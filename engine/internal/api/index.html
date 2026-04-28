@@ -1,0 +1,3948 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>eBPF SOC — Threat Intelligence</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js" defer></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        soc: {
+          bg:       '#070b14',
+          panel:    '#0f172a',
+          panel2:   '#111d33',
+          line:     '#1f2a44',
+          mute:     '#64748b',
+          text:     '#e2e8f0',
+          dim:      '#94a3b8',
+          accent:   '#22d3ee',
+          ok:       '#10b981',
+          critical: '#f43f5e',
+          high:     '#fb923c',
+          medium:   '#facc15',
+          low:      '#3b82f6',
+          info:     '#94a3b8',
+        }
+      },
+      fontFamily: {
+        mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'monospace'],
+      }
+    }
+  }
+}
+</script>
+<style>
+  :root {
+    --crit: #f43f5e;
+    --high: #fb923c;
+    --med:  #facc15;
+    --low:  #3b82f6;
+    --info: #94a3b8;
+  }
+  html, body { height: 100%; }
+  body {
+    background:
+      radial-gradient(60% 40% at 80% -10%, rgba(34,211,238,0.08), transparent 60%),
+      radial-gradient(60% 50% at -10% 10%, rgba(244,63,94,0.06), transparent 60%),
+      #070b14;
+    color: #e2e8f0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  }
+  .glass {
+    background: rgba(15, 23, 42, 0.6);
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    border: 1px solid rgba(31, 42, 68, 0.9);
+  }
+  .glow-crit  { box-shadow: 0 0 18px -4px rgba(244,63,94,0.7); }
+  .glow-high  { box-shadow: 0 0 14px -4px rgba(251,146,60,0.55); }
+  .pulse-dot::before {
+    content: '';
+    display: inline-block; width: 8px; height: 8px; border-radius: 9999px;
+    background: #10b981;
+    margin-right: 8px;
+    box-shadow: 0 0 0 0 rgba(16,185,129,0.7);
+    animation: pulse 1.6s infinite;
+  }
+  .pulse-dot.dead::before {
+    background: #ef4444;
+    animation: none;
+    box-shadow: none;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0 rgba(16,185,129,0.6); }
+    70%  { box-shadow: 0 0 0 10px rgba(16,185,129,0); }
+    100% { box-shadow: 0 0 0 0 rgba(16,185,129,0); }
+  }
+  .sev-dot { width: 8px; height: 8px; border-radius: 9999px; display: inline-block; margin-right: 6px; }
+  .sev-dot.critical { background: var(--crit); box-shadow: 0 0 8px var(--crit); }
+  .sev-dot.high     { background: var(--high); }
+  .sev-dot.medium   { background: var(--med); }
+  .sev-dot.low      { background: var(--low); }
+  .sev-dot.info     { background: var(--info); }
+
+  .sev-bar.critical { background: var(--crit); }
+  .sev-bar.high     { background: var(--high); }
+  .sev-bar.medium   { background: var(--med); }
+  .sev-bar.low      { background: var(--low); }
+  .sev-bar.info     { background: var(--info); }
+
+  .sev-tag {
+    display: inline-flex; align-items: center;
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase;
+  }
+  .sev-tag.critical { background: rgba(244,63,94,0.15);  color: #fda4af; border: 1px solid rgba(244,63,94,0.4); }
+  .sev-tag.high     { background: rgba(251,146,60,0.15); color: #fdba74; border: 1px solid rgba(251,146,60,0.4); }
+  .sev-tag.medium   { background: rgba(250,204,21,0.12); color: #fde68a; border: 1px solid rgba(250,204,21,0.4); }
+  .sev-tag.low      { background: rgba(59,130,246,0.15); color: #93c5fd; border: 1px solid rgba(59,130,246,0.4); }
+  .sev-tag.info     { background: rgba(148,163,184,0.15); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.4); }
+
+  .alert-row { transition: background-color 120ms ease; }
+  .alert-row:hover { background: rgba(34,211,238,0.05); }
+  .alert-row.selected { background: rgba(34,211,238,0.08); border-color: rgba(34,211,238,0.4); }
+
+  .stat-card { transition: transform 120ms ease, border-color 120ms ease; }
+  .stat-card:hover { transform: translateY(-1px); border-color: rgba(34,211,238,0.4); }
+
+  /* Slide-over */
+  .panel-slide { transform: translateX(100%); transition: transform 240ms ease; }
+  .panel-slide.open { transform: translateX(0); }
+
+  /* Process tree */
+  .ptree-node {
+    border-left: 2px solid #1f2a44;
+    padding-left: 14px; margin-left: 6px;
+    position: relative;
+  }
+  .ptree-node::before {
+    content: '';
+    position: absolute; left: -5px; top: 14px;
+    width: 8px; height: 8px; border-radius: 9999px;
+    background: #1f2a44; border: 2px solid #0f172a;
+  }
+  .ptree-node.score-high::before { background: var(--high); box-shadow: 0 0 8px var(--high); }
+  .ptree-node.score-crit::before { background: var(--crit); box-shadow: 0 0 8px var(--crit); }
+  .ptree-node.score-med::before  { background: var(--med); }
+
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: #1f2a44; border-radius: 3px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #334155; }
+
+  .spark { display: flex; align-items: flex-end; gap: 2px; height: 32px; }
+  .spark > div { width: 4px; background: rgba(34,211,238,0.4); border-radius: 1px; }
+
+  .ts-bar { display: flex; align-items: flex-end; gap: 1px; height: 100%; }
+  .ts-bar-col { display: flex; flex-direction: column-reverse; flex: 1; min-width: 0; }
+  .ts-bar-seg { width: 100%; }
+
+  .blink-new { animation: rowflash 1.2s ease-out 1; }
+  @keyframes rowflash {
+    0%   { background: rgba(34,211,238,0.18); }
+    100% { background: transparent; }
+  }
+
+  .truncate-mid {
+    display: inline-block; max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+
+  /* Risk gauge */
+  .gauge-arc {
+    transform-origin: center;
+    transition: stroke-dashoffset 600ms ease, stroke 400ms ease;
+  }
+  .gauge-pulse  { animation: gpulse 1.4s ease-in-out infinite; }
+  @keyframes gpulse {
+    0%, 100% { filter: drop-shadow(0 0 4px var(--crit)); }
+    50%      { filter: drop-shadow(0 0 12px var(--crit)); }
+  }
+
+  /* Trend deltas */
+  .delta-up   { color: #fda4af; }
+  .delta-down { color: #6ee7b7; }
+  .delta-flat { color: #6b7280; }
+
+  /* Ack badges */
+  .ack-badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 6px; border-radius: 4px;
+    font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .ack-badge.new   { background: rgba(34,211,238,0.12); color: #67e8f9; border: 1px solid rgba(34,211,238,0.4); }
+  .ack-badge.ack   { background: rgba(250,204,21,0.12); color: #fde68a; border: 1px solid rgba(250,204,21,0.4); }
+  .ack-badge.resolved { background: rgba(16,185,129,0.12); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.4); opacity: 0.65; }
+
+  .alert-row.resolved { opacity: 0.45; }
+  .alert-row.grouped::after {
+    content: '+' attr(data-group-extra);
+    position: absolute; right: 12px; top: 12px;
+    font-size: 10px; font-weight: 700;
+    background: rgba(34,211,238,0.15); color: #67e8f9;
+    border: 1px solid rgba(34,211,238,0.4);
+    padding: 1px 6px; border-radius: 4px;
+  }
+  .alert-row { position: relative; }
+
+  /* Timeline interactivity */
+  .ts-bar-col { cursor: pointer; transition: opacity 120ms ease; }
+  .ts-bar-col:hover { opacity: 0.7; }
+  .ts-bar-col.dim   { opacity: 0.3; }
+  .ts-bar-col.selected { box-shadow: inset 0 0 0 1px var(--info); border-radius: 2px; }
+
+  /* Modal */
+  .modal-back { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 49; display: none; }
+  .modal-back.open { display: flex; align-items: center; justify-content: center; }
+  .modal-card { width: min(560px, 90vw); max-height: 80vh; overflow-y: auto; }
+
+  kbd.k {
+    display: inline-block;
+    background: rgba(15,23,42,0.9);
+    border: 1px solid rgba(31,42,68,0.9);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-family: ui-monospace, monospace;
+    font-size: 10px;
+    color: #cbd5e1;
+    min-width: 18px; text-align: center;
+  }
+
+  /* Bell button */
+  .bell-btn { transition: color 120ms ease, background 120ms ease; }
+  .bell-btn.on { color: #22d3ee; }
+
+  /* Export menu */
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 30px; height: 30px;
+    border: 1px solid rgba(31,42,68,0.9);
+    border-radius: 6px;
+    color: #94a3b8;
+    background: rgba(15,23,42,0.6);
+  }
+  .icon-btn:hover { color: #e2e8f0; border-color: rgba(34,211,238,0.4); }
+
+  /* Active filter banner */
+  .active-filter {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px; border-radius: 4px;
+    background: rgba(34,211,238,0.12); color: #67e8f9;
+    border: 1px solid rgba(34,211,238,0.4);
+    font-size: 11px;
+  }
+  .active-filter button { color: inherit; opacity: 0.7; }
+  .active-filter button:hover { opacity: 1; }
+
+  /* Clickable panel rows */
+  .clickable-row { cursor: pointer; transition: background 100ms ease; }
+  .clickable-row:hover { background: rgba(34,211,238,0.06); }
+  .clickable-row.selected { background: rgba(34,211,238,0.12); border-color: rgba(34,211,238,0.4); }
+
+  /* Floating popover (hover preview, risk breakdown) */
+  .popover {
+    position: fixed; z-index: 60;
+    max-width: 480px;
+    background: rgba(15,23,42,0.96);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(31,42,68,0.95);
+    border-radius: 8px; padding: 12px;
+    box-shadow: 0 20px 50px -10px rgba(0,0,0,0.7);
+    pointer-events: auto;
+    animation: popfade 120ms ease-out;
+  }
+  @keyframes popfade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; } }
+  .popover.hidden { display: none; }
+
+  /* Right-click context menu */
+  .ctx-menu {
+    position: fixed; z-index: 70;
+    min-width: 220px;
+    background: rgba(11,17,32,0.98);
+    border: 1px solid rgba(31,42,68,0.95);
+    border-radius: 6px; padding: 4px;
+    box-shadow: 0 16px 40px -8px rgba(0,0,0,0.7);
+    font-size: 12px;
+  }
+  .ctx-menu.hidden { display: none; }
+  .ctx-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 7px 10px; border-radius: 4px; cursor: pointer;
+    color: #cbd5e1;
+  }
+  .ctx-item:hover { background: rgba(34,211,238,0.10); color: #e2e8f0; }
+  .ctx-sep { height: 1px; background: rgba(31,42,68,0.95); margin: 4px 0; }
+  .ctx-item.danger { color: #fda4af; }
+  .ctx-item kbd {
+    font-family: ui-monospace, monospace; font-size: 10px; opacity: 0.6;
+    border: 1px solid rgba(31,42,68,0.95); padding: 1px 4px; border-radius: 3px;
+  }
+
+  /* Pin star */
+  .pin-btn { color: #475569; cursor: pointer; transition: color 120ms ease, transform 120ms ease; }
+  .pin-btn:hover { color: #fde68a; }
+  .pin-btn.pinned { color: #facc15; }
+  .pin-btn.pinned:hover { color: #fbbf24; }
+  .alert-row.pinned { border-left-color: #facc15; }
+
+  /* Bulk action bar */
+  .bulk-bar {
+    display: flex; align-items: center; gap: 12px;
+    padding: 8px 16px;
+    background: rgba(34,211,238,0.08);
+    border-bottom: 1px solid rgba(34,211,238,0.4);
+    font-size: 12px;
+  }
+  .bulk-bar.hidden { display: none; }
+  .bulk-bar button {
+    padding: 4px 10px; border-radius: 4px;
+    border: 1px solid rgba(31,42,68,0.95);
+    background: rgba(15,23,42,0.6);
+    color: #cbd5e1;
+  }
+  .bulk-bar button:hover { border-color: rgba(34,211,238,0.5); color: #e2e8f0; }
+  .bulk-bar .danger:hover { color: #fda4af; border-color: rgba(244,63,94,0.5); }
+
+  /* Alert checkbox */
+  .alert-check { accent-color: #22d3ee; }
+
+  /* Saved views menu */
+  .views-menu {
+    position: absolute; z-index: 30;
+    min-width: 240px;
+    background: rgba(11,17,32,0.98);
+    border: 1px solid rgba(31,42,68,0.95);
+    border-radius: 6px; padding: 4px;
+    box-shadow: 0 16px 40px -8px rgba(0,0,0,0.7);
+    font-size: 12px;
+    max-height: 60vh; overflow-y: auto;
+  }
+  .views-menu.hidden { display: none; }
+  .view-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 6px 8px; border-radius: 4px; cursor: pointer;
+    color: #cbd5e1;
+  }
+  .view-item:hover { background: rgba(34,211,238,0.10); }
+  .view-item .del { opacity: 0.4; padding: 0 4px; }
+  .view-item:hover .del { opacity: 0.9; }
+  .view-item .del:hover { color: #fda4af; }
+
+  /* Sort header */
+  .sort-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 16px;
+    background: rgba(15,23,42,0.4);
+    border-bottom: 1px solid rgba(31,42,68,0.95);
+    font-size: 11px; color: #64748b;
+  }
+  .sort-btn {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 6px; border-radius: 3px; cursor: pointer;
+  }
+  .sort-btn:hover { background: rgba(34,211,238,0.06); color: #e2e8f0; }
+  .sort-btn.active { color: #22d3ee; }
+
+  /* Notes textarea in drill-down */
+  .notes-area {
+    width: 100%; min-height: 60px;
+    background: rgba(15,23,42,0.6);
+    border: 1px solid rgba(31,42,68,0.9);
+    border-radius: 6px; padding: 8px;
+    color: #e2e8f0; font-size: 12px;
+    font-family: ui-monospace, monospace;
+    outline: none; resize: vertical;
+  }
+  .notes-area:focus { border-color: rgba(34,211,238,0.5); }
+
+  /* Timeline brush handles */
+  .ts-brush {
+    position: absolute; top: 0; bottom: 0;
+    background: rgba(34,211,238,0.10);
+    border-left: 1.5px solid #22d3ee;
+    border-right: 1.5px solid #22d3ee;
+    pointer-events: none;
+  }
+  .ts-bar { position: relative; }
+
+  /* Risk gauge clickable */
+  #riskGauge { cursor: pointer; }
+
+  /* ─── Left sidebar ─── */
+  :root { --sidebar-w: 64px; --sidebar-w-open: 240px; }
+  body.sidebar-open { --sidebar-w: var(--sidebar-w-open); }
+
+  #sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0;
+    width: var(--sidebar-w);
+    z-index: 35;
+    background: rgba(7,11,20,0.92);
+    backdrop-filter: blur(10px);
+    border-right: 1px solid rgba(31,42,68,0.95);
+    transition: width 180ms ease;
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  #sidebar .sb-section {
+    padding: 4px 0;
+    border-bottom: 1px solid rgba(31,42,68,0.6);
+  }
+  #sidebar .sb-section:last-child { border-bottom: 0; }
+  #sidebar .sb-label {
+    font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
+    color: #475569;
+    padding: 10px 16px 4px;
+    opacity: 0; transition: opacity 120ms ease;
+    pointer-events: none;
+    white-space: nowrap;
+  }
+  body.sidebar-open #sidebar .sb-label { opacity: 1; }
+  #sidebar .sb-item {
+    display: flex; align-items: center; gap: 14px;
+    padding: 9px 18px; margin: 1px 6px;
+    color: #94a3b8;
+    border-radius: 6px;
+    cursor: pointer;
+    white-space: nowrap;
+    position: relative;
+    transition: background 100ms ease, color 100ms ease;
+  }
+  #sidebar .sb-item:hover { background: rgba(34,211,238,0.08); color: #e2e8f0; }
+  #sidebar .sb-item.active { background: rgba(34,211,238,0.12); color: #22d3ee; }
+  #sidebar .sb-item svg { flex-shrink: 0; }
+  #sidebar .sb-item .sb-text {
+    font-size: 12px; opacity: 0; transition: opacity 120ms ease;
+    pointer-events: none;
+  }
+  body.sidebar-open #sidebar .sb-item .sb-text { opacity: 1; }
+  #sidebar .sb-item .sb-badge {
+    margin-left: auto;
+    font-size: 10px;
+    background: rgba(244,63,94,0.15); color: #fda4af;
+    border: 1px solid rgba(244,63,94,0.4);
+    padding: 0 5px; border-radius: 3px;
+    opacity: 0; transition: opacity 120ms ease;
+  }
+  body.sidebar-open #sidebar .sb-item .sb-badge.show { opacity: 1; }
+  #sidebar .sb-item.bell-on { color: #22d3ee; }
+
+  #sidebar .sb-toggle {
+    margin: 8px 6px;
+    padding: 8px;
+    color: #475569;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  #sidebar .sb-toggle:hover { background: rgba(255,255,255,0.04); color: #94a3b8; }
+  #sidebar .sb-spacer { flex: 1; }
+
+  /* Tooltip when collapsed */
+  #sidebar .sb-item .sb-tip {
+    position: absolute; left: calc(100% + 6px); top: 50%; transform: translateY(-50%);
+    background: rgba(11,17,32,0.98);
+    border: 1px solid rgba(31,42,68,0.95);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    color: #cbd5e1;
+    white-space: nowrap;
+    pointer-events: none;
+    opacity: 0; transition: opacity 100ms ease;
+    box-shadow: 0 6px 20px -4px rgba(0,0,0,0.7);
+  }
+  body:not(.sidebar-open) #sidebar .sb-item:hover .sb-tip { opacity: 1; }
+
+  /* Shift main content right of the sidebar */
+  body { padding-left: var(--sidebar-w); transition: padding-left 180ms ease; }
+  header.sticky { left: var(--sidebar-w); right: 0; transition: left 180ms ease; }
+
+  /* ─── Watchlist badge ─── */
+  .watch-tag {
+    display: inline-flex; align-items: center;
+    background: rgba(217,70,239,0.15); color: #f0abfc;
+    border: 1px solid rgba(217,70,239,0.4);
+    padding: 1px 6px; border-radius: 3px;
+    font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+
+  /* ─── MITRE Navigator matrix ─── */
+  .mitre-matrix {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(140px, 1fr);
+    gap: 6px;
+    overflow-x: auto;
+  }
+  .mitre-col h4 {
+    font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: #94a3b8;
+    padding-bottom: 6px; margin-bottom: 6px;
+    border-bottom: 1px solid rgba(31,42,68,0.95);
+  }
+  .mitre-cell {
+    background: rgba(15,23,42,0.6);
+    border: 1px solid rgba(31,42,68,0.6);
+    border-radius: 4px;
+    padding: 6px 8px;
+    margin-bottom: 4px;
+    font-size: 11px;
+    cursor: default;
+    line-height: 1.3;
+  }
+  .mitre-cell.observed { cursor: pointer; }
+  .mitre-cell.observed:hover { border-color: rgba(34,211,238,0.5); }
+
+  /* ─── Cmd+K palette ─── */
+  #paletteModal {
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.55);
+    z-index: 65;
+    display: none;
+    align-items: flex-start; justify-content: center;
+    padding-top: 14vh;
+  }
+  #paletteModal.open { display: flex; }
+  .palette-card {
+    width: min(640px, 92vw);
+    background: rgba(11,17,32,0.96);
+    backdrop-filter: blur(12px);
+    border: 1px solid rgba(31,42,68,0.95);
+    border-radius: 10px;
+    box-shadow: 0 30px 80px -10px rgba(0,0,0,0.7);
+    overflow: hidden;
+  }
+  .palette-card input {
+    width: 100%;
+    background: transparent;
+    color: #e2e8f0;
+    border: 0; border-bottom: 1px solid rgba(31,42,68,0.95);
+    padding: 14px 18px;
+    font-size: 14px;
+    outline: none;
+  }
+  .palette-card input::placeholder { color: #475569; }
+  .palette-results { max-height: 420px; overflow-y: auto; padding: 6px; }
+  .pal-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px; border-radius: 6px;
+    color: #cbd5e1; font-size: 12px;
+    cursor: pointer;
+  }
+  .pal-item.sel, .pal-item:hover { background: rgba(34,211,238,0.10); color: #e2e8f0; }
+  .pal-kind {
+    font-size: 9px; letter-spacing: 0.08em; text-transform: uppercase;
+    background: rgba(15,23,42,0.7);
+    color: #94a3b8;
+    border: 1px solid rgba(31,42,68,0.95);
+    padding: 1px 6px; border-radius: 3px;
+    flex-shrink: 0;
+  }
+  .pal-item .pal-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pal-item .pal-meta { color: #64748b; font-size: 11px; flex-shrink: 0; }
+  .pal-empty { padding: 16px; color: #475569; font-size: 12px; text-align: center; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- ─────────── LEFT SIDEBAR ─────────── -->
+<aside id="sidebar">
+  <div class="sb-toggle" id="sidebarToggle" title="Toggle sidebar">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+  </div>
+
+  <div class="sb-section">
+    <div class="sb-label">Tools</div>
+    <div class="sb-item" id="sbPolicies"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 3v5h5M9 9h1M9 13h6M9 17h6"/><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9l5 5v11a2 2 0 0 1-2 2z"/></svg><span class="sb-text">Policies</span><span class="sb-tip">Policies</span></div>
+    <div class="sb-item" id="sbAttacks"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg><span class="sb-text">Attacks</span><span class="sb-tip">Attacks</span></div>
+    <div class="sb-item" id="sbMitre"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg><span class="sb-text">MITRE Navigator</span><span class="sb-tip">MITRE Navigator</span></div>
+    <div class="sb-item" id="sbGraph"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><line x1="7.5" y1="7.5" x2="11" y2="16"/><line x1="16.5" y1="7.5" x2="13" y2="16"/></svg><span class="sb-text">Correlation Graph</span><span class="sb-tip">Correlation Graph</span></div>
+    <div class="sb-item" id="sbSim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6v3l4 4v8a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4V10l4-4z"/><line x1="9" y1="14" x2="15" y2="14"/></svg><span class="sb-text">Rule Simulator</span><span class="sb-tip">Rule Simulator</span></div>
+    <div class="sb-item" id="sbHoneypots"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 8v8l8 5 8-5V8z"/><path d="M9 13h6"/><path d="M12 11v5"/></svg><span class="sb-text">Honeypots</span><span class="sb-tip">Honeypots</span></div>
+    <div class="sb-item" id="sbKprobes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg><span class="sb-text">Kprobe Perf</span><span class="sb-tip">Kprobe Perf</span></div>
+  </div>
+
+  <div class="sb-section">
+    <div class="sb-label">Workflow</div>
+    <div class="sb-item" id="sbPalette"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg><span class="sb-text">Command Palette</span><span class="sb-tip">⌘K · Command palette</span></div>
+    <div class="sb-item" id="sbWatchlist"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg><span class="sb-text">Watchlist</span><span class="sb-tip">Watchlist</span><span class="sb-badge" id="watchBadgeCount"></span></div>
+    <div class="sb-item" id="sbTimeMachine"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 9 14"/></svg><span class="sb-text">Time Machine</span><span class="sb-tip">Time Machine</span></div>
+    <div class="sb-item" id="sbExport"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg><span class="sb-text">Export view</span><span class="sb-tip">Export current view</span></div>
+  </div>
+
+  <div class="sb-section">
+    <div class="sb-label">Settings</div>
+    <div class="sb-item" id="sbBell"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="sb-text">Notifications</span><span class="sb-tip">Notifications</span></div>
+    <div class="sb-item" id="sbHelp"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg><span class="sb-text">Help &amp; shortcuts</span><span class="sb-tip">Help (?)</span></div>
+  </div>
+
+  <div class="sb-spacer"></div>
+
+  <div class="sb-section">
+    <div class="sb-label">Account</div>
+    <div class="sb-item" id="sbUser" style="cursor: default">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>
+      <span class="sb-text font-mono" id="sidebarUser">—</span>
+      <span class="sb-tip">Logged in</span>
+    </div>
+    <a href="/api/logout" class="sb-item">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      <span class="sb-text">Sign out</span>
+      <span class="sb-tip">Sign out</span>
+    </a>
+  </div>
+</aside>
+
+<!-- ─────────── TOP BAR ─────────── -->
+<header class="sticky top-0 z-30 glass border-b border-soc-line">
+  <div class="max-w-[1600px] mx-auto px-6 py-3 flex items-center gap-6">
+    <div class="flex items-center gap-3">
+      <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+        <path d="M16 2 L29 9.5 V22.5 L16 30 L3 22.5 V9.5 Z" stroke="#22d3ee" stroke-width="1.4" fill="rgba(34,211,238,0.06)"/>
+        <path d="M16 8 L23 12 V20 L16 24 L9 20 V12 Z" stroke="#22d3ee" stroke-width="1.2" fill="none"/>
+        <circle cx="16" cy="16" r="2" fill="#22d3ee"/>
+      </svg>
+      <div>
+        <div class="text-sm font-semibold tracking-wider text-soc-text">eBPF SOC</div>
+        <div class="text-[10px] uppercase tracking-[0.18em] text-soc-mute">Threat Intelligence</div>
+      </div>
+    </div>
+
+    <div class="flex-1 max-w-xl">
+      <div class="relative">
+        <input id="searchInput" type="text" placeholder='Search… (try: severity:critical policy:T1003 score:>50 process:bash)'
+          class="w-full bg-soc-panel/80 border border-soc-line text-sm rounded-md px-9 py-2 placeholder:text-soc-mute focus:outline-none focus:border-soc-accent/60 focus:ring-1 focus:ring-soc-accent/30">
+        <svg class="absolute left-2.5 top-2.5 w-4 h-4 text-soc-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+        <kbd class="absolute right-2.5 top-2 text-[10px] text-soc-mute border border-soc-line rounded px-1.5 py-0.5">/</kbd>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4 text-xs text-soc-dim">
+      <!-- Risk gauge -->
+      <div class="flex items-center gap-2" title="System risk score (0–100), weighted by recent alert severity">
+        <svg id="riskGauge" width="44" height="44" viewBox="0 0 44 44">
+          <circle cx="22" cy="22" r="18" stroke="#1f2a44" stroke-width="3" fill="none"/>
+          <circle id="riskArc" class="gauge-arc" cx="22" cy="22" r="18"
+                  stroke="#10b981" stroke-width="3" fill="none"
+                  stroke-linecap="round"
+                  stroke-dasharray="113.1"
+                  stroke-dashoffset="113.1"
+                  transform="rotate(-90 22 22)"/>
+          <text id="riskValue" x="22" y="26" text-anchor="middle"
+                font-size="11" font-weight="700" fill="#e2e8f0" font-family="ui-monospace,monospace">0</text>
+        </svg>
+        <div class="flex flex-col leading-tight">
+          <span class="text-[10px] uppercase tracking-widest text-soc-mute">risk</span>
+          <span id="riskLabel" class="text-[11px] text-soc-text">low</span>
+        </div>
+      </div>
+
+      <div id="rangeSelect" class="flex bg-soc-panel/80 border border-soc-line rounded-md overflow-hidden">
+        <button data-range="5"  class="px-3 py-1.5 hover:bg-soc-panel2">5m</button>
+        <button data-range="30" class="px-3 py-1.5 hover:bg-soc-panel2 bg-soc-panel2 text-soc-accent">30m</button>
+        <button data-range="60" class="px-3 py-1.5 hover:bg-soc-panel2">1h</button>
+        <button data-range="1440" class="px-3 py-1.5 hover:bg-soc-panel2">24h</button>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <span class="text-soc-mute">host</span>
+        <span id="hostLabel" class="text-soc-text font-mono">—</span>
+      </div>
+      <div id="connStatus" class="pulse-dot dead text-soc-text">connecting…</div>
+      <span id="userLabel" class="hidden">—</span>
+    </div>
+  </div>
+</header>
+
+<main class="max-w-[1600px] mx-auto px-6 py-5 space-y-5">
+
+  <!-- ─────────── KPI ROW ─────────── -->
+  <section class="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-5 gap-4">
+    <div class="stat-card glass rounded-lg p-4 glow-crit">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-widest text-soc-mute">Critical</span>
+        <span class="sev-dot critical"></span>
+      </div>
+      <div class="mt-2 flex items-baseline gap-2">
+        <span id="kpiCrit" class="text-3xl font-bold text-soc-text">0</span>
+        <span id="kpiCritDelta" class="text-xs text-soc-mute">—</span>
+      </div>
+      <div class="spark mt-3" id="sparkCrit"></div>
+    </div>
+
+    <div class="stat-card glass rounded-lg p-4">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-widest text-soc-mute">High</span>
+        <span class="sev-dot high"></span>
+      </div>
+      <div class="mt-2 flex items-baseline gap-2">
+        <span id="kpiHigh" class="text-3xl font-bold text-soc-text">0</span>
+        <span id="kpiHighDelta" class="text-xs text-soc-mute">—</span>
+      </div>
+      <div class="spark mt-3" id="sparkHigh"></div>
+    </div>
+
+    <div class="stat-card glass rounded-lg p-4">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-widest text-soc-mute">Medium</span>
+        <span class="sev-dot medium"></span>
+      </div>
+      <div class="mt-2 flex items-baseline gap-2">
+        <span id="kpiMed" class="text-3xl font-bold text-soc-text">0</span>
+        <span id="kpiMedDelta" class="text-xs text-soc-mute">—</span>
+      </div>
+      <div class="spark mt-3" id="sparkMed"></div>
+    </div>
+
+    <div class="stat-card glass rounded-lg p-4">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-widest text-soc-mute">Events / sec</span>
+        <span class="text-soc-accent text-[10px]">60s avg</span>
+      </div>
+      <div class="mt-2 flex items-baseline gap-2">
+        <span id="kpiEps" class="text-3xl font-bold text-soc-text">0.0</span>
+        <span class="text-xs text-soc-mute">eps</span>
+      </div>
+      <div class="spark mt-3" id="sparkEps"></div>
+    </div>
+
+    <div class="stat-card glass rounded-lg p-4 col-span-2 md:col-span-4 xl:col-span-1">
+      <div class="flex items-center justify-between">
+        <span class="text-[10px] uppercase tracking-widest text-soc-mute">Active processes</span>
+        <span class="text-soc-mute text-[10px]" id="procWindow">last 10m</span>
+      </div>
+      <div class="mt-2 flex items-baseline gap-2">
+        <span id="kpiProcs" class="text-3xl font-bold text-soc-text">0</span>
+        <span class="text-xs text-soc-mute">unique exec_ids</span>
+      </div>
+      <div class="text-[11px] text-soc-dim mt-3 truncate" id="topProc">—</div>
+    </div>
+  </section>
+
+  <!-- ─────────── TIMELINE ─────────── -->
+  <section class="glass rounded-lg p-4">
+    <div class="flex items-center justify-between mb-3">
+      <div>
+        <h2 class="text-sm font-semibold tracking-wide text-soc-text">Severity timeline</h2>
+        <p class="text-[11px] text-soc-mute">Alert volume by severity, 1-min buckets</p>
+      </div>
+      <div class="flex items-center gap-3 text-[11px]">
+        <span><span class="sev-dot critical"></span>critical</span>
+        <span><span class="sev-dot high"></span>high</span>
+        <span><span class="sev-dot medium"></span>medium</span>
+        <span><span class="sev-dot low"></span>low</span>
+      </div>
+    </div>
+    <div id="timeline" class="ts-bar h-[100px] bg-soc-panel/40 rounded p-2"></div>
+    <div id="timelineAxis" class="flex justify-between text-[10px] text-soc-mute mt-1 px-2"></div>
+  </section>
+
+  <!-- ─────────── MAIN GRID ─────────── -->
+  <section class="grid grid-cols-1 xl:grid-cols-3 gap-5">
+
+    <!-- Alert triage queue -->
+    <div class="xl:col-span-2 glass rounded-lg flex flex-col">
+      <div class="p-4 border-b border-soc-line flex items-center justify-between gap-3 flex-wrap">
+        <div>
+          <h2 class="text-sm font-semibold tracking-wide text-soc-text">Alert triage</h2>
+          <p class="text-[11px] text-soc-mute">Click to investigate · <kbd class="k">j</kbd>/<kbd class="k">k</kbd> navigate · <kbd class="k">a</kbd> ack · <kbd class="k">r</kbd> resolve</p>
+        </div>
+        <div class="flex flex-wrap items-center gap-3 text-[11px]">
+          <div class="flex flex-wrap items-center gap-1.5">
+            <button data-sev="critical" class="sev-filter sev-tag critical">critical</button>
+            <button data-sev="high"     class="sev-filter sev-tag high">high</button>
+            <button data-sev="medium"   class="sev-filter sev-tag medium">medium</button>
+            <button data-sev="low"      class="sev-filter sev-tag low">low</button>
+            <button data-sev="info"     class="sev-filter sev-tag info">info</button>
+          </div>
+          <div class="flex items-center gap-1.5 text-soc-dim">
+            <label class="flex items-center gap-1 cursor-pointer">
+              <input id="filterUnack" type="checkbox" class="accent-cyan-400"> unacked
+            </label>
+            <label class="flex items-center gap-1 cursor-pointer">
+              <input id="groupToggle" type="checkbox" class="accent-cyan-400" checked> group
+            </label>
+          </div>
+          <span id="alertCount" class="text-soc-mute">0 alerts</span>
+          <div class="relative">
+            <button id="viewsBtn" class="px-2 py-1 border border-soc-line rounded hover:bg-soc-panel2 text-soc-dim">views ▾</button>
+            <div id="viewsMenu" class="views-menu hidden" style="right:0; top:calc(100% + 4px);"></div>
+          </div>
+          <button id="alertClear" class="px-2 py-1 border border-soc-line rounded hover:bg-soc-panel2 text-soc-dim">clear</button>
+        </div>
+      </div>
+      <div id="filterChips" class="hidden px-4 py-2 border-b border-soc-line flex flex-wrap gap-1.5 text-[11px]"></div>
+      <div id="bulkBar" class="bulk-bar hidden">
+        <span id="bulkCount" class="text-soc-text font-mono">0 selected</span>
+        <button id="bulkAck">Acknowledge</button>
+        <button id="bulkResolve">Resolve</button>
+        <button id="bulkExport">Export</button>
+        <button id="bulkClear" class="danger">Clear selection</button>
+      </div>
+      <div id="sortBar" class="sort-bar">
+        <span>sort by</span>
+        <span id="sortBtnTime"     class="sort-btn active" data-sort="time">time <span class="sort-dir">↓</span></span>
+        <span id="sortBtnSeverity" class="sort-btn"        data-sort="severity">severity</span>
+        <span id="sortBtnScore"    class="sort-btn"        data-sort="score">score</span>
+      </div>
+      <div id="alertList" class="overflow-y-auto scrollbar-thin divide-y divide-soc-line max-h-[60vh]"></div>
+      <div id="alertEmpty" class="text-center text-soc-mute text-xs py-8 hidden">no alerts match current filters</div>
+    </div>
+
+    <!-- Right column: MITRE + top processes -->
+    <div class="space-y-5">
+      <div class="glass rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-sm font-semibold tracking-wide text-soc-text">MITRE ATT&amp;CK coverage</h2>
+            <p class="text-[11px] text-soc-mute">Techniques observed in current window</p>
+          </div>
+          <a href="https://attack.mitre.org/" target="_blank" rel="noopener" class="text-[10px] text-soc-mute hover:text-soc-accent">attack.mitre.org ↗</a>
+        </div>
+        <div id="mitre" class="space-y-2"></div>
+      </div>
+
+      <div class="glass rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-sm font-semibold tracking-wide text-soc-text">Top processes by score</h2>
+            <p class="text-[11px] text-soc-mute">Highest aggregate suspicion</p>
+          </div>
+        </div>
+        <div id="topProcs" class="space-y-2"></div>
+      </div>
+
+      <div class="glass rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-sm font-semibold tracking-wide text-soc-text">IOCs observed</h2>
+            <p class="text-[11px] text-soc-mute">Files, hosts, ports referenced in events</p>
+          </div>
+        </div>
+        <div id="iocs" class="text-xs space-y-1.5 font-mono"></div>
+      </div>
+
+      <div class="glass rounded-lg p-4">
+        <div class="flex items-center justify-between mb-3">
+          <div>
+            <h2 class="text-sm font-semibold tracking-wide text-soc-text">Network connections</h2>
+            <p class="text-[11px] text-soc-mute">Outbound TCP from shells &amp; LOLBins</p>
+          </div>
+        </div>
+        <div id="netPanel" class="text-xs space-y-1.5 font-mono"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────── LIVE STREAM ─────────── -->
+  <section class="glass rounded-lg">
+    <div class="p-4 border-b border-soc-line flex items-center justify-between gap-3 flex-wrap">
+      <div>
+        <h2 class="text-sm font-semibold tracking-wide text-soc-text">Live event stream</h2>
+        <p class="text-[11px] text-soc-mute">Raw kernel events as Tetragon emits them</p>
+      </div>
+      <div class="flex items-center gap-3 text-[11px] text-soc-dim flex-wrap">
+        <input id="streamFilter" type="text" placeholder="filter… (regex)"
+          class="bg-soc-panel/60 border border-soc-line rounded px-2 py-1 w-44 placeholder:text-soc-mute focus:outline-none focus:border-soc-accent/50 text-soc-text">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="filterNoise" type="checkbox" checked class="accent-cyan-400"> hide self-noise
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="streamPause" type="checkbox" class="accent-cyan-400"> pause
+        </label>
+        <button id="streamClear" class="px-2 py-1 border border-soc-line rounded hover:bg-soc-panel2">clear</button>
+        <span id="streamCount" class="text-soc-mute">0 events</span>
+      </div>
+    </div>
+    <div id="eventList" class="overflow-y-auto scrollbar-thin font-mono text-[11px] max-h-[40vh] divide-y divide-soc-line/40"></div>
+  </section>
+</main>
+
+<!-- ─────────── DRILL-DOWN PANEL ─────────── -->
+<aside id="drillPanel" class="panel-slide fixed top-0 right-0 h-full w-full max-w-[640px] z-40 glass border-l border-soc-line shadow-2xl overflow-y-auto scrollbar-thin">
+  <div class="p-5">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <div id="drillSev" class="sev-tag info mb-2">info</div>
+        <h2 id="drillTitle" class="text-base font-semibold text-soc-text leading-snug">—</h2>
+        <p id="drillMeta" class="text-[11px] text-soc-mute mt-1 font-mono">—</p>
+      </div>
+      <button onclick="closeDrill()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+
+    <div class="grid grid-cols-3 gap-2 text-[11px] mb-4">
+      <div class="bg-soc-panel/60 rounded p-2 border border-soc-line">
+        <div class="text-soc-mute uppercase tracking-wider text-[10px]">score</div>
+        <div id="drillScore" class="text-soc-text font-mono text-base">—</div>
+      </div>
+      <div class="bg-soc-panel/60 rounded p-2 border border-soc-line">
+        <div class="text-soc-mute uppercase tracking-wider text-[10px]">events</div>
+        <div id="drillEvents" class="text-soc-text font-mono text-base">—</div>
+      </div>
+      <div class="bg-soc-panel/60 rounded p-2 border border-soc-line">
+        <div class="text-soc-mute uppercase tracking-wider text-[10px]">chain depth</div>
+        <div id="drillDepth" class="text-soc-text font-mono text-base">—</div>
+      </div>
+    </div>
+
+    <div class="mb-4 flex flex-wrap gap-2">
+      <button id="drillPin" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text hover:border-soc-accent/40">★ Pin</button>
+      <button id="drillAck" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text">Acknowledge</button>
+      <button id="drillResolve" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-emerald-400">Resolve</button>
+      <button id="drillCopyId" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text">Copy exec_id</button>
+      <button id="drillFilterProc" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-accent">Filter by process</button>
+    </div>
+
+    <div class="mb-5">
+      <h3 class="text-xs uppercase tracking-widest text-soc-mute mb-2">Narrative</h3>
+      <p id="drillStory" class="text-sm text-soc-text leading-relaxed bg-soc-panel/40 rounded p-3 border border-soc-line"></p>
+    </div>
+
+    <div class="mb-5">
+      <h3 class="text-xs uppercase tracking-widest text-soc-mute mb-2">Notes (this browser)</h3>
+      <textarea id="drillNotes" class="notes-area" placeholder="Investigator notes — saved locally as you type"></textarea>
+    </div>
+
+    <div class="mb-5">
+      <h3 class="text-xs uppercase tracking-widest text-soc-mute mb-2">Process lineage</h3>
+      <div id="drillTree" class="text-xs"></div>
+    </div>
+
+    <div class="mb-5">
+      <h3 class="text-xs uppercase tracking-widest text-soc-mute mb-2">Indicators</h3>
+      <div id="drillIOC" class="text-[11px] font-mono space-y-1"></div>
+    </div>
+
+    <div>
+      <div class="flex items-center justify-between mb-2">
+        <h3 class="text-xs uppercase tracking-widest text-soc-mute">Event timeline</h3>
+        <div id="replayControls" class="flex items-center gap-2 text-[11px] text-soc-dim hidden">
+          <button id="replayPlay" class="px-2 py-1 border border-soc-line rounded hover:border-soc-accent/50 hover:text-soc-text">▶ Replay</button>
+          <button id="replayStop" class="px-2 py-1 border border-soc-line rounded hover:text-soc-text hidden">■ Stop</button>
+          <select id="replaySpeed" class="bg-soc-panel/60 border border-soc-line rounded px-1.5 py-1 text-soc-text">
+            <option value="1">1×</option>
+            <option value="2" selected>2×</option>
+            <option value="5">5×</option>
+            <option value="10">10×</option>
+            <option value="20">20×</option>
+          </select>
+          <span id="replayProgress" class="text-soc-mute font-mono"></span>
+        </div>
+      </div>
+      <div id="drillTimeline" class="space-y-1.5 text-[11px] font-mono"></div>
+    </div>
+  </div>
+</aside>
+<div id="drillBackdrop" class="fixed inset-0 bg-black/40 z-30 hidden" onclick="closeDrill()"></div>
+
+<!-- ─────────── POLICY VIEWER MODAL ─────────── -->
+<div id="policiesModal" class="modal-back" onclick="if(event.target===this) closePoliciesModal()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(820px, 92vw); max-height: 84vh;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Loaded TracingPolicies</h2>
+        <p class="text-[11px] text-soc-mute">Read-only — these are the YAMLs Tetragon compiled into eBPF programs</p>
+      </div>
+      <button onclick="closePoliciesModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="policiesBody" class="space-y-4 overflow-y-auto scrollbar-thin" style="max-height: 70vh;"></div>
+  </div>
+</div>
+
+<!-- ─────────── ATTACKS PANEL MODAL ─────────── -->
+<div id="attacksModal" class="modal-back" onclick="if(event.target===this) closeAttacksModal()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(560px, 92vw);">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Quick-fire attacks</h2>
+        <p class="text-[11px] text-soc-mute">Triggers the same scripts as the SSH path. Effects are real — kprobes will fire on the server.</p>
+      </div>
+      <button onclick="closeAttacksModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="attacksBody" class="space-y-2"></div>
+    <div id="attacksStatus" class="mt-3 text-[11px] text-soc-mute">Tip: open the live event stream side-by-side and watch the kprobes fire.</div>
+  </div>
+</div>
+
+<!-- ─────────── CORRELATION GRAPH MODAL ─────────── -->
+<div id="graphModal" class="modal-back" onclick="if(event.target===this) closeGraphModal()">
+  <div class="modal-card glass rounded-lg p-4" style="width: min(1100px, 95vw); max-height: 92vh;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Process correlation graph</h2>
+        <p class="text-[11px] text-soc-mute">Each node is a process (exec_id). Edges are parent→child. Color is the alert score touching that process. Drag to pan; scroll to zoom; click a node to drill in.</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <span class="text-[11px] text-soc-mute" id="graphStats">—</span>
+        <button onclick="closeGraphModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+      </div>
+    </div>
+    <svg id="graphSvg" width="100%" height="640" style="background: rgba(7,11,20,0.6); border: 1px solid rgba(31,42,68,0.9); border-radius: 8px;"></svg>
+  </div>
+</div>
+
+<!-- ─────────── RULE SIMULATOR MODAL ─────────── -->
+<div id="simModal" class="modal-back" onclick="if(event.target===this) closeSimModal()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(720px, 95vw); max-height: 92vh; overflow-y: auto;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Detection rule simulator</h2>
+        <p class="text-[11px] text-soc-mute">Re-classify historical alerts against simulated severity thresholds. Useful for tuning before changing <code>scorer.go</code>.</p>
+      </div>
+      <button onclick="closeSimModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div class="grid grid-cols-2 gap-3 text-[11px]">
+      <div class="bg-soc-panel/40 border border-soc-line rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Current thresholds</div>
+        <div class="space-y-1 font-mono">
+          <div>low      ≥ <span class="text-soc-text">5</span></div>
+          <div>medium   ≥ <span class="text-soc-text">10</span></div>
+          <div>high     ≥ <span class="text-soc-text">20</span></div>
+          <div>critical ≥ <span class="text-soc-text">40</span></div>
+        </div>
+      </div>
+      <div class="bg-soc-panel/40 border border-soc-line rounded p-3">
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Simulated thresholds</div>
+        <div class="space-y-2 font-mono">
+          <div class="flex items-center gap-2"><span class="w-16 text-soc-dim">low</span>      <input id="simLow"  type="number" value="5"  class="w-20 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text"></div>
+          <div class="flex items-center gap-2"><span class="w-16 text-soc-dim">medium</span>   <input id="simMed"  type="number" value="10" class="w-20 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text"></div>
+          <div class="flex items-center gap-2"><span class="w-16 text-soc-dim">high</span>     <input id="simHigh" type="number" value="20" class="w-20 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text"></div>
+          <div class="flex items-center gap-2"><span class="w-16 text-soc-dim">critical</span> <input id="simCrit" type="number" value="40" class="w-20 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="mt-4">
+      <h3 class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Optional: filter to a policy</h3>
+      <select id="simPolicy" class="bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text text-[12px]">
+        <option value="">(all policies)</option>
+        <option value="outbound-connections">outbound-connections</option>
+        <option value="privilege-escalation">privilege-escalation</option>
+        <option value="sensitive-file-access">sensitive-file-access</option>
+      </select>
+    </div>
+
+    <div class="mt-5">
+      <h3 class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Outcome</h3>
+      <div id="simResults" class="space-y-2"></div>
+    </div>
+
+    <div class="mt-4">
+      <h3 class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Score distribution</h3>
+      <div id="simHistogram" class="text-[11px] font-mono space-y-1"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────── COMMAND PALETTE ─────────── -->
+<div id="paletteModal">
+  <div class="palette-card">
+    <input id="paletteInput" type="text" autocomplete="off" placeholder="Search alerts, processes, MITRE techniques, attacks, actions…">
+    <div id="paletteResults" class="palette-results"></div>
+  </div>
+</div>
+
+<!-- ─────────── MITRE NAVIGATOR MODAL ─────────── -->
+<div id="mitreModal" class="modal-back" onclick="if(event.target===this) closeMitreNavigator()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(1200px, 96vw); max-height: 92vh;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">MITRE ATT&amp;CK Navigator</h2>
+        <p class="text-[11px] text-soc-mute">Tactic columns × technique cells. Cells light up for techniques observed in current alerts. Click an observed cell to filter.</p>
+      </div>
+      <button onclick="closeMitreNavigator()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="mitreBody" class="overflow-x-auto scrollbar-thin pb-3"></div>
+  </div>
+</div>
+
+<!-- ─────────── WATCHLIST MODAL ─────────── -->
+<div id="watchlistModal" class="modal-back" onclick="if(event.target===this) closeWatchlistModal()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(620px, 92vw); max-height: 92vh; overflow-y: auto;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Watchlist</h2>
+        <p class="text-[11px] text-soc-mute">User-defined IOCs. Alerts/events touching these get a magenta <span class="watch-tag">WATCHED</span> badge. Stored in this browser only (localStorage).</p>
+      </div>
+      <button onclick="closeWatchlistModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="watchlistBody"></div>
+  </div>
+</div>
+
+<!-- ─────────── HONEYPOTS MODAL (stub) ─────────── -->
+<div id="honeypotsModal" class="modal-back" onclick="if(event.target===this) closeHoneypotsPanel()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(560px, 92vw);">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Honeypot files</h2>
+        <p class="text-[11px] text-soc-mute">Decoy credential files. Any access fires a critical alert with a 🍯 badge.</p>
+      </div>
+      <button onclick="closeHoneypotsPanel()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="honeypotsBody"></div>
+  </div>
+</div>
+
+<!-- ─────────── KPROBES MODAL (stub) ─────────── -->
+<div id="kprobesModal" class="modal-back" onclick="if(event.target===this) closeKprobesPanel()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(680px, 92vw);">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Kprobe performance</h2>
+        <p class="text-[11px] text-soc-mute">Per-policy kprobe stats: posts, kernel memory, mode.</p>
+      </div>
+      <button onclick="closeKprobesPanel()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="kprobesBody"></div>
+  </div>
+</div>
+
+<!-- ─────────── TIME MACHINE MODAL (stub) ─────────── -->
+<div id="timeMachineModal" class="modal-back" onclick="if(event.target===this) closeTimeMachine()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(720px, 92vw);">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Time Machine</h2>
+        <p class="text-[11px] text-soc-mute">Replay the dashboard's state at any point in the recent past.</p>
+      </div>
+      <button onclick="closeTimeMachine()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div id="timeMachineBody"></div>
+  </div>
+</div>
+
+<!-- ─────────── HOVER POPOVER ─────────── -->
+<div id="alertPopover" class="popover hidden"></div>
+
+<!-- ─────────── CONTEXT MENU ─────────── -->
+<div id="ctxMenu" class="ctx-menu hidden"></div>
+
+<!-- ─────────── RISK BREAKDOWN POPOVER ─────────── -->
+<div id="riskPopover" class="popover hidden" style="width: 360px;"></div>
+
+<!-- ─────────── HELP MODAL ─────────── -->
+<div id="helpModal" class="modal-back" onclick="if(event.target===this) closeHelp()">
+  <div class="modal-card glass rounded-lg p-6">
+    <div class="flex items-start justify-between mb-4">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Keyboard shortcuts</h2>
+        <p class="text-[11px] text-soc-mute">Faster triage without leaving the keyboard</p>
+      </div>
+      <button onclick="closeHelp()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+    <div class="grid grid-cols-2 gap-x-6 gap-y-2 text-[12px]">
+      <div><kbd class="k">/</kbd>                              <span class="text-soc-dim ml-2">focus search</span></div>
+      <div><kbd class="k">Esc</kbd>                            <span class="text-soc-dim ml-2">close panel / clear search</span></div>
+      <div><kbd class="k">j</kbd> / <kbd class="k">k</kbd>     <span class="text-soc-dim ml-2">next / prev alert</span></div>
+      <div><kbd class="k">↵</kbd>                              <span class="text-soc-dim ml-2">open selected alert</span></div>
+      <div><kbd class="k">a</kbd>                              <span class="text-soc-dim ml-2">acknowledge selected</span></div>
+      <div><kbd class="k">r</kbd>                              <span class="text-soc-dim ml-2">resolve selected</span></div>
+      <div><kbd class="k">c</kbd>                              <span class="text-soc-dim ml-2">clear alerts</span></div>
+      <div><kbd class="k">e</kbd>                              <span class="text-soc-dim ml-2">export current view (JSON)</span></div>
+      <div><kbd class="k">g</kbd>                              <span class="text-soc-dim ml-2">toggle alert grouping</span></div>
+      <div><kbd class="k">n</kbd>                              <span class="text-soc-dim ml-2">toggle notifications</span></div>
+      <div><kbd class="k">?</kbd>                              <span class="text-soc-dim ml-2">this help</span></div>
+    </div>
+    <div class="mt-5 pt-4 border-t border-soc-line text-[11px] text-soc-mute">
+      Notifications fire only when the tab is in background and the bell is on.
+      Alert acknowledgement state is stored in this browser only (localStorage).
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ─────────── State ───────────
+const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+const state = {
+  alerts: [],
+  events: [],
+  liveEvents: [],
+  selectedSeverities: new Set(['critical', 'high', 'medium', 'low', 'info']),
+  search: '',
+  rangeMin: 30,
+  filterNoise: true,
+  streamPaused: false,
+  selectedAlertId: null,
+  selectedAlertIdx: -1,
+  epsBuckets: new Array(60).fill(0),
+  // Marks let "clear" survive reconnects: refreshSnapshot skips IDs ≤ mark.
+  alertClearMark: 0,
+  eventClearMark: 0,
+  // New: ack state machine — { [alertId]: 'ack'|'resolved' }; 'new' is implicit.
+  alertStates: lsGet('soc.alertStates', {}),
+  filterUnack: false,
+  groupAlerts: true,
+  timelineFilterMin: null,        // index into the timeline bucket array (0 = oldest)
+  notificationsEnabled: lsGet('soc.notifications', false),
+  // Snapshot taken once per render of KPIs for delta calculation.
+  prevWindowCounts: { critical: 0, high: 0, medium: 0 },
+
+  // Tier 1: filters that any panel can set
+  mitreFilter: null,        // policy key, e.g. 'sensitive-file-access'
+  iocFilter:   null,        // { kind: 'file'|'net', value: string }
+  procFilter:  null,        // binary path
+  timelineRange: null,      // { startIdx, endIdx } from brush
+
+  // Tier 2: workflow state
+  pinnedAlertIds: new Set(lsGet('soc.pinnedAlerts', [])),
+  alertNotes:     lsGet('soc.alertNotes', {}),    // { [id]: markdown text }
+  savedViews:     lsGet('soc.savedViews', {}),    // { [name]: viewSpec }
+  selectedSet:    new Set(),                       // alertIds checked for bulk
+  streamRegex:    '',                              // live-stream filter
+  sortBy:         'time',                          // time|severity|score
+  sortDir:        'desc',
+};
+
+// ─────────── Stream connection ───────────
+const stream = {
+  es: null,
+  retries: 0,
+  lastMessageAt: 0,
+  reconnectTimer: null,
+};
+
+// ─────────── MITRE mapping ───────────
+const MITRE = {
+  'outbound-connections':  { id: 'T1071', tactic: 'Command & Control',  name: 'Application Layer Protocol' },
+  'privilege-escalation':  { id: 'T1548', tactic: 'Privilege Escalation', name: 'Abuse Elevation Control Mechanism' },
+  'sensitive-file-access': { id: 'T1003', tactic: 'Credential Access',  name: 'OS Credential Dumping' },
+};
+
+const SEVERITY_RANK = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
+
+// ─────────── DOM refs ───────────
+const $ = (id) => document.getElementById(id);
+
+// ─────────── Utilities ───────────
+const fmtTime = (t) => t ? new Date(t).toLocaleTimeString([], { hour12: false }) : '';
+const fmtRel = (t) => {
+  if (!t) return '';
+  const sec = Math.max(0, (Date.now() - new Date(t).getTime()) / 1000);
+  if (sec < 60)  return Math.round(sec) + 's ago';
+  if (sec < 3600) return Math.round(sec/60) + 'm ago';
+  return Math.round(sec/3600) + 'h ago';
+};
+const pick = (o, ...keys) => { for (const k of keys) if (o && o[k] != null) return o[k]; return ''; };
+const escHTML = (s) => String(s == null ? '' : s)
+  .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
+  .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const sevOf = (a) => String(pick(a, 'severity', 'Severity') || 'info').toLowerCase();
+
+// Heuristic: identify events generated by the engine watching its own files
+function isSelfNoise(ev) {
+  const bin = String(pick(ev, 'binary', 'Binary') || '');
+  const args = String(pick(ev, 'args', 'Args') || '');
+  if (bin.includes('engine-linux-amd64') || bin.endsWith('/engine')) return true;
+  if (args.includes('events.db') || args.includes('engine.log')) return true;
+  return false;
+}
+
+// ─────────── Initial load ───────────
+async function loadInitial() {
+  await refreshSnapshot({ initial: true });
+  $('hostLabel').textContent = location.hostname;
+  // Fetch honeypot prefix so badges can display before the panel is opened.
+  try {
+    const r = await fetch('/api/honeypots');
+    if (r.ok) {
+      const j = await r.json();
+      state.honeypotPrefix = j.prefix || '';
+    }
+  } catch (e) {}
+  // Fetch whoami to populate the user label.
+  try {
+    const w = await fetch('/api/whoami');
+    if (w.ok) {
+      const j = await w.json();
+      if (j && j.user) {
+        $('userLabel').textContent = j.user;
+        $('sidebarUser').textContent = j.user;
+      }
+    } else if (w.status === 401) {
+      window.location.href = '/login';
+    }
+  } catch (e) {}
+}
+
+// Pull /api/alerts and /api/events. Used on first load and on reconnect to
+// fill any gap where events arrived while we were disconnected. Honors clear
+// marks so user-initiated clears aren't undone.
+async function refreshSnapshot(opts = {}) {
+  try {
+    const [aRes, eRes] = await Promise.all([fetch('/api/alerts'), fetch('/api/events')]);
+    if (aRes.status === 401 || eRes.status === 401) {
+      window.location.href = '/login';
+      return;
+    }
+    const newAlerts = (await aRes.json()) || [];
+    const newEvents = (await eRes.json()) || [];
+
+    if (opts.initial) {
+      state.alerts = newAlerts;
+      state.events = newEvents;
+      state.liveEvents = newEvents.slice(0, 200);
+    } else {
+      // Alerts: skip cleared ids on user-initiated clears.
+      const knownAlertIds = new Set(state.alerts.map(a => pick(a, 'id', 'ID')));
+      const freshAlerts = newAlerts.filter(a => {
+        const id = pick(a, 'id', 'ID') || 0;
+        return id > state.alertClearMark && !knownAlertIds.has(id);
+      });
+      state.alerts = freshAlerts.concat(state.alerts).slice(0, 200);
+
+      // Events: state.events always catches up (used for stats/IOCs);
+      // state.liveEvents (display buffer) honors the clear mark.
+      const knownEventIds = new Set(state.events.map(e => pick(e, 'id', 'ID')));
+      const freshEvents = newEvents.filter(e => !knownEventIds.has(pick(e, 'id', 'ID')));
+      state.events = freshEvents.concat(state.events).slice(0, 500);
+      if (!state.streamPaused) {
+        const liveFresh = freshEvents.filter(e => (pick(e, 'id', 'ID') || 0) > state.eventClearMark);
+        state.liveEvents = liveFresh.concat(state.liveEvents).slice(0, 200);
+      }
+    }
+    renderAll();
+  } catch (err) {
+    console.error('refreshSnapshot failed', err);
+  }
+}
+
+// ─────────── SSE ───────────
+function setStatus(text, alive) {
+  const el = $('connStatus');
+  el.textContent = text;
+  el.classList.toggle('dead', !alive);
+}
+
+function connectStream() {
+  if (stream.reconnectTimer) {
+    clearTimeout(stream.reconnectTimer);
+    stream.reconnectTimer = null;
+  }
+  if (stream.es) {
+    try { stream.es.close(); } catch (e) {}
+    stream.es = null;
+  }
+
+  setStatus('connecting…', false);
+  const es = new EventSource('/api/stream');
+  stream.es = es;
+
+  es.onopen = () => {
+    const wasDown = stream.retries > 0 || stream.lastMessageAt === 0;
+    stream.retries = 0;
+    stream.lastMessageAt = Date.now();
+    setStatus('live', true);
+    if (wasDown) {
+      // Catch any alerts/events that landed while we were offline.
+      refreshSnapshot();
+    }
+  };
+
+  es.onerror = () => {
+    if (es.readyState === EventSource.CLOSED) {
+      // Browser gave up — take over with explicit backoff.
+      scheduleReconnect();
+    } else {
+      // Still CONNECTING — let the browser try its built-in retry.
+      setStatus('reconnecting…', false);
+    }
+  };
+
+  es.onmessage = (msg) => {
+    stream.lastMessageAt = Date.now();
+    try {
+      const b = JSON.parse(msg.data);
+      if (b.type === 'event') onEvent(b.payload);
+      if (b.type === 'alert') onAlert(b.payload);
+    } catch (e) { console.error(e); }
+  };
+}
+
+function scheduleReconnect() {
+  if (stream.reconnectTimer) return;
+  if (stream.es) {
+    try { stream.es.close(); } catch (e) {}
+    stream.es = null;
+  }
+  const delay = Math.min(30000, 1000 * Math.pow(2, Math.min(stream.retries, 5)));
+  stream.retries += 1;
+  setStatus('retry in ' + Math.round(delay / 1000) + 's…', false);
+  stream.reconnectTimer = setTimeout(() => {
+    stream.reconnectTimer = null;
+    connectStream();
+  }, delay);
+}
+
+// Watchdog: server emits a keepalive every 15s. If we go >45s without anything
+// AND the EventSource isn't OPEN, force a reconnect (covers laptop sleep/wake).
+setInterval(() => {
+  if (!stream.es || stream.lastMessageAt === 0) return;
+  const elapsed = Date.now() - stream.lastMessageAt;
+  if (elapsed > 45_000 && stream.es.readyState !== EventSource.OPEN) {
+    scheduleReconnect();
+  }
+}, 5000);
+
+// Tab woke up (e.g. laptop resumed) — verify connection immediately.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return;
+  if (!stream.es || stream.es.readyState === EventSource.CLOSED) {
+    scheduleReconnect();
+  }
+});
+
+function onEvent(ev) {
+  state.events.unshift(ev);
+  if (state.events.length > 500) state.events.length = 500;
+  if (!state.streamPaused) {
+    state.liveEvents.unshift(ev);
+    if (state.liveEvents.length > 200) state.liveEvents.length = 200;
+    renderEventStream();
+  }
+  bumpEPS();
+  renderKPIs();
+  renderTopProcs();
+  renderIOCs();
+  if (pick(ev, 'policy_name', 'PolicyName') === 'outbound-connections') renderNetwork();
+}
+
+function onAlert(al) {
+  state.alerts.unshift(al);
+  if (state.alerts.length > 200) state.alerts.length = 200;
+  renderAlertList(true);
+  renderKPIs();
+  renderTimeline();
+  renderMitre();
+  renderNetwork();
+  maybeNotify(al);
+}
+
+// ─────────── KPI helpers ───────────
+function setDelta(id, cur, prev, lowerIsBetter) {
+  const el = $(id);
+  if (!el) return;
+  if (prev === 0 && cur === 0) {
+    el.textContent = '—';
+    el.className = 'text-xs delta-flat';
+    return;
+  }
+  const diff = cur - prev;
+  const sign = diff > 0 ? '+' : (diff < 0 ? '' : '±');
+  const arrow = diff > 0 ? '↑' : (diff < 0 ? '↓' : '·');
+  el.textContent = sign + diff + ' ' + arrow + ' vs prior';
+  // For severity counters, going DOWN is good.
+  el.className = 'text-xs ' + (
+    diff === 0 ? 'delta-flat' :
+    (lowerIsBetter ? (diff > 0 ? 'delta-up' : 'delta-down')
+                   : (diff > 0 ? 'delta-down' : 'delta-up'))
+  );
+}
+
+// Risk: weighted combination of recent severities (0..100).
+function computeRisk(cur) {
+  const score = cur.critical * 8 + cur.high * 3 + cur.medium * 1;
+  return Math.min(100, score);
+}
+function updateGauge(cur) {
+  const r = computeRisk(cur);
+  const arc = document.getElementById('riskArc');
+  const txt = document.getElementById('riskValue');
+  const lbl = document.getElementById('riskLabel');
+  if (!arc || !txt) return;
+  // Circumference of r=18 circle is 2*pi*18 ≈ 113.1
+  const C = 113.1;
+  arc.setAttribute('stroke-dashoffset', C * (1 - r / 100));
+  txt.textContent = r;
+  let stroke, label;
+  if (r >= 70)      { stroke = '#f43f5e'; label = 'critical'; }
+  else if (r >= 40) { stroke = '#fb923c'; label = 'elevated'; }
+  else if (r >= 15) { stroke = '#facc15'; label = 'guarded';  }
+  else              { stroke = '#10b981'; label = 'low';      }
+  arc.setAttribute('stroke', stroke);
+  arc.classList.toggle('gauge-pulse', r >= 70);
+  lbl.textContent = label;
+  lbl.style.color = stroke;
+}
+
+// ─────────── Notifications ───────────
+let audioCtx = null;
+function playChime() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.connect(g); g.connect(audioCtx.destination);
+    o.type = 'sine';
+    o.frequency.setValueAtTime(880, audioCtx.currentTime);
+    o.frequency.exponentialRampToValueAtTime(440, audioCtx.currentTime + 0.2);
+    g.gain.setValueAtTime(0.0001, audioCtx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.18, audioCtx.currentTime + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, audioCtx.currentTime + 0.4);
+    o.start();
+    o.stop(audioCtx.currentTime + 0.5);
+  } catch (e) {}
+}
+function maybeNotify(alert) {
+  if (!state.notificationsEnabled) return;
+  if (sevOf(alert) !== 'critical') return;
+  if (!document.hidden) return;  // only notify when tab unfocused
+  playChime();
+  if ('Notification' in window && Notification.permission === 'granted') {
+    try {
+      new Notification('eBPF SOC — critical alert', {
+        body: pick(alert, 'title', 'Title'),
+        tag:  'alert-' + (pick(alert, 'id', 'ID') || ''),
+      });
+    } catch (e) {}
+  }
+}
+async function toggleNotifications() {
+  if (state.notificationsEnabled) {
+    state.notificationsEnabled = false;
+  } else {
+    if ('Notification' in window) {
+      const perm = Notification.permission === 'granted'
+        ? 'granted'
+        : await Notification.requestPermission();
+      if (perm !== 'granted') {
+        // Still allow audio-only chime even without notification permission.
+      }
+    }
+    state.notificationsEnabled = true;
+    playChime();  // confirmation
+  }
+  lsSet('soc.notifications', state.notificationsEnabled);
+  $('sbBell').classList.toggle('bell-on', state.notificationsEnabled);
+  $('sbBell').title = state.notificationsEnabled
+    ? 'Notifications ON  (n) — fire when tab unfocused'
+    : 'Notifications OFF  (n)';
+}
+
+// ─────────── Ack state ───────────
+function ackStateOf(a) {
+  const id = pick(a, 'id', 'ID');
+  return state.alertStates[id] || 'new';
+}
+function setAckState(id, newState) {
+  if (newState === 'new') delete state.alertStates[id];
+  else state.alertStates[id] = newState;
+  // Trim: avoid unbounded localStorage growth.
+  const keys = Object.keys(state.alertStates);
+  if (keys.length > 2000) {
+    const trimmed = {};
+    keys.slice(-1500).forEach(k => trimmed[k] = state.alertStates[k]);
+    state.alertStates = trimmed;
+  }
+  lsSet('soc.alertStates', state.alertStates);
+  renderAlertList();
+  // If currently drilled into this alert, refresh the panel.
+  if (state.selectedAlertId == id) {
+    const a = state.alerts.find(x => pick(x, 'id', 'ID') == id);
+    if (a) renderDrill(a, pick(a, 'exec_id', 'ExecID'));
+  }
+}
+
+// ─────────── Export ───────────
+function exportJSON() {
+  const blob = new Blob([JSON.stringify({
+    generated_at: new Date().toISOString(),
+    host: location.hostname,
+    range_minutes: state.rangeMin,
+    filters: {
+      severities: [...state.selectedSeverities],
+      search: state.search,
+      unack_only: state.filterUnack,
+      timeline_minute: state.timelineFilterMin,
+    },
+    alerts: state.alerts.map(a => ({...a, _ack_state: ackStateOf(a)})),
+    events: state.liveEvents,
+    alert_states: state.alertStates,
+  }, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'soc-export-' + new Date().toISOString().replace(/[:.]/g, '-') + '.json';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// ─────────── Help modal ───────────
+function showHelp() { $('helpModal').classList.add('open'); }
+function closeHelp() { $('helpModal').classList.remove('open'); }
+
+// ─────────── Policy viewer ───────────
+async function showPoliciesModal() {
+  $('policiesModal').classList.add('open');
+  const body = $('policiesBody');
+  body.innerHTML = '<div class="text-soc-mute text-[12px]">loading…</div>';
+  try {
+    const res = await fetch('/api/policies');
+    if (!res.ok) throw new Error('http ' + res.status);
+    const policies = await res.json();
+    if (!policies.length) { body.innerHTML = '<div class="text-soc-mute">no policies on disk — pass <code>-policies &lt;dir&gt;</code> when starting the engine</div>'; return; }
+    body.innerHTML = policies.map(p =>
+      '<div class="bg-soc-panel/40 border border-soc-line rounded-lg overflow-hidden">' +
+        '<div class="px-3 py-2 border-b border-soc-line flex items-center justify-between gap-3">' +
+          '<div>' +
+            '<div class="text-soc-text font-semibold text-[13px]">' + escHTML(p.name) + '</div>' +
+            '<div class="text-[11px] text-soc-mute mt-0.5">' + escHTML(p.description) + '</div>' +
+          '</div>' +
+          '<span class="font-mono text-[10px] text-soc-accent">' + escHTML(p.mitre) + '</span>' +
+        '</div>' +
+        '<pre class="text-[11px] font-mono p-3 overflow-x-auto scrollbar-thin text-soc-text leading-snug" style="white-space: pre;">' + yamlHighlight(p.yaml || '(YAML not loaded — engine -policies flag may be misconfigured)') + '</pre>' +
+      '</div>'
+    ).join('');
+  } catch (err) {
+    body.innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
+  }
+}
+function closePoliciesModal() { $('policiesModal').classList.remove('open'); }
+
+// Lightweight YAML colorization without a parser dependency.
+function yamlHighlight(yaml) {
+  return escHTML(yaml)
+    .replace(/^(#.*)$/gm, '<span style="color:#64748b">$1</span>')
+    .replace(/^(\s*-\s)/gm, '<span style="color:#fb923c">$1</span>')
+    .replace(/^(\s*)([A-Za-z_][\w-]*)(:)/gm, '$1<span style="color:#22d3ee">$2</span>$3')
+    .replace(/(:\s)(&quot;[^&]*&quot;|&#39;[^&]*&#39;|[^\n]+?)$/gm, '$1<span style="color:#fde68a">$2</span>');
+}
+
+// ─────────── Quick-fire attacks ───────────
+async function showAttacksModal() {
+  $('attacksModal').classList.add('open');
+  const body = $('attacksBody');
+  body.innerHTML = '<div class="text-soc-mute text-[12px]">loading…</div>';
+  try {
+    const res = await fetch('/api/attacks');
+    if (!res.ok) throw new Error('http ' + res.status);
+    const list = await res.json();
+    list.sort((a, b) => a.id.localeCompare(b.id));
+    body.innerHTML = list.map(a =>
+      '<div class="flex items-center justify-between gap-3 p-2.5 bg-soc-panel/40 border border-soc-line rounded">' +
+        '<div class="flex-1 min-w-0">' +
+          '<div class="text-soc-text font-mono text-[12px]">' + escHTML(a.id) + '</div>' +
+          '<div class="text-[11px] text-soc-dim mt-0.5">' + escHTML(a.description) + '</div>' +
+        '</div>' +
+        '<button class="px-3 py-1.5 rounded border border-soc-line text-[11px] text-soc-text hover:border-soc-accent/50 hover:bg-soc-accent/10" data-attack-id="' + escHTML(a.id) + '">▶ Fire</button>' +
+      '</div>'
+    ).join('');
+    body.querySelectorAll('[data-attack-id]').forEach(btn => {
+      btn.addEventListener('click', () => fireAttack(btn.dataset.attackId, btn));
+    });
+  } catch (err) {
+    body.innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
+  }
+}
+function closeAttacksModal() { $('attacksModal').classList.remove('open'); }
+
+async function fireAttack(id, btn) {
+  btn.disabled = true;
+  const orig = btn.textContent;
+  btn.textContent = '… running';
+  try {
+    const res = await fetch('/api/run-attack', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'id=' + encodeURIComponent(id),
+    });
+    if (res.status === 429) {
+      $('attacksStatus').textContent = 'throttled — wait a few seconds before re-firing the same script.';
+    } else if (!res.ok) {
+      $('attacksStatus').textContent = 'failed: HTTP ' + res.status + ' ' + (await res.text());
+    } else {
+      $('attacksStatus').textContent = '✓ launched ' + id + ' — alerts should appear within ~1s';
+    }
+  } catch (err) {
+    $('attacksStatus').textContent = 'failed: ' + err;
+  } finally {
+    setTimeout(() => { btn.disabled = false; btn.textContent = orig; }, 1500);
+  }
+}
+
+// ─────────── Hover preview popover ───────────
+function showAlertHover(e, id) {
+  const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === String(id));
+  if (!a) return;
+  const sev = sevOf(a);
+  const note = state.alertNotes[id];
+  const html =
+    '<div class="text-[11px] text-soc-mute mb-1">' + fmtTime(pick(a, 'timestamp', 'Timestamp')) + ' · ' + fmtRel(pick(a, 'timestamp', 'Timestamp')) + '</div>' +
+    '<div class="flex items-center gap-2 mb-2"><span class="sev-tag ' + sev + '">' + sev + '</span><span class="text-soc-text font-medium">' + escHTML(pick(a, 'title', 'Title')) + '</span></div>' +
+    (pick(a, 'description', 'Description') ? '<div class="text-[12px] text-soc-dim mb-2">' + escHTML(pick(a, 'description', 'Description')) + '</div>' : '') +
+    '<div class="text-[10px] text-soc-mute font-mono">score=' + pick(a, 'score', 'Score') + ' · exec_id=' + escHTML(String(pick(a, 'exec_id', 'ExecID') || '').slice(0, 22)) + '…</div>' +
+    (note ? '<div class="mt-2 pt-2 border-t border-soc-line text-[11px] text-soc-text whitespace-pre-wrap">📝 ' + escHTML(note) + '</div>' : '');
+  const pop = $('alertPopover');
+  pop.innerHTML = html;
+  pop.classList.remove('hidden');
+  // Position to the left of the alert row (so it doesn't overlap the row)
+  const rect = e.currentTarget.getBoundingClientRect();
+  const x = Math.max(8, rect.left - 410);
+  const y = Math.min(window.innerHeight - 200, rect.top);
+  pop.style.left = x + 'px';
+  pop.style.top  = y + 'px';
+}
+function hideAlertHover() { $('alertPopover').classList.add('hidden'); }
+
+// ─────────── Right-click context menu ───────────
+function showAlertContextMenu(e, id) {
+  const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === String(id));
+  if (!a) return;
+  const ack = ackStateOf(a);
+  const isPinned = state.pinnedAlertIds.has(String(id));
+  const execId = pick(a, 'exec_id', 'ExecID');
+  const items = [
+    { label: 'Open chain',     kbd: '↵',  action: () => openDrill(id) },
+    { label: ack === 'ack' ? 'Reopen' : 'Acknowledge', kbd: 'a', action: () => setAckState(id, ack === 'ack' ? 'new' : 'ack') },
+    { label: ack === 'resolved' ? 'Reopen' : 'Resolve', kbd: 'r', action: () => setAckState(id, ack === 'resolved' ? 'new' : 'resolved') },
+    { label: isPinned ? 'Unpin' : 'Pin to top', action: () => togglePin(id) },
+    { sep: true },
+    { label: 'Filter to this process', action: () => {
+        const bin = execIdToBin(execId);
+        if (bin) toggleProcFilter(bin);
+      } },
+    { label: 'Filter to this exec_id', action: () => {
+        state.search = execId; $('searchInput').value = execId; renderAlertList();
+      } },
+    { sep: true },
+    { label: 'Copy exec_id',   action: () => navigator.clipboard.writeText(execId) },
+    { label: 'Copy as JSON',   action: () => navigator.clipboard.writeText(JSON.stringify(a, null, 2)) },
+  ];
+  const html = items.map(it => it.sep
+    ? '<div class="ctx-sep"></div>'
+    : '<div class="ctx-item' + (it.danger ? ' danger' : '') + '" data-act="' + escHTML(it.label) + '"><span>' + escHTML(it.label) + '</span>' + (it.kbd ? '<kbd>' + it.kbd + '</kbd>' : '') + '</div>'
+  ).join('');
+  const m = $('ctxMenu');
+  m.innerHTML = html;
+  m.classList.remove('hidden');
+  // Position
+  const x = Math.min(e.clientX, window.innerWidth  - 240);
+  const y = Math.min(e.clientY, window.innerHeight - 320);
+  m.style.left = x + 'px';
+  m.style.top  = y + 'px';
+  m.querySelectorAll('[data-act]').forEach((el, i) => {
+    const idx = items.filter(it => !it.sep).findIndex((_, j) => j === i);
+    if (idx < 0) return;
+    el.addEventListener('click', () => {
+      const real = items.filter(it => !it.sep)[i];
+      if (real && real.action) real.action();
+      closeContextMenu();
+    });
+  });
+}
+function closeContextMenu() { $('ctxMenu').classList.add('hidden'); }
+
+// ─────────── Risk gauge breakdown ───────────
+function showRiskBreakdown(e) {
+  const cutoff = Date.now() - state.rangeMin * 60_000;
+  const recent = state.alerts.filter(a => new Date(pick(a, 'timestamp', 'Timestamp')).getTime() >= cutoff);
+  const cur = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  recent.forEach(a => cur[sevOf(a)] = (cur[sevOf(a)] || 0) + 1);
+  const r = computeRisk(cur);
+  // Top contributors: sort by severity rank then score
+  const top = recent.slice()
+    .sort((a, b) => (SEVERITY_RANK[sevOf(b)] - SEVERITY_RANK[sevOf(a)]) || ((pick(b, 'score', 'Score') || 0) - (pick(a, 'score', 'Score') || 0)))
+    .slice(0, 6);
+  const html =
+    '<div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Risk breakdown</div>' +
+    '<div class="text-soc-text text-base font-semibold mb-2">' + r + ' / 100 — ' + (r >= 70 ? 'critical' : r >= 40 ? 'elevated' : r >= 15 ? 'guarded' : 'low') + '</div>' +
+    '<div class="text-[11px] text-soc-dim mb-3">Window: last ' + state.rangeMin + 'm · weights: crit ×8, high ×3, med ×1</div>' +
+    '<div class="space-y-1 text-[12px]">' +
+      ['critical','high','medium'].map(s =>
+        '<div class="flex justify-between"><span><span class="sev-dot ' + s + '"></span>' + s + '</span><span class="font-mono">' + cur[s] + ' × ' + (s === 'critical' ? 8 : s === 'high' ? 3 : 1) + ' = ' + (cur[s] * (s === 'critical' ? 8 : s === 'high' ? 3 : 1)) + '</span></div>'
+      ).join('') +
+    '</div>' +
+    '<div class="text-[10px] uppercase tracking-widest text-soc-mute mt-3 mb-1">Top contributors</div>' +
+    (top.length
+      ? '<div class="space-y-1 text-[11px]">' + top.map(a =>
+          '<div class="flex justify-between gap-2 cursor-pointer hover:text-soc-text" data-jump="' + pick(a, 'id', 'ID') + '">' +
+            '<span class="truncate"><span class="sev-dot ' + sevOf(a) + '"></span>' + escHTML(pick(a, 'title', 'Title')) + '</span>' +
+            '<span class="text-soc-mute font-mono whitespace-nowrap">' + (pick(a, 'score', 'Score') || 0) + '</span>' +
+          '</div>'
+        ).join('') + '</div>'
+      : '<div class="text-soc-mute text-[11px]">no alerts in window</div>');
+  const pop = $('riskPopover');
+  pop.innerHTML = html;
+  pop.classList.remove('hidden');
+  const rect = e.currentTarget.getBoundingClientRect();
+  pop.style.left = Math.min(rect.left, window.innerWidth - 380) + 'px';
+  pop.style.top  = (rect.bottom + 8) + 'px';
+  pop.querySelectorAll('[data-jump]').forEach(el => {
+    el.addEventListener('click', () => { closeRiskBreakdown(); openDrill(el.dataset.jump); });
+  });
+}
+function closeRiskBreakdown() { $('riskPopover').classList.add('hidden'); }
+
+// ─────────── Saved views ───────────
+function currentViewSpec() {
+  return {
+    severities: [...state.selectedSeverities],
+    search: state.search,
+    rangeMin: state.rangeMin,
+    filterUnack: state.filterUnack,
+    groupAlerts: state.groupAlerts,
+    mitreFilter: state.mitreFilter,
+    iocFilter: state.iocFilter,
+    procFilter: state.procFilter,
+    sortBy: state.sortBy,
+    sortDir: state.sortDir,
+  };
+}
+function applyViewSpec(v) {
+  state.selectedSeverities = new Set(v.severities || ['critical','high','medium','low','info']);
+  state.search             = v.search || '';
+  state.rangeMin           = v.rangeMin || 30;
+  state.filterUnack        = !!v.filterUnack;
+  state.groupAlerts        = v.groupAlerts !== false;
+  state.mitreFilter        = v.mitreFilter || null;
+  state.iocFilter          = v.iocFilter || null;
+  state.procFilter         = v.procFilter || null;
+  state.sortBy             = v.sortBy || 'time';
+  state.sortDir            = v.sortDir || 'desc';
+  // Sync UI controls
+  document.querySelectorAll('.sev-filter').forEach(b => {
+    b.style.opacity = state.selectedSeverities.has(b.dataset.sev) ? '1' : '0.35';
+  });
+  $('searchInput').value = state.search;
+  $('filterUnack').checked = state.filterUnack;
+  $('groupToggle').checked = state.groupAlerts;
+  document.querySelectorAll('#rangeSelect button').forEach(b => {
+    b.classList.toggle('bg-soc-panel2', parseInt(b.dataset.range,10) === state.rangeMin);
+    b.classList.toggle('text-soc-accent', parseInt(b.dataset.range,10) === state.rangeMin);
+  });
+  renderAll();
+}
+function saveCurrentView() {
+  const name = prompt('Save current view as:');
+  if (!name) return;
+  state.savedViews[name] = currentViewSpec();
+  lsSet('soc.savedViews', state.savedViews);
+  renderSavedViewsMenu();
+}
+function deleteView(name) {
+  delete state.savedViews[name];
+  lsSet('soc.savedViews', state.savedViews);
+  renderSavedViewsMenu();
+}
+function renderSavedViewsMenu() {
+  const menu = $('viewsMenu');
+  if (!menu) return;
+  const names = Object.keys(state.savedViews);
+  let html = '<div class="view-item" data-act="save"><span>＋ Save current view</span></div>';
+  if (names.length) html += '<div class="ctx-sep"></div>';
+  names.forEach(n => {
+    html += '<div class="view-item" data-load="' + escHTML(n) + '">' +
+              '<span class="truncate">' + escHTML(n) + '</span>' +
+              '<span class="del" data-del="' + escHTML(n) + '" title="Delete">×</span>' +
+            '</div>';
+  });
+  menu.innerHTML = html;
+  menu.querySelector('[data-act="save"]').addEventListener('click', () => { saveCurrentView(); menu.classList.add('hidden'); });
+  menu.querySelectorAll('[data-load]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-del]')) return;
+      const n = el.dataset.load;
+      applyViewSpec(state.savedViews[n]);
+      menu.classList.add('hidden');
+    });
+  });
+  menu.querySelectorAll('[data-del]').forEach(el => {
+    el.addEventListener('click', (e) => { e.stopPropagation(); deleteView(el.dataset.del); });
+  });
+}
+
+// ─────────── Investigator notes ───────────
+function saveNote(id, text) {
+  if (!text || !text.trim()) delete state.alertNotes[id];
+  else state.alertNotes[id] = text;
+  lsSet('soc.alertNotes', state.alertNotes);
+}
+
+// ─────────── Replay player ───────────
+let replayTimer = null;
+function startReplay() {
+  const evts = state._replayEvents || [];
+  if (evts.length < 2) return;
+  stopReplay();
+  $('replayPlay').classList.add('hidden');
+  $('replayStop').classList.remove('hidden');
+  // Hide all rows initially
+  document.querySelectorAll('.replay-evt').forEach(el => el.style.opacity = '0');
+  const speed = parseFloat($('replaySpeed').value || '2');
+  const t0 = new Date(pick(evts[0], 'timestamp', 'Timestamp')).getTime();
+  let idx = 0;
+  const reveal = () => {
+    if (idx >= evts.length) { stopReplay(); return; }
+    const node = document.querySelector('[data-replay-idx="' + idx + '"]');
+    if (node) { node.style.opacity = '1'; node.style.transition = 'opacity 200ms ease'; }
+    $('replayProgress').textContent = (idx + 1) + ' / ' + evts.length;
+    idx += 1;
+    if (idx < evts.length) {
+      const t  = new Date(pick(evts[idx],   'timestamp', 'Timestamp')).getTime();
+      const tp = new Date(pick(evts[idx-1], 'timestamp', 'Timestamp')).getTime();
+      const realDelta = Math.max(0, t - tp);
+      const playDelta = Math.min(2000, Math.max(60, realDelta / speed));
+      replayTimer = setTimeout(reveal, playDelta);
+    } else {
+      stopReplay();
+    }
+  };
+  reveal();
+}
+function stopReplay() {
+  if (replayTimer) clearTimeout(replayTimer);
+  replayTimer = null;
+  $('replayPlay').classList.remove('hidden');
+  $('replayStop').classList.add('hidden');
+  // Reveal all (so the user sees full state when they stop)
+  document.querySelectorAll('.replay-evt').forEach(el => el.style.opacity = '1');
+}
+
+// ─────────── Search DSL ───────────
+// Tokenize "severity:critical AND policy:sensitive uid:0" etc.
+// Supported predicates: severity, policy, uid, score (>N, >=N, =N, <N), process, exec, ack, pinned.
+// Unrecognized bare words fall back to substring match against the JSON of the alert.
+function parseDSL(q) {
+  const tokens = [];
+  // Split on whitespace, keeping quoted strings together.
+  const re = /"([^"]+)"|'([^']+)'|(\S+)/g;
+  let m;
+  while ((m = re.exec(q)) !== null) tokens.push(m[1] || m[2] || m[3]);
+  const ops = [];      // each: {kind, key?, op?, val} or {kind:'AND'|'OR'|'NOT'}
+  for (const t of tokens) {
+    const upper = t.toUpperCase();
+    if (upper === 'AND' || upper === 'OR' || upper === 'NOT') { ops.push({ kind: upper }); continue; }
+    const colon = t.indexOf(':');
+    if (colon > 0) {
+      const key = t.slice(0, colon).toLowerCase();
+      let val = t.slice(colon + 1);
+      let op = '=';
+      const m2 = val.match(/^(>=|<=|>|<)(.+)$/);
+      if (m2) { op = m2[1]; val = m2[2]; }
+      ops.push({ kind: 'PRED', key, op, val });
+    } else {
+      ops.push({ kind: 'TEXT', val: t });
+    }
+  }
+  return ops;
+}
+function dslPredicate(ops, a, hay) {
+  // Build a list of booleans for each clause; then combine via AND/OR/NOT.
+  const evals = [];
+  let pendingNot = false;
+  for (const op of ops) {
+    if (op.kind === 'AND' || op.kind === 'OR') { evals.push(op.kind); continue; }
+    if (op.kind === 'NOT') { pendingNot = true; continue; }
+    let v = false;
+    if (op.kind === 'PRED') v = matchPred(a, op.key, op.op, op.val);
+    else if (op.kind === 'TEXT') v = hay.includes(op.val.toLowerCase());
+    if (pendingNot) { v = !v; pendingNot = false; }
+    evals.push(v);
+  }
+  // Default join: AND
+  let result = null;
+  let pendingOp = 'AND';
+  for (const e of evals) {
+    if (e === 'AND' || e === 'OR') { pendingOp = e; continue; }
+    if (result === null) { result = e; continue; }
+    result = pendingOp === 'OR' ? (result || e) : (result && e);
+    pendingOp = 'AND';
+  }
+  return result == null ? true : result;
+}
+// ─────────── Watchlist ───────────
+state.watchlist = lsGet('soc.watchlist', { paths: [], ips: [], binaries: [] });
+state.watchHits = 0;
+
+function isWatched(ev) {
+  const args = String(pick(ev, 'args', 'Args') || '');
+  const bin = String(pick(ev, 'binary', 'Binary') || '');
+  for (const p of (state.watchlist.paths || []))     if (p && args.includes(p)) return p;
+  for (const ip of (state.watchlist.ips || []))      if (ip && args.includes(ip)) return ip;
+  for (const b of (state.watchlist.binaries || []))  if (b && bin === b) return b;
+  return null;
+}
+function alertWatchedTerm(a) {
+  const hay = JSON.stringify(a);
+  for (const p of (state.watchlist.paths || []))    if (p && hay.includes(p)) return p;
+  for (const ip of (state.watchlist.ips || []))     if (ip && hay.includes(ip)) return ip;
+  for (const b of (state.watchlist.binaries || [])) if (b && hay.includes(b)) return b;
+  return null;
+}
+function refreshWatchBadge() {
+  let count = 0;
+  for (const a of state.alerts) if (alertWatchedTerm(a)) count++;
+  state.watchHits = count;
+  const el = $('watchBadgeCount');
+  if (count > 0) {
+    el.textContent = count;
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
+}
+
+function showWatchlistModal() {
+  $('watchlistModal').classList.add('open');
+  renderWatchlistEditor();
+}
+function closeWatchlistModal() { $('watchlistModal').classList.remove('open'); }
+function renderWatchlistEditor() {
+  const w = state.watchlist;
+  const block = (label, key, placeholder) => {
+    const items = (w[key] || []).map((v, i) =>
+      '<div class="flex items-center gap-2 mb-1">' +
+        '<input class="flex-1 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text font-mono text-[12px]" value="' + escHTML(v) + '" data-wl-edit="' + key + ':' + i + '">' +
+        '<button class="px-2 py-1 border border-soc-line rounded text-soc-mute hover:text-rose-300" data-wl-del="' + key + ':' + i + '">×</button>' +
+      '</div>').join('');
+    return '<div class="mb-4">' +
+      '<h3 class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">' + label + '</h3>' +
+      items +
+      '<div class="flex items-center gap-2 mt-1">' +
+        '<input class="flex-1 bg-soc-panel/60 border border-soc-line rounded px-2 py-1 text-soc-text font-mono text-[12px]" placeholder="' + placeholder + '" data-wl-add="' + key + '">' +
+        '<button class="px-3 py-1 border border-soc-line rounded text-soc-dim hover:text-soc-accent" data-wl-add-btn="' + key + '">+ Add</button>' +
+      '</div></div>';
+  };
+  $('watchlistBody').innerHTML =
+    block('Paths (substring match)',  'paths',    '/etc/secrets, /home/jeff/.aws') +
+    block('IP / network peers',       'ips',      '198.51.100.5, 10.0.0.0/24') +
+    block('Process binaries (exact)', 'binaries', '/usr/bin/curl');
+
+  $('watchlistBody').querySelectorAll('[data-wl-edit]').forEach(el => {
+    el.addEventListener('input', (e) => {
+      const [key, i] = el.dataset.wlEdit.split(':');
+      state.watchlist[key][parseInt(i, 10)] = e.target.value;
+      lsSet('soc.watchlist', state.watchlist);
+      refreshWatchBadge(); renderAlertList(); renderIOCs();
+    });
+  });
+  $('watchlistBody').querySelectorAll('[data-wl-del]').forEach(el => {
+    el.addEventListener('click', () => {
+      const [key, i] = el.dataset.wlDel.split(':');
+      state.watchlist[key].splice(parseInt(i, 10), 1);
+      lsSet('soc.watchlist', state.watchlist);
+      renderWatchlistEditor();
+      refreshWatchBadge(); renderAlertList(); renderIOCs();
+    });
+  });
+  $('watchlistBody').querySelectorAll('[data-wl-add-btn]').forEach(el => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.wlAddBtn;
+      const inp = $('watchlistBody').querySelector('[data-wl-add="' + key + '"]');
+      const v = (inp.value || '').trim();
+      if (!v) return;
+      state.watchlist[key] = state.watchlist[key] || [];
+      state.watchlist[key].push(v);
+      lsSet('soc.watchlist', state.watchlist);
+      renderWatchlistEditor();
+      refreshWatchBadge(); renderAlertList(); renderIOCs();
+    });
+  });
+}
+
+// ─────────── MITRE ATT&CK Navigator ───────────
+const MITRE_MATRIX = {
+  'Initial Access': [
+    { id: 'T1190', name: 'Exploit Public App' },
+    { id: 'T1133', name: 'External Remote Svc' },
+    { id: 'T1078', name: 'Valid Accounts' },
+  ],
+  'Execution': [
+    { id: 'T1059', name: 'Command/Scripting Interpreter' },
+    { id: 'T1106', name: 'Native API' },
+    { id: 'T1204', name: 'User Execution' },
+  ],
+  'Persistence': [
+    { id: 'T1543', name: 'Create/Modify System Process' },
+    { id: 'T1547', name: 'Boot/Logon Autostart' },
+    { id: 'T1136', name: 'Create Account' },
+  ],
+  'Privilege Escalation': [
+    { id: 'T1548', name: 'Abuse Elevation Control', _policy: 'privilege-escalation' },
+    { id: 'T1068', name: 'Exploit for PrivEsc' },
+    { id: 'T1055', name: 'Process Injection' },
+  ],
+  'Defense Evasion': [
+    { id: 'T1027', name: 'Obfuscated Files' },
+    { id: 'T1070', name: 'Indicator Removal' },
+    { id: 'T1562', name: 'Impair Defenses' },
+  ],
+  'Credential Access': [
+    { id: 'T1003', name: 'OS Credential Dumping', _policy: 'sensitive-file-access' },
+    { id: 'T1555', name: 'Creds from Stores' },
+    { id: 'T1110', name: 'Brute Force' },
+  ],
+  'Discovery': [
+    { id: 'T1057', name: 'Process Discovery' },
+    { id: 'T1083', name: 'File/Dir Discovery' },
+    { id: 'T1018', name: 'Remote System Discovery' },
+  ],
+  'Lateral Movement': [
+    { id: 'T1021', name: 'Remote Services' },
+    { id: 'T1570', name: 'Lateral Tool Transfer' },
+  ],
+  'Collection': [
+    { id: 'T1005', name: 'Data from Local System' },
+    { id: 'T1056', name: 'Input Capture' },
+  ],
+  'Command and Control': [
+    { id: 'T1071', name: 'App Layer Protocol', _policy: 'outbound-connections' },
+    { id: 'T1095', name: 'Non-App Layer Protocol' },
+    { id: 'T1572', name: 'Protocol Tunneling' },
+  ],
+  'Exfiltration': [
+    { id: 'T1041', name: 'Over C2' },
+    { id: 'T1567', name: 'Over Web Service' },
+  ],
+  'Impact': [
+    { id: 'T1486', name: 'Data Encrypted (Ransomware)' },
+    { id: 'T1496', name: 'Resource Hijacking' },
+    { id: 'T1485', name: 'Data Destruction' },
+  ],
+};
+function showMitreNavigator() {
+  $('mitreModal').classList.add('open');
+  // Count alerts per technique using guessPolicy mapping.
+  const counts = {};
+  for (const a of state.alerts) {
+    const p = guessPolicy(a);
+    if (!p) continue;
+    for (const tactic in MITRE_MATRIX) {
+      for (const t of MITRE_MATRIX[tactic]) {
+        if (t._policy === p) counts[t.id] = (counts[t.id] || 0) + 1;
+      }
+    }
+  }
+  let html = '<div class="mitre-matrix">';
+  for (const tactic in MITRE_MATRIX) {
+    html += '<div class="mitre-col"><h4>' + escHTML(tactic) + '</h4>';
+    for (const t of MITRE_MATRIX[tactic]) {
+      const c = counts[t.id] || 0;
+      const observed = c > 0;
+      const intensity = Math.min(1, c / 20);
+      const bg = observed
+        ? 'background: rgba(244,63,94,' + (0.10 + intensity * 0.45) + '); border-color: rgba(244,63,94,' + (0.4 + intensity * 0.4) + ');'
+        : '';
+      html += '<div class="mitre-cell' + (observed ? ' observed' : '') + '" style="' + bg + '" data-mitre-techn="' + t.id + '" data-policy="' + (t._policy || '') + '">' +
+        '<div class="text-soc-accent font-mono text-[10px]">' + t.id + (observed ? '  <span class="text-rose-300">×' + c + '</span>' : '') + '</div>' +
+        '<div class="text-soc-text">' + escHTML(t.name) + '</div>' +
+      '</div>';
+    }
+    html += '</div>';
+  }
+  html += '</div>';
+  $('mitreBody').innerHTML = html;
+
+  $('mitreBody').querySelectorAll('.mitre-cell.observed').forEach(el => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.policy;
+      if (p) { state.mitreFilter = p; closeMitreNavigator(); renderFilterChips(); renderAlertList(); renderMitre(); }
+    });
+  });
+}
+function closeMitreNavigator() { $('mitreModal').classList.remove('open'); }
+
+// ─────────── Cmd+K Command Palette ───────────
+const PALETTE_ACTIONS = [
+  { kind: 'action', label: 'Show MITRE Navigator',         run: () => showMitreNavigator() },
+  { kind: 'action', label: 'Show Correlation Graph',       run: () => showGraphModal() },
+  { kind: 'action', label: 'Show Rule Simulator',          run: () => showSimModal() },
+  { kind: 'action', label: 'Show Watchlist',               run: () => showWatchlistModal() },
+  { kind: 'action', label: 'Show Time Machine',            run: () => showTimeMachine() },
+  { kind: 'action', label: 'Show Loaded Policies',         run: () => showPoliciesModal() },
+  { kind: 'action', label: 'Show Honeypot Status',         run: () => showHoneypotsPanel() },
+  { kind: 'action', label: 'Show Kprobe Perf',             run: () => showKprobesPanel() },
+  { kind: 'action', label: 'Open Quick-fire Attacks',      run: () => showAttacksModal() },
+  { kind: 'action', label: 'Toggle Notifications',         run: () => toggleNotifications() },
+  { kind: 'action', label: 'Export Current View as JSON',  run: () => exportJSON() },
+  { kind: 'action', label: 'Clear Alerts',                 run: () => $('alertClear').click() },
+  { kind: 'action', label: 'Clear All Filters',            run: () => clearAllFilters() },
+  { kind: 'action', label: 'Save Current View as…',        run: () => saveCurrentView() },
+  { kind: 'action', label: 'Show Help / Shortcuts',        run: () => showHelp() },
+];
+let paletteIdx = 0;
+function openPalette() {
+  $('paletteModal').classList.add('open');
+  $('paletteInput').value = '';
+  paletteIdx = 0;
+  renderPaletteResults();
+  setTimeout(() => $('paletteInput').focus(), 50);
+}
+function closePalette() { $('paletteModal').classList.remove('open'); }
+
+function paletteResults(query) {
+  const q = (query || '').toLowerCase().trim();
+  const results = [];
+  // Actions
+  for (const a of PALETTE_ACTIONS) {
+    if (!q || a.label.toLowerCase().includes(q)) results.push({ ...a, meta: '' });
+  }
+  // Alerts
+  for (const a of state.alerts.slice(0, 80)) {
+    const t = pick(a, 'title', 'Title') || '';
+    if (q && t.toLowerCase().includes(q)) {
+      results.push({ kind: 'alert', label: t, meta: sevOf(a),
+        run: () => openDrill(pick(a, 'id', 'ID')) });
+    }
+  }
+  // Processes (binaries from events)
+  const seenBin = new Set();
+  for (const e of state.events.slice(0, 200)) {
+    const bin = pick(e, 'binary', 'Binary');
+    if (!bin || seenBin.has(bin)) continue;
+    if (q && bin.toLowerCase().includes(q)) {
+      seenBin.add(bin);
+      results.push({ kind: 'process', label: bin, meta: 'filter →',
+        run: () => { toggleProcFilter(bin); closePalette(); } });
+    }
+  }
+  // MITRE techniques
+  for (const tactic in MITRE_MATRIX) {
+    for (const t of MITRE_MATRIX[tactic]) {
+      const txt = (t.id + ' ' + t.name + ' ' + tactic).toLowerCase();
+      if (q && txt.includes(q) && t._policy) {
+        results.push({ kind: 'mitre', label: t.id + ' ' + t.name, meta: tactic,
+          run: () => { state.mitreFilter = t._policy; renderFilterChips(); renderAlertList(); renderMitre(); closePalette(); } });
+      }
+    }
+  }
+  // Saved views
+  for (const name in state.savedViews) {
+    if (!q || name.toLowerCase().includes(q)) {
+      results.push({ kind: 'view', label: name, meta: 'apply →',
+        run: () => { applyViewSpec(state.savedViews[name]); closePalette(); } });
+    }
+  }
+  // Attacks (from local list — fast, no fetch needed for palette)
+  const attackIds = ['01-webshell','02-credential-theft','03-reverse-shell','04-privilege-escalation','05-living-off-the-land','06-persistence'];
+  for (const id of attackIds) {
+    if (q && (id.includes(q) || 'fire attack'.includes(q))) {
+      results.push({ kind: 'fire', label: 'Fire ' + id, meta: 'POST /api/run-attack',
+        run: () => { fireAttackById(id); closePalette(); } });
+    }
+  }
+  return results.slice(0, 40);
+}
+async function fireAttackById(id) {
+  try {
+    await fetch('/api/run-attack', { method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'id=' + encodeURIComponent(id) });
+  } catch (e) {}
+}
+function renderPaletteResults() {
+  const q = $('paletteInput').value;
+  const list = paletteResults(q);
+  state._paletteList = list;
+  if (paletteIdx >= list.length) paletteIdx = 0;
+  const box = $('paletteResults');
+  if (!list.length) { box.innerHTML = '<div class="pal-empty">no matches</div>'; return; }
+  box.innerHTML = list.map((r, i) =>
+    '<div class="pal-item' + (i === paletteIdx ? ' sel' : '') + '" data-pal-i="' + i + '">' +
+      '<span class="pal-kind">' + r.kind + '</span>' +
+      '<span class="pal-text">' + escHTML(r.label) + '</span>' +
+      (r.meta ? '<span class="pal-meta">' + escHTML(r.meta) + '</span>' : '') +
+    '</div>'
+  ).join('');
+  box.querySelectorAll('[data-pal-i]').forEach(el => {
+    el.addEventListener('click', () => {
+      paletteIdx = parseInt(el.dataset.palI, 10);
+      runSelectedPalette();
+    });
+  });
+}
+function runSelectedPalette() {
+  const r = (state._paletteList || [])[paletteIdx];
+  if (!r) return;
+  closePalette();
+  if (r.run) r.run();
+}
+
+// ─────────── Honeypots panel ───────────
+state.honeypotPrefix = '';
+async function showHoneypotsPanel() {
+  $('honeypotsModal').classList.add('open');
+  $('honeypotsBody').innerHTML = '<div class="text-soc-mute text-[12px]">loading…</div>';
+  try {
+    const r = await fetch('/api/honeypots');
+    if (!r.ok) throw new Error('http ' + r.status);
+    const data = await r.json();
+    state.honeypotPrefix = data.prefix || '';
+    if (!data.files || !data.files.length) {
+      $('honeypotsBody').innerHTML = '<div class="text-soc-mute">no honeypots seeded</div>';
+      return;
+    }
+    // Count alerts that touched each honeypot
+    const counts = {};
+    for (const f of data.files) counts[f.path] = 0;
+    for (const a of state.alerts) {
+      const desc = String(pick(a, 'description', 'Description') || '');
+      const title = String(pick(a, 'title', 'Title') || '');
+      for (const f of data.files) {
+        if (desc.includes(f.path) || title.includes(f.path)) counts[f.path] += 1;
+      }
+    }
+    $('honeypotsBody').innerHTML =
+      '<div class="text-[11px] text-soc-mute mb-3">Prefix: <span class="font-mono text-soc-text">' + escHTML(data.prefix) + '</span> — any access fires a 🍯 alert.</div>' +
+      data.files.map(f => {
+        const c = counts[f.path] || 0;
+        return '<div class="flex items-center justify-between gap-3 p-2 bg-soc-panel/40 border border-soc-line rounded mb-1.5">' +
+          '<div class="flex-1 min-w-0">' +
+            '<div class="font-mono text-[12px] text-soc-text truncate">🍯 ' + escHTML(f.path) + '</div>' +
+            '<div class="text-[11px] text-soc-dim mt-0.5">' + escHTML(f.description) + ' · ' + f.bytes + ' bytes</div>' +
+          '</div>' +
+          '<span class="' + (c > 0 ? 'sev-tag critical' : 'text-soc-mute font-mono text-[11px]') + '">' + (c > 0 ? c + ' hit' + (c === 1 ? '' : 's') : 'untouched') + '</span>' +
+          '</div>';
+      }).join('');
+  } catch (err) {
+    $('honeypotsBody').innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
+  }
+}
+function closeHoneypotsPanel() { $('honeypotsModal').classList.remove('open'); }
+function isHoneypotPath(p) {
+  return state.honeypotPrefix && p && String(p).indexOf(state.honeypotPrefix) >= 0;
+}
+
+// ─────────── Kprobe perf panel ───────────
+async function showKprobesPanel() {
+  $('kprobesModal').classList.add('open');
+  $('kprobesBody').innerHTML = '<div class="text-soc-mute text-[12px]">loading…</div>';
+  try {
+    const r = await fetch('/api/policy-stats');
+    const data = await r.json();
+    if (!r.ok) {
+      $('kprobesBody').innerHTML = '<div class="text-rose-400 text-[12px]">' + escHTML(data.error || 'failed') + '</div>' +
+        '<pre class="text-[11px] font-mono text-soc-mute mt-2 whitespace-pre-wrap">' + escHTML(data.raw || '') + '</pre>';
+      return;
+    }
+    const stats = data.stats || [];
+    const total = stats.reduce((acc, s) => acc + (s.npost || 0), 0) || 1;
+    $('kprobesBody').innerHTML =
+      '<div class="text-[11px] text-soc-mute mb-3">Live counts from <code>tetra tracingpolicy list</code> inside the Tetragon container.</div>' +
+      stats.map(s => {
+        const pct = Math.round((s.npost / total) * 100);
+        const stateColor = s.state === 'enabled' ? 'text-emerald-400' : 'text-rose-400';
+        return '<div class="bg-soc-panel/40 border border-soc-line rounded p-3 mb-2">' +
+          '<div class="flex items-center justify-between mb-1.5">' +
+            '<div>' +
+              '<span class="font-mono text-soc-text font-semibold">' + escHTML(s.name) + '</span>' +
+              '<span class="ml-2 text-[10px] uppercase ' + stateColor + '">' + escHTML(s.state) + '</span>' +
+              '<span class="ml-2 text-[10px] text-soc-mute">' + escHTML(s.mode) + '</span>' +
+            '</div>' +
+            '<span class="font-mono text-soc-text">' + s.npost + ' posts</span>' +
+          '</div>' +
+          '<div class="text-[10px] text-soc-mute mb-1">' + escHTML(s.sensors) + ' · ' + escHTML(s.kernel_memory) + '</div>' +
+          '<div class="h-1.5 bg-soc-panel/60 rounded overflow-hidden"><div class="h-full bg-soc-accent" style="width:' + pct + '%"></div></div>' +
+        '</div>';
+      }).join('');
+  } catch (err) {
+    $('kprobesBody').innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
+  }
+}
+function closeKprobesPanel() { $('kprobesModal').classList.remove('open'); }
+
+// ─────────── Time Machine ───────────
+// Ring buffer: every 30s snapshot the current alerts/events. Slider lets the
+// user scrub back. While scrubbing, the dashboard renders the snapshot's
+// data; "live" returns to following the SSE stream.
+state.snapshots = [];   // [{ ts, alerts, events }] oldest first
+state.timeMachineActive = false;
+state.timeMachineSavedLive = null;
+
+function snapshotState() {
+  // Cap at 60 entries (≥ 30 minutes of history at 30s cadence)
+  state.snapshots.push({
+    ts: Date.now(),
+    alerts: state.alerts.slice(0, 200),
+    events: state.events.slice(0, 500),
+  });
+  if (state.snapshots.length > 60) state.snapshots.shift();
+}
+setInterval(snapshotState, 30_000);
+
+function showTimeMachine() {
+  $('timeMachineModal').classList.add('open');
+  renderTimeMachineBody();
+}
+function closeTimeMachine() {
+  $('timeMachineModal').classList.remove('open');
+  // Don't auto-exit replay mode — user might want to keep scrubbed state visible.
+}
+function renderTimeMachineBody() {
+  const snaps = state.snapshots;
+  const body = $('timeMachineBody');
+  if (!snaps.length) {
+    body.innerHTML = '<div class="text-soc-mute text-[12px]">No snapshots yet. The first one is taken 30 s after page load. Come back in a minute.</div>';
+    return;
+  }
+  const oldest = snaps[0].ts, newest = snaps[snaps.length - 1].ts;
+  const oldestAgo = Math.round((Date.now() - oldest) / 1000);
+  const newestAgo = Math.round((Date.now() - newest) / 1000);
+  body.innerHTML =
+    '<div class="text-[11px] text-soc-mute mb-3">' + snaps.length + ' snapshot(s) · oldest ' + oldestAgo + 's ago · newest ' + newestAgo + 's ago</div>' +
+    '<div class="flex items-center gap-3">' +
+      '<input id="tmSlider" type="range" min="0" max="' + (snaps.length - 1) + '" value="' + (snaps.length - 1) + '" class="flex-1 accent-cyan-400">' +
+      '<button id="tmLive" class="px-3 py-1 border border-soc-line rounded text-soc-dim hover:text-soc-accent">Live</button>' +
+    '</div>' +
+    '<div id="tmStatus" class="mt-3 text-[12px] font-mono text-soc-text"></div>';
+  $('tmSlider').addEventListener('input', (e) => {
+    const idx = parseInt(e.target.value, 10);
+    enterTimeMachine(idx);
+  });
+  $('tmLive').addEventListener('click', exitTimeMachine);
+  // Initial label
+  updateTmStatus(snaps.length - 1);
+}
+function updateTmStatus(idx) {
+  const s = state.snapshots[idx];
+  if (!s) return;
+  const ago = Math.round((Date.now() - s.ts) / 1000);
+  $('tmStatus').textContent = 'Snapshot ' + (idx + 1) + '/' + state.snapshots.length +
+    ' · ' + ago + 's ago · ' + s.alerts.length + ' alerts · ' + s.events.length + ' events';
+}
+function enterTimeMachine(idx) {
+  const s = state.snapshots[idx];
+  if (!s) return;
+  if (!state.timeMachineActive) {
+    state.timeMachineSavedLive = {
+      alerts: state.alerts,
+      events: state.events,
+      liveEvents: state.liveEvents,
+    };
+    state.timeMachineActive = true;
+  }
+  state.alerts = s.alerts.slice();
+  state.events = s.events.slice();
+  state.liveEvents = s.events.slice(0, 200);
+  renderAll();
+  updateTmStatus(idx);
+  // Visual cue
+  document.body.style.outline = '2px solid rgba(217,70,239,0.5)';
+}
+function exitTimeMachine() {
+  if (!state.timeMachineActive) return;
+  const live = state.timeMachineSavedLive;
+  state.alerts = live.alerts;
+  state.events = live.events;
+  state.liveEvents = live.liveEvents;
+  state.timeMachineActive = false;
+  state.timeMachineSavedLive = null;
+  document.body.style.outline = '';
+  renderAll();
+  $('tmStatus').textContent = 'Live — following SSE stream';
+}
+
+// ─────────── Process correlation graph (D3) ───────────
+async function showGraphModal() {
+  $('graphModal').classList.add('open');
+  if (typeof d3 === 'undefined') {
+    $('graphStats').textContent = 'D3 still loading…';
+    setTimeout(showGraphModal, 200);
+    return;
+  }
+
+  // Build nodes (one per unique exec_id seen in events) and edges (parent→child).
+  const nodes = new Map(); // execId → { id, bin, score, alerts }
+  const edges = [];
+  const seenEdge = new Set();
+
+  // Score per exec_id from alerts
+  const scoreByExec = new Map();
+  const alertsByExec = new Map();
+  for (const a of state.alerts) {
+    const id = pick(a, 'exec_id', 'ExecID');
+    if (!id) continue;
+    scoreByExec.set(id, Math.max(scoreByExec.get(id) || 0, pick(a, 'score', 'Score') || 0));
+    if (!alertsByExec.has(id)) alertsByExec.set(id, []);
+    alertsByExec.get(id).push(a);
+  }
+  // Walk events to harvest exec/parent relationships
+  for (const e of state.events) {
+    if (state.filterNoise && isSelfNoise(e)) continue;
+    const id = pick(e, 'exec_id', 'ExecID');
+    if (!id) continue;
+    if (!nodes.has(id)) {
+      nodes.set(id, {
+        id,
+        bin: pick(e, 'binary', 'Binary') || '?',
+        score: scoreByExec.get(id) || 0,
+        alerts: (alertsByExec.get(id) || []).length,
+      });
+    }
+    // Parent edges via per-exec_id chain fetch are too expensive; instead
+    // use the parent_pid from process_exec when both PIDs are present.
+    const ppid = pick(e, 'parent_pid', 'ParentPID') || 0;
+    const pid  = pick(e, 'pid', 'PID') || 0;
+    if (!ppid || !pid) continue;
+    // Find a parent exec_id whose pid === ppid (heuristic)
+    for (const [parentId, info] of nodes) {
+      if (parentId === id) continue;
+      // We don't track pid on the node; this is best-effort. Instead, group edges by binary.
+      void info;
+    }
+  }
+  // Better: derive edges by walking the alert chain endpoint for the top N exec_ids
+  // (limited to keep things snappy).
+  const topIds = [...nodes.keys()].slice(0, 40);
+  for (const id of topIds) {
+    try {
+      const r = await fetch('/api/process/' + encodeURIComponent(id));
+      if (!r.ok) continue;
+      const data = await r.json();
+      const chain = data.chain || [];
+      // chain is leaf-first per server; build edges
+      for (let i = 1; i < chain.length; i++) {
+        const child  = chain[i - 1];
+        const parent = chain[i];
+        const cId = pick(child, 'exec_id', 'ExecID');
+        const pId = pick(parent, 'exec_id', 'ExecID');
+        if (!cId || !pId) continue;
+        // Ensure both nodes exist
+        if (!nodes.has(cId)) nodes.set(cId, { id: cId, bin: pick(child, 'binary', 'Binary') || '?', score: scoreByExec.get(cId) || 0, alerts: 0 });
+        if (!nodes.has(pId)) nodes.set(pId, { id: pId, bin: pick(parent, 'binary', 'Binary') || '?', score: scoreByExec.get(pId) || 0, alerts: 0 });
+        const k = pId + '→' + cId;
+        if (seenEdge.has(k)) continue;
+        seenEdge.add(k);
+        edges.push({ source: pId, target: cId });
+      }
+    } catch (e) { /* ignore */ }
+  }
+
+  $('graphStats').textContent = nodes.size + ' processes · ' + edges.length + ' edges';
+  renderGraph([...nodes.values()], edges);
+}
+function closeGraphModal() {
+  $('graphModal').classList.remove('open');
+  if (window._graphSim) { window._graphSim.stop(); window._graphSim = null; }
+}
+
+function renderGraph(nodes, links) {
+  const svg = d3.select('#graphSvg');
+  svg.selectAll('*').remove();
+  const w = svg.node().clientWidth, h = +svg.attr('height');
+
+  const g = svg.append('g');
+
+  // Zoom + pan
+  svg.call(d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => g.attr('transform', e.transform)));
+
+  // Color scale by score: 0=#3b82f6 (low) to 100=#f43f5e (crit)
+  const color = (s) => s >= 40 ? '#f43f5e' : s >= 20 ? '#fb923c' : s >= 5 ? '#facc15' : '#3b82f6';
+  const radius = (s) => 6 + Math.min(20, Math.sqrt(s));
+
+  const link = g.append('g').attr('stroke', 'rgba(148,163,184,0.35)').attr('stroke-width', 1)
+    .selectAll('line').data(links).join('line');
+
+  const node = g.append('g')
+    .selectAll('g').data(nodes, d => d.id).join('g')
+    .style('cursor', 'pointer')
+    .call(d3.drag()
+      .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
+      .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
+      .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
+    .on('click', (e, d) => { closeGraphModal(); openDrillByExec(d.id); });
+
+  node.append('circle')
+    .attr('r', d => radius(d.score))
+    .attr('fill', d => color(d.score))
+    .attr('stroke', '#0a0f1c').attr('stroke-width', 1.5);
+
+  node.append('title').text(d => d.bin + '  (score=' + d.score + ')');
+
+  node.append('text')
+    .attr('x', d => radius(d.score) + 4)
+    .attr('y', 3)
+    .attr('font-size', 10).attr('fill', '#cbd5e1')
+    .attr('font-family', 'ui-monospace,monospace')
+    .text(d => (d.bin || '').split('/').pop());
+
+  const sim = d3.forceSimulation(nodes)
+    .force('link',   d3.forceLink(links).id(d => d.id).distance(60))
+    .force('charge', d3.forceManyBody().strength(-160))
+    .force('center', d3.forceCenter(w / 2, h / 2))
+    .force('collide', d3.forceCollide().radius(d => radius(d.score) + 4))
+    .on('tick', () => {
+      link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+          .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+      node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    });
+  window._graphSim = sim;
+}
+
+// ─────────── Detection rule simulator ───────────
+function showSimModal() {
+  $('simModal').classList.add('open');
+  runSimulation();
+  ['simLow','simMed','simHigh','simCrit','simPolicy'].forEach(id =>
+    $(id).addEventListener('input', runSimulation, { once: false })
+  );
+}
+function closeSimModal() { $('simModal').classList.remove('open'); }
+
+function classify(score, lo, md, hi, cr) {
+  if (score >= cr) return 'critical';
+  if (score >= hi) return 'high';
+  if (score >= md) return 'medium';
+  if (score >= lo) return 'low';
+  return 'info';
+}
+function runSimulation() {
+  const lo = parseInt($('simLow').value,  10) || 0;
+  const md = parseInt($('simMed').value,  10) || 0;
+  const hi = parseInt($('simHigh').value, 10) || 0;
+  const cr = parseInt($('simCrit').value, 10) || 0;
+  const policyFilter = $('simPolicy').value || null;
+
+  const subset = policyFilter
+    ? state.alerts.filter(a => guessPolicy(a) === policyFilter)
+    : state.alerts.slice();
+
+  const cur  = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  const sim  = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const a of subset) {
+    cur[sevOf(a)] = (cur[sevOf(a)] || 0) + 1;
+    sim[classify(pick(a, 'score', 'Score') || 0, lo, md, hi, cr)] += 1;
+  }
+
+  const sevs = ['critical', 'high', 'medium', 'low', 'info'];
+  $('simResults').innerHTML = sevs.map(s => {
+    const delta = sim[s] - cur[s];
+    const arrow = delta > 0 ? '↑ +' + delta : delta < 0 ? '↓ ' + delta : '·';
+    const color = delta > 0 ? 'text-rose-300' : delta < 0 ? 'text-emerald-300' : 'text-soc-mute';
+    return '<div class="flex items-center gap-3 text-[12px]">' +
+      '<span class="sev-tag ' + s + '" style="min-width:80px; justify-content:center">' + s + '</span>' +
+      '<span class="font-mono text-soc-mute">cur ' + cur[s] + '</span>' +
+      '<span class="font-mono text-soc-text">sim ' + sim[s] + '</span>' +
+      '<span class="font-mono ' + color + '">' + arrow + '</span>' +
+      '</div>';
+  }).join('');
+
+  // Histogram of scores in 10-point buckets up to 100+
+  const buckets = new Array(11).fill(0);
+  for (const a of subset) {
+    const sc = pick(a, 'score', 'Score') || 0;
+    buckets[Math.min(10, Math.floor(sc / 10))] += 1;
+  }
+  const max = Math.max(1, ...buckets);
+  $('simHistogram').innerHTML = buckets.map((c, i) => {
+    const lower = i * 10;
+    const upper = i === 10 ? '100+' : (lower + 9);
+    const w = Math.round((c / max) * 100);
+    const rangeStart = i * 10;
+    const sev = classify(rangeStart, lo, md, hi, cr);
+    const sevColor = { critical:'#f43f5e', high:'#fb923c', medium:'#facc15', low:'#3b82f6', info:'#94a3b8' }[sev];
+    return '<div class="flex items-center gap-2">' +
+      '<span class="w-14 text-soc-mute text-right">' + lower + '–' + upper + '</span>' +
+      '<div class="flex-1 h-3 bg-soc-panel/60 rounded overflow-hidden"><div style="width:' + w + '%; height:100%; background:' + sevColor + '"></div></div>' +
+      '<span class="w-8 text-soc-text text-right">' + c + '</span>' +
+      '</div>';
+  }).join('');
+}
+
+function matchPred(a, key, op, val) {
+  const valLower = String(val).toLowerCase();
+  switch (key) {
+    case 'severity': return sevOf(a) === valLower;
+    case 'policy': {
+      const p = guessPolicy(a) || '';
+      // Allow MITRE id ("T1003"), tactic substring, or the policy name
+      const m = MITRE[p];
+      return p.toLowerCase().includes(valLower)
+          || (m && (m.id.toLowerCase() === valLower || m.tactic.toLowerCase().includes(valLower)));
+    }
+    case 'uid': {
+      // We don't have uid on the alert; try to find an event whose exec_id matches.
+      const id = pick(a, 'exec_id', 'ExecID');
+      for (const e of state.events) {
+        if (pick(e, 'exec_id', 'ExecID') === id) {
+          return String(pick(e, 'uid', 'UID')) === val;
+        }
+      }
+      return false;
+    }
+    case 'score': {
+      const score = pick(a, 'score', 'Score') || 0;
+      const n = parseFloat(val);
+      if (Number.isNaN(n)) return false;
+      switch (op) {
+        case '>':  return score >  n;
+        case '>=': return score >= n;
+        case '<':  return score <  n;
+        case '<=': return score <= n;
+        default:   return score === n;
+      }
+    }
+    case 'process':
+    case 'proc': {
+      const t = String(pick(a, 'title', 'Title') || '').toLowerCase();
+      if (t.includes(valLower)) return true;
+      const id = pick(a, 'exec_id', 'ExecID');
+      const bin = execIdToBin(id);
+      return bin && String(bin).toLowerCase().includes(valLower);
+    }
+    case 'exec':
+    case 'exec_id': {
+      const id = String(pick(a, 'exec_id', 'ExecID') || '');
+      return id.includes(val);
+    }
+    case 'ack': return ackStateOf(a) === valLower;
+    case 'pinned':
+      return state.pinnedAlertIds.has(String(pick(a, 'id', 'ID'))) === (valLower === 'true' || valLower === '1' || valLower === 'yes');
+    default:
+      return false;
+  }
+}
+
+function bumpEPS() {
+  const sec = Math.floor(Date.now() / 1000) % 60;
+  state.epsBuckets[sec] = (state.epsBuckets[sec] || 0) + 1;
+}
+
+setInterval(() => {
+  const sec = Math.floor(Date.now() / 1000) % 60;
+  state.epsBuckets[(sec + 1) % 60] = 0;
+  renderKPIs();
+}, 1000);
+
+// ─────────── Renderers ───────────
+function renderAll() {
+  renderKPIs();
+  renderTimeline();
+  renderAlertList();
+  renderMitre();
+  renderTopProcs();
+  renderIOCs();
+  renderNetwork();
+  renderEventStream();
+  renderTimelineBanner();
+  renderFilterChips();
+  renderBulkBar();
+  renderSavedViewsMenu();
+  refreshWatchBadge();
+  // Sync UI control state with persisted/current state.
+  $('sbBell').classList.toggle('bell-on', state.notificationsEnabled);
+}
+
+function renderKPIs() {
+  const now = Date.now();
+  const windowMs = state.rangeMin * 60_000;
+  const cur = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  const prev = { critical: 0, high: 0, medium: 0 };
+  for (const a of state.alerts) {
+    const ts = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    const ageMs = now - ts;
+    if (ageMs < 0) continue;
+    if (ageMs <= windowMs) {
+      cur[sevOf(a)] = (cur[sevOf(a)] || 0) + 1;
+    } else if (ageMs <= windowMs * 2) {
+      const s = sevOf(a);
+      if (s in prev) prev[s] += 1;
+    }
+  }
+  $('kpiCrit').textContent = cur.critical;
+  $('kpiHigh').textContent = cur.high;
+  $('kpiMed').textContent  = cur.medium;
+  setDelta('kpiCritDelta', cur.critical, prev.critical, true);
+  setDelta('kpiHighDelta', cur.high,     prev.high,     true);
+  setDelta('kpiMedDelta',  cur.medium,   prev.medium,   true);
+  updateGauge(cur);
+
+  // EPS
+  const totalEvents = state.epsBuckets.reduce((a,b) => a+b, 0);
+  const eps = totalEvents / 60;
+  $('kpiEps').textContent = eps.toFixed(1);
+  renderSpark('sparkEps', state.epsBuckets, 'rgba(34,211,238,0.45)');
+
+  // Sparklines from minute buckets
+  const sparks = sparkBuckets();
+  renderSpark('sparkCrit', sparks.critical, 'rgba(244,63,94,0.7)');
+  renderSpark('sparkHigh', sparks.high,     'rgba(251,146,60,0.7)');
+  renderSpark('sparkMed',  sparks.medium,   'rgba(250,204,21,0.7)');
+
+  // Active processes (unique exec_id in last 10min from events)
+  const procCutoff = Date.now() - 10 * 60_000;
+  const seen = new Map();
+  for (const e of state.events) {
+    const ts = new Date(pick(e, 'timestamp', 'Timestamp')).getTime();
+    if (ts < procCutoff) continue;
+    const id = pick(e, 'exec_id', 'ExecID');
+    if (!id) continue;
+    seen.set(id, (seen.get(id) || 0) + 1);
+  }
+  $('kpiProcs').textContent = seen.size;
+
+  // Top process by frequency
+  let top = ['', 0];
+  const procBins = new Map();
+  for (const e of state.events.slice(0, 500)) {
+    const bin = pick(e, 'binary', 'Binary');
+    if (!bin) continue;
+    procBins.set(bin, (procBins.get(bin) || 0) + 1);
+    if (procBins.get(bin) > top[1]) top = [bin, procBins.get(bin)];
+  }
+  $('topProc').textContent = top[0] ? (top[0] + '  ×' + top[1]) : '—';
+}
+
+function sparkBuckets() {
+  const buckets = { critical: new Array(20).fill(0), high: new Array(20).fill(0), medium: new Array(20).fill(0) };
+  const now = Date.now();
+  for (const a of state.alerts) {
+    const t = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    const minAgo = Math.floor((now - t) / 60_000);
+    if (minAgo < 0 || minAgo >= 20) continue;
+    const idx = 19 - minAgo;
+    const s = sevOf(a);
+    if (buckets[s]) buckets[s][idx] += 1;
+  }
+  return buckets;
+}
+
+function renderSpark(id, data, color) {
+  const el = $(id); if (!el) return;
+  const max = Math.max(1, ...data);
+  el.innerHTML = data.map(v => {
+    const h = Math.max(2, Math.round((v / max) * 32));
+    return '<div style="height:' + h + 'px; background:' + color + '"></div>';
+  }).join('');
+}
+
+function renderTimeline() {
+  const buckets = state.rangeMin;
+  const counts = Array.from({ length: buckets }, () => ({ critical: 0, high: 0, medium: 0, low: 0, info: 0 }));
+  const now = Date.now();
+  for (const a of state.alerts) {
+    const t = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    const minAgo = Math.floor((now - t) / 60_000);
+    if (minAgo < 0 || minAgo >= buckets) continue;
+    const idx = buckets - 1 - minAgo;
+    counts[idx][sevOf(a)] += 1;
+  }
+  const max = Math.max(1, ...counts.map(c => c.critical + c.high + c.medium + c.low + c.info));
+  const tl = $('timeline');
+  tl.innerHTML = counts.map((c, i) => {
+    const segs = ['critical','high','medium','low','info'].map(s => {
+      const h = (c[s] / max) * 100;
+      if (!h) return '';
+      return '<div class="ts-bar-seg sev-bar ' + s + '" style="height:' + h + '%"></div>';
+    }).join('');
+    const minAgo = (buckets - 1) - i;
+    const tip = (minAgo === 0 ? 'now' : minAgo + 'm ago') + ' — ' +
+      (Object.entries(c).filter(([,v]) => v).map(([k,v]) => k + ':' + v).join(' ') || 'no alerts');
+    const cls = ['ts-bar-col'];
+    if (state.timelineFilterMin != null && state.timelineFilterMin !== i) cls.push('dim');
+    if (state.timelineFilterMin === i) cls.push('selected');
+    return '<div class="' + cls.join(' ') + '" data-bucket="' + i + '" title="' + tip + '">' + segs + '</div>';
+  }).join('');
+
+  // Click to filter (single minute)
+  tl.querySelectorAll('[data-bucket]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      // Drag handled separately; if drag distance was > 0, skip click
+      if (tl._dragMoved) { tl._dragMoved = false; return; }
+      const idx = parseInt(el.dataset.bucket, 10);
+      // Clear any active brush range
+      state.timelineRange = null;
+      state.timelineFilterMin = (state.timelineFilterMin === idx) ? null : idx;
+      renderTimeline();
+      renderAlertList();
+      renderTimelineBanner();
+      renderFilterChips();
+    });
+  });
+
+  // Brush: drag across buckets to select a range
+  attachTimelineBrush(tl, buckets);
+
+  // Render brush overlay if active
+  if (state.timelineRange) {
+    const r = state.timelineRange;
+    const cols = tl.querySelectorAll('.ts-bar-col');
+    if (cols.length) {
+      const startX = cols[r.startIdx].offsetLeft;
+      const endCol = cols[r.endIdx];
+      const endX = endCol.offsetLeft + endCol.offsetWidth;
+      const overlay = document.createElement('div');
+      overlay.className = 'ts-brush';
+      overlay.style.left = startX + 'px';
+      overlay.style.width = (endX - startX) + 'px';
+      tl.appendChild(overlay);
+    }
+  }
+
+  const ax = $('timelineAxis');
+  const labels = [buckets + 'm ago', Math.floor(buckets * 0.66) + 'm', Math.floor(buckets * 0.33) + 'm', 'now'];
+  ax.innerHTML = labels.map(l => '<span>' + l + '</span>').join('');
+}
+
+function attachTimelineBrush(tl, buckets) {
+  if (tl._brushBound) return;
+  tl._brushBound = true;
+  let dragStart = null;
+  tl.addEventListener('mousedown', (e) => {
+    const col = e.target.closest('[data-bucket]');
+    if (!col) return;
+    dragStart = parseInt(col.dataset.bucket, 10);
+    tl._dragMoved = false;
+  });
+  tl.addEventListener('mousemove', (e) => {
+    if (dragStart == null) return;
+    const col = e.target.closest('[data-bucket]');
+    if (!col) return;
+    const cur = parseInt(col.dataset.bucket, 10);
+    if (cur !== dragStart) tl._dragMoved = true;
+  });
+  document.addEventListener('mouseup', (e) => {
+    if (dragStart == null) return;
+    const col = e.target.closest && e.target.closest('[data-bucket]');
+    if (col && tl._dragMoved) {
+      const end = parseInt(col.dataset.bucket, 10);
+      const startIdx = Math.min(dragStart, end);
+      const endIdx   = Math.max(dragStart, end);
+      state.timelineFilterMin = null;
+      state.timelineRange = { startIdx, endIdx };
+      renderTimeline(); renderAlertList(); renderTimelineBanner(); renderFilterChips();
+    }
+    dragStart = null;
+  });
+}
+
+// timelineBanner was replaced by the active-filter chip bar; this is now a no-op.
+function renderTimelineBanner() {}
+
+function passesFilter(a) {
+  // Pinned alerts always show, regardless of any filter.
+  if (state.pinnedAlertIds.has(String(pick(a, 'id', 'ID')))) return true;
+
+  if (!state.selectedSeverities.has(sevOf(a))) return false;
+  if (state.filterUnack && ackStateOf(a) !== 'new') return false;
+
+  // Timeline range/single-minute filter
+  const range = state.timelineRange;
+  const single = state.timelineFilterMin;
+  if (range || single != null) {
+    const t = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    const minAgo = Math.floor((Date.now() - t) / 60_000);
+    if (minAgo < 0 || minAgo >= state.rangeMin) return false;
+    const idx = state.rangeMin - 1 - minAgo;
+    if (range) {
+      if (idx < range.startIdx || idx > range.endIdx) return false;
+    } else if (idx !== single) return false;
+  }
+
+  if (state.mitreFilter) {
+    if (guessPolicy(a) !== state.mitreFilter) return false;
+  }
+  if (state.iocFilter) {
+    const hay = JSON.stringify(a);
+    if (!hay.includes(state.iocFilter.value)) return false;
+  }
+  if (state.procFilter) {
+    // Match against the alert title (which contains chain) or via lookup.
+    const t = String(pick(a, 'title', 'Title') || '');
+    const id = pick(a, 'exec_id', 'ExecID');
+    if (!t.includes(state.procFilter) && !execIdToBin(id, state.procFilter)) return false;
+  }
+
+  if (state.search) {
+    const hay = JSON.stringify(a).toLowerCase();
+    // If the search has any `key:value` token, route through the DSL parser.
+    // Otherwise fall back to fast substring match.
+    if (/\S:\S/.test(state.search) || /\b(AND|OR|NOT)\b/i.test(state.search)) {
+      try {
+        const ops = parseDSL(state.search);
+        if (!dslPredicate(ops, a, hay)) return false;
+      } catch (e) {
+        if (!hay.includes(state.search.toLowerCase())) return false;
+      }
+    } else {
+      if (!hay.includes(state.search.toLowerCase())) return false;
+    }
+  }
+  return true;
+}
+
+// Resolve an exec_id to its binary by scanning recent events.
+function execIdToBin(execId, matchBin) {
+  if (!execId) return false;
+  for (const e of state.events) {
+    if (pick(e, 'exec_id', 'ExecID') === execId) {
+      const bin = pick(e, 'binary', 'Binary') || '';
+      return matchBin ? bin === matchBin : bin;
+    }
+  }
+  return false;
+}
+
+// ─────────── Active filter chip bar ───────────
+function renderFilterChips() {
+  const bar = $('filterChips');
+  const chips = [];
+
+  if (state.timelineRange) {
+    const r = state.timelineRange;
+    const a = state.rangeMin - 1 - r.endIdx;
+    const b = state.rangeMin - 1 - r.startIdx;
+    chips.push(filterChip('time', (a === 0 ? 'now' : a + 'm') + '–' + b + 'm ago', 'timeline'));
+  } else if (state.timelineFilterMin != null) {
+    const minAgo = (state.rangeMin - 1) - state.timelineFilterMin;
+    chips.push(filterChip('time', (minAgo === 0 ? 'this minute' : minAgo + 'm ago'), 'timeline'));
+  }
+  if (state.mitreFilter) {
+    const m = MITRE[state.mitreFilter];
+    chips.push(filterChip('MITRE', (m ? m.id + ' ' + m.tactic : state.mitreFilter), 'mitre'));
+  }
+  if (state.iocFilter)  chips.push(filterChip(state.iocFilter.kind, state.iocFilter.value, 'ioc'));
+  if (state.procFilter) chips.push(filterChip('process', state.procFilter, 'proc'));
+
+  if (!chips.length) { bar.classList.add('hidden'); bar.innerHTML = ''; return; }
+  bar.classList.remove('hidden');
+  bar.innerHTML = chips.join('') +
+    '<button id="clearAllFilters" class="ml-1 text-soc-mute hover:text-soc-text underline">clear all</button>';
+  bar.querySelectorAll('[data-clear]').forEach(b => {
+    b.addEventListener('click', () => clearOneFilter(b.dataset.clear));
+  });
+  $('clearAllFilters').addEventListener('click', clearAllFilters);
+}
+function filterChip(kind, value, key) {
+  return '<span class="active-filter">' +
+    '<span class="text-soc-mute">' + escHTML(kind) + '</span>' +
+    '<span>' + escHTML(value) + '</span>' +
+    '<button data-clear="' + key + '">×</button>' +
+  '</span>';
+}
+function clearOneFilter(key) {
+  switch (key) {
+    case 'timeline': state.timelineRange = null; state.timelineFilterMin = null; break;
+    case 'mitre':    state.mitreFilter = null; break;
+    case 'ioc':      state.iocFilter = null; break;
+    case 'proc':     state.procFilter = null; break;
+  }
+  renderFilterChips(); renderAlertList(); renderTimeline(); renderEventStream();
+}
+function clearAllFilters() {
+  state.timelineRange = null; state.timelineFilterMin = null;
+  state.mitreFilter = null; state.iocFilter = null; state.procFilter = null;
+  renderFilterChips(); renderAlertList(); renderTimeline(); renderEventStream();
+}
+
+// Group consecutive alerts that share the same exec_id chain root.
+// Heuristic: same exec_id OR same chain prefix in title (split on " → ").
+function groupAlertList(filtered) {
+  if (!state.groupAlerts) return filtered.map(a => ({ head: a, members: [a] }));
+  const groups = [];
+  const keyOf = (a) => {
+    const ex = pick(a, 'exec_id', 'ExecID') || '';
+    if (ex) return ex;
+    return String(pick(a, 'title', 'Title') || '').split(' (score')[0];
+  };
+  for (const a of filtered) {
+    const k = keyOf(a);
+    const last = groups[groups.length - 1];
+    if (last && last.key === k) {
+      last.members.push(a);
+      // Keep the highest-scoring as head.
+      const lastScore = pick(last.head, 'score', 'Score') || 0;
+      const aScore = pick(a, 'score', 'Score') || 0;
+      if (aScore > lastScore) last.head = a;
+    } else {
+      groups.push({ key: k, head: a, members: [a] });
+    }
+  }
+  return groups;
+}
+
+function renderAlertList(flashTop = false) {
+  const list = $('alertList');
+  const filtered = sortAlerts(state.alerts.filter(passesFilter));
+  // Pin pinned alerts to top regardless of sort.
+  filtered.sort((a, b) => {
+    const pa = state.pinnedAlertIds.has(String(pick(a, 'id', 'ID'))) ? 1 : 0;
+    const pb = state.pinnedAlertIds.has(String(pick(b, 'id', 'ID'))) ? 1 : 0;
+    return pb - pa;
+  });
+  $('alertEmpty').classList.toggle('hidden', filtered.length > 0);
+  $('alertCount').textContent = filtered.length === state.alerts.length
+    ? state.alerts.length + ' alerts'
+    : filtered.length + ' / ' + state.alerts.length + ' alerts';
+  const groups = groupAlertList(filtered);
+  state._displayOrder = groups.map(g => pick(g.head, 'id', 'ID'));
+  list.innerHTML = groups.map((g, i) => alertRowHTML(g.head, flashTop && i === 0, g.members.length, i)).join('');
+
+  // Row click: open drill (unless click was on an action/checkbox/pin)
+  list.querySelectorAll('[data-alert-id]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      if (e.target.closest('[data-ack-action]') ||
+          e.target.closest('.alert-check') ||
+          e.target.closest('.pin-btn')) return;
+      // Shift-click toggles selection instead of opening drill
+      if (e.shiftKey) { toggleAlertSelection(el.dataset.alertId); return; }
+      openDrill(el.dataset.alertId);
+    });
+
+    // Right-click → context menu
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      showAlertContextMenu(e, el.dataset.alertId);
+    });
+
+    // Hover preview — debounced
+    let hoverTimer = null;
+    el.addEventListener('mouseenter', (e) => {
+      hoverTimer = setTimeout(() => showAlertHover(e, el.dataset.alertId), 350);
+    });
+    el.addEventListener('mouseleave', () => {
+      clearTimeout(hoverTimer);
+      hideAlertHover();
+    });
+  });
+
+  list.querySelectorAll('[data-ack-action]').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      setAckState(el.dataset.alertId, el.dataset.ackAction);
+    });
+  });
+  list.querySelectorAll('.pin-btn').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePin(el.dataset.alertId);
+    });
+  });
+  list.querySelectorAll('.alert-check').forEach(el => {
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAlertSelection(el.dataset.alertId);
+    });
+  });
+
+  if (state.selectedAlertId != null) {
+    state.selectedAlertIdx = state._displayOrder.findIndex(id => id == state.selectedAlertId);
+  }
+}
+
+function sortAlerts(arr) {
+  const dir = state.sortDir === 'asc' ? 1 : -1;
+  const key = state.sortBy;
+  return arr.slice().sort((a, b) => {
+    let av, bv;
+    if (key === 'severity') { av = SEVERITY_RANK[sevOf(a)] || 0; bv = SEVERITY_RANK[sevOf(b)] || 0; }
+    else if (key === 'score') { av = pick(a, 'score', 'Score') || 0; bv = pick(b, 'score', 'Score') || 0; }
+    else { av = new Date(pick(a, 'timestamp', 'Timestamp')).getTime(); bv = new Date(pick(b, 'timestamp', 'Timestamp')).getTime(); }
+    return (av - bv) * dir;
+  });
+}
+
+function setSort(field) {
+  if (state.sortBy === field) {
+    state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  } else {
+    state.sortBy = field;
+    state.sortDir = 'desc';
+  }
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.sort === field);
+    if (b.dataset.sort === field) {
+      const arrow = b.querySelector('.sort-dir') || (() => { const s = document.createElement('span'); s.className = 'sort-dir'; b.appendChild(s); return s; })();
+      arrow.textContent = ' ' + (state.sortDir === 'asc' ? '↑' : '↓');
+    } else {
+      const arrow = b.querySelector('.sort-dir');
+      if (arrow) arrow.remove();
+    }
+  });
+  renderAlertList();
+}
+
+function togglePin(id) {
+  id = String(id);
+  if (state.pinnedAlertIds.has(id)) state.pinnedAlertIds.delete(id);
+  else state.pinnedAlertIds.add(id);
+  lsSet('soc.pinnedAlerts', [...state.pinnedAlertIds]);
+  renderAlertList();
+  if (state.selectedAlertId == id) {
+    const a = state.alerts.find(x => pick(x, 'id', 'ID') == id);
+    if (a) renderDrill(a, pick(a, 'exec_id', 'ExecID'));
+  }
+}
+
+function toggleAlertSelection(id) {
+  id = String(id);
+  if (state.selectedSet.has(id)) state.selectedSet.delete(id);
+  else state.selectedSet.add(id);
+  renderAlertList();
+  renderBulkBar();
+}
+function clearSelection() {
+  state.selectedSet.clear();
+  renderAlertList();
+  renderBulkBar();
+}
+function renderBulkBar() {
+  const bar = $('bulkBar');
+  if (!bar) return;
+  if (state.selectedSet.size === 0) { bar.classList.add('hidden'); return; }
+  bar.classList.remove('hidden');
+  $('bulkCount').textContent = state.selectedSet.size + ' selected';
+}
+function bulkAck()     { state.selectedSet.forEach(id => setAckStateNoRender(id, 'ack')); flushAckState(); clearSelection(); }
+function bulkResolve() { state.selectedSet.forEach(id => setAckStateNoRender(id, 'resolved')); flushAckState(); clearSelection(); }
+function bulkExport() {
+  const ids = state.selectedSet;
+  const subset = state.alerts.filter(a => ids.has(String(pick(a, 'id', 'ID'))));
+  exportAlertsBlob(subset, 'soc-selected-' + Date.now());
+  clearSelection();
+}
+function setAckStateNoRender(id, st) {
+  if (st === 'new') delete state.alertStates[id];
+  else state.alertStates[id] = st;
+}
+function flushAckState() { lsSet('soc.alertStates', state.alertStates); }
+function exportAlertsBlob(alerts, filename) {
+  const blob = new Blob([JSON.stringify({
+    generated_at: new Date().toISOString(),
+    host: location.hostname,
+    alerts: alerts.map(a => ({ ...a, _ack_state: ackStateOf(a) })),
+  }, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename + '.json';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function alertRowHTML(a, flash, groupCount, displayIdx) {
+  const sev = sevOf(a);
+  const id = pick(a, 'id', 'ID');
+  const idStr = String(id);
+  const title = pick(a, 'title', 'Title');
+  const desc = pick(a, 'description', 'Description');
+  const score = pick(a, 'score', 'Score');
+  const ts = pick(a, 'timestamp', 'Timestamp');
+  const execId = pick(a, 'exec_id', 'ExecID');
+  const policy = guessPolicy(a);
+  const mitre = MITRE[policy];
+  const ack = ackStateOf(a);
+  const isPinned = state.pinnedAlertIds.has(idStr);
+  const isChecked = state.selectedSet.has(idStr);
+  const sel = state.selectedAlertId == id ? ' selected' : '';
+  const resolvedCls = ack === 'resolved' ? ' resolved' : '';
+  const pinnedCls = isPinned ? ' pinned' : '';
+  const groupBadge = (groupCount > 1) ? ' grouped' : '';
+  const groupAttr = (groupCount > 1) ? ' data-group-extra="' + (groupCount - 1) + '"' : '';
+
+  const ackBadge = ack === 'new' ? '' :
+    '<span class="ack-badge ' + ack + '">' + ack + '</span>';
+  const watchTerm = alertWatchedTerm(a);
+  const watchBadge = watchTerm ? '<span class="watch-tag" title="watchlist match: ' + escHTML(watchTerm) + '">watched</span>' : '';
+  const honeyBadge = (state.honeypotPrefix && JSON.stringify(a).includes(state.honeypotPrefix))
+    ? '<span class="watch-tag" style="background:rgba(250,204,21,0.15);color:#fde68a;border-color:rgba(250,204,21,0.4);" title="honeypot file accessed">🍯 honey</span>'
+    : '';
+
+  // Action buttons: shown contextually based on current state.
+  const actions = [];
+  if (ack === 'new')      actions.push('<button data-ack-action="ack"      data-alert-id="' + id + '" class="text-[10px] text-soc-mute hover:text-soc-accent">ack</button>');
+  if (ack !== 'resolved') actions.push('<button data-ack-action="resolved" data-alert-id="' + id + '" class="text-[10px] text-soc-mute hover:text-emerald-400">resolve</button>');
+  if (ack !== 'new')      actions.push('<button data-ack-action="new"      data-alert-id="' + id + '" class="text-[10px] text-soc-mute hover:text-soc-text">reopen</button>');
+
+  const pinSvg = isPinned
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 17.27 18.18 21l-1.64-7.03L22 9.24l-7.19-.61L12 2 9.19 8.63 2 9.24l5.46 4.73L5.82 21z"/></svg>';
+
+  return '' +
+    '<div class="alert-row p-3 cursor-pointer border-l-2 border-transparent' + (flash ? ' blink-new' : '') + sel + resolvedCls + pinnedCls + groupBadge + '" data-alert-id="' + id + '"' + groupAttr + '>' +
+      '<div class="flex items-center gap-3">' +
+        '<input type="checkbox" class="alert-check" data-alert-id="' + id + '"' + (isChecked ? ' checked' : '') + '>' +
+        '<span class="sev-tag ' + sev + '">' + sev + '</span>' +
+        ackBadge + watchBadge + honeyBadge +
+        '<div class="flex-1 min-w-0">' +
+          '<div class="text-sm text-soc-text font-medium truncate">' + escHTML(title) + '</div>' +
+          (desc ? '<div class="text-[11px] text-soc-dim truncate mt-0.5">' + escHTML(desc) + '</div>' : '') +
+        '</div>' +
+        '<button class="pin-btn' + (isPinned ? ' pinned' : '') + '" data-alert-id="' + id + '" title="' + (isPinned ? 'Unpin' : 'Pin to top') + '">' + pinSvg + '</button>' +
+        '<div class="text-right text-[11px] text-soc-mute font-mono whitespace-nowrap">' +
+          '<div class="text-soc-text">' + fmtTime(ts) + '</div>' +
+          '<div>' + fmtRel(ts) + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="flex items-center gap-3 mt-2 text-[10px] text-soc-mute">' +
+        '<span class="font-mono">score <span class="text-soc-text">' + score + '</span></span>' +
+        (mitre ? '<span class="font-mono"><span class="text-soc-accent">' + mitre.id + '</span> ' + mitre.tactic + '</span>' : '') +
+        (execId ? '<span class="font-mono truncate-mid" style="max-width:240px">exec_id ' + escHTML(String(execId).slice(0, 22)) + '…</span>' : '') +
+        (actions.length ? '<span class="ml-auto flex gap-2">' + actions.join('') + '</span>' : '') +
+      '</div>' +
+    '</div>';
+}
+
+function guessPolicy(alert) {
+  const desc = String(pick(alert, 'description', 'Description') || '').toLowerCase();
+  const title = String(pick(alert, 'title', 'Title') || '').toLowerCase();
+  if (desc.includes('outbound') || title.includes('outbound')) return 'outbound-connections';
+  if (desc.includes('credential') || desc.includes('shadow') || desc.includes('passwd') || desc.includes('id_rsa') || desc.includes('sensitive file')) return 'sensitive-file-access';
+  if (desc.includes('sudo') || desc.includes('setuid') || title.includes('sudo')) return 'privilege-escalation';
+  return null;
+}
+
+function renderMitre() {
+  const cutoff = Date.now() - state.rangeMin * 60_000;
+  const counts = {};
+  for (const a of state.alerts) {
+    const t = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    if (t < cutoff) continue;
+    const p = guessPolicy(a);
+    if (!p) continue;
+    counts[p] = (counts[p] || 0) + 1;
+  }
+  const max = Math.max(1, ...Object.values(counts));
+  const html = Object.keys(MITRE).map(p => {
+    const m = MITRE[p];
+    const c = counts[p] || 0;
+    const w = Math.round((c / max) * 100);
+    const sel = state.mitreFilter === p ? ' selected' : '';
+    return '' +
+      '<div class="clickable-row p-1 -m-1 rounded' + sel + '" data-mitre="' + p + '" title="Click to filter alerts">' +
+        '<div class="flex items-center justify-between text-[11px] mb-1">' +
+          '<div><span class="text-soc-accent font-mono">' + m.id + '</span> <span class="text-soc-dim">' + m.tactic + '</span></div>' +
+          '<span class="text-soc-text font-mono">' + c + '</span>' +
+        '</div>' +
+        '<div class="text-[10px] text-soc-mute mb-1">' + m.name + '</div>' +
+        '<div class="h-1.5 bg-soc-panel/60 rounded overflow-hidden">' +
+          '<div class="h-full bg-soc-accent" style="width:' + w + '%"></div>' +
+        '</div>' +
+      '</div>';
+  }).join('');
+  $('mitre').innerHTML = html;
+  $('mitre').querySelectorAll('[data-mitre]').forEach(el => {
+    el.addEventListener('click', () => {
+      const p = el.dataset.mitre;
+      state.mitreFilter = (state.mitreFilter === p) ? null : p;
+      renderFilterChips(); renderAlertList(); renderMitre();
+    });
+  });
+}
+
+function renderTopProcs() {
+  const scores = new Map();
+  for (const a of state.alerts) {
+    const id = pick(a, 'exec_id', 'ExecID');
+    const s = pick(a, 'score', 'Score') || 0;
+    if (!id) continue;
+    scores.set(id, Math.max(scores.get(id) || 0, s));
+  }
+  const procByExec = new Map();
+  for (const e of state.events) {
+    const id = pick(e, 'exec_id', 'ExecID');
+    if (!id || procByExec.has(id)) continue;
+    procByExec.set(id, pick(e, 'binary', 'Binary'));
+  }
+  const rows = [...scores.entries()]
+    .map(([id, score]) => ({ id, score, bin: procByExec.get(id) || '?' }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 6);
+  if (rows.length === 0) {
+    $('topProcs').innerHTML = '<div class="text-[11px] text-soc-mute">no scored processes yet</div>';
+    return;
+  }
+  const max = rows[0].score || 1;
+  $('topProcs').innerHTML = rows.map((r, i) => {
+    const w = Math.round((r.score / max) * 100);
+    const sel = state.procFilter === r.bin ? ' selected' : '';
+    return '' +
+      '<div class="clickable-row rounded p-1 -m-1' + sel + '" data-proc-row="' + i + '" data-bin="' + escHTML(r.bin) + '" data-exec="' + escHTML(r.id) + '">' +
+        '<div class="flex items-center justify-between text-[11px]">' +
+          '<span class="font-mono text-soc-text truncate" style="max-width: 14rem">' + escHTML(r.bin) + '</span>' +
+          '<span class="font-mono text-soc-text">' + r.score + '</span>' +
+        '</div>' +
+        '<div class="h-1 bg-soc-panel/60 rounded mt-1 overflow-hidden">' +
+          '<div class="h-full" style="width:' + w + '%; background: linear-gradient(90deg, var(--low), var(--high), var(--crit))"></div>' +
+        '</div>' +
+      '</div>';
+  }).join('');
+  // Left-click → drill into the chain. Right-click → filter to this binary.
+  $('topProcs').querySelectorAll('[data-proc-row]').forEach(el => {
+    el.addEventListener('click', () => openDrillByExec(el.dataset.exec));
+    el.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      toggleProcFilter(el.dataset.bin);
+    });
+  });
+}
+
+// Build aggregated network connections: { peer: {count, processes:Set} }.
+// outbound-connections kprobes don't always carry the peer in args, so we
+// also surface the source process binary as a useful indicator.
+function aggregateNetwork() {
+  const peers = new Map();   // ip:port -> {count, procs:Set}
+  const procs = new Map();   // binary  -> count (when peer not parseable)
+  for (const e of state.events) {
+    if (pick(e, 'policy_name', 'PolicyName') !== 'outbound-connections') continue;
+    const args = String(pick(e, 'args', 'Args') || '');
+    const bin = pick(e, 'binary', 'Binary') || '';
+    const m = args.match(/(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)/);
+    if (m) {
+      const p = peers.get(m[1]) || { count: 0, procs: new Set() };
+      p.count += 1;
+      if (bin) p.procs.add(bin);
+      peers.set(m[1], p);
+    } else if (bin) {
+      procs.set(bin, (procs.get(bin) || 0) + 1);
+    }
+  }
+  return { peers, procs };
+}
+
+function renderNetwork() {
+  const el = $('netPanel');
+  if (!el) return;
+  const { peers, procs } = aggregateNetwork();
+  const html = [];
+  if (peers.size) {
+    html.push('<div class="text-[10px] uppercase tracking-widest text-soc-mute">peers</div>');
+    [...peers.entries()].sort((a,b) => b[1].count - a[1].count).slice(0, 6).forEach(([peer, info]) => {
+      const procStr = [...info.procs].slice(0, 2).map(p => p.split('/').pop()).join(',') || '?';
+      const sel = state.iocFilter && state.iocFilter.kind === 'net' && state.iocFilter.value === peer ? ' selected' : '';
+      html.push(
+        '<div class="clickable-row p-1 -m-1 rounded flex justify-between gap-2' + sel + '" data-net="' + escHTML(peer) + '" title="Click to filter alerts">' +
+          '<span class="text-soc-text">' + escHTML(peer) + '</span>' +
+          '<span class="text-soc-mute truncate" title="' + escHTML([...info.procs].join(', ')) + '">' + escHTML(procStr) + '  ×' + info.count + '</span>' +
+        '</div>'
+      );
+    });
+  }
+  if (procs.size) {
+    html.push('<div class="text-[10px] uppercase tracking-widest text-soc-mute mt-2">source processes</div>');
+    [...procs.entries()].sort((a,b) => b[1]-a[1]).slice(0, 6).forEach(([bin, c]) => {
+      const sel = state.procFilter === bin ? ' selected' : '';
+      html.push('<div class="clickable-row p-1 -m-1 rounded flex justify-between' + sel + '" data-proc="' + escHTML(bin) + '" title="Filter to this process"><span class="text-soc-text truncate">' + escHTML(bin) + '</span><span class="text-soc-mute">×' + c + '</span></div>');
+    });
+  }
+  if (!html.length) {
+    el.innerHTML = '<div class="text-soc-mute text-[11px]">no outbound connections — try ' +
+      '<span class="text-soc-accent font-mono">attacks/03-reverse-shell.sh</span></div>';
+    return;
+  }
+  el.innerHTML = html.join('');
+  el.querySelectorAll('[data-net]').forEach(r => r.addEventListener('click', () => toggleIocFilter('net', r.dataset.net)));
+  el.querySelectorAll('[data-proc]').forEach(r => r.addEventListener('click', () => toggleProcFilter(r.dataset.proc)));
+}
+
+function toggleIocFilter(kind, value) {
+  if (state.iocFilter && state.iocFilter.kind === kind && state.iocFilter.value === value) {
+    state.iocFilter = null;
+  } else {
+    state.iocFilter = { kind, value };
+  }
+  renderFilterChips(); renderAlertList(); renderIOCs(); renderNetwork();
+}
+function toggleProcFilter(bin) {
+  state.procFilter = (state.procFilter === bin) ? null : bin;
+  renderFilterChips(); renderAlertList(); renderTopProcs(); renderNetwork();
+}
+
+function renderIOCs() {
+  const files = new Map();
+  const nets = new Map();
+  for (const e of state.events) {
+    if (state.filterNoise && isSelfNoise(e)) continue;
+    const policy = pick(e, 'policy_name', 'PolicyName');
+    const args = String(pick(e, 'args', 'Args') || '');
+    if (policy === 'sensitive-file-access') {
+      const m = args.match(/(\/[^\s]+)/);
+      if (m) files.set(m[1], (files.get(m[1]) || 0) + 1);
+    } else if (policy === 'outbound-connections') {
+      const m = args.match(/(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)/);
+      if (m) nets.set(m[1], (nets.get(m[1]) || 0) + 1);
+    }
+  }
+  const html = [];
+  if (files.size) {
+    html.push('<div class="text-[10px] uppercase tracking-widest text-soc-mute">files</div>');
+    html.push(...[...files.entries()].sort((a,b) => b[1]-a[1]).slice(0, 6).map(([f, c]) => {
+      const sel = state.iocFilter && state.iocFilter.kind === 'file' && state.iocFilter.value === f ? ' selected' : '';
+      return '<div class="clickable-row p-1 -m-1 rounded flex justify-between' + sel + '" data-ioc-kind="file" data-ioc-val="' + escHTML(f) + '" title="Filter alerts to this file"><span class="text-soc-text truncate">' + escHTML(f) + '</span><span class="text-soc-mute">×' + c + '</span></div>';
+    }));
+  }
+  if (nets.size) {
+    html.push('<div class="text-[10px] uppercase tracking-widest text-soc-mute mt-2">network</div>');
+    html.push(...[...nets.entries()].sort((a,b) => b[1]-a[1]).slice(0, 6).map(([n, c]) => {
+      const sel = state.iocFilter && state.iocFilter.kind === 'net' && state.iocFilter.value === n ? ' selected' : '';
+      return '<div class="clickable-row p-1 -m-1 rounded flex justify-between' + sel + '" data-ioc-kind="net" data-ioc-val="' + escHTML(n) + '" title="Filter alerts to this peer"><span class="text-soc-text">' + escHTML(n) + '</span><span class="text-soc-mute">×' + c + '</span></div>';
+    }));
+  }
+  if (!html.length) html.push('<div class="text-soc-mute text-[11px]">no IOCs yet — fire an attack script in the VM</div>');
+  $('iocs').innerHTML = html.join('');
+  $('iocs').querySelectorAll('[data-ioc-kind]').forEach(el => {
+    el.addEventListener('click', () => toggleIocFilter(el.dataset.iocKind, el.dataset.iocVal));
+  });
+}
+
+function renderEventStream() {
+  let filtered = state.liveEvents.filter(e => !state.filterNoise || !isSelfNoise(e));
+  if (state.streamRegex) {
+    let re = null;
+    try { re = new RegExp(state.streamRegex, 'i'); } catch (err) { re = null; }
+    if (re) {
+      filtered = filtered.filter(e => {
+        const hay = (pick(e, 'binary', 'Binary') || '') + ' ' +
+                    (pick(e, 'args', 'Args')   || '') + ' ' +
+                    (pick(e, 'event_type', 'EventType') || '') + ' ' +
+                    (pick(e, 'policy_name', 'PolicyName') || '');
+        return re.test(hay);
+      });
+    } else {
+      // Fallback: substring
+      const q = state.streamRegex.toLowerCase();
+      filtered = filtered.filter(e => JSON.stringify(e).toLowerCase().includes(q));
+    }
+  }
+  $('streamCount').textContent = filtered.length + ' events' +
+    (state.filterNoise || state.streamRegex ? ' (filtered)' : '');
+  $('eventList').innerHTML = filtered.slice(0, 200).map(e => eventRowHTML(e)).join('');
+}
+
+function eventRowHTML(e) {
+  const ts = pick(e, 'timestamp', 'Timestamp');
+  const type = String(pick(e, 'event_type', 'EventType') || '');
+  const bin = pick(e, 'binary', 'Binary');
+  const args = pick(e, 'args', 'Args');
+  const policy = pick(e, 'policy_name', 'PolicyName');
+  const execId = pick(e, 'exec_id', 'ExecID');
+  const typeColor = type === 'process_kprobe' ? 'text-soc-accent'
+    : type === 'process_exec' ? 'text-emerald-400'
+    : 'text-soc-dim';
+  const policyTag = policy ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-soc-panel2 text-soc-dim ml-2">' + escHTML(policy) + '</span>' : '';
+  return '' +
+    '<div class="px-4 py-1.5 hover:bg-soc-panel2/30 cursor-pointer flex items-baseline gap-3" onclick="openDrillByExec(\'' + String(execId).replace(/'/g, "\\'") + '\')">' +
+      '<span class="text-soc-mute whitespace-nowrap">' + fmtTime(ts) + '</span>' +
+      '<span class="' + typeColor + ' whitespace-nowrap">' + escHTML(type.padEnd(15)) + '</span>' +
+      '<span class="text-soc-text truncate">' + escHTML(bin) + ' ' + escHTML(args) + '</span>' +
+      policyTag +
+    '</div>';
+}
+
+// ─────────── Drill-down ───────────
+async function openDrill(alertId) {
+  const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === String(alertId));
+  if (!a) return;
+  state.selectedAlertId = pick(a, 'id', 'ID');
+  renderAlertList();
+  const execId = pick(a, 'exec_id', 'ExecID');
+  await renderDrill(a, execId);
+}
+
+async function openDrillByExec(execId) {
+  if (!execId || execId === 'undefined') return;
+  const a = state.alerts.find(x => pick(x, 'exec_id', 'ExecID') === execId);
+  await renderDrill(a, execId);
+}
+
+async function renderDrill(a, execId) {
+  $('drillBackdrop').classList.remove('hidden');
+  $('drillPanel').classList.add('open');
+
+  const sev = a ? sevOf(a) : 'info';
+  $('drillSev').className = 'sev-tag ' + sev + ' mb-2';
+  $('drillSev').textContent = sev;
+  $('drillTitle').textContent = a ? pick(a, 'title', 'Title') : ('Process ' + execId);
+  $('drillMeta').textContent = a
+    ? (fmtTime(pick(a, 'timestamp', 'Timestamp')) + ' · ' + pick(a, 'description', 'Description'))
+    : ('exec_id: ' + execId);
+  $('drillScore').textContent = a ? (pick(a, 'score', 'Score') || '—') : '—';
+
+  $('drillTree').innerHTML = '<div class="text-soc-mute text-[11px]">loading…</div>';
+  $('drillTimeline').innerHTML = '';
+  $('drillIOC').innerHTML = '';
+  $('drillStory').textContent = '…';
+  $('drillEvents').textContent = '…';
+  $('drillDepth').textContent = '…';
+
+  // Replay state reset
+  stopReplay();
+  $('replayControls').classList.add('hidden');
+
+  // Sync action buttons + notes textarea with this alert's state
+  const id = a ? pick(a, 'id', 'ID') : null;
+  if (id != null) {
+    const isPinned = state.pinnedAlertIds.has(String(id));
+    const ack = ackStateOf(a);
+    $('drillPin').textContent = isPinned ? '★ Unpin' : '★ Pin';
+    $('drillAck').textContent = ack === 'ack' ? 'Reopen' : 'Acknowledge';
+    $('drillResolve').textContent = ack === 'resolved' ? 'Reopen' : 'Resolve';
+    $('drillPin').onclick      = () => togglePin(id);
+    $('drillAck').onclick      = () => setAckState(id, ack === 'ack' ? 'new' : 'ack');
+    $('drillResolve').onclick  = () => setAckState(id, ack === 'resolved' ? 'new' : 'resolved');
+    $('drillCopyId').onclick   = () => navigator.clipboard.writeText(execId || '');
+    $('drillFilterProc').onclick = () => {
+      const bin = execIdToBin(execId);
+      if (bin) toggleProcFilter(bin);
+    };
+    $('drillNotes').value = state.alertNotes[id] || '';
+    $('drillNotes').oninput = (e) => saveNote(id, e.target.value);
+  }
+
+  if (!execId) {
+    $('drillTree').innerHTML = '<div class="text-soc-mute">no exec_id on this alert</div>';
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/process/' + encodeURIComponent(execId));
+    const data = await res.json();
+    const chain = data.chain || [];
+    const events = data.events || [];
+
+    $('drillEvents').textContent = events.length;
+    $('drillDepth').textContent = chain.length;
+
+    // Process tree
+    $('drillTree').innerHTML = chain.length
+      ? chain.map((n, i) => treeNodeHTML(n, i)).join('')
+      : '<div class="text-soc-mute">no chain reconstructed</div>';
+
+    // Story
+    $('drillStory').textContent = composeStory(a, chain, events);
+
+    // Timeline (sorted ASC for replay; events arrive newest-first from API)
+    const sorted = events.slice().sort((x, y) =>
+      new Date(pick(x, 'timestamp', 'Timestamp')).getTime() - new Date(pick(y, 'timestamp', 'Timestamp')).getTime()
+    );
+    state._replayEvents = sorted;
+    $('drillTimeline').innerHTML = sorted.slice(0, 30).map((e, i) =>
+      '<div class="flex items-baseline gap-2 replay-evt" data-replay-idx="' + i + '">' +
+        '<span class="text-soc-mute whitespace-nowrap">' + fmtTime(pick(e, 'timestamp', 'Timestamp')) + '</span>' +
+        '<span class="text-soc-accent">' + escHTML(pick(e, 'event_type', 'EventType')) + '</span>' +
+        (pick(e, 'policy_name', 'PolicyName') ? '<span class="text-[10px] px-1 py-0.5 rounded bg-soc-panel2 text-soc-dim">' + escHTML(pick(e, 'policy_name', 'PolicyName')) + '</span>' : '') +
+        '<span class="text-soc-text truncate">' + escHTML(pick(e, 'args', 'Args')) + '</span>' +
+      '</div>'
+    ).join('') || '<div class="text-soc-mute">no events</div>';
+    if (sorted.length > 1) $('replayControls').classList.remove('hidden');
+
+    // IOCs
+    const iocs = extractIOCs(events);
+    $('drillIOC').innerHTML = iocs.length
+      ? iocs.map(i => '<div><span class="text-soc-mute">' + i.kind + '</span> <span class="text-soc-text">' + escHTML(i.val) + '</span></div>').join('')
+      : '<div class="text-soc-mute">no indicators detected</div>';
+  } catch (err) {
+    $('drillTree').innerHTML = '<div class="text-rose-400">failed to load: ' + escHTML(String(err)) + '</div>';
+  }
+}
+
+function treeNodeHTML(n, i) {
+  const bin = pick(n, 'binary', 'Binary');
+  const args = pick(n, 'args', 'Args');
+  const pid = pick(n, 'pid', 'PID');
+  const uid = pick(n, 'uid', 'UID');
+  const score = pick(n, 'score', 'Score') || 0;
+  const cls = score >= 50 ? 'score-crit' : score >= 20 ? 'score-high' : score >= 5 ? 'score-med' : '';
+  return '' +
+    '<div class="ptree-node ' + cls + ' py-2">' +
+      '<div class="flex items-center gap-2">' +
+        '<span class="font-mono text-soc-text">' + escHTML(bin) + '</span>' +
+        (args ? '<span class="font-mono text-soc-dim truncate">' + escHTML(args) + '</span>' : '') +
+      '</div>' +
+      '<div class="text-[10px] text-soc-mute font-mono mt-0.5">' +
+        'pid=' + pid + ' · uid=' + uid + (score ? ' · score=' + score : '') +
+      '</div>' +
+    '</div>';
+}
+
+function extractIOCs(events) {
+  const ioc = [];
+  const seen = new Set();
+  for (const e of events) {
+    const policy = pick(e, 'policy_name', 'PolicyName');
+    const args = String(pick(e, 'args', 'Args') || '');
+    if (policy === 'sensitive-file-access') {
+      const m = args.match(/(\/[^\s]+)/);
+      if (m && !seen.has('file:'+m[1])) { ioc.push({ kind: 'file', val: m[1] }); seen.add('file:'+m[1]); }
+    } else if (policy === 'outbound-connections') {
+      const m = args.match(/(\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?)/);
+      if (m && !seen.has('net:'+m[1])) { ioc.push({ kind: 'net', val: m[1] }); seen.add('net:'+m[1]); }
+    }
+    const bin = pick(e, 'binary', 'Binary');
+    if (bin && !seen.has('proc:'+bin)) { ioc.push({ kind: 'proc', val: bin }); seen.add('proc:'+bin); }
+  }
+  return ioc.slice(0, 12);
+}
+
+function composeStory(alert, chain, events) {
+  if (!chain.length) return 'Insufficient data to reconstruct the chain.';
+  const root = chain[0];
+  const leaf = chain[chain.length - 1];
+  const rootBin = pick(root, 'binary', 'Binary') || 'unknown';
+  const leafBin = pick(leaf, 'binary', 'Binary') || rootBin;
+  const uid = pick(leaf, 'uid', 'UID');
+  const policiesHit = [...new Set(events.map(e => pick(e, 'policy_name', 'PolicyName')).filter(Boolean))];
+  const score = alert ? pick(alert, 'score', 'Score') : pick(leaf, 'score', 'Score');
+
+  const techniques = policiesHit.map(p => MITRE[p]).filter(Boolean);
+  const techStr = techniques.map(t => t.id + ' ' + t.tactic).join(', ');
+
+  let story = 'A ' + (chain.length > 1 ? chain.length + '-process chain' : 'process') + ' starting from ' + rootBin;
+  if (chain.length > 1) story += ' descended into ' + leafBin;
+  if (uid === 0) story += ', running as root,';
+  story += ' triggered ' + events.length + ' kernel event' + (events.length === 1 ? '' : 's') + '.';
+  if (techniques.length) story += ' Mapped to MITRE ' + techStr + '.';
+  if (score) story += ' Aggregate suspicion score: ' + score + '.';
+  return story;
+}
+
+function closeDrill() {
+  $('drillPanel').classList.remove('open');
+  $('drillBackdrop').classList.add('hidden');
+  state.selectedAlertId = null;
+  renderAlertList();
+}
+
+// ─────────── Wiring ───────────
+function wire() {
+  // Severity filter pills
+  document.querySelectorAll('.sev-filter').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const s = btn.dataset.sev;
+      if (state.selectedSeverities.has(s)) {
+        if (state.selectedSeverities.size === 1) return;  // don't unselect last
+        state.selectedSeverities.delete(s);
+        btn.style.opacity = '0.35';
+      } else {
+        state.selectedSeverities.add(s);
+        btn.style.opacity = '1';
+      }
+      renderAlertList();
+    });
+  });
+
+  // Time range
+  document.querySelectorAll('#rangeSelect button').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('#rangeSelect button').forEach(b => {
+        b.classList.remove('bg-soc-panel2', 'text-soc-accent');
+      });
+      btn.classList.add('bg-soc-panel2', 'text-soc-accent');
+      state.rangeMin = parseInt(btn.dataset.range, 10);
+      renderKPIs(); renderTimeline(); renderMitre();
+    });
+  });
+
+  // Search
+  $('searchInput').addEventListener('input', (e) => {
+    state.search = e.target.value;
+    renderAlertList();
+  });
+
+  // Triage filter controls
+  $('filterUnack').addEventListener('change', (e) => {
+    state.filterUnack = e.target.checked;
+    renderAlertList();
+  });
+  $('groupToggle').addEventListener('change', (e) => {
+    state.groupAlerts = e.target.checked;
+    renderAlertList();
+  });
+  // Sidebar toggle
+  $('sidebarToggle').addEventListener('click', () => {
+    document.body.classList.toggle('sidebar-open');
+    lsSet('soc.sidebarOpen', document.body.classList.contains('sidebar-open'));
+  });
+  if (lsGet('soc.sidebarOpen', false)) document.body.classList.add('sidebar-open');
+
+  // Sidebar items (replacing the previous header buttons)
+  $('sbBell').addEventListener('click', toggleNotifications);
+  $('sbExport').addEventListener('click', exportJSON);
+  $('sbHelp').addEventListener('click', showHelp);
+  $('sbPolicies').addEventListener('click', showPoliciesModal);
+  $('sbAttacks').addEventListener('click', showAttacksModal);
+  $('sbGraph').addEventListener('click', showGraphModal);
+  $('sbSim').addEventListener('click', showSimModal);
+  $('sbMitre').addEventListener('click', showMitreNavigator);
+  $('sbHoneypots').addEventListener('click', showHoneypotsPanel);
+  $('sbKprobes').addEventListener('click', showKprobesPanel);
+  $('sbPalette').addEventListener('click', openPalette);
+  $('sbWatchlist').addEventListener('click', showWatchlistModal);
+  $('sbTimeMachine').addEventListener('click', showTimeMachine);
+
+  $('replayPlay').addEventListener('click', startReplay);
+  $('replayStop').addEventListener('click', stopReplay);
+
+  // Risk gauge → breakdown popover
+  $('riskGauge').addEventListener('click', (e) => {
+    if ($('riskPopover').classList.contains('hidden')) showRiskBreakdown(e);
+    else closeRiskBreakdown();
+  });
+
+  // Sort buttons
+  document.querySelectorAll('.sort-btn').forEach(b => {
+    b.addEventListener('click', () => setSort(b.dataset.sort));
+  });
+
+  // Bulk action bar
+  $('bulkAck').addEventListener('click',     bulkAck);
+  $('bulkResolve').addEventListener('click', bulkResolve);
+  $('bulkExport').addEventListener('click',  bulkExport);
+  $('bulkClear').addEventListener('click',   clearSelection);
+
+  // Saved views menu
+  $('viewsBtn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    $('viewsMenu').classList.toggle('hidden');
+  });
+
+  // Live stream regex filter (debounced)
+  let streamFilterTimer = null;
+  $('streamFilter').addEventListener('input', (e) => {
+    clearTimeout(streamFilterTimer);
+    streamFilterTimer = setTimeout(() => {
+      state.streamRegex = e.target.value;
+      renderEventStream();
+    }, 200);
+  });
+
+  // Dismiss popovers / menus on outside click
+  document.addEventListener('click', (e) => {
+    if (!e.target.closest('#ctxMenu'))     closeContextMenu();
+    if (!e.target.closest('#riskPopover') && !e.target.closest('#riskGauge')) closeRiskBreakdown();
+    if (!e.target.closest('#viewsMenu')    && !e.target.closest('#viewsBtn')) {
+      $('viewsMenu').classList.add('hidden');
+    }
+  });
+
+  // Cmd+K / Ctrl+K → palette (works regardless of focus)
+  document.addEventListener('keydown', (e) => {
+    if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+      e.preventDefault();
+      if ($('paletteModal').classList.contains('open')) closePalette();
+      else openPalette();
+      return;
+    }
+  });
+
+  // Palette input handlers
+  $('paletteInput').addEventListener('input', () => { paletteIdx = 0; renderPaletteResults(); });
+  $('paletteInput').addEventListener('keydown', (e) => {
+    const n = (state._paletteList || []).length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); paletteIdx = (paletteIdx + 1) % Math.max(1, n); renderPaletteResults(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); paletteIdx = (paletteIdx - 1 + n) % Math.max(1, n); renderPaletteResults(); }
+    else if (e.key === 'Enter')   { e.preventDefault(); runSelectedPalette(); }
+  });
+
+  // Global keyboard shortcuts
+  document.addEventListener('keydown', (e) => {
+    const inField = document.activeElement === $('searchInput');
+    if (e.key === '/' && !inField) {
+      e.preventDefault(); $('searchInput').focus(); return;
+    }
+    if (e.key === 'Escape') {
+      if (!$('ctxMenu').classList.contains('hidden'))     { closeContextMenu(); return; }
+      if (!$('riskPopover').classList.contains('hidden')) { closeRiskBreakdown(); return; }
+      if (!$('viewsMenu').classList.contains('hidden'))   { $('viewsMenu').classList.add('hidden'); return; }
+      if (state.selectedSet.size > 0) { clearSelection(); return; }
+      if ($('policiesModal').classList.contains('open')) { closePoliciesModal(); return; }
+      if ($('attacksModal').classList.contains('open'))  { closeAttacksModal(); return; }
+      if ($('graphModal').classList.contains('open'))    { closeGraphModal(); return; }
+      if ($('simModal').classList.contains('open'))      { closeSimModal(); return; }
+      if ($('mitreModal').classList.contains('open'))    { closeMitreNavigator(); return; }
+      if ($('watchlistModal').classList.contains('open')){ closeWatchlistModal(); return; }
+      if ($('honeypotsModal').classList.contains('open')){ closeHoneypotsPanel(); return; }
+      if ($('kprobesModal').classList.contains('open'))  { closeKprobesPanel(); return; }
+      if ($('timeMachineModal').classList.contains('open')) { closeTimeMachine(); return; }
+      if ($('paletteModal').classList.contains('open'))  { closePalette(); return; }
+      if ($('helpModal').classList.contains('open')) { closeHelp(); return; }
+      if ($('drillPanel').classList.contains('open')) { closeDrill(); return; }
+      if (state.timelineFilterMin != null || state.timelineRange != null
+          || state.mitreFilter || state.iocFilter || state.procFilter) {
+        clearAllFilters();
+        return;
+      }
+      $('searchInput').blur();
+      return;
+    }
+    if (inField) return;  // remaining shortcuts are blocked while typing
+    // Modifiers off
+    if (e.ctrlKey || e.metaKey || e.altKey) return;
+
+    switch (e.key) {
+      case '?': e.preventDefault(); showHelp(); break;
+      case 'j': e.preventDefault(); navigateAlerts(+1); break;
+      case 'k': e.preventDefault(); navigateAlerts(-1); break;
+      case 'Enter':
+        if (state._displayOrder && state.selectedAlertIdx >= 0) {
+          const id = state._displayOrder[state.selectedAlertIdx];
+          if (id != null) openDrill(String(id));
+        }
+        break;
+      case 'a': if (state.selectedAlertId != null) setAckState(state.selectedAlertId, 'ack'); break;
+      case 'r': if (state.selectedAlertId != null) setAckState(state.selectedAlertId, 'resolved'); break;
+      case 'c': $('alertClear').click(); break;
+      case 'e': e.preventDefault(); exportJSON(); break;
+      case 'g':
+        $('groupToggle').checked = !$('groupToggle').checked;
+        $('groupToggle').dispatchEvent(new Event('change'));
+        break;
+      case 'n': toggleNotifications(); break;
+    }
+  });
+
+  function navigateAlerts(delta) {
+    const order = state._displayOrder || [];
+    if (!order.length) return;
+    let idx = state.selectedAlertIdx;
+    if (idx < 0) idx = (delta > 0 ? -1 : order.length);
+    idx = Math.max(0, Math.min(order.length - 1, idx + delta));
+    state.selectedAlertIdx = idx;
+    state.selectedAlertId = order[idx];
+    renderAlertList();
+    // Scroll selected into view
+    const node = document.querySelector('[data-alert-id="' + state.selectedAlertId + '"]');
+    if (node) node.scrollIntoView({ block: 'nearest' });
+  }
+
+  // Stream controls
+  $('filterNoise').addEventListener('change', (e) => {
+    state.filterNoise = e.target.checked;
+    renderEventStream(); renderIOCs();
+  });
+  $('streamPause').addEventListener('change', (e) => {
+    state.streamPaused = e.target.checked;
+  });
+  $('streamClear').addEventListener('click', () => {
+    // Only clear the visible buffer; keep state.events for stats/IOCs.
+    // Mark the high-water ID so reconnect-refresh won't replay them.
+    const maxId = state.liveEvents.reduce((m, e) => Math.max(m, pick(e, 'id', 'ID') || 0), 0);
+    state.eventClearMark = Math.max(state.eventClearMark, maxId);
+    state.liveEvents = [];
+    renderEventStream();
+  });
+  $('alertClear').addEventListener('click', () => {
+    const maxId = state.alerts.reduce((m, a) => Math.max(m, pick(a, 'id', 'ID') || 0), 0);
+    state.alertClearMark = Math.max(state.alertClearMark, maxId);
+    state.alerts = [];
+    state.selectedAlertId = null;
+    renderAlertList();
+    renderKPIs();
+    renderTimeline();
+    renderMitre();
+    renderTopProcs();
+  });
+}
+
+// ─────────── Boot ───────────
+wire();
+// Sync persisted notification state into the sidebar bell.
+$('sbBell').classList.toggle('bell-on', state.notificationsEnabled);
+$('sbBell').title = state.notificationsEnabled
+  ? 'Notifications ON  (n) — fire when tab unfocused'
+  : 'Notifications OFF  (n)';
+loadInitial().then(connectStream);
+setInterval(() => { renderTimeline(); renderKPIs(); renderTopProcs(); renderIOCs(); renderNetwork(); }, 5000);
+</script>
+</body>
+</html>

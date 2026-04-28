@@ -1,0 +1,286 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# eBPF Threat Observability PoC — .gitignore
+# ─────────────────────────────────────────────────────────────────────────────
+# Organized by category. Leading-slash patterns are anchored to the repo root;
+# un-anchored patterns match anywhere in the tree.
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 1. Build artifacts                                                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# Native + cross-compiled engine binaries (`make build`, `make build-linux`)
+/engine/engine
+/engine/engine-linux-*
+/engine/engine-darwin-*
+/engine/engine-windows-*
+/engine/engine.exe
+*.exe
+
+# Bundles produced by `make tarball`
+/ebpf-poc-*.tar.gz
+/ebpf-poc-*.tar
+/dist/
+/out/
+/build/
+/bin/
+
+# Go test, coverage, profile output
+*.test
+*.out
+*.prof
+*.cover
+coverage.txt
+coverage.html
+profile.out
+
+# Go workspace state — usually ad-hoc; commit only intentionally
+go.work
+go.work.sum
+
+# Vendored deps (uncomment if your team commits a vendor/ tree)
+# /engine/vendor/
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 2. Local databases & runtime state                                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# SQLite from -fake mode, tests, and stray local runs
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-*
+/fake-events.db
+/events.db
+
+# Anything written under a /var/* in the repo root by accident
+/var/
+
+# Honeypot dirs if seeded under the repo by mistake
+/honey/
+/honeypots/
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 3. Engine runtime logs                                                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+*.log
+/logs/
+engine.log
+ebpf-engine.log
+attack-run.log
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 4. Secrets & credentials — NEVER commit                                    ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# Environment files
+.env
+.env.*
+!.env.example
+!.env.template
+
+# Generic key & cert material
+*.pem
+*.key
+*.p12
+*.pfx
+*.cer
+*.crt
+*.csr
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+*.ppk
+known_hosts
+
+# Inline secrets files
+secrets.yaml
+secrets.yml
+secrets.json
+.secrets/
+.netrc
+.npmrc
+credentials
+credentials.json
+service-account*.json
+*-key.json
+*-credentials.json
+
+# Cloud provider local config
+.aws/
+.gcp/
+.azure/
+gcloud-key.json
+azure-creds.json
+
+# Terraform — state contains plaintext outputs and tokens
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+.terraform/
+.terraform.lock.hcl
+override.tf
+override.tf.json
+
+# Kubernetes / Helm — kubeconfigs and rendered charts
+*.kubeconfig
+kubeconfig
+.kube/
+charts/*/charts/
+charts/*/Chart.lock
+
+# Pulumi
+Pulumi.*.yaml
+.pulumi/
+
+# Ansible vault outputs (intentional opt-in — vaulted files belong in git)
+ansible.cfg.local
+host_vars/
+group_vars/all/vault.yml
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 5. Editor / IDE                                                            ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# JetBrains (GoLand, IntelliJ, WebStorm, PyCharm)
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# VS Code — convention: keep settings.json/extensions.json/tasks.json shared,
+# ignore everything else (per-user state, debug configs that may have secrets).
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+!.vscode/tasks.json
+!.vscode/launch.json
+
+# Vim / Neovim
+*.swp
+*.swo
+*.swn
+*~
+Session.vim
+.netrwhist
+tags
+
+# Emacs
+\#*\#
+.\#*
+.elc
+auto-save-list/
+
+# Sublime
+*.sublime-workspace
+*.sublime-project
+
+# Eclipse / Theia
+.project
+.classpath
+.settings/
+
+# Helix / Zed / nova
+.helix/
+.zed/
+.nova/
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 6. AI / coding assistants — per-user, often contains chat history          ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+.claude/
+.cursor/
+.cursorrules
+.aider*
+.windsurfrules
+.continue/
+.copilot/
+.codeium/
+.tabnine/
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 7. OS noise                                                                ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+desktop.ini
+$RECYCLE.BIN/
+*.stackdump
+
+# Linux
+.directory
+.Trash-*
+.nfs*
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 8. Editor / temp / merge artifacts                                         ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+*.tmp
+*.temp
+*.bak
+*.orig
+*.rej
+*.diff
+*.patch
+.~lock.*
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 9. Node / web tooling (future-proofing — not currently used)              ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+node_modules/
+.npm/
+.yarn/cache/
+.yarn/build-state.yml
+.yarn/install-state.gz
+.pnp.*
+.pnpm-store/
+.next/
+.nuxt/
+.cache/
+.parcel-cache/
+.svelte-kit/
+.turbo/
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 10. Docker / container artifacts                                           ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+.docker/
+docker-compose.override.yml
+docker-compose.override.yaml
+*.dockerignore.local
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 11. Forensic / scratch                                                     ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+*.pcap
+*.pcapng
+*.dmp
+*.core
+core.*
+scratch/
+sandbox/
+TODO.local
+TODO.md.local
+NOTES.local
+NOTES.md.local
+
+# ╔═══════════════════════════════════════════════════════════════════════════╗
+# ║ 12. Local override files                                                   ║
+# ╚═══════════════════════════════════════════════════════════════════════════╝
+# Convention: any file ending in `.local` is per-developer override.
+*.local
+!*.local.example

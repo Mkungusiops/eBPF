@@ -1,0 +1,26 @@
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "outbound-connections"
+spec:
+  kprobes:
+    - call: "tcp_connect"
+      syscall: false
+      args:
+        - index: 0
+          type: "sock"
+      selectors:
+        - matchBinaries:
+            - operator: "In"
+              values:
+                - "/usr/bin/bash"
+                - "/bin/bash"
+                - "/usr/bin/sh"
+                - "/bin/sh"
+                - "/usr/bin/zsh"
+                - "/usr/bin/dash"
+                - "/usr/bin/nc"
+                - "/usr/bin/ncat"
+                - "/usr/bin/socat"
+          matchActions:
+            - action: Post

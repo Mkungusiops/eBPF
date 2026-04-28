@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>eBPF SOC — Sign in</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root {
+    --bg: #070b14;
+    --panel: rgba(15, 23, 42, 0.65);
+    --line: rgba(31, 42, 68, 0.9);
+    --text: #e2e8f0;
+    --dim:  #94a3b8;
+    --mute: #64748b;
+    --accent: #22d3ee;
+    --crit:   #f43f5e;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    color: var(--text);
+    background:
+      radial-gradient(60% 40% at 80% -10%, rgba(34,211,238,0.08), transparent 60%),
+      radial-gradient(60% 50% at -10% 10%, rgba(244,63,94,0.06), transparent 60%),
+      var(--bg);
+    display: flex; align-items: center; justify-content: center;
+    padding: 24px;
+  }
+
+  .card {
+    width: 100%; max-width: 420px;
+    background: var(--panel);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 28px 28px 24px;
+    box-shadow: 0 20px 60px -10px rgba(0,0,0,0.6);
+  }
+
+  .brand {
+    display: flex; align-items: center; gap: 12px;
+    padding-bottom: 18px; margin-bottom: 22px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand h1 {
+    margin: 0; font-size: 14px; letter-spacing: 0.04em;
+  }
+  .brand p {
+    margin: 0; font-size: 10px; letter-spacing: 0.18em; color: var(--mute);
+    text-transform: uppercase;
+  }
+
+  h2 {
+    margin: 0 0 4px; font-size: 18px; font-weight: 600;
+  }
+  .sub {
+    margin: 0 0 20px; font-size: 12px; color: var(--dim);
+  }
+
+  label {
+    display: block; font-size: 10px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--mute);
+    margin-bottom: 6px;
+  }
+  input[type="text"], input[type="password"] {
+    width: 100%;
+    background: rgba(15,23,42,0.8);
+    border: 1px solid var(--line);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 10px 12px;
+    font-size: 14px;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    outline: none;
+    transition: border-color 120ms ease, box-shadow 120ms ease;
+  }
+  input:focus {
+    border-color: rgba(34,211,238,0.5);
+    box-shadow: 0 0 0 3px rgba(34,211,238,0.12);
+  }
+  .row { margin-bottom: 14px; }
+
+  button[type="submit"] {
+    width: 100%;
+    background: linear-gradient(180deg, rgba(34,211,238,0.95), rgba(34,211,238,0.75));
+    color: #0a0f1c; border: 0; border-radius: 6px;
+    padding: 11px 12px;
+    font-size: 13px; font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: transform 80ms ease, box-shadow 120ms ease;
+  }
+  button[type="submit"]:hover { box-shadow: 0 0 22px -4px rgba(34,211,238,0.6); }
+  button[type="submit"]:active { transform: translateY(1px); }
+
+  .err {
+    background: rgba(244,63,94,0.12);
+    color: #fda4af;
+    border: 1px solid rgba(244,63,94,0.4);
+    padding: 8px 12px; border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 14px;
+  }
+
+  .footer {
+    margin-top: 18px; padding-top: 14px;
+    border-top: 1px solid var(--line);
+    font-size: 11px; color: var(--mute);
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .footer code {
+    font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+    color: var(--dim);
+  }
+
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: rgba(16,185,129,0.12);
+    color: #6ee7b7;
+    border: 1px solid rgba(16,185,129,0.4);
+    padding: 2px 8px; border-radius: 4px;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .dot {
+    width: 6px; height: 6px; border-radius: 9999px; background: #10b981;
+    box-shadow: 0 0 6px #10b981;
+  }
+</style>
+</head>
+<body>
+
+<div class="card">
+  <div class="brand">
+    <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
+      <path d="M16 2 L29 9.5 V22.5 L16 30 L3 22.5 V9.5 Z" stroke="#22d3ee" stroke-width="1.4" fill="rgba(34,211,238,0.06)"/>
+      <path d="M16 8 L23 12 V20 L16 24 L9 20 V12 Z" stroke="#22d3ee" stroke-width="1.2" fill="none"/>
+      <circle cx="16" cy="16" r="2" fill="#22d3ee"/>
+    </svg>
+    <div>
+      <h1>eBPF SOC</h1>
+      <p>Threat Intelligence</p>
+    </div>
+    <span class="pill" style="margin-left:auto"><span class="dot"></span>Online</span>
+  </div>
+
+  <h2>Sign in</h2>
+  <p class="sub">Authentication is required to view the dashboard.</p>
+
+  <!--ERR-->
+
+  <form method="POST" action="/api/login" autocomplete="off">
+    <div class="row">
+      <label for="user">User</label>
+      <input id="user" name="user" type="text" autocomplete="username" required autofocus value="">
+    </div>
+    <div class="row">
+      <label for="pass">Password</label>
+      <input id="pass" name="pass" type="password" autocomplete="current-password" required>
+    </div>
+    <button type="submit">Sign in</button>
+  </form>
+
+  <div class="footer">
+    <span>Default credentials</span>
+    <code>admin / ebpf-soc-demo</code>
+  </div>
+</div>
+
+</body>
+</html>
