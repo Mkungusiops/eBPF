@@ -3,19 +3,59 @@
 <head>
 <meta charset="utf-8">
 <title>eBPF SOC — Sign in</title>
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link id="appFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {
     --bg: #070b14;
     --panel: rgba(15, 23, 42, 0.65);
+    --input-bg: rgba(15, 23, 42, 0.8);
     --line: rgba(31, 42, 68, 0.9);
     --text: #e2e8f0;
     --dim:  #94a3b8;
     --mute: #64748b;
     --accent: #22d3ee;
     --crit:   #f43f5e;
+    --btn-text: #0a0f1c;
+    --shadow:  rgba(0,0,0,0.6);
   }
+  body.theme-light {
+    --bg: #f1f5f9;
+    --panel: rgba(255, 255, 255, 0.92);
+    --input-bg: rgba(255, 255, 255, 0.95);
+    --line: rgba(203, 213, 225, 0.95);
+    --text: #0f172a;
+    --dim:  #475569;
+    --mute: #64748b;
+    --accent: #0891b2;
+    --btn-text: #ffffff;
+    --shadow: rgba(15,23,42,0.18);
+  }
+  body.theme-light input[type="text"],
+  body.theme-light input[type="password"] { box-shadow: inset 0 1px 0 rgba(15,23,42,0.04); }
+  body.theme-light button[type="submit"] {
+    background: linear-gradient(180deg, #0891b2, #0e7490);
+  }
+  .theme-toggle {
+    position: fixed; top: 16px; right: 16px;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 999px; padding: 8px 14px;
+    color: var(--text); font-weight: 600; font-size: 11px;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    cursor: pointer;
+    transition: color 120ms ease, border-color 120ms ease, background 120ms ease, transform 80ms ease;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+    box-shadow: 0 4px 14px -6px var(--shadow);
+  }
+  .theme-toggle:hover {
+    color: var(--accent);
+    border-color: var(--accent);
+    transform: translateY(-1px);
+  }
+  body.theme-light .theme-toggle { background: #ffffff; }
   * { box-sizing: border-box; }
   html, body { height: 100%; margin: 0; }
   body {
@@ -27,6 +67,13 @@
       var(--bg);
     display: flex; align-items: center; justify-content: center;
     padding: 24px;
+    transition: background-color 200ms ease, color 200ms ease;
+  }
+  body.theme-light {
+    background:
+      radial-gradient(60% 40% at 80% -10%, rgba(8,145,178,0.10), transparent 60%),
+      radial-gradient(60% 50% at -10% 10%, rgba(244,63,94,0.07), transparent 60%),
+      var(--bg);
   }
 
   .card {
@@ -67,7 +114,7 @@
   }
   input[type="text"], input[type="password"] {
     width: 100%;
-    background: rgba(15,23,42,0.8);
+    background: var(--input-bg);
     border: 1px solid var(--line);
     color: var(--text);
     border-radius: 6px;
@@ -86,7 +133,7 @@
   button[type="submit"] {
     width: 100%;
     background: linear-gradient(180deg, rgba(34,211,238,0.95), rgba(34,211,238,0.75));
-    color: #0a0f1c; border: 0; border-radius: 6px;
+    color: var(--btn-text); border: 0; border-radius: 6px;
     padding: 11px 12px;
     font-size: 13px; font-weight: 600;
     letter-spacing: 0.04em;
@@ -133,6 +180,12 @@
 </head>
 <body>
 
+<button id="themeToggle" class="theme-toggle" type="button" title="Toggle dark / light">
+  <svg id="themeIconDark"  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+  <svg id="themeIconLight" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1"  x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1"  y1="12" x2="3"  y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64"  x2="19.78" y2="4.22"/></svg>
+  <span id="themeLabel">Dark</span>
+</button>
+
 <div class="card">
   <div class="brand">
     <svg width="28" height="28" viewBox="0 0 32 32" fill="none">
@@ -170,5 +223,32 @@
   </div>
 </div>
 
+<script>
+  // Read the same localStorage key the dashboard uses so theme stays
+  // consistent across login → dashboard transitions.
+  (function () {
+    function lsGet(k, d) {
+      try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; }
+    }
+    function lsSet(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+    function applyTheme(t) {
+      var isLight = t === 'light';
+      document.body.classList.toggle('theme-light', isLight);
+      var d = document.getElementById('themeIconDark');
+      var l = document.getElementById('themeIconLight');
+      if (d) d.style.display = isLight ? 'none'   : 'inline';
+      if (l) l.style.display = isLight ? 'inline' : 'none';
+      var lbl = document.getElementById('themeLabel');
+      if (lbl) lbl.textContent = isLight ? 'Light' : 'Dark';
+      var fav = document.getElementById('appFavicon');
+      if (fav) fav.href = isLight ? '/favicon-light.svg' : '/favicon.svg';
+      lsSet('soc.theme', t);
+    }
+    applyTheme(lsGet('soc.theme', 'dark'));
+    document.getElementById('themeToggle').addEventListener('click', function () {
+      applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
+    });
+  })();
+</script>
 </body>
 </html>

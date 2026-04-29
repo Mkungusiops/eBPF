@@ -67,11 +67,17 @@ via gRPC. We pin to **`quay.io/cilium/tetragon:v1.6.1`** because the
 
 Three policies are loaded in [policies/](../policies):
 
-| Policy                  | Kprobe                  | What it catches                                                     | MITRE          |
-|-------------------------|-------------------------|---------------------------------------------------------------------|----------------|
-| `outbound-connections`  | `tcp_connect`           | TCP connect from `bash`/`sh`/`nc`/`socat` (shells calling out)      | T1071 C2       |
-| `privilege-escalation`  | (setuid hooks)          | `setuid(0)`, sudo to root                                           | T1548 PrivEsc  |
-| `sensitive-file-access` | `security_file_permission` | Reads/writes of `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/` | T1003 CredAccess |
+| Policy                  | Kprobe                     | What it catches                                                     | MITRE              |
+|-------------------------|----------------------------|---------------------------------------------------------------------|--------------------|
+| `outbound-connections`  | `tcp_connect`              | TCP connect from `bash`/`sh`/`nc`/`socat` (shells calling out)      | T1071 C2           |
+| `privilege-escalation`  | (setuid hooks)             | `setuid(0)`, sudo to root                                           | T1548 PrivEsc      |
+| `sensitive-file-access` | `security_file_permission` | Reads/writes of `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/`, **`/var/lib/ebpf-engine/honey/`** | T1003 CredAccess + honeypot |
+
+The honeypot prefix is the directory the engine seeds with five decoy
+credential-style files on startup ([honeypots.go](../engine/internal/api/honeypots.go)).
+Because no legitimate process should ever read those files, **any hit
+under that prefix is a high-confidence signal** — the dashboard surfaces
+them with a 🍯 *honey* badge alongside the regular severity.
 
 `process_exec` events are emitted for **every** `execve` for free —
 they're the spine of the process tree.
@@ -177,22 +183,41 @@ how to wire this through systemd and an environment file.
 
 ## HTTP API surface
 
-| Method | Path                       | Auth | Returns                                          |
-|--------|----------------------------|------|--------------------------------------------------|
-| GET    | `/`                        | yes  | the dashboard HTML                               |
-| GET    | `/login`                   | no   | login page                                       |
-| POST   | `/api/login`               | no   | sets `soc_session` cookie + 303 → `/`            |
-| GET    | `/api/logout`              | no¹  | clears cookie + 303 → `/login`                   |
-| GET    | `/api/whoami`              | yes  | `{"user":"admin"}`                               |
-| GET    | `/api/events`              | yes  | last 200 events                                  |
-| GET    | `/api/alerts`              | yes  | last 100 alerts                                  |
-| GET    | `/api/process/<exec_id>`   | yes  | `{chain, events}` for a given exec_id            |
-| GET    | `/api/stream`              | yes  | SSE: `data: {"type":"alert"\|"event", ...}`      |
-| GET    | `/favicon.svg`             | no   | the icon (also served at `/favicon.ico`)         |
+| Method | Path                       | Auth | Returns                                                                |
+|--------|----------------------------|------|------------------------------------------------------------------------|
+| GET    | `/`                        | yes  | the dashboard HTML                                                     |
+| GET    | `/login`                   | no   | login page                                                             |
+| POST   | `/api/login`               | no   | sets `soc_session` cookie + 303 → `/`                                  |
+| GET    | `/api/logout`              | no¹  | clears cookie + 303 → `/login`                                         |
+| GET    | `/api/whoami`              | yes  | `{"user":"admin"}`                                                     |
+| GET    | `/api/events`              | yes  | last 200 events                                                        |
+| GET    | `/api/alerts`              | yes  | last 100 alerts                                                        |
+| GET    | `/api/process/<exec_id>`   | yes  | `{chain, events}` for a given exec_id                                  |
+| GET    | `/api/stream`              | yes  | SSE: `data: {"type":"alert"\|"event", ...}`                            |
+| GET    | `/api/policies`            | yes  | the 3 TracingPolicy YAMLs (Policies viewer, needs `-policies` flag)    |
+| GET    | `/api/attacks`             | yes  | allow-listed attack scripts (Attacks panel, needs `-attacks` flag)     |
+| POST   | `/api/run-attack`          | yes  | launches `id=<allowed-script>` async; 202 on success, 429 on throttle  |
+| GET    | `/api/honeypots`           | yes  | `{prefix, files: […]}` describing the seeded decoy files               |
+| GET    | `/api/policy-stats`        | yes  | parsed `tetra tracingpolicy list` (NPOST per policy, kernel mem, mode) |
+| GET    | `/favicon.svg`             | no   | the icon (also served at `/favicon.ico`)                               |
 
 ¹ Logout is intentionally tolerant — it clears the cookie regardless of
 whether the session is currently valid, so it works for already-expired
 sessions.
+
+### Engine flags (relevant to the dashboard's tooling endpoints)
+
+| Flag         | Default                       | Effect on the dashboard                             |
+|--------------|-------------------------------|-----------------------------------------------------|
+| `-policies`  | `policies`                    | `/api/policies` reads YAMLs from this dir.          |
+| `-attacks`   | `attacks`                     | `/api/attacks` and `/api/run-attack` look here.     |
+| `-honeypots` | `/var/lib/ebpf-engine/honey`  | Decoy files seeded on startup (idempotent).         |
+| `-user`      | `admin`                       | Dashboard username.                                 |
+| `-pass`      | `ebpf-soc-demo`               | Bcrypt-hashed at startup, plaintext discarded.      |
+| `-tetragon`  | `unix:///var/run/tetragon/tetragon.sock` | gRPC socket for Tetragon's GetEvents stream. |
+| `-db`        | `events.db`                   | SQLite path. Must be **outside** any kprobe-watched path. |
+| `-http`      | `:8080`                       | HTTP listen address.                                |
+| `-fake`      | `false`                       | Synthesize events without Tetragon (UI dev mode).   |
 
 ## Event lifecycle
 

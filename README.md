@@ -16,6 +16,7 @@ and live SSE updates.
 | [docs/architecture.md](docs/architecture.md)            | How everything works, components, data flow         |
 | [docs/deploy-linux-server.md](docs/deploy-linux-server.md) | Step-by-step deploy on a fresh Linux server         |
 | [docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md) | Local Linux VM on macOS via Multipass               |
+| [docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md) | Day-to-day ops runbook once the VM is set up        |
 | [docs/build.md](docs/build.md)                          | Original 5-day build plan that produced this codebase|
 
 ## Repository layout

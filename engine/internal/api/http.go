@@ -1,6 +1,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -11,6 +13,22 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
+
+// versionSHA is a hash of the embedded HTML+favicon. It changes whenever
+// the binary is rebuilt with frontend changes — used by the dashboard's
+// version watcher to prompt a soft reload when a new version is deployed.
+var (
+	versionSHA = computeVersionSHA()
+	startedAt  = time.Now().UTC()
+)
+
+func computeVersionSHA() string {
+	h := sha256.New()
+	h.Write([]byte(indexHTML))
+	h.Write([]byte(loginHTML))
+	h.Write(faviconSVG)
+	return hex.EncodeToString(h.Sum(nil))[:12]
+}
 
 type Broadcast struct {
 	Type    string      `json:"type"`
@@ -46,6 +64,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/login", s.auth.HandleLogin)
 	mux.HandleFunc("/favicon.svg", s.handleFavicon)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	mux.HandleFunc("/favicon-light.svg", s.handleFaviconLight)
 
 	// Protected endpoints (registered raw; the global middleware enforces auth)
 	mux.HandleFunc("/", s.handleIndex)
@@ -60,6 +79,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/run-attack", s.handleAttackRun)
 	mux.HandleFunc("/api/honeypots", s.handleHoneypots)
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
+	mux.HandleFunc("/api/version", s.handleVersion)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
 	return http.ListenAndServe(addr, s.auth.Middleware(mux))
@@ -88,10 +108,29 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, indexHTML)
 }
 
+// handleVersion returns the build SHA + start time. The dashboard polls
+// this every 30s; if the SHA changes between polls, a "new version
+// deployed — reload" toast is shown so users get fresh UI without a
+// blind hard refresh.
+func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]interface{}{
+		"sha":        versionSHA,
+		"started_at": startedAt.Format(time.RFC3339),
+		"server_now": time.Now().UTC().Format(time.RFC3339),
+	})
+}
+
 func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "image/svg+xml")
 	w.Header().Set("Cache-Control", "public, max-age=86400")
 	_, _ = w.Write(faviconSVG)
+}
+
+func (s *Server) handleFaviconLight(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	_, _ = w.Write(faviconLightSVG)
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
@@ -161,7 +200,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "data: %s\n\n", data)
 			flusher.Flush()
 		case <-keepalive.C:
-			fmt.Fprint(w, ": keepalive\n\n")
+			// Send a real data: heartbeat (not a comment). EventSource
+			// fires onmessage for data: only, so this lets the client
+			// confirm liveness during quiet periods.
+			fmt.Fprint(w, "data: {\"type\":\"heartbeat\"}\n\n")
 			flusher.Flush()
 		}
 	}

@@ -191,6 +191,14 @@ These are now eBPF programs **running in the kernel**. They will fire on
 every matching syscall whether the engine is up or not. Tetragon will
 buffer events for the engine to consume.
 
+> **Note about `sensitive-file-access`:** the policy in this repo watches
+> `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/`, **and
+> `/var/lib/ebpf-engine/honey/`** — the last prefix is the honeypot
+> directory the engine seeds on startup (see §5a below). If you're
+> upgrading from an older deploy that loaded the policy without the
+> honeypot prefix, re-run `make policies-apply` after extracting the new
+> tarball so Tetragon picks up the updated YAML.
+
 ### 4a. Spot-check that a policy fires
 
 Trigger a `sensitive-file-access` event by reading `/etc/shadow`, then
@@ -222,6 +230,31 @@ sensitive-file-access kprobe and fill the DB with self-noise. The
 included policy excludes `/home/` so this isn't an issue, but pinning
 the data path to `/var/lib/` is the durable fix.
 
+### 5a. Honeypot directory (auto-seeded)
+
+The engine seeds five decoy credential-style files at
+`/var/lib/ebpf-engine/honey/` on startup:
+
+| File              | Purpose                                                 |
+|-------------------|---------------------------------------------------------|
+| `_passwd`         | decoy `/etc/passwd`-style file                          |
+| `_shadow`         | decoy credential hashes                                 |
+| `_id_rsa`         | decoy SSH private key                                   |
+| `_aws_credentials`| decoy AWS access key + secret                           |
+| `_db_backup.sql`  | decoy DB dump                                           |
+
+Because the `sensitive-file-access` policy now watches that prefix,
+**any read of these files immediately fires a `critical` alert** with a
+🍯 *honey* badge. Honeypots are the highest-signal indicator in the
+dashboard — the only legitimate caller is your own incident response
+process, so any hit is unambiguous.
+
+You don't need to create the directory manually; `EnsureHoneypots` is
+called from the engine's `main()` and creates anything missing. To
+override the location, pass `-honeypots <dir>` (see §6/§7). To disable,
+point `-honeypots /tmp/disabled-honey-dir` and remove the prefix from
+the sensitive-files YAML.
+
 ## 6. Set credentials
 
 The default credentials (`admin / ebpf-soc-demo`) are baked into the
@@ -232,16 +265,30 @@ For a quick manual run:
 
 ```bash
 sudo ./engine/engine-linux-amd64 \
-  -tetragon unix:///var/run/tetragon/tetragon.sock \
-  -db /var/lib/ebpf-engine/events.db \
-  -http :8080 \
-  -user admin \
-  -pass 'pick-something-strong'
+  -tetragon  unix:///var/run/tetragon/tetragon.sock \
+  -db        /var/lib/ebpf-engine/events.db \
+  -http      :8080 \
+  -user      admin \
+  -pass      'pick-something-strong' \
+  -policies  ~/ebpf-poc/policies \
+  -attacks   ~/ebpf-poc/attacks \
+  -honeypots /var/lib/ebpf-engine/honey
 ```
 
-Verify in the log line:
+| Flag         | Purpose                                                                    |
+|--------------|----------------------------------------------------------------------------|
+| `-tetragon`  | gRPC socket exposed by the Tetragon container                              |
+| `-db`        | SQLite path. Must be **outside** any path watched by the kprobes.          |
+| `-http`      | Listen address. Bind to `127.0.0.1:8080` if you'll front it with a proxy.  |
+| `-user`/`-pass` | Dashboard credentials (bcrypt-hashed at startup, plaintext discarded).  |
+| `-policies`  | Directory holding the TracingPolicy YAMLs. Required for the in-app **Policies** viewer panel. |
+| `-attacks`   | Directory holding the allow-listed attack scripts. Required for the **Attacks** quick-fire panel; a missing dir returns 503. |
+| `-honeypots` | Directory the engine seeds with decoy files at startup. Defaults to `/var/lib/ebpf-engine/honey`. |
+
+Verify in the log lines:
 
 ```
+honeypots: seeded at /var/lib/ebpf-engine/honey
 HTTP listening on :8080 (auth: user=admin)
 ```
 
@@ -262,7 +309,21 @@ EBPF_PASS=pick-something-strong
 EBPF_HTTP=:8080
 EBPF_DB=/var/lib/ebpf-engine/events.db
 EBPF_TETRAGON=unix:///var/run/tetragon/tetragon.sock
+EBPF_POLICIES=/opt/ebpf-poc/policies
+EBPF_ATTACKS=/opt/ebpf-poc/attacks
+EBPF_HONEYPOTS=/var/lib/ebpf-engine/honey
 EOF
+```
+
+Pin the policy and attack directories to a stable, root-owned path
+(rather than `~/ebpf-poc/...`) so the systemd-run engine can read them
+under the hardening directives below:
+
+```bash
+sudo mkdir -p /opt/ebpf-poc
+sudo cp -r ~/ebpf-poc/policies ~/ebpf-poc/attacks /opt/ebpf-poc/
+sudo chmod -R a+rX /opt/ebpf-poc
+sudo chmod a+x /opt/ebpf-poc/attacks/*.sh
 ```
 
 Place the engine binary somewhere stable:
@@ -283,11 +344,14 @@ Wants=network-online.target
 [Service]
 EnvironmentFile=/etc/ebpf-engine.env
 ExecStart=/usr/local/bin/ebpf-engine \
-  -tetragon ${EBPF_TETRAGON} \
-  -db       ${EBPF_DB} \
-  -http     ${EBPF_HTTP} \
-  -user     ${EBPF_USER} \
-  -pass     ${EBPF_PASS}
+  -tetragon  ${EBPF_TETRAGON} \
+  -db        ${EBPF_DB} \
+  -http      ${EBPF_HTTP} \
+  -user      ${EBPF_USER} \
+  -pass      ${EBPF_PASS} \
+  -policies  ${EBPF_POLICIES} \
+  -attacks   ${EBPF_ATTACKS} \
+  -honeypots ${EBPF_HONEYPOTS}
 Restart=on-failure
 RestartSec=5s
 # The engine itself doesn't need root once Tetragon owns the kprobes,
@@ -302,6 +366,8 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=read-only
 PrivateTmp=true
+# /var/lib/ebpf-engine    — DB + honey/  (engine writes both)
+# /var/log                — engine.log
 ReadWritePaths=/var/lib/ebpf-engine /var/log
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
@@ -372,6 +438,31 @@ the credentials from `/etc/ebpf-engine.env`. After login the dashboard
 KPI panels are visible and the **● connected** indicator (top-right)
 confirms SSE is wired up.
 
+### 9a-bis. Smoke-test the dashboard's tooling endpoints
+
+Confirm each sidebar tool has its server-side wiring intact. From your
+laptop, with an SSH tunnel open (`ssh -L 8080:localhost:8080 user@server`):
+
+```bash
+# Capture the session cookie once
+curl -sS -c /tmp/c.txt -o /dev/null \
+  -X POST -d "user=admin&pass=$EBPF_PASS" \
+  http://localhost:8080/api/login
+
+curl -sS -b /tmp/c.txt http://localhost:8080/api/whoami       # {"user":"admin"}
+curl -sS -b /tmp/c.txt http://localhost:8080/api/policies     # 3 entries with YAML
+curl -sS -b /tmp/c.txt http://localhost:8080/api/attacks      # 6 allow-listed scripts
+curl -sS -b /tmp/c.txt http://localhost:8080/api/honeypots    # prefix + 5 decoy files
+curl -sS -b /tmp/c.txt http://localhost:8080/api/policy-stats # NPOST counters from tetra
+```
+
+If `/api/policies` returns three rows but with empty `yaml` fields, the
+`-policies` flag points at a directory the engine can't read. If
+`/api/attacks` returns 200 but `POST /api/run-attack` returns 503, same
+thing for `-attacks`. If `/api/honeypots` returns no files, the engine
+couldn't write to `-honeypots`; check `ReadWritePaths` in the systemd
+unit.
+
 ### 9b. Drive the attack-simulation matrix
 
 Open a *second* SSH session on the server (keep the dashboard tab open
@@ -387,6 +478,10 @@ sudo bash attacks/03-reverse-shell.sh            # → medium  (bash → tcp_con
 sudo bash attacks/04-privilege-escalation.sh     # → high    (setuid(0) + root reads)
 sudo bash attacks/05-living-off-the-land.sh      # → critical (curl|sh + base64 -d)
 sudo bash attacks/06-persistence.sh              # → medium  (chmod +x + dotfile recon)
+
+# Honeypot smoke test — touching any decoy file should produce a critical
+# alert with a 🍯 honey badge in the dashboard.
+sudo cat /var/lib/ebpf-engine/honey/_id_rsa >/dev/null
 ```
 
 For each, the dashboard should within ~1 s:
@@ -461,6 +556,10 @@ execution, before the script finishes — that's the proactive value.
 | Engine kprobe counters        | `sudo docker exec tetragon tetra tracingpolicy list` (NPOST col) |
 | Engine resource usage         | `sudo systemctl status ebpf-engine`                              |
 | Free disk used by SQLite      | `sudo du -sh /var/lib/ebpf-engine`                               |
+| List honeypot files           | `ls -la /var/lib/ebpf-engine/honey/`                             |
+| Verify honeypots from API     | `curl -sS -b /tmp/c.txt http://localhost:8080/api/honeypots`     |
+| Verify kprobe perf endpoint   | `curl -sS -b /tmp/c.txt http://localhost:8080/api/policy-stats`  |
+| Re-seed missing honeypots     | `sudo systemctl restart ebpf-engine` (idempotent on startup)     |
 
 ### Upgrading the engine
 
@@ -498,8 +597,10 @@ Before treating this as anything more than a demo:
 - [ ] Backup of `/var/lib/ebpf-engine/events.db` if alert history matters
 - [ ] Monitoring of the engine systemd unit (alert on failure)
 - [ ] All six `attacks/*.sh` scripts validated and detected end-to-end
+- [ ] Honeypot smoke test passes (`cat /var/lib/ebpf-engine/honey/_id_rsa` produces a `critical` alert with a 🍯 badge)
 - [ ] Default `admin` username changed if your team policy requires it
 - [ ] Outbound network access from the host restricted to what the engine needs (Tetragon image pull only happens once)
+- [ ] `EBPF_ATTACKS` points at a stable read-only path (e.g. `/opt/ebpf-poc/attacks`) — clients can fire these scripts via the dashboard, so treat the directory contents like signed artifacts
 
 ## 12. Troubleshooting
 
@@ -549,6 +650,39 @@ The SSE connection isn't establishing. Hit `/api/whoami` and check the
 response. If 401, your session expired — log in again. If 200 but the
 dashboard still says connecting, hard-reload (`Cmd/Ctrl + Shift + R`)
 to fetch fresh JS.
+
+### Sidebar tools show empty / 503 / "ships next deploy"
+
+You're running an older binary, or the engine was started without the
+`-policies` / `-attacks` / `-honeypots` flags. Check:
+
+```bash
+# What flags is systemd actually passing?
+ps -ef | grep ebpf-engine | grep -v grep
+
+# Is the env file populated?
+cat /etc/ebpf-engine.env
+
+# Are the directories readable by the systemd-restricted unit?
+sudo -u root ls /opt/ebpf-poc/policies /opt/ebpf-poc/attacks /var/lib/ebpf-engine/honey
+```
+
+A common gotcha: `ProtectSystem=strict` in the unit file blocks writes
+outside `ReadWritePaths`. If you put the honeypot dir somewhere outside
+`/var/lib/ebpf-engine/`, add it to `ReadWritePaths`.
+
+### Honeypot accesses don't fire alerts
+
+The `sensitive-file-access` policy must include the honeypot prefix.
+Verify the loaded YAML:
+
+```bash
+sudo docker exec tetragon tetra tracingpolicy list
+# `sensitive-file-access` should show NPOST > 0 once you `cat` a decoy.
+
+# If it doesn't — the loaded policy is stale. Re-apply:
+cd ~/ebpf-poc && sudo make policies-apply
+```
 
 ## 13. Uninstall
 
