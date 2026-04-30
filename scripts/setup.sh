@@ -120,9 +120,39 @@ done
 [[ -S /var/run/tetragon/tetragon.sock ]] || fatal "tetragon socket never appeared"
 log "tetragon socket ready"
 
+# ───── cgroup v2 prep (for the Choke Gateway) ───────────────────────────────
+# The choke gateway uses cgroup v2 to enforce throttle/tarpit/quarantine
+# by moving target PIDs into per-tier cgroups with CPU + IO + pids caps.
+# Quarantine additionally raises cgroup.freeze on the cgroup, which the
+# kernel translates into a synchronous freeze of every member.
+#
+# Ubuntu 22.04+ defaults to cgroup v2 unified ("cgroupv2: hidden_dev_chk
+# is unified"). We just need the +cpu/+memory/+io/+pids controllers
+# enabled on the root's subtree_control. The engine itself recreates the
+# choke-{throttled,tarpit,quarantined} cgroups under that root on every
+# start, so this script just verifies the kernel side.
+CGROOT="/sys/fs/cgroup"
+if [[ -f "$CGROOT/cgroup.controllers" ]]; then
+  log "cgroup v2 detected at $CGROOT — controllers: $(tr ' ' ',' < "$CGROOT/cgroup.controllers")"
+  # Best-effort: enable controllers in the parent's subtree. The engine
+  # also tries this; doing it here too means a freshly-booted VM is ready
+  # without an extra restart.
+  echo "+cpu +memory +io +pids" | sudo tee "$CGROOT/cgroup.subtree_control" >/dev/null 2>&1 || true
+else
+  log "WARNING: cgroup v2 not found at $CGROOT — graduated enforcement (throttle/tarpit/quarantine) will be disabled."
+  log "         The engine will still sever (SIGKILL) and will still record decisions."
+fi
+
 log "──────────────────────────────────────────────────────────────"
 log " Day 1 done. Suggested next steps:"
-log "   make policies-apply         # apply TracingPolicies"
-log "   make build && sudo ./engine/engine"
-log "   open http://\$(hostname -I | awk '{print \$1}'):8080"
+log "   sudo make policies-apply                # apply TracingPolicies (incl. enforce/)"
+log "   sudo ./engine/engine-linux-amd64 \\"
+log "       -tetragon unix:///var/run/tetragon/tetragon.sock \\"
+log "       -policies policies \\"
+log "       -choke-policies policies/choke \\"
+log "       -enforce \\"
+log "       -http :8080"
+log ""
+log "   then open the choke console:"
+log "     http://\$(hostname -I | awk '{print \$1}'):8080/choke"
 log "──────────────────────────────────────────────────────────────"

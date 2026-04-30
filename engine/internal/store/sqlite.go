@@ -35,6 +35,7 @@ type Alert struct {
 
 type Store struct {
 	db *sql.DB
+	*decisionStore
 }
 
 func New(path string) (*Store, error) {
@@ -47,6 +48,14 @@ func New(path string) (*Store, error) {
 	if err := s.migrate(); err != nil {
 		return nil, err
 	}
+	ds := newDecisionStore(db)
+	if err := ds.migrate(); err != nil {
+		return nil, err
+	}
+	if err := ds.loadLastHash(); err != nil {
+		return nil, err
+	}
+	s.decisionStore = ds
 	return s, nil
 }
 

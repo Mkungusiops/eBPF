@@ -1,0 +1,30 @@
+# When nc/ncat/socat appear in a chain that's already crossed Tarpit (15+),
+# severely cap their network surface — these tools are rare-in-production,
+# common-in-attacks, so the bias toward false-positives is acceptable.
+apiVersion: chokegw/v1
+kind: ChokePolicy
+metadata:
+  name: network-tools-tarpit
+  description: Hard cap on netcat-family tools above tarpit threshold
+match:
+  binaries:
+    - /usr/bin/nc
+    - /usr/bin/ncat
+    - /usr/bin/socat
+    - nc
+    - ncat
+    - socat
+  states:
+    - tarpit
+    - quarantined
+    - severed
+buckets:
+  - dimension: egress.connect
+    rate_per_sec: 1
+    burst: 1
+  - dimension: egress.bytes
+    rate_per_sec: 1024     # 1 KiB/s — basically nothing
+    burst: 4096
+deny_syscalls:
+  - ptrace
+  - bpf

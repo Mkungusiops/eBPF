@@ -1,0 +1,44 @@
+# Kernel-level severance for the curl|sh / wget|sh pattern.
+#
+# This policy is a backstop independent of the userspace circuit: even if
+# the engine is down or behind, the kernel will SIGKILL any shell process
+# whose argv contains "| sh" or "| bash" alongside a fresh exec. Apply on
+# top of network-watch.yaml to convert detect-only into prevent.
+#
+# Sever rather than throttle: this is an unambiguous attack signal — a
+# real curl|sh from an admin is rare enough to justify the false positive
+# risk. Tune binaries/values for your environment if needed.
+apiVersion: cilium.io/v1alpha1
+kind: TracingPolicy
+metadata:
+  name: "sever-pipe-to-shell"
+spec:
+  kprobes:
+    - call: "__x64_sys_execve"
+      syscall: true
+      args:
+        - index: 0
+          type: "string"
+        - index: 1
+          type: "char_buf"
+          sizeArgIndex: 2
+        - index: 2
+          type: "size_t"
+      selectors:
+        - matchBinaries:
+            - operator: "In"
+              values:
+                - "/usr/bin/curl"
+                - "/usr/bin/wget"
+                - "/bin/curl"
+                - "/bin/wget"
+          matchArgs:
+            - index: 1
+              operator: "Postfix"
+              values:
+                - "| sh"
+                - "|sh"
+                - "| bash"
+                - "|bash"
+          matchActions:
+            - action: Sigkill

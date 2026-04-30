@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
@@ -39,17 +40,25 @@ type Server struct {
 	store     *store.Store
 	tree      *tree.Tree
 	broadcast <-chan Broadcast
-	auth      *Auth
+	// outbound is the writable side of the same channel — owned by main()
+	// and shared with the server so it can publish decision events back
+	// onto the bus without going through main's send() helper.
+	outbound chan<- Broadcast
+	auth     *Auth
+	// gateway is wired in after construction via SetGateway() so the HTTP
+	// listener can start before all the choke wiring has finished.
+	gateway *choke.Gateway
 
 	subsMu sync.Mutex
 	subs   map[chan Broadcast]struct{}
 }
 
-func NewServer(st *store.Store, pt *tree.Tree, broadcast <-chan Broadcast, auth *Auth) *Server {
+func NewServer(st *store.Store, pt *tree.Tree, broadcast chan Broadcast, auth *Auth) *Server {
 	return &Server{
 		store:     st,
 		tree:      pt,
 		broadcast: broadcast,
+		outbound:  broadcast,
 		auth:      auth,
 		subs:      make(map[chan Broadcast]struct{}),
 	}
@@ -80,6 +89,31 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/honeypots", s.handleHoneypots)
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
 	mux.HandleFunc("/api/version", s.handleVersion)
+	mux.HandleFunc("/api/decisions", s.handleDecisions)
+	mux.HandleFunc("/api/verify-chain", s.handleVerifyChain)
+
+	// Choke Gateway Console — separate page, separate API namespace.
+	mux.HandleFunc("/choke", s.handleChokeConsole)
+	mux.HandleFunc("/api/choke/state", s.handleChokeState)
+	mux.HandleFunc("/api/choke/circuits", s.handleChokeCircuits)
+	mux.HandleFunc("/api/choke/buckets", s.handleChokeBuckets)
+	mux.HandleFunc("/api/choke/thresholds", s.handleChokeThresholds)
+	mux.HandleFunc("/api/choke/manual", s.handleChokeManual)
+	mux.HandleFunc("/api/choke/kill-switch", s.handleChokeKillSwitch)
+	mux.HandleFunc("/api/choke/policies", s.handleChokePolicies)
+	mux.HandleFunc("/api/choke/policy/preview", s.handleChokePolicyPreview)
+	// Enterprise actions: presets, bulk, forget, thaw, annotate, snapshot, drill-in.
+	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)
+	mux.HandleFunc("/api/choke/bulk-manual", s.handleChokeBulkManual)
+	mux.HandleFunc("/api/choke/forget", s.handleChokeForget)
+	mux.HandleFunc("/api/choke/thaw", s.handleChokeThaw)
+	mux.HandleFunc("/api/choke/cgroups", s.handleChokeCgroups)
+	mux.HandleFunc("/api/choke/annotate", s.handleChokeAnnotate)
+	mux.HandleFunc("/api/choke/forensic-snapshot", s.handleChokeForensicSnapshot)
+	mux.HandleFunc("/api/choke/process/", s.handleChokeProcess)
+	mux.HandleFunc("/api/choke/processes", s.handleChokeProcesses)
+	mux.HandleFunc("/api/choke/proc/", s.handleChokeProcLive)
+	mux.HandleFunc("/api/choke/jail", s.handleChokeJail)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
 	return http.ListenAndServe(addr, s.auth.Middleware(mux))

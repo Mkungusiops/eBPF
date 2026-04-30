@@ -1,0 +1,28 @@
+# Outside-the-box: cap autonomous agent / cron-driven processes' rate of
+# spawning new processes and outbound connections. Catches runaway LLM
+# agent loops, cryptominers spinning workers, and reverse-shell beacons.
+#
+# Activates as soon as a matched binary's score is non-pristine.
+apiVersion: chokegw/v1
+kind: ChokePolicy
+metadata:
+  name: agent-loop-cap
+  description: Hard cap on process-spawn / egress for AI-agent and cron-like runners
+match:
+  binaries:
+    - /usr/local/bin/claude
+    - /usr/local/bin/aider
+    - /usr/bin/python3
+    - /usr/bin/node
+    - /usr/sbin/cron
+buckets:
+  - dimension: process.fork
+    rate_per_sec: 2        # 2 child processes/sec sustained
+    burst: 10
+  - dimension: egress.connect
+    rate_per_sec: 5
+    burst: 20
+deny_syscalls:
+  - ptrace
+  - process_vm_writev
+  - bpf

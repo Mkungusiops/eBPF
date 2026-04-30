@@ -4,6 +4,33 @@ End-to-end recipe for spinning up the eBPF engine against real kernel events
 inside an Ubuntu VM on macOS. Each block is labeled **[macOS host]** or
 **[inside VM]** so you know where to run it.
 
+> **Production path only.** This guide deploys the engine with the
+> Choke Gateway enabled and `-enforce` on — so attack scripts will
+> actually be choked (cgroup v2 throttle/tarpit/quarantine, SIGKILL on
+> sever). `make fake` exists for unit-test/UI iteration only and is not
+> used here.
+
+## Fast path: `make deploy`
+
+If your VM is already bootstrapped (Tetragon running, policies applied),
+the entire deploy/restart loop collapses to one command from the macOS
+host:
+
+```bash
+make deploy           # build → sync → restart → print URL
+```
+
+After the first `make deploy` you can use `make redeploy` for fast
+iteration (skips setup.sh + policy re-apply). Other helpers:
+
+```bash
+make vm-logs                       # tail engine logs
+make vm-status                     # engine + cgroup tier counts
+make vm-attack SCRIPT=01-webshell.sh  # fire an attack inside the VM
+```
+
+The long-form steps below show what `make deploy` does under the hood.
+
 ## Prerequisites
 
 - macOS with Homebrew
@@ -92,21 +119,49 @@ sudo pkill -f engine-linux-amd64 || true
 sleep 2
 sudo systemd-run \
   --unit=ebpf-engine \
-  --description="eBPF SOC engine" \
+  --description="eBPF Choke Gateway" \
   --property=Restart=always \
   --property=RestartSec=2 \
   --property=StandardOutput=append:/var/log/ebpf-engine.log \
   --property=StandardError=append:/var/log/ebpf-engine.log \
   --property=WorkingDirectory=/home/ubuntu/ebpf-poc \
-  /home/ubuntu/ebpf-poc/engine/engine-linux-amd64 \
-    -tetragon  unix:///var/run/tetragon/tetragon.sock \
-    -db        /var/lib/ebpf-engine/events.db \
-    -http      :8080 \
-    -user      admin -pass ebpf-soc-demo \
-    -policies  /home/ubuntu/ebpf-poc/policies \
-    -attacks   /home/ubuntu/ebpf-poc/attacks \
-    -honeypots /var/lib/ebpf-engine/honey
+  /home/ubuntu/ebpf-poc/engine-linux-amd64 \
+    -tetragon       unix:///var/run/tetragon/tetragon.sock \
+    -db             /var/lib/ebpf-engine/events.db \
+    -http           :8080 \
+    -user           admin -pass ebpf-soc-demo \
+    -policies       /home/ubuntu/ebpf-poc/policies \
+    -choke-policies /home/ubuntu/ebpf-poc/policies/choke \
+    -attacks        /home/ubuntu/ebpf-poc/attacks \
+    -honeypots      /var/lib/ebpf-engine/honey \
+    -enforce \
+    -cgroup-root    /sys/fs/cgroup
 ```
+
+### Choke gateway flags
+
+| Flag | Default | Purpose |
+|---|---|---|
+| `-enforce` | off (detect-only) | Wire the real enforcer chain. Without this the engine still records decisions but never moves a PID into a cgroup or sends SIGKILL. |
+| `-dry-run` | off | Decisions recorded, no enforcement. Stack on top of `-enforce` to shadow-roll a new policy. |
+| `-choke-policies <dir>` | `policies/choke` | DSL directory loaded at startup. |
+| `-cgroup-root <path>` | `/sys/fs/cgroup` | Where the engine creates `choke-throttled`, `choke-tarpit`, `choke-quarantined`. Must be the cgroup v2 unified mount. |
+| `-throttle-at` `-tarpit-at` `-quarantine-at` `-sever-at` | `5 / 15 / 25 / 40` | Chain-score thresholds for each tier. Tunable live via the choke console (PUT `/api/choke/thresholds`). |
+
+### What the cgroup tiers actually do
+
+When the engine starts with `-enforce`, the cgroup v2 backend creates
+three sibling cgroups under `-cgroup-root` and applies these limits:
+
+| Tier | `cpu.max` | `pids.max` | `io.weight` | `memory.high` | Behaviour |
+|---|---|---|---|---|---|
+| `choke-throttled`   | 5% of one core | 200 | 10 | 512 MiB | Real CPU throttle |
+| `choke-tarpit`      | 1% of one core | 50  | 1  | 128 MiB | Severely degraded |
+| `choke-quarantined` | (frozen)       | 10  | 1  | 64 MiB  | `cgroup.freeze=1` — process pauses immediately |
+
+Sever is handled separately (SIGKILL via `kill(2)` from the userspace
+severer) and additionally clears the BPF map entry so a future PID-reuse
+doesn't inherit shaping.
 
 Verify:
 
@@ -122,7 +177,27 @@ sudo journalctl -u ebpf-engine -n 20 --no-pager
 multipass info ebpf | awk '/IPv4/{print $2}'
 ```
 
-Browse to `http://<vm-ip>:8080`. Login: **`admin` / `ebpf-soc-demo`**.
+Two pages now serve from the same engine:
+
+| Path | Purpose |
+|---|---|
+| `http://<vm-ip>:8080/`        | SOC dashboard (alerts, events, MITRE coverage, IOCs) |
+| `http://<vm-ip>:8080/choke`   | **Choke Gateway Console** — process state, thresholds, manual override, kill-switch, policy workbench |
+
+Login: **`admin` / `ebpf-soc-demo`**.
+
+### Verify enforcement is live
+
+```bash
+# Choke tiers exist with the right limits
+multipass exec ebpf -- bash -lc 'for t in throttled tarpit quarantined; do echo "=== choke-$t ==="; cat /sys/fs/cgroup/choke-$t/cpu.max /sys/fs/cgroup/choke-$t/pids.max 2>/dev/null; done'
+
+# Engine reports its mode
+VM=$(multipass info ebpf | awk '/IPv4/{print $2; exit}')
+curl -s -c /tmp/c -d 'user=admin&pass=ebpf-soc-demo' http://$VM:8080/api/login -o /dev/null
+curl -s -b /tmp/c http://$VM:8080/api/choke/state | jq .mode
+# expect: "enforcing"
+```
 
 ## 10. Smoke-test the API — [macOS host]
 
@@ -156,6 +231,33 @@ sudo cat /var/lib/ebpf-engine/honey/_id_rsa >/dev/null
 
 multipass exec ebpf -- sudo bash /home/ubuntu/ebpf-poc/attacks/01-webshell.sh 
 ```
+
+### Watch the choke gateway respond
+
+With `-enforce` on, the gateway moves PIDs into the choke cgroups in
+real time as their chain score climbs. To watch:
+
+```bash
+# 1. open the console in another tab
+open "http://$(multipass info ebpf | awk '/IPv4/{print $2; exit}'):8080/choke"
+
+# 2. fire a long-running attack
+multipass exec ebpf -- sudo bash /home/ubuntu/ebpf-poc/attacks/03-reverse-shell.sh
+
+# 3. observe (from macOS):
+#    - state ladder counts move out of "pristine"
+#    - decision tape shows pristine → throttled → tarpit → ...
+#    - Choke Map (kernel) panel shows the live PID
+#    - cgroup tier file confirms it
+multipass exec ebpf -- cat /sys/fs/cgroup/choke-throttled/cgroup.procs
+```
+
+### Manual override from the console
+
+Hover any process row → click `↓` (throttle), `≋` (tarpit), `⌖`
+(quarantine), or `✕` (sever). Sever / quarantine require a typed
+audit reason — that text lands in the hash-chained `decisions` table
+alongside the operator's username.
 
 ## 12. Operational one-liners — [inside VM]
 

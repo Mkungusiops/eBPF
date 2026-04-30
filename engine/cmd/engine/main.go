@@ -17,10 +17,22 @@ import (
 	"google.golang.org/protobuf/types/known/wrapperspb"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/api"
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke/tokens"
+	"github.com/jeffmk/ebpf-poc-engine/internal/enforce"
+	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/bpfmap"
+	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/cgroupv2"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policy"
+	"github.com/jeffmk/ebpf-poc-engine/internal/sysproc"
 	"github.com/jeffmk/ebpf-poc-engine/internal/score"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
+
+// gw is the global choke gateway. It is created in main() and read by the
+// event handlers. nil-safe: handlers check before dispatching.
+var gw *choke.Gateway
 
 func main() {
 	var (
@@ -33,6 +45,16 @@ func main() {
 		policiesDir  = flag.String("policies", "policies", "directory containing TracingPolicy YAMLs (for read-only viewer)")
 		attacksDir   = flag.String("attacks", "attacks", "directory containing allowlisted attack scripts (for quick-fire panel)")
 		honeypotDir  = flag.String("honeypots", "/var/lib/ebpf-engine/honey", "directory where decoy files are seeded; access fires alerts when watched by sensitive-files policy")
+		// Phase 1+2: choke gateway
+		chokeDir     = flag.String("choke-policies", "policies/choke", "directory containing ChokePolicy YAMLs (DSL); empty disables policy-driven choking")
+		dryRun       = flag.Bool("dry-run", false, "shadow mode: record decisions but do not execute enforcement actions")
+		enforceFlag   = flag.Bool("enforce", false, "enable real enforcement (kill/throttle); when false, decisions are logged only")
+		throttleAt   = flag.Int("throttle-at", 5, "chain score at which to start throttling")
+		tarpitAt     = flag.Int("tarpit-at", 15, "chain score at which to tarpit")
+		quarantineAt = flag.Int("quarantine-at", 25, "chain score at which to quarantine (sinkhole)")
+		severAt      = flag.Int("sever-at", 40, "chain score at which to sever (SIGKILL)")
+		cgroupRoot   = flag.String("cgroup-root", cgroupv2.DefaultRoot, "cgroup v2 unified mount; choke-{throttled,tarpit,quarantined} are created under this root")
+		critBinsRaw  = flag.String("system-critical", "", "comma-separated list of binaries exempt from SCORE-DRIVEN auto-enforce (manual overrides still apply); empty = use the default safe list (sshd, systemd, dockerd, …)")
 	)
 	flag.Parse()
 	api.SetPolicyDir(*policiesDir)
@@ -62,6 +84,151 @@ func main() {
 			log.Fatalf("http: %v", err)
 		}
 	}()
+
+	// ---- Choke Gateway (phases 1 & 2) -------------------------------------
+	// Backends: throttler writes per-PID rate buckets into the BPF map (via
+	// the noop in-memory backend by default — swap for the real loader at
+	// deploy time); severer sends SIGKILL on ActSever. Composed via Multi.
+	bpfBackend := bpfmap.NewNoopBackend()
+	if err := bpfBackend.Open(); err != nil {
+		log.Fatalf("bpfmap open: %v", err)
+	}
+	defer bpfBackend.Close()
+	throttleBackend := &enforce.Throttler{Backend: bpfBackend}
+	severerBackend := &enforce.Severer{}
+
+	// cgroup v2 backend — real per-PID throttle / tarpit / quarantine on
+	// Linux. On non-Linux this is a no-op stub (Apply returns
+	// ErrUnsupported) so the engine still compiles and runs in dev mode.
+	cgBackend := cgroupv2.NewBackend(*cgroupRoot)
+	if cgBackend.Available() {
+		if err := cgBackend.Mgr.Setup(); err != nil {
+			log.Printf("[cgroupv2] setup failed (%v) — graduated enforcement will fall through to telemetry only", err)
+		} else {
+			log.Printf("[cgroupv2] choke tiers ready under %s", *cgroupRoot)
+		}
+	} else {
+		log.Printf("[cgroupv2] not available at %s — graduated enforcement disabled (sever still works via SIGKILL)", *cgroupRoot)
+	}
+
+	// Order matters: the cgroup backend handles throttle/tarpit/quarantine
+	// (real kernel-level choke), the severer handles sever (SIGKILL), and
+	// the throttler trails as a telemetry mirror writing to the noop
+	// bpfmap so the UI's "Choke Map (kernel)" panel still populates.
+	var enforcer enforce.Enforcer = &enforce.Multi{
+		Backends: []enforce.Enforcer{cgBackend, severerBackend, throttleBackend},
+	}
+	if !*enforceFlag {
+		// Detection-only mode (default). Replace the real enforcer with a
+		// logger so decisions still get recorded but no kernel call fires.
+		enforcer = &enforce.Logger{Prefix: "[enforce-disabled]"}
+	}
+
+	// Policy DSL — load all *.yaml under -choke-policies. Missing dir is
+	// not an error; you just get no DSL-driven choking.
+	policySet := policy.NewSet()
+	if *chokeDir != "" {
+		set, warns, err := policy.LoadDir(*chokeDir)
+		if err == nil {
+			policySet = set
+			for _, w := range warns {
+				log.Printf("[policy] warn: %v", w)
+			}
+			log.Printf("[policy] loaded %d choke policies from %s", set.Len(), *chokeDir)
+		} else if !os.IsNotExist(err) {
+			log.Printf("[policy] load %s: %v (continuing without DSL)", *chokeDir, err)
+		}
+	}
+
+	// system-critical exemption list — comma-separated CLI override or
+	// the package's safe defaults (sshd, systemd, dockerd, …). Score-
+	// driven transitions on these binaries are audited but the enforcer
+	// is bypassed; manual overrides still go through.
+	var critBins []string
+	if *critBinsRaw != "" {
+		for _, b := range strings.Split(*critBinsRaw, ",") {
+			if t := strings.TrimSpace(b); t != "" {
+				critBins = append(critBins, t)
+			}
+		}
+	} else {
+		critBins = choke.DefaultSystemCriticalBinaries()
+	}
+	log.Printf("[gateway] system-critical exemption: %d binaries (auto-enforce bypassed; manual override allowed)", len(critBins))
+
+	gw = choke.NewGateway(choke.Config{
+		Store:     st,
+		Enforcer:  enforcer,
+		Broadcast: httpSrv,
+		Tokens:    tokens.NewManager(),
+		Policies:  policySet,
+		Tree:      pt,
+		BPFMap:    bpfBackend,
+		Thresholds: circuit.Config{
+			ThrottleAt:   *throttleAt,
+			TarpitAt:     *tarpitAt,
+			QuarantineAt: *quarantineAt,
+			SeverAt:      *severAt,
+		},
+		DryRun:                 *dryRun,
+		Enforcing:              *enforceFlag,
+		SystemCriticalBinaries: critBins,
+	})
+	httpSrv.SetGateway(gw)
+	// Wire cgroup pass-throughs so /api/choke/cgroups + /api/choke/thaw
+	// reach the manager without dragging the linux-only package into
+	// the choke package itself.
+	gw.SetCgroupInhabitorsFn(cgBackend.Mgr.Inhabitants)
+	gw.SetThawFn(cgBackend.Mgr.Thaw)
+	// Process picker: read /proc on every request and adapt the slice
+	// shape into the gateway's choke.SysProcEntry to keep the choke
+	// package free of OS-specific imports.
+	gw.SetSysProcListFn(func() ([]choke.SysProcEntry, error) {
+		raw, err := sysproc.List()
+		if err != nil {
+			return nil, err
+		}
+		out := make([]choke.SysProcEntry, 0, len(raw))
+		for _, e := range raw {
+			out = append(out, choke.SysProcEntry{
+				PID: e.PID, PPID: e.PPID, UID: e.UID,
+				Comm: e.Comm, Exe: e.Exe, Cmdline: e.Cmdline,
+				StartTime: e.StartTime,
+			})
+		}
+		return out, nil
+	})
+	// Live /proc snapshot for the inspect drawer — same OS-isolation
+	// pattern as SetSysProcListFn so the gateway package stays free of
+	// /proc imports. Backend is no-op on non-Linux dev builds.
+	gw.SetSysProcDetailFn(func(pid uint32) (choke.SysProcDetail, error) {
+		d, err := sysproc.ReadDetail(pid)
+		if err != nil {
+			return choke.SysProcDetail{PID: pid}, err
+		}
+		return choke.SysProcDetail{
+			PID:         d.PID,
+			Status:      d.Status,
+			Threads:     d.Threads,
+			VmRSSKB:     d.VmRSSKB,
+			VmSizeKB:    d.VmSizeKB,
+			StartedUnix: d.StartedUnix,
+			Cwd:         d.Cwd,
+			Root:        d.Root,
+			NumFDs:      d.NumFDs,
+			FDSamples:   d.FDSamples,
+			NumConns:    d.NumConns,
+			ConnPeers:   d.ConnPeers,
+		}, nil
+	})
+	mode := "ENFORCING"
+	if *dryRun {
+		mode = "DRY-RUN"
+	} else if !*enforceFlag {
+		mode = "DETECT-ONLY"
+	}
+	log.Printf("[gateway] %s; thresholds throttle=%d tarpit=%d quarantine=%d sever=%d",
+		mode, *throttleAt, *tarpitAt, *quarantineAt, *severAt)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -347,6 +514,13 @@ func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
 
 func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {
 	chainScore := pt.ChainScore(execID)
+
+	// Gateway runs on every event regardless of alert threshold so a
+	// process can transition to "throttled" before it ever produces an
+	// alert. The gateway is monotonic — repeated calls below threshold
+	// are no-ops.
+	dispatchGateway(execID, pt, chainScore, reason)
+
 	if chainScore < 10 {
 		return
 	}
@@ -373,6 +547,27 @@ func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- 
 	a.ID = id
 	send(broadcast, api.Broadcast{Type: "alert", Payload: a})
 	log.Printf("[ALERT %s] %s", severity, title)
+}
+
+// dispatchGateway calls the choke gateway with the latest chain score for
+// an exec_id. Looks up the node in the process tree to get the canonical
+// PID/binary so the enforcer has a real target. nil-safe: if the gateway
+// isn't initialised (early init or tests) this is a no-op.
+func dispatchGateway(execID string, pt *tree.Tree, chainScore int, reason string) {
+	if gw == nil {
+		return
+	}
+	n, ok := pt.Get(execID)
+	if !ok {
+		return
+	}
+	gw.OnEvent(context.Background(), choke.Observation{
+		ExecID: execID,
+		PID:    n.PID,
+		Binary: n.Binary,
+		Score:  chainScore,
+		Reason: reason,
+	})
 }
 
 func send(ch chan<- api.Broadcast, b api.Broadcast) {

@@ -1,0 +1,416 @@
+#!/usr/bin/env bash
+#
+# chokectl — fleet CLI for the eBPF Choke Gateway.
+#
+# Drives N hosts (each running the engine + Tetragon) over HTTP. Reads a
+# hosts file listing one "name url" pair per line; fans subcommands out
+# in parallel; merges results into a single terminal table or download
+# tree. Read-only subcommands are safe; write subcommands hit every host
+# unless --host=<name> is specified.
+#
+# Usage:
+#   chokectl <subcommand> [args...]
+#   chokectl --help
+#
+# Read-only:
+#   status                  Mode/thresholds/tracked/audit per host (table)
+#   cgroups                 Per-host cgroup-tier inhabitant counts
+#   decisions [N]           Recent decisions, merged by timestamp (default 50)
+#   alerts    [N]           Recent alerts, merged by timestamp (default 20)
+#   snapshot  [DIR]         Download forensic-snapshot.json per host into DIR
+#                           (default ./snapshots/<utc-stamp>/)
+#
+# Control plane (writes hit every host unless --host is set):
+#   preset <name>           apply preset: containment|forensic|maintenance|default
+#   thresholds T/Tp/Q/S     set thresholds (e.g. 20/50/120/200)
+#   kill-switch on|off      toggle global enforcement bypass
+#   thaw                    release the quarantined cgroup
+#   jail HOST PID ACTION REASON
+#                           manual override on one specific host
+#                           ACTION: throttle|tarpit|quarantine|sever
+#
+# Config:
+#   $CHOKECTL_HOSTS         path to hosts file (default ./chokectl.hosts)
+#   $CHOKE_USER             API user (default admin)
+#   $CHOKE_PASS             API password (default ebpf-soc-demo)
+#   --hosts=PATH            override hosts file
+#   --host=NAME             restrict to a single host (writes only)
+#   --timeout=SECS          per-request timeout (default 5)
+#
+# Hosts file format (lines starting with # are comments):
+#   ebpf-1   http://192.168.252.3:8080
+#   ebpf-2   http://192.168.252.4:8080  # optional trailing comment
+#
+# Exit codes:
+#   0  all hosts succeeded
+#   1  one or more hosts unreachable / errored (others may still be ok)
+#   3  bad usage / bad config / no hosts matched
+
+set -uo pipefail
+
+CHOKECTL_HOSTS="${CHOKECTL_HOSTS:-./chokectl.hosts}"
+CHOKE_USER="${CHOKE_USER:-admin}"
+CHOKE_PASS="${CHOKE_PASS:-ebpf-soc-demo}"
+TIMEOUT=5
+HOST_FILTER=""
+
+# ─────────── arg parsing ───────────────────────────────────────────────
+ARGS=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --hosts=*)   CHOKECTL_HOSTS="${1#*=}"; shift ;;
+    --hosts)     CHOKECTL_HOSTS="$2"; shift 2 ;;
+    --host=*)    HOST_FILTER="${1#*=}"; shift ;;
+    --host)      HOST_FILTER="$2"; shift 2 ;;
+    --timeout=*) TIMEOUT="${1#*=}"; shift ;;
+    --timeout)   TIMEOUT="$2"; shift 2 ;;
+    -h|--help)   sed -n '3,/^# Exit codes:/p' "$0" | sed 's/^# \?//'; exit 0 ;;
+    --)          shift; ARGS+=("$@"); break ;;
+    *)           ARGS+=("$1"); shift ;;
+  esac
+done
+if [[ ${#ARGS[@]} -eq 0 ]]; then
+  echo "chokectl: missing subcommand (try chokectl --help)" >&2
+  exit 3
+fi
+SUBCMD="${ARGS[0]}"; ARGS=("${ARGS[@]:1}")
+
+# ─────────── helpers ──────────────────────────────────────────────────
+log()  { printf '\033[36m[%s]\033[0m %s\n' "$1" "$2" >&2; }
+fail() { printf '\033[31m[%s]\033[0m %s\n' "$1" "$2" >&2; }
+
+# Parse the hosts file into two parallel arrays: NAMES and URLS.
+HOST_NAMES=()
+HOST_URLS=()
+load_hosts() {
+  if [[ ! -f "$CHOKECTL_HOSTS" ]]; then
+    fail chokectl "hosts file not found: $CHOKECTL_HOSTS"
+    fail chokectl "create one — see chokectl.hosts.example"
+    exit 3
+  fi
+  # Loop-local vars declared explicitly because bash uses dynamic scoping
+  # for `local` — a naked assignment inside this function would clobber a
+  # caller's local of the same name (notably cmd_preset's `local name`).
+  local line _hname _hurl
+  while IFS= read -r line; do
+    line="${line%%#*}"                                    # strip comment
+    line="$(echo "$line" | tr -s ' \t' ' ')"              # collapse spaces
+    line="${line# }"; line="${line% }"                    # trim
+    [[ -z "$line" ]] && continue
+    _hname="${line%% *}"
+    _hurl="${line#* }"
+    [[ -z "$_hname" || -z "$_hurl" || "$_hname" == "$_hurl" ]] && continue
+    if [[ -n "$HOST_FILTER" && "$_hname" != "$HOST_FILTER" ]]; then
+      continue
+    fi
+    HOST_NAMES+=("$_hname")
+    HOST_URLS+=("$_hurl")
+  done < "$CHOKECTL_HOSTS"
+  if [[ ${#HOST_NAMES[@]} -eq 0 ]]; then
+    fail chokectl "no hosts matched (filter: '${HOST_FILTER:-none}')"
+    exit 3
+  fi
+}
+
+# Cookie jar per-host so login state doesn't collide.
+cookie_jar() {
+  local name="$1"
+  echo "/tmp/chokectl-cookies-$(echo "$name" | tr -c 'A-Za-z0-9._-' '_')"
+}
+
+# Authenticate with one host. The engine has a 10/min per-IP rate limit
+# on /api/login (anti brute-force), and the session TTL is 24h — so we
+# only re-login when the cached cookie is missing or older than 1 hour.
+# This lets the operator run chokectl as often as they like without
+# tripping the rate limiter.
+host_login() {
+  local name="$1" url="$2" cookies
+  cookies="$(cookie_jar "$name")"
+  if [[ -f "$cookies" ]]; then
+    # Probe with the cached cookie; success → reuse.
+    local code
+    code=$(curl -sS --max-time "$TIMEOUT" -b "$cookies" \
+      -o /dev/null -w "%{http_code}" "$url/api/whoami" 2>/dev/null) || code="000"
+    if [[ "$code" == "200" ]]; then return 0; fi
+    rm -f "$cookies"
+  fi
+  curl -sS --max-time "$TIMEOUT" -c "$cookies" \
+    -d "user=$CHOKE_USER&pass=$CHOKE_PASS" \
+    -o /dev/null "$url/api/login" 2>/dev/null
+}
+
+# GET helper. Echoes body to stdout; returns 0 on 2xx, 1 otherwise.
+host_get() {
+  local name="$1" url="$2" path="$3" cookies status
+  cookies="$(cookie_jar "$name")"
+  status=$(curl -sS --max-time "$TIMEOUT" -b "$cookies" \
+    -o /tmp/chokectl-body-$$ -w "%{http_code}" "$url$path" 2>/dev/null) || return 1
+  cat /tmp/chokectl-body-$$
+  rm -f /tmp/chokectl-body-$$
+  [[ "$status" =~ ^2 ]]
+}
+
+# POST/PUT helper.
+host_send() {
+  local name="$1" url="$2" path="$3" method="$4" body="$5" cookies status
+  cookies="$(cookie_jar "$name")"
+  status=$(curl -sS --max-time "$TIMEOUT" -b "$cookies" -X "$method" \
+    -H 'content-type: application/json' -d "$body" \
+    -o /tmp/chokectl-body-$$ -w "%{http_code}" "$url$path" 2>/dev/null) || return 1
+  cat /tmp/chokectl-body-$$
+  rm -f /tmp/chokectl-body-$$
+  [[ "$status" =~ ^2 ]]
+}
+
+# Run a function in parallel across all hosts. The function receives
+# $1=name $2=url and writes output to a temp file named after $name;
+# fanout() then prints results in stable hosts-file order so the output
+# is deterministic regardless of completion order.
+fanout() {
+  local fn="$1"; shift
+  local tmpdir; tmpdir=$(mktemp -d -t chokectl.XXXXXX)
+  local i
+  for i in "${!HOST_NAMES[@]}"; do
+    (
+      out="$tmpdir/${HOST_NAMES[i]}.out"
+      err="$tmpdir/${HOST_NAMES[i]}.err"
+      if host_login "${HOST_NAMES[i]}" "${HOST_URLS[i]}"; then
+        "$fn" "${HOST_NAMES[i]}" "${HOST_URLS[i]}" "$@" > "$out" 2> "$err"
+        echo $? > "$tmpdir/${HOST_NAMES[i]}.rc"
+      else
+        echo "unreachable" > "$err"
+        echo 1 > "$tmpdir/${HOST_NAMES[i]}.rc"
+      fi
+    ) &
+  done
+  wait
+  local any_fail=0
+  for i in "${!HOST_NAMES[@]}"; do
+    local rc; rc=$(cat "$tmpdir/${HOST_NAMES[i]}.rc" 2>/dev/null || echo 1)
+    if [[ "$rc" == "0" ]]; then
+      cat "$tmpdir/${HOST_NAMES[i]}.out" 2>/dev/null
+    else
+      fail "${HOST_NAMES[i]}" "$(cat "$tmpdir/${HOST_NAMES[i]}.err" 2>/dev/null || echo error)"
+      any_fail=1
+    fi
+  done
+  rm -rf "$tmpdir"
+  return $any_fail
+}
+
+# ─────────── subcommands ──────────────────────────────────────────────
+
+cmd_status() {
+  load_hosts
+  printf '%-12s %-14s %-6s %-26s %-7s %-26s %s\n' HOST MODE KILL THRESHOLDS TRACKED COUNTS AUDIT
+  printf '%-12s %-14s %-6s %-26s %-7s %-26s %s\n' ------------ -------------- ------ -------------------------- ------- -------------------------- ------
+  _row() {
+    local name="$1" url="$2"
+    body=$(host_get "$name" "$url" "/api/choke/state")
+    if [[ -z "$body" ]]; then
+      printf '%-12s %s\n' "$name" "(unreachable)"
+      return 1
+    fi
+    # Pass JSON via env var so we don't fight bash redirection precedence.
+    NAME="$name" BODY="$body" python3 -c '
+import os, json
+name = os.environ["NAME"]
+try:
+    d = json.loads(os.environ["BODY"])
+except Exception as e:
+    print("{:<12} (bad json: {})".format(name, e)); raise SystemExit(0)
+mode = d.get("mode","?")
+kill = "on" if d.get("kill_switched") else "off"
+t = d.get("thresholds") or {}
+thr = "{}/{}/{}/{}".format(t.get("throttle_at","?"), t.get("tarpit_at","?"), t.get("quarantine_at","?"), t.get("sever_at","?"))
+tracked = d.get("tracked", 0)
+counts = d.get("counts") or {}
+counts_s = " ".join("{}={}".format(k[:3], v) for k,v in counts.items() if v)
+audit = d.get("audit") or {}
+audit_s = ("ok·" + str(audit.get("total","?"))) if audit.get("ok") else ("BROKEN at id " + str(audit.get("bad_at","?")))
+print("{:<12} {:<14} {:<6} {:<26} {:<7} {:<26} {}".format(name, mode, kill, thr, tracked, counts_s, audit_s))
+'
+  }
+  fanout _row
+}
+
+cmd_cgroups() {
+  load_hosts
+  printf '%-12s  %s\n' HOST CGROUP_TIER_INHABITANTS
+  _row() {
+    local name="$1" url="$2"
+    body=$(host_get "$name" "$url" "/api/choke/cgroups") || return 1
+    NAME="$name" BODY="$body" python3 -c '
+import os, json
+name = os.environ["NAME"]
+d = json.loads(os.environ["BODY"])
+parts = []
+for k in ("choke-throttled","choke-tarpit","choke-quarantined"):
+    parts.append("{}={}".format(k.split("-",1)[1], len(d.get(k) or [])))
+print("{:<12}  {}".format(name, "  ".join(parts)))
+'
+  }
+  fanout _row
+}
+
+cmd_preset() {
+  local name="${ARGS[0]:-}"
+  if [[ -z "$name" ]]; then fail chokectl "usage: chokectl preset <containment|forensic|maintenance|default>"; exit 3; fi
+  case "$name" in containment|forensic|maintenance|default) ;; *) fail chokectl "unknown preset: $name"; exit 3 ;; esac
+  load_hosts
+  log fleet "applying preset '$name' to ${#HOST_NAMES[@]} host(s)…"
+  _row() {
+    local h="$1" u="$2"
+    body=$(host_send "$h" "$u" "/api/choke/preset" POST "{\"name\":\"$name\",\"reason\":\"chokectl fleet apply\"}") || return 1
+    echo "$h  → applied: $name"
+  }
+  fanout _row
+}
+
+cmd_thresholds() {
+  local spec="${ARGS[0]:-}"
+  if [[ -z "$spec" ]]; then fail chokectl "usage: chokectl thresholds T/Tp/Q/S  (e.g. 20/50/120/200)"; exit 3; fi
+  IFS='/' read -r t tp q s <<<"$spec"
+  if [[ -z "$t" || -z "$tp" || -z "$q" || -z "$s" ]]; then
+    fail chokectl "bad threshold spec; expected throttle/tarpit/quarantine/sever"; exit 3
+  fi
+  load_hosts
+  local body="{\"throttle_at\":$t,\"tarpit_at\":$tp,\"quarantine_at\":$q,\"sever_at\":$s}"
+  log fleet "setting thresholds $spec on ${#HOST_NAMES[@]} host(s)…"
+  _row() {
+    local h="$1" u="$2"
+    host_send "$h" "$u" "/api/choke/thresholds" PUT "$body" >/dev/null || return 1
+    echo "$h  → set: $spec"
+  }
+  fanout _row
+}
+
+cmd_kill_switch() {
+  local on="${ARGS[0]:-}"
+  if [[ "$on" != "on" && "$on" != "off" ]]; then fail chokectl "usage: chokectl kill-switch on|off"; exit 3; fi
+  local val="false"
+  [[ "$on" == "on" ]] && val="true"
+  load_hosts
+  log fleet "kill-switch=$on on ${#HOST_NAMES[@]} host(s)…"
+  _row() {
+    local h="$1" u="$2"
+    host_send "$h" "$u" "/api/choke/kill-switch" POST "{\"on\":$val}" >/dev/null || return 1
+    echo "$h  → kill-switch: $on"
+  }
+  fanout _row
+}
+
+cmd_thaw() {
+  load_hosts
+  log fleet "thawing quarantined cgroup on ${#HOST_NAMES[@]} host(s)…"
+  _row() {
+    local h="$1" u="$2"
+    host_send "$h" "$u" "/api/choke/thaw" POST "{\"reason\":\"chokectl fleet thaw\"}" >/dev/null || return 1
+    echo "$h  → thawed"
+  }
+  fanout _row
+}
+
+cmd_snapshot() {
+  load_hosts
+  local dir="${ARGS[0]:-./snapshots/$(date -u +%Y%m%dT%H%M%SZ)}"
+  mkdir -p "$dir"
+  log fleet "downloading forensic snapshots to $dir/"
+  _row() {
+    local h="$1" u="$2"
+    local out="$dir/$h.json"
+    cookies="$(cookie_jar "$h")"
+    status=$(curl -sS --max-time "$TIMEOUT" -b "$cookies" \
+      -o "$out" -w "%{http_code}" "$u/api/choke/forensic-snapshot" 2>/dev/null) || return 1
+    if [[ "$status" =~ ^2 ]]; then
+      bytes=$(wc -c < "$out" | tr -d ' ')
+      echo "$h  → $out ($bytes bytes)"
+    else
+      rm -f "$out"
+      return 1
+    fi
+  }
+  fanout _row
+}
+
+cmd_decisions() {
+  local n="${ARGS[0]:-50}"
+  load_hosts
+  _row() {
+    local h="$1" u="$2"
+    body=$(host_get "$h" "$u" "/api/decisions?limit=$n") || return 1
+    H="$h" BODY="$body" python3 -c '
+import os, json
+h = os.environ["H"]
+for r in json.loads(os.environ["BODY"]):
+    ts = (r.get("timestamp") or "")[:19]
+    action = r.get("action") or ""
+    pid = r.get("pid") or 0
+    binary = r.get("binary") or ""
+    reason = (r.get("reason") or "")[:60]
+    print("{}\t{}\t{:<11}\t{:>5}\t{:<30}\t{}".format(ts, h, action, pid, binary, reason))
+'
+  }
+  log fleet "merged decisions across ${#HOST_NAMES[@]} host(s) (newest first):"
+  printf '%-19s\t%-12s\t%-11s\t%5s\t%-30s\t%s\n' TIMESTAMP HOST ACTION PID BINARY REASON
+  fanout _row | sort -k1,1r | head -n "$n"
+}
+
+cmd_alerts() {
+  local n="${ARGS[0]:-20}"
+  load_hosts
+  _row() {
+    local h="$1" u="$2"
+    body=$(host_get "$h" "$u" "/api/alerts") || return 1
+    H="$h" BODY="$body" python3 -c '
+import os, json
+h = os.environ["H"]
+for r in json.loads(os.environ["BODY"]):
+    ts = (r.get("timestamp") or "")[:19]
+    sev = r.get("severity") or ""
+    score = r.get("score") or 0
+    title = (r.get("title") or "")[:80]
+    print("{}\t{}\t{:<8}\t{:>4}\t{}".format(ts, h, sev, score, title))
+'
+  }
+  log fleet "merged alerts across ${#HOST_NAMES[@]} host(s) (newest first):"
+  printf '%-19s\t%-12s\t%-8s\t%4s\t%s\n' TIMESTAMP HOST SEVERITY SCORE TITLE
+  fanout _row | sort -k1,1r | head -n "$n"
+}
+
+cmd_jail() {
+  local h="${ARGS[0]:-}"
+  local pid="${ARGS[1]:-}"
+  local action="${ARGS[2]:-}"
+  local reason="${ARGS[3]:-}"
+  if [[ -z "$h" || -z "$pid" || -z "$action" || -z "$reason" ]]; then
+    fail chokectl "usage: chokectl jail HOST PID ACTION REASON"
+    fail chokectl "ACTION: throttle|tarpit|quarantine|sever"
+    exit 3
+  fi
+  HOST_FILTER="$h"
+  load_hosts
+  if [[ ${#HOST_NAMES[@]} -ne 1 ]]; then
+    fail chokectl "no host named '$h' in $CHOKECTL_HOSTS"; exit 3
+  fi
+  local url="${HOST_URLS[0]}"
+  host_login "$h" "$url" || { fail "$h" "login failed"; exit 2; }
+  body="{\"pids\":[$pid],\"action\":\"$action\",\"reason\":$(printf '%s' "$reason" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"
+  resp=$(host_send "$h" "$url" "/api/choke/jail" POST "$body")
+  echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+}
+
+# ─────────── dispatch ─────────────────────────────────────────────────
+case "$SUBCMD" in
+  status)       cmd_status ;;
+  cgroups)      cmd_cgroups ;;
+  preset)       cmd_preset ;;
+  thresholds)   cmd_thresholds ;;
+  kill-switch)  cmd_kill_switch ;;
+  thaw)         cmd_thaw ;;
+  snapshot)     cmd_snapshot ;;
+  decisions)    cmd_decisions ;;
+  alerts)       cmd_alerts ;;
+  jail)         cmd_jail ;;
+  *) fail chokectl "unknown subcommand: $SUBCMD (try chokectl --help)"; exit 3 ;;
+esac

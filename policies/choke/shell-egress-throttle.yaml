@@ -1,0 +1,43 @@
+# Userspace ChokePolicy: when a shell crosses into "throttled" or "tarpit"
+# state in the gateway's circuit, install per-PID rate buckets that the
+# BPF data plane consults on every connect()/sendto()/getaddrinfo().
+#
+# Read by the engine via -choke-policies. The buckets are advisory unless
+# the BPF backend (bpfmap) is wired to a real loaded eBPF program — see
+# internal/enforce/bpfmap/README.
+apiVersion: chokegw/v1
+kind: ChokePolicy
+metadata:
+  name: shell-egress-throttle
+  description: Cap shell egress when chain score crosses throttle threshold
+match:
+  binaries:
+    - /bin/bash
+    - /usr/bin/bash
+    - /bin/sh
+    - /usr/bin/sh
+    - /usr/bin/zsh
+    - /usr/bin/dash
+  states:
+    - throttled
+    - tarpit
+buckets:
+  - dimension: egress.connect
+    rate_per_sec: 5
+    burst: 10
+  - dimension: egress.bytes
+    rate_per_sec: 65536    # 64 KiB/s when throttled — exfil-rate
+    burst: 262144          # 256 KiB burst for legitimate small payloads
+  - dimension: dns.query
+    rate_per_sec: 20
+    burst: 40
+deny_syscalls:
+  - ptrace
+  - process_vm_writev
+  - mount
+  - bpf
+  - perf_event_open
+deny_paths:
+  - /etc/shadow
+  - /etc/gshadow
+  - /root/.ssh/

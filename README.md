@@ -1,14 +1,28 @@
-# eBPF Threat Observability PoC
+# eBPF Threat Choke Gateway
 
-A proactive, kernel-level threat observability tool. Tetragon emits kernel
-events; a Go correlation engine consumes them, builds process trees, scores
-chains of suspicious behavior, persists to SQLite, and serves a real-time
-SOC-style dashboard with auth, MITRE ATT&CK mapping, alert acknowledgement,
-and live SSE updates.
+A proactive, kernel-level threat **detection + enforcement** platform.
+Tetragon emits kernel events; a Go correlation engine scores chains of
+suspicious behaviour; the **Choke Gateway** converts those scores into
+graduated, audited enforcement actions — throttle, tarpit, quarantine
+(cgroup v2 freeze), or sever (SIGKILL) — keyed on Tetragon's stable
+exec_id so a single process is the unit of control.
 
 ```
-[ kernel ] -- eBPF kprobes --> [ Tetragon ] -- gRPC --> [ engine ] -- HTTPS --> [ browser ]
+[ kernel ] -- eBPF kprobes --> [ Tetragon ] -- gRPC --> [ engine + choke gateway ]
+                                                              │
+                                                              ├── SOC dashboard (/)
+                                                              ├── Choke console (/choke)
+                                                              └── cgroup v2 tiers
+                                                                  · choke-throttled    (5% CPU)
+                                                                  · choke-tarpit       (1% CPU)
+                                                                  · choke-quarantined  (frozen)
+                                                                  + SIGKILL on sever
 ```
+
+> **Production path is Multipass / real Linux only.** `make fake`
+> exists for unit tests and frontend iteration but is **not** the
+> deploy story. To exercise the gateway against real eBPF events,
+> see [docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md).
 
 | Doc                                                     | Purpose                                              |
 |---------------------------------------------------------|------------------------------------------------------|
@@ -45,12 +59,15 @@ and live SSE updates.
 
 | Goal                                  | Command                                                       |
 |---------------------------------------|---------------------------------------------------------------|
+| **Deploy to the Multipass `ebpf` VM** | **`make deploy`** (build + sync + restart + print URL)        |
+| Fast iterate after first deploy       | `make redeploy`                                               |
+| Tail engine logs on the VM            | `make vm-logs`                                                |
+| Engine status + cgroup tier counts    | `make vm-status`                                              |
+| Fire an attack inside the VM          | `make vm-attack SCRIPT=03-reverse-shell.sh`                   |
 | Run unit tests                        | `make test`                                                   |
-| Run engine locally (no Tetragon)      | `make fake` then open <http://localhost:8080>                  |
 | Cross-compile for a Linux server      | `make build-linux`                                            |
 | Bundle binary + policies + attacks    | `make tarball` → `ebpf-poc-amd64.tar.gz`                      |
-| Deploy on a fresh Linux server        | See [docs/deploy-linux-server.md](docs/deploy-linux-server.md) |
-| Local Linux VM on macOS (Multipass)   | See [docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md) |
+| Local UI iteration only (test mode)   | `make fake` — never used for real deploys                     |
 
 ## Requirements
 
@@ -66,66 +83,51 @@ and live SSE updates.
 The Go code itself builds on macOS for development convenience, but
 Tetragon only runs on Linux — actual events flow only on a Linux host.
 
-## Quick start
+## Quick start — deploy to the Multipass VM
 
-### A. Local dev / UI demo (any OS, no Tetragon required)
+**Prerequisite**: a Multipass VM named `ebpf` running Ubuntu 22.04+
+(kernel ≥ 5.15, BTF enabled). First-time setup:
+[docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md).
 
 ```bash
-make fake          # builds engine, runs with -fake on :8080
-open http://localhost:8080
+make deploy
 ```
 
-You'll be redirected to `/login`. **Default credentials**:
+That single command:
 
-| User    | Password         |
-|---------|------------------|
-| `admin` | `ebpf-soc-demo`  |
+1. cross-compiles `engine-linux-amd64` (no CGO),
+2. transfers the binary + `policies/` + `attacks/` + `scripts/` into
+   `ebpf:/home/ubuntu/ebpf-poc`,
+3. runs `setup.sh` to install Docker / Go / Tetragon and enable cgroup
+   v2 controllers,
+4. applies every TracingPolicy under `policies/` and `policies/enforce/`
+   (the latter has Tetragon `Sigkill`/`Override` actions),
+5. (re)starts the engine as a transient systemd unit with the choke
+   gateway enabled (`-enforce -choke-policies ... -cgroup-root ...`),
+6. prints the URLs for the SOC dashboard and Choke console.
 
-Override with `-user` and `-pass` flags. `make fake` synthesizes a
-deterministic stream of attack-pattern events (webshell, reverse-shell,
-credential theft, privilege escalation, LOLBin) through the same
-handlers Tetragon would feed in production. Useful for iterating on
-the UI, scoring rules, or storage schema without a Linux host.
+Open the printed `http://<vm-ip>:8080/choke` URL. Login: **`admin` /
+`ebpf-soc-demo`**.
 
-### B. Real deploy on a Linux server
+**Trigger a real attack and watch the gateway respond:**
 
-For a complete walkthrough including systemd, TLS, and hardening, see
-**[docs/deploy-linux-server.md](docs/deploy-linux-server.md)**. Short
-version:
+```bash
+make vm-attack SCRIPT=03-reverse-shell.sh
+make vm-status        # see live cgroup tier populations
+make vm-logs          # tail engine output
+```
 
-1. **From your dev machine**, build the Linux artifact:
-   ```bash
-   make tarball                          # → ebpf-poc-amd64.tar.gz
-   scp ebpf-poc-amd64.tar.gz user@server:~/
-   ```
-2. **On the server** (Ubuntu 22.04+, kernel ≥ 5.15):
-   ```bash
-   mkdir ~/ebpf-poc && tar -xzf ~/ebpf-poc-amd64.tar.gz -C ~/ebpf-poc
-   cd ~/ebpf-poc
-   TETRAGON_IMAGE=quay.io/cilium/tetragon:v1.6.1 bash scripts/setup.sh
-   sudo make policies-apply
-   sudo mkdir -p /var/lib/ebpf-engine
-   sudo ./engine/engine-linux-amd64 \
-     -tetragon unix:///var/run/tetragon/tetragon.sock \
-     -db /var/lib/ebpf-engine/events.db \
-     -http :8080 \
-     -user admin -pass 'pick-something-strong'
-   ```
-3. **Open the UI** at `http://<server-ip>:8080` (use an SSH tunnel —
-   the engine is HTTP-only; put TLS in front for anything beyond a demo).
-4. **Trigger an attack scenario** in another shell on the server:
-   ```bash
-   sudo bash ~/ebpf-poc/attacks/01-webshell.sh
-   ```
-   An alert appears in the UI within ~1 s. Click it for the full chain.
+The reverse-shell process will move from `pristine` → `throttled` →
+`tarpit` etc. as its chain score climbs — you'll see it both in the
+console's Decision Tape and in the kernel:
 
-> **Tetragon image tag**: pin to a versioned tag — the `:latest` tag is
-> no longer published. v1.6.1 is the current stable.
+```bash
+multipass exec ebpf -- cat /sys/fs/cgroup/choke-throttled/cgroup.procs
+multipass exec ebpf -- cat /sys/fs/cgroup/choke-quarantined/cgroup.procs
+```
 
-### C. Local Linux VM on macOS (Multipass)
-
-If you don't have a remote Linux server, you can run the full stack in
-a local VM. See **[docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md)**.
+For the full step-by-step walkthrough (or to debug a `make deploy`
+failure), see **[docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md)**.
 
 ## How detection works
 
@@ -219,8 +221,6 @@ session, see [docs/architecture.md](docs/architecture.md).
 
 ## Limitations
 
-- **Detection only, no prevention.** Adding `enforcement` actions
-  (`SIGKILL`, `Override`) to the policies would change that.
 - **Single host.** The engine talks to one Tetragon socket and writes
   one SQLite file. Multi-host needs a fan-in collector.
 - **Single-user auth.** Sessions are in-memory and lost on engine

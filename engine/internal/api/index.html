@@ -463,8 +463,10 @@ tailwind.config = {
     background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25);
     border-radius: 4px; padding: 4px 8px; font-size: 11px;
     color: #cbd5e1;
+    transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
   }
   .graph-tool:focus { outline: none; border-color: rgba(34,211,238,0.6); }
+  .graph-tool:hover { border-color: rgba(34,211,238,0.45); }
   .graph-chip {
     display: inline-flex; align-items: center; gap: 4px;
     padding: 3px 9px; border-radius: 3px; font-size: 10px; font-weight: 600;
@@ -476,6 +478,92 @@ tailwind.config = {
   .graph-chip.threat   { background: rgba(251,146,60,0.18); color: #fed7aa; border-color: rgba(251,146,60,0.45); }
   .graph-chip.baseline { background: rgba(148,163,184,0.12); color: #94a3b8; border-color: rgba(148,163,184,0.3); }
   .graph-chip.off { opacity: 0.35; }
+
+  /* Correlation graph canvas + nodes — theme-aware via CSS classes so the
+     same D3 render code works in dark and light mode. */
+  .graph-canvas {
+    background: rgba(7,11,20,0.6);
+    border: 1px solid rgba(31,42,68,0.9);
+    border-radius: 8px;
+    transition: background 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+  }
+  .graph-links   { stroke: rgba(148,163,184,0.40); }
+  .graph-link-strong { stroke: rgba(244,63,94,0.55) !important; }
+  .graph-node-label {
+    fill: #cbd5e1;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 10px;
+    paint-order: stroke;
+    stroke: rgba(7,11,20,0.65);
+    stroke-width: 2.5px;
+    stroke-linejoin: round;
+  }
+  .graph-node-stroke { stroke: #0a0f1c; }
+
+  /* Light-mode overrides — match the legibility of dark-mode while keeping
+     the same severity color semantics. */
+  body.theme-light .graph-tool {
+    background: rgba(255,255,255,0.95);
+    border-color: rgba(148,163,184,0.45);
+    color: #0f172a;
+  }
+  body.theme-light .graph-tool:hover  { background: #f1f5f9; border-color: rgba(8,145,178,0.55); }
+  body.theme-light .graph-tool:focus  { outline: none; border-color: rgba(8,145,178,0.7); box-shadow: 0 0 0 3px rgba(8,145,178,0.15); }
+  body.theme-light .graph-chip.attack   { background: rgba(244,63,94,0.18); color: #9f1239; border-color: rgba(244,63,94,0.55); }
+  body.theme-light .graph-chip.threat   { background: rgba(251,146,60,0.22); color: #9a3412; border-color: rgba(251,146,60,0.55); }
+  body.theme-light .graph-chip.baseline { background: rgba(148,163,184,0.22); color: #334155; border-color: rgba(100,116,139,0.50); }
+  body.theme-light .graph-chip.off      { opacity: 0.45; }
+  body.theme-light .graph-canvas {
+    background:
+      radial-gradient(120% 80% at 50% -10%, rgba(8,145,178,0.06), transparent 60%),
+      linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+    border: 1px solid rgba(203,213,225,0.95);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.9), 0 1px 3px rgba(15,23,42,0.05);
+  }
+  body.theme-light .graph-links { stroke: rgba(71,85,105,0.45); }
+  body.theme-light .graph-node-label {
+    fill: #0f172a;
+    stroke: rgba(255,255,255,0.85);
+  }
+  body.theme-light .graph-node-stroke { stroke: #ffffff; }
+
+  /* Modal maximize/restore — toggled by JS for the correlation graph. The
+     `!important` flags beat the inline width/max-height set on the modal-card.
+     Using viewport units (vw/vh) keeps the chrome consistent at any zoom. */
+  .modal-card.modal-max {
+    width: 98vw !important;
+    max-width: 98vw !important;
+    max-height: 96vh !important;
+    height: 96vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .modal-card.modal-max > .graph-body { flex: 1 1 auto; min-height: 0; }
+  .graph-icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 28px; height: 28px;
+    border-radius: 5px;
+    border: 1px solid transparent;
+    color: rgb(var(--soc-mute));
+    background: transparent;
+    cursor: pointer;
+    transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
+  }
+  .graph-icon-btn:hover {
+    color: rgb(var(--soc-text));
+    background: rgba(148,163,184,0.12);
+    border-color: rgb(var(--soc-line) / 0.8);
+  }
+  .graph-icon-btn:focus-visible {
+    outline: none;
+    border-color: rgba(34,211,238,0.55);
+    box-shadow: 0 0 0 3px rgba(34,211,238,0.18);
+  }
+  body.theme-light .graph-icon-btn:hover { background: rgba(148,163,184,0.18); }
+  body.theme-light .graph-icon-btn:focus-visible {
+    border-color: rgba(8,145,178,0.6);
+    box-shadow: 0 0 0 3px rgba(8,145,178,0.18);
+  }
 
   /* Time Machine density bars */
   .tm-density {
@@ -614,6 +702,28 @@ tailwind.config = {
   }
   @keyframes popfade { from { opacity: 0; transform: translateY(-2px); } to { opacity: 1; } }
   .popover.hidden { display: none; }
+
+  /* Light-mode overrides for floating popovers + ctx menus + risk-breakdown
+     buttons. Without these the popover stays dark even when the page is in
+     light mode (the hex colors above are hard-coded). */
+  body.theme-light .popover {
+    background: rgba(255,255,255,0.98);
+    border-color: rgba(203,213,225,0.95);
+    box-shadow: 0 20px 50px -10px rgba(15,23,42,0.18);
+  }
+  body.theme-light .popover .border-soc-line { border-color: rgba(203,213,225,0.95); }
+  body.theme-light .ctx-menu {
+    background: rgba(255,255,255,0.98);
+    border-color: rgba(203,213,225,0.95);
+  }
+  /* Risk-breakdown action buttons — re-color the text + hover for light mode
+     (their borders are tinted to match severity, which works in both themes). */
+  body.theme-light #rbFilterCrit { color: #be123c; }
+  body.theme-light #rbFilterCrit:hover { background: rgba(244,63,94,0.08); }
+  body.theme-light #rbExport     { color: #0e7490; }
+  body.theme-light #rbExport:hover { background: rgba(8,145,178,0.08); }
+  body.theme-light #rbAckAll     { color: #475569; border-color: rgba(203,213,225,0.95); }
+  body.theme-light #rbAckAll:hover { color: #0f172a; }
 
   /* Right-click context menu */
   .ctx-menu {
@@ -965,6 +1075,20 @@ tailwind.config = {
   .pal-item .pal-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pal-item .pal-meta { color: #64748b; font-size: 11px; flex-shrink: 0; }
   .pal-empty { padding: 16px; color: #475569; font-size: 12px; text-align: center; }
+
+  /* Light-mode overrides for the command palette modal — the dark
+     hex-coded values above need theme-aware fallbacks so the palette
+     reads correctly when body has `theme-light`. */
+  body.theme-light #paletteModal           { background: rgba(15,23,42,0.35); }
+  body.theme-light .palette-card           { background: rgba(255,255,255,0.98); border-color: rgba(203,213,225,0.95); box-shadow: 0 30px 80px -10px rgba(15,23,42,0.18); }
+  body.theme-light .palette-card input     { color: #0f172a; border-bottom-color: rgba(203,213,225,0.95); }
+  body.theme-light .palette-card input::placeholder { color: #64748b; }
+  body.theme-light .pal-item               { color: #334155; }
+  body.theme-light .pal-item.sel,
+  body.theme-light .pal-item:hover         { background: rgba(8,145,178,0.10); color: #0f172a; }
+  body.theme-light .pal-kind               { background: rgba(15,23,42,0.04); color: #475569; border-color: rgba(203,213,225,0.95); }
+  body.theme-light .pal-item .pal-meta     { color: #64748b; }
+  body.theme-light .pal-empty              { color: #64748b; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -984,6 +1108,7 @@ tailwind.config = {
     <div class="sb-item" id="sbSim"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 3h6v3l4 4v8a4 4 0 0 1-4 4H9a4 4 0 0 1-4-4V10l4-4z"/><line x1="9" y1="14" x2="15" y2="14"/></svg><span class="sb-text">Rule Simulator</span><span class="sb-tip">Rule Simulator</span></div>
     <div class="sb-item" id="sbHoneypots"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 8v8l8 5 8-5V8z"/><path d="M9 13h6"/><path d="M12 11v5"/></svg><span class="sb-text">Honeypots</span><span class="sb-tip">Honeypots</span></div>
     <div class="sb-item" id="sbKprobes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg><span class="sb-text">Kprobe Perf</span><span class="sb-tip">Kprobe Perf</span></div>
+    <a class="sb-item" id="sbChoke" href="/choke" style="text-decoration:none; color:inherit;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="6" y1="18" x2="18" y2="6"/></svg><span class="sb-text">Choke Gateway</span><span class="sb-tip">Choke Gateway · /choke</span></a>
   </div>
 
   <div class="sb-section">
@@ -1034,7 +1159,7 @@ tailwind.config = {
 
     <div class="flex-1 max-w-xl">
       <div class="relative">
-        <input id="searchInput" type="text" placeholder='Search… (try: severity:critical policy:T1003 score:>50 process:bash)'
+        <input id="searchInput" type="text" placeholder='Search… (try: severity:critical policy:T1003 score:>50 process:bash pid:1574)'
           class="w-full bg-soc-panel/80 border border-soc-line text-sm rounded-md px-9 py-2 placeholder:text-soc-mute focus:outline-none focus:border-soc-accent/60 focus:ring-1 focus:ring-soc-accent/30">
         <svg class="absolute left-2.5 top-2.5 w-4 h-4 text-soc-mute" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
         <kbd class="absolute right-2.5 top-2 text-[10px] text-soc-mute border border-soc-line rounded px-1.5 py-0.5">/</kbd>
@@ -1272,7 +1397,12 @@ tailwind.config = {
         <span id="sortBtnSeverity" class="sort-btn"        data-sort="severity">severity</span>
         <span id="sortBtnScore"    class="sort-btn"        data-sort="score">score</span>
       </div>
-      <div id="alertList" class="overflow-y-auto scrollbar-thin divide-y divide-soc-line max-h-[60vh]"></div>
+      <!-- min-h reserves vertical space even when only a handful of alerts
+           are loaded, so the panel always reaches roughly the same
+           bottom edge as the live event stream below. max-h scales with
+           the viewport so on tall monitors the list keeps growing
+           instead of stopping at a fixed cap. -->
+      <div id="alertList" class="overflow-y-auto scrollbar-thin divide-y divide-soc-line min-h-[60vh] max-h-[calc(100vh-220px)]"></div>
       <div id="alertEmpty" class="text-center text-soc-mute text-xs py-8 hidden">no alerts match current filters</div>
     </div>
 
@@ -1377,7 +1507,46 @@ tailwind.config = {
       <button id="drillAck" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text">Acknowledge</button>
       <button id="drillResolve" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-emerald-400">Resolve</button>
       <button id="drillCopyId" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text">Copy exec_id</button>
+      <button id="drillCopyPid" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-text" title="Copy the leaf process PID">Copy PID</button>
       <button id="drillFilterProc" class="px-3 py-1 rounded border border-soc-line text-[11px] text-soc-dim hover:text-soc-accent">Filter by process</button>
+      <button id="drillChoke" class="px-3 py-1 rounded border border-rose-500/40 text-[11px] text-rose-400 hover:text-rose-300 hover:border-rose-400" title="Choke / jail this alert's process via the gateway">🔒 Choke</button>
+    </div>
+
+    <!-- Choke action popover — shown when drillChoke is clicked. Targets
+         the leaf process of the alert's chain (deepest = the offending
+         binary). Lets the operator pick action + reason without leaving
+         the alert detail panel. Inlined here rather than a modal so the
+         investigator keeps full alert context visible while choking. -->
+    <div id="drillChokeBox" class="mb-4 hidden border border-rose-500/40 rounded p-3 bg-rose-950/20">
+      <div class="flex items-center gap-2 mb-2">
+        <span class="text-[10px] uppercase tracking-widest text-rose-300 font-bold">🔒 Choke this process</span>
+        <span id="drillChokeTarget" class="text-[11px] text-soc-mute font-mono"></span>
+        <div class="flex-1"></div>
+        <button id="drillChokeClose" class="text-soc-mute hover:text-soc-text text-sm leading-none" aria-label="Close">×</button>
+      </div>
+      <div class="flex gap-2 flex-wrap mb-2">
+        <button class="px-2 py-1 text-[11px] rounded border border-soc-line hover:border-soc-accent/40" data-drill-choke-act="throttle">↓ throttle</button>
+        <button class="px-2 py-1 text-[11px] rounded border border-amber-500/40 text-amber-400 hover:bg-amber-900/20" data-drill-choke-act="tarpit">≋ tarpit</button>
+        <button class="px-2 py-1 text-[11px] rounded border border-amber-500/40 text-amber-400 hover:bg-amber-900/20" data-drill-choke-act="quarantine">⌖ quarantine (freeze)</button>
+        <button class="px-2 py-1 text-[11px] rounded border border-rose-500/40 text-rose-400 hover:bg-rose-900/20" data-drill-choke-act="sever">✕ sever (SIGKILL)</button>
+      </div>
+      <div id="drillChokeWarn" class="hidden text-[11px] mb-2 px-2 py-2 rounded border border-amber-500/40 bg-amber-950/20 text-amber-300 leading-snug"></div>
+      <input id="drillChokeReason" type="text" placeholder="audit reason (required)" class="w-full text-[11px] px-2 py-1 rounded bg-soc-panel border border-soc-line text-soc-text font-mono mb-2">
+      <div class="flex items-center gap-3 flex-wrap text-[11px] text-soc-mute">
+        <label class="flex items-center gap-1">
+          <input type="checkbox" id="drillChokeDescendants"> include descendants
+        </label>
+        <label class="flex items-center gap-1">
+          <input type="checkbox" id="drillChokeRevert"> auto-revert in
+          <select id="drillChokeRevertSec" class="bg-soc-panel border border-soc-line rounded text-[11px] px-1">
+            <option value="60">1m</option>
+            <option value="300" selected>5m</option>
+            <option value="900">15m</option>
+            <option value="3600">1h</option>
+          </select>
+        </label>
+        <span id="drillChokeStatus" class="ml-auto"></span>
+      </div>
     </div>
 
     <div class="mb-5">
@@ -1459,9 +1628,22 @@ tailwind.config = {
         <h2 class="text-base font-semibold text-soc-text">Process correlation graph</h2>
         <p class="text-[11px] text-soc-mute">Each node is a process (exec_id). Edges are parent→child. Color is the alert score touching that process. Drag to pan; scroll to zoom; click a node to drill in.</p>
       </div>
-      <div class="flex items-center gap-3">
-        <span class="text-[11px] text-soc-mute" id="graphStats">—</span>
-        <button onclick="closeGraphModal()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+      <div class="flex items-center gap-2">
+        <span class="text-[11px] text-soc-mute mr-1" id="graphStats">—</span>
+        <button id="graphMaxBtn" class="graph-icon-btn" title="Maximize (F)" aria-label="Maximize graph">
+          <svg id="graphMaxIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="15 4 20 4 20 9"/>
+            <polyline points="9 20 4 20 4 15"/>
+            <line x1="20" y1="4" x2="14" y2="10"/>
+            <line x1="4" y1="20" x2="10" y2="14"/>
+          </svg>
+        </button>
+        <button id="graphCloseBtn" class="graph-icon-btn" title="Close (Esc)" aria-label="Close graph" onclick="closeGraphModal()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="5" y1="5" x2="19" y2="19"/>
+            <line x1="19" y1="5" x2="5" y2="19"/>
+          </svg>
+        </button>
       </div>
     </div>
     <div class="flex items-center gap-2 mb-3 flex-wrap">
@@ -1473,10 +1655,10 @@ tailwind.config = {
       <span class="text-[10px] text-soc-mute ml-2">Layout:</span>
       <button id="graphLayoutForce"  class="graph-tool" title="Force-directed (default)">⚛ Force</button>
       <button id="graphLayoutRadial" class="graph-tool" title="Radial — root processes at center">◎ Radial</button>
-      <span class="text-[10px] text-soc-mute ml-auto">Drag · scroll-zoom · click node to drill</span>
+      <span class="text-[10px] text-soc-mute ml-auto">Drag · scroll-zoom · click node to drill · F to toggle full screen</span>
     </div>
-    <div class="grid grid-cols-[1fr_240px] gap-3">
-      <svg id="graphSvg" width="100%" height="600" style="background: rgba(7,11,20,0.6); border: 1px solid rgba(31,42,68,0.9); border-radius: 8px;"></svg>
+    <div class="graph-body grid grid-cols-[1fr_240px] gap-3">
+      <svg id="graphSvg" class="graph-canvas" width="100%" height="600"></svg>
       <div id="graphSidebar" class="bg-soc-panel/40 border border-soc-line rounded-lg p-3 text-[11px] overflow-y-auto scrollbar-thin" style="height: 600px;">
         <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Selection</div>
         <div id="graphSidebarBody" class="text-soc-mute">Click a node to inspect</div>
@@ -1539,6 +1721,39 @@ tailwind.config = {
 </div>
 
 <!-- ─────────── COMMAND PALETTE ─────────── -->
+<!-- Export confirmation modal — shown before a PDF download starts so the
+     operator knows what will be exported. Reuses the existing modal-back
+     and modal-card classes for visual consistency with the rest of the
+     dashboard. JS opens/closes via classList. -->
+<div id="exportConfirmModal" class="modal-back" onclick="if(event.target===this) closeExportConfirm()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(440px, 92vw);">
+    <div class="flex items-start justify-between mb-3">
+      <div class="flex items-center gap-2">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-soc-accent">
+          <path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/>
+        </svg>
+        <h2 class="text-base font-semibold text-soc-text">Export current view to PDF</h2>
+      </div>
+      <button onclick="closeExportConfirm()" class="text-soc-mute hover:text-soc-text text-xl leading-none" aria-label="Close">×</button>
+    </div>
+    <p class="text-[11px] text-soc-mute mb-3 leading-relaxed">
+      The PDF is generated client-side and saved to your Downloads folder. Nothing is
+      sent off-host. The snapshot below is what will be embedded.
+    </p>
+    <div id="exportConfirmCounts" class="mb-4"></div>
+    <div class="flex justify-end gap-2">
+      <button onclick="closeExportConfirm()"
+              class="px-3 py-1.5 text-[12px] rounded border border-soc-line/80 text-soc-dim hover:text-soc-text hover:border-soc-line">
+        Cancel
+      </button>
+      <button onclick="closeExportConfirm(); exportPDF();"
+              class="px-3 py-1.5 text-[12px] rounded border border-emerald-500/40 bg-emerald-900/30 text-emerald-200 hover:bg-emerald-900/50">
+        Export PDF
+      </button>
+    </div>
+  </div>
+</div>
+
 <div id="paletteModal">
   <div class="palette-card">
     <input id="paletteInput" type="text" autocomplete="off" placeholder="Search alerts, processes, MITRE techniques, attacks, actions…">
@@ -1726,6 +1941,36 @@ tailwind.config = {
 // ─────────── State ───────────
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } };
 const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+
+// copyToClipboard works on both HTTPS/localhost (navigator.clipboard) and
+// plain HTTP (document.execCommand fallback). The engine ships HTTP by
+// default; modern browsers gate `navigator.clipboard` to secure contexts
+// only, so without this fallback every "Copy exec_id" button silently
+// no-op'd on the VM. Returns a Promise that resolves(true) on success
+// and resolves(false) on failure (no rejection — callers can `.then(ok…)`
+// without try/catch).
+function copyToClipboard(text) {
+  return new Promise((resolve) => {
+    const t = String(text || '');
+    if (navigator.clipboard && window.isSecureContext) {
+      navigator.clipboard.writeText(t).then(() => resolve(true), () => fallback());
+      return;
+    }
+    fallback();
+    function fallback() {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = t; ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none;';
+        document.body.appendChild(ta);
+        ta.select(); ta.setSelectionRange(0, t.length);
+        const ok = document.execCommand('copy');
+        document.body.removeChild(ta);
+        resolve(!!ok);
+      } catch (e) { resolve(false); }
+    }
+  });
+}
 
 const state = {
   alerts: [],
@@ -3279,6 +3524,39 @@ function setAckState(id, newState) {
 }
 
 // ─────────── Export ───────────
+// confirmExportPDF: show a modal listing what will be in the PDF and
+// require an explicit click before triggering the download. Avoids the
+// surprise "file just appeared in your Downloads" UX. Wired to the
+// sidebar's `sbExport` click (the keyboard shortcut bypasses confirm so
+// power users can still export quickly).
+function confirmExportPDF() {
+  // Snapshot the counts shown on the dashboard right now so the modal
+  // tells the operator exactly what's going to be in the PDF.
+  const totalAlerts   = (state.alerts || []).length;
+  const totalEvents   = (state.events || []).length;
+  const counts = {
+    critical: 0, high: 0, medium: 0, low: 0, info: 0,
+  };
+  for (const a of (state.alerts || [])) counts[sevOf(a)] = (counts[sevOf(a)] || 0) + 1;
+  const sevLine = ['critical','high','medium','low','info']
+    .map(s => `<span class="sev-tag ${s}">${s} ${counts[s]||0}</span>`).join(' ');
+  const modal = $('exportConfirmModal');
+  $('exportConfirmCounts').innerHTML =
+    `<div class="text-xs text-soc-mute mb-2">Snapshot at ${new Date().toLocaleString()}</div>` +
+    `<div class="grid grid-cols-2 gap-3 text-xs">` +
+    `  <div class="glass rounded p-2"><div class="text-soc-mute text-[10px] uppercase tracking-wider">Alerts</div><div class="text-soc-text font-mono text-base">${totalAlerts}</div></div>` +
+    `  <div class="glass rounded p-2"><div class="text-soc-mute text-[10px] uppercase tracking-wider">Events</div><div class="text-soc-text font-mono text-base">${totalEvents}</div></div>` +
+    `</div>` +
+    `<div class="mt-3 flex flex-wrap gap-1">${sevLine}</div>`;
+  modal.classList.add('open');
+  modal.style.display = 'flex';
+}
+function closeExportConfirm() {
+  const m = $('exportConfirmModal');
+  m.classList.remove('open');
+  m.style.display = 'none';
+}
+
 function exportPDF() {
   if (!window.jspdf || !window.jspdf.jsPDF) {
     alert('PDF library still loading — try again in a second.');
@@ -3778,8 +4056,19 @@ function showAlertContextMenu(e, id) {
         state.search = execId; $('searchInput').value = execId; renderAlertList();
       } },
     { sep: true },
-    { label: 'Copy exec_id',   action: () => navigator.clipboard.writeText(execId) },
-    { label: 'Copy as JSON',   action: () => navigator.clipboard.writeText(JSON.stringify(a, null, 2)) },
+    { label: 'Copy exec_id',   action: () => copyToClipboard(execId) },
+    { label: 'Copy PID',       action: () => {
+        // PID isn't on the alert directly — pull from the most recent
+        // event for this exec_id.
+        for (const e of state.events) {
+          if (pick(e, 'exec_id', 'ExecID') === execId) {
+            copyToClipboard(String(pick(e, 'pid', 'PID') || ''));
+            return;
+          }
+        }
+        copyToClipboard('');
+    }},
+    { label: 'Copy as JSON',   action: () => copyToClipboard(JSON.stringify(a, null, 2)) },
   ];
   const html = items.map(it => it.sep
     ? '<div class="ctx-sep"></div>'
@@ -5172,18 +5461,86 @@ async function showGraphModal() {
   }
 
   $('graphStats').textContent = nodes.size + ' processes · ' + edges.length + ' edges';
+  // Bind maximize + resize + key handlers once. drawGraph() rebinds the
+  // toolbar each render, but these belong to the modal lifecycle.
+  if (!window._graphChromeBound) {
+    window._graphChromeBound = true;
+    const maxBtn = document.getElementById('graphMaxBtn');
+    if (maxBtn) maxBtn.addEventListener('click', () => setGraphMaximized(!state.graphMaximized));
+    window.addEventListener('resize', () => {
+      if (!document.getElementById('graphModal').classList.contains('open')) return;
+      _resizeGraphCanvas();
+      if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph();
+    });
+    document.addEventListener('keydown', (ev) => {
+      if (!document.getElementById('graphModal').classList.contains('open')) return;
+      // Don't hijack typing in the search field
+      if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'TEXTAREA')) return;
+      if (ev.key === 'Escape') {
+        if (state.graphMaximized) { setGraphMaximized(false); ev.preventDefault(); }
+        else { closeGraphModal(); }
+      } else if (ev.key === 'f' || ev.key === 'F') {
+        setGraphMaximized(!state.graphMaximized);
+        ev.preventDefault();
+      }
+    });
+  }
+  _resizeGraphCanvas();
   renderGraph([...nodes.values()], edges);
 }
 function closeGraphModal() {
   $('graphModal').classList.remove('open');
+  // Reset to the unmaximized state so a fresh open is predictable.
+  if (state.graphMaximized) setGraphMaximized(false);
   if (window._graphSim) { window._graphSim.stop(); window._graphSim = null; }
 }
 
 // Persisted graph view state
-state.graphFilters = lsGet('soc.graphFilters', { attack: true, threat: true, baseline: false });
-state.graphLayout  = lsGet('soc.graphLayout', 'force');
-state.graphSearch  = '';
+state.graphFilters    = lsGet('soc.graphFilters', { attack: true, threat: true, baseline: false });
+state.graphLayout     = lsGet('soc.graphLayout', 'force');
+state.graphSearch     = '';
+state.graphMaximized  = false;
 let _graphRaw = { nodes: [], links: [] };
+
+// SVG icons for maximize and restore — matched to the icon-button slot so
+// both states render at identical optical weight.
+const _GRAPH_ICON_MAX = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<polyline points="15 4 20 4 20 9"/><polyline points="9 20 4 20 4 15"/>' +
+  '<line x1="20" y1="4" x2="14" y2="10"/><line x1="4" y1="20" x2="10" y2="14"/></svg>';
+const _GRAPH_ICON_MIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<polyline points="20 9 15 9 15 4"/><polyline points="4 15 9 15 9 20"/>' +
+  '<line x1="15" y1="9" x2="21" y2="3"/><line x1="9" y1="15" x2="3" y2="21"/></svg>';
+
+// Resize the graph SVG + sidebar to fit the current modal size. The D3 layout
+// reads height/width from the SVG element on each redraw, so callers should
+// invoke drawGraph() afterwards to recenter the simulation.
+function _resizeGraphCanvas() {
+  const svg     = document.getElementById('graphSvg');
+  const sidebar = document.getElementById('graphSidebar');
+  if (!svg) return;
+  let h;
+  if (state.graphMaximized) {
+    // 96vh modal − ~140px chrome (header, toolbar, padding); floor at 420.
+    h = Math.max(420, Math.floor(window.innerHeight * 0.96) - 140);
+  } else {
+    h = 600;
+  }
+  svg.setAttribute('height', String(h));
+  if (sidebar) sidebar.style.height = h + 'px';
+}
+
+function setGraphMaximized(on) {
+  state.graphMaximized = !!on;
+  const card = document.querySelector('#graphModal .modal-card');
+  if (card) card.classList.toggle('modal-max', state.graphMaximized);
+  const btn  = document.getElementById('graphMaxBtn');
+  const icon = document.getElementById('graphMaxIcon');
+  if (btn)  btn.title = state.graphMaximized ? 'Restore (F)' : 'Maximize (F)';
+  if (icon) icon.outerHTML = (state.graphMaximized ? _GRAPH_ICON_MIN : _GRAPH_ICON_MAX)
+    .replace('<svg', '<svg id="graphMaxIcon"');
+  _resizeGraphCanvas();
+  if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph();
+}
 
 function renderGraph(nodes, links) {
   // Annotate each node with its classification
@@ -5233,11 +5590,15 @@ function drawGraph() {
   const radius = (n) => 6 + Math.min(22, Math.sqrt(Math.max(n.score || 0, n.alerts || 0)));
 
   const link = g.append('g')
-    .attr('stroke', 'rgba(148,163,184,0.35)').attr('stroke-width', 1)
+    .attr('class', 'graph-links').attr('stroke-width', 1)
     .selectAll('line').data(links).join('line')
     .attr('stroke-width', d => {
       const ts = typeof d.target === 'object' ? d.target : nodes.find(n => n.id === d.target);
       return ts && ts.score >= 40 ? 2.5 : 1;
+    })
+    .classed('graph-link-strong', d => {
+      const ts = typeof d.target === 'object' ? d.target : nodes.find(n => n.id === d.target);
+      return !!(ts && ts.score >= 40);
     });
 
   const node = g.append('g')
@@ -5260,17 +5621,17 @@ function drawGraph() {
     .attr('stroke-dasharray', '2,2');
 
   node.append('circle')
+    .attr('class', 'graph-node-stroke')
     .attr('r', d => radius(d))
     .attr('fill', d => color(d))
-    .attr('stroke', '#0a0f1c').attr('stroke-width', 1.5);
+    .attr('stroke-width', 1.5);
 
   node.append('title').text(d => d.bin + '  (' + d.cls + ', score=' + d.score + ', alerts=' + d.alerts + ')');
 
   // Show labels only for high-signal nodes to reduce clutter
   node.filter(d => d.score >= 5 || d.cls === 'attack').append('text')
+    .attr('class', 'graph-node-label')
     .attr('x', d => radius(d) + 4).attr('y', 3)
-    .attr('font-size', 10).attr('fill', '#cbd5e1')
-    .attr('font-family', 'ui-monospace,monospace')
     .text(d => (d.bin || '').split('/').pop());
 
   let sim;
@@ -5358,14 +5719,31 @@ function renderGraphSidebar(node, links) {
     '<div class="space-y-1 mt-3 pt-3 border-t border-soc-line">' +
       '<button class="w-full text-[10px] px-2 py-1.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10" data-gs-drill="' + escHTML(node.id) + '">Open drill panel →</button>' +
       '<button class="w-full text-[10px] px-2 py-1.5 rounded border border-soc-line text-soc-mute hover:text-soc-text" data-gs-copy="' + escHTML(node.id) + '">Copy exec_id</button>' +
+      '<button class="w-full text-[10px] px-2 py-1.5 rounded border border-soc-line text-soc-mute hover:text-soc-text" data-gs-copy-pid="' + escHTML(node.id) + '">Copy PID</button>' +
     '</div>';
   body.querySelectorAll('[data-gs-drill]').forEach(b => b.addEventListener('click', () => {
     closeGraphModal(); openDrillByExec(b.dataset.gsDrill);
   }));
   body.querySelectorAll('[data-gs-copy]').forEach(b => b.addEventListener('click', () => {
-    navigator.clipboard.writeText(b.dataset.gsCopy);
-    b.textContent = '✓ copied';
-    setTimeout(() => b.textContent = 'Copy exec_id', 800);
+    copyToClipboard(b.dataset.gsCopy).then(ok => {
+      b.textContent = ok ? '✓ copied' : '✕ failed';
+      setTimeout(() => b.textContent = 'Copy exec_id', 800);
+    });
+  }));
+  // Copy PID: look up first event whose exec_id matches the node, copy
+  // its pid. Same affordance as the alert-panel button: failure-tolerant
+  // text feedback right on the button.
+  body.querySelectorAll('[data-gs-copy-pid]').forEach(b => b.addEventListener('click', () => {
+    const eid = b.dataset.gsCopyPid;
+    let pid = '';
+    for (const e of state.events) {
+      if (pick(e, 'exec_id', 'ExecID') === eid) { pid = String(pick(e, 'pid', 'PID') || ''); break; }
+    }
+    if (!pid) { b.textContent = '✕ no pid'; setTimeout(() => b.textContent = 'Copy PID', 800); return; }
+    copyToClipboard(pid).then(ok => {
+      b.textContent = ok ? ('✓ ' + pid) : '✕ failed';
+      setTimeout(() => b.textContent = 'Copy PID', 800);
+    });
   }));
 }
 
@@ -5484,6 +5862,27 @@ function matchPred(a, key, op, val) {
     case 'exec_id': {
       const id = String(pick(a, 'exec_id', 'ExecID') || '');
       return id.includes(val);
+    }
+    case 'pid': {
+      // Alerts don't carry a PID directly — they describe chains. Match
+      // against any event whose exec_id is the alert's exec_id. Supports
+      // numeric ops too: pid:>1000, pid:<5, etc.
+      const id = pick(a, 'exec_id', 'ExecID');
+      if (!id) return false;
+      const want = parseInt(val, 10);
+      if (Number.isNaN(want)) return false;
+      for (const e of state.events) {
+        if (pick(e, 'exec_id', 'ExecID') !== id) continue;
+        const pid = pick(e, 'pid', 'PID') || 0;
+        switch (op) {
+          case '>':  if (pid >  want) return true; break;
+          case '>=': if (pid >= want) return true; break;
+          case '<':  if (pid <  want) return true; break;
+          case '<=': if (pid <= want) return true; break;
+          default:   if (pid === want) return true;
+        }
+      }
+      return false;
     }
     case 'ack': return ackStateOf(a) === valLower;
     case 'pinned':
@@ -5953,17 +6352,31 @@ function passesFilter(a) {
 
   if (state.search) {
     const hay = JSON.stringify(a).toLowerCase();
+    const q = state.search.trim();
     // If the search has any `key:value` token, route through the DSL parser.
-    // Otherwise fall back to fast substring match.
-    if (/\S:\S/.test(state.search) || /\b(AND|OR|NOT)\b/i.test(state.search)) {
+    // Otherwise fall back to fast substring match — with one extra trick:
+    // a bare numeric search (e.g. "1574") auto-broadens to also match PID,
+    // so operators don't have to type pid:1574 every time they paste a PID.
+    if (/\S:\S/.test(q) || /\b(AND|OR|NOT)\b/i.test(q)) {
       try {
-        const ops = parseDSL(state.search);
+        const ops = parseDSL(q);
         if (!dslPredicate(ops, a, hay)) return false;
       } catch (e) {
-        if (!hay.includes(state.search.toLowerCase())) return false;
+        if (!hay.includes(q.toLowerCase())) return false;
       }
+    } else if (/^\d{1,7}$/.test(q)) {
+      // Pure-numeric → try substring (covers exec_id digits too) OR pid match
+      const want = parseInt(q, 10);
+      const id = pick(a, 'exec_id', 'ExecID');
+      let pidHit = false;
+      if (id) {
+        for (const e of state.events) {
+          if (pick(e, 'exec_id', 'ExecID') === id && (pick(e, 'pid', 'PID') || 0) === want) { pidHit = true; break; }
+        }
+      }
+      if (!pidHit && !hay.includes(q.toLowerCase())) return false;
     } else {
-      if (!hay.includes(state.search.toLowerCase())) return false;
+      if (!hay.includes(q.toLowerCase())) return false;
     }
   }
   return true;
@@ -6568,6 +6981,109 @@ function toggleProcFilter(bin) {
   renderFilterChips(); renderAlertList(); renderTopProcs(); renderNetwork();
 }
 
+// ─────────── Choke from alert detail ──────────────────────────────────
+// state.drillChoke is set by the drill-load code with {execId, pid, binary}
+// of the alert's leaf process. The popover shows action buttons; clicking
+// one POSTs /api/choke/jail and surfaces the outcome inline so the
+// investigator sees the result without leaving the alert panel.
+
+// System-critical binaries — severing these takes the host down or
+// breaks operator access. The popover surfaces a yellow warning when the
+// target matches; the operator must explicitly type the reason and the
+// confirm() click then carries the consequences. (We don't *block* —
+// these are real attack vectors and the SOC sometimes needs to act.)
+const SYSTEM_CRITICAL_BINS = [
+  '/usr/sbin/sshd', '/usr/sbin/sshd-session',
+  '/usr/lib/systemd/systemd', '/sbin/init',
+  '/usr/bin/dockerd', '/usr/bin/containerd', '/usr/bin/containerd-shim-runc-v2',
+  '/usr/sbin/cron', '/usr/sbin/rsyslogd',
+  '/usr/bin/snapd',
+];
+function isSystemCritical(binary) {
+  if (!binary) return false;
+  return SYSTEM_CRITICAL_BINS.includes(binary) || binary.startsWith('/usr/lib/systemd/');
+}
+
+function openDrillChokeBox() {
+  const t = state.drillChoke || {};
+  if (!t.pid) {
+    alert('No PID resolved for this alert yet — wait for the chain to load.');
+    return;
+  }
+  $('drillChokeBox').classList.remove('hidden');
+  $('drillChokeTarget').textContent =
+    `pid ${t.pid} · ${t.binary || '(unknown)'}`;
+  $('drillChokeReason').value = '';
+  $('drillChokeDescendants').checked = false;
+  $('drillChokeRevert').checked = false;
+  $('drillChokeStatus').textContent = '';
+  // Show / hide the system-critical warning line.
+  const warn = $('drillChokeWarn');
+  if (isSystemCritical(t.binary)) {
+    warn.classList.remove('hidden');
+    warn.innerHTML = '⚠ <span class="font-semibold">' + escHTML(t.binary) +
+      '</span> is a system daemon. Sever sends SIGKILL to this PID; '
+      + 'systemd will respawn it on a new PID, but in-flight sessions / sockets break. '
+      + 'If your goal is to <em>stop the service</em>, also disable the systemd unit.';
+  } else {
+    warn.classList.add('hidden');
+  }
+  setTimeout(() => $('drillChokeReason').focus(), 50);
+}
+
+document.addEventListener('click', e => {
+  if (e.target.id === 'drillChokeClose') {
+    $('drillChokeBox').classList.add('hidden');
+    return;
+  }
+  const btn = e.target.closest('[data-drill-choke-act]');
+  if (btn) doDrillChoke(btn.dataset.drillChokeAct);
+});
+
+async function doDrillChoke(action) {
+  const t = state.drillChoke || {};
+  if (!t.pid) return;
+  const reason = $('drillChokeReason').value.trim();
+  if (!reason) {
+    $('drillChokeStatus').innerHTML = '<span class="text-rose-400">reason required for audit</span>';
+    $('drillChokeReason').focus();
+    return;
+  }
+  const descendants = $('drillChokeDescendants').checked;
+  const revertOn = $('drillChokeRevert').checked;
+  const revertSec = revertOn ? +$('drillChokeRevertSec').value : 0;
+
+  const high = (action === 'sever' || action === 'quarantine');
+  if (high && !confirm(`${action.toUpperCase()} pid ${t.pid} (${t.binary || '?'})${descendants?' + descendants':''}?\n\nThis is a high-impact action.`)) {
+    return;
+  }
+
+  $('drillChokeStatus').innerHTML = '<span class="text-soc-mute">applying…</span>';
+  try {
+    const r = await fetch('/api/choke/jail', {
+      method: 'POST', headers: {'content-type': 'application/json'},
+      body: JSON.stringify({
+        pids: [t.pid], descendants, action, reason,
+        revert_after_seconds: revertSec,
+      })
+    });
+    if (!r.ok) {
+      const txt = await r.text();
+      $('drillChokeStatus').innerHTML = '<span class="text-rose-400">failed: ' + escHTML(txt) + '</span>';
+      return;
+    }
+    const j = await r.json();
+    const okN = (j.results || []).filter(x => x.ok).length;
+    const total = (j.results || []).length;
+    const note = revertOn ? ` · revert in ${revertSec/60}m` : '';
+    $('drillChokeStatus').innerHTML =
+      '<span class="text-emerald-400">✓ ' + action + ': ' + okN + '/' + total +
+      ' applied' + escHTML(note) + '</span>';
+  } catch (e) {
+    $('drillChokeStatus').innerHTML = '<span class="text-rose-400">network error: ' + escHTML(String(e)) + '</span>';
+  }
+}
+
 function renderIOCs() {
   const files = new Map();
   const nets = new Map();
@@ -6701,13 +7217,38 @@ async function renderDrill(a, execId) {
     $('drillPin').onclick      = () => togglePin(id);
     $('drillAck').onclick      = () => setAckState(id, ack === 'ack' ? 'new' : 'ack');
     $('drillResolve').onclick  = () => setAckState(id, ack === 'resolved' ? 'new' : 'resolved');
-    $('drillCopyId').onclick   = () => navigator.clipboard.writeText(execId || '');
+    $('drillCopyId').onclick   = () => copyToClipboard(execId || '').then(ok => {
+      const t = $('drillCopyId').textContent;
+      $('drillCopyId').textContent = ok ? '✓ copied' : '✕ failed';
+      setTimeout(() => { $('drillCopyId').textContent = t; }, 800);
+    });
+    // Copy PID — pulls from state.drillChoke, populated by the chain-load
+    // code below. If the chain isn't loaded yet (button clicked the moment
+    // the panel opens), fall back to the most recent event's pid.
+    $('drillCopyPid').onclick  = () => {
+      const pid = (state.drillChoke && state.drillChoke.pid) || 0;
+      const fb = $('drillCopyPid');
+      const t = fb.textContent;
+      if (!pid) {
+        fb.textContent = '✕ no pid yet'; setTimeout(() => fb.textContent = t, 1000);
+        return;
+      }
+      copyToClipboard(String(pid)).then(ok => {
+        fb.textContent = ok ? '✓ copied · ' + pid : '✕ failed';
+        setTimeout(() => fb.textContent = t, 800);
+      });
+    };
     $('drillFilterProc').onclick = () => {
       const bin = execIdToBin(execId);
       if (bin) toggleProcFilter(bin);
     };
     $('drillNotes').value = state.alertNotes[id] || '';
     $('drillNotes').oninput = (e) => saveNote(id, e.target.value);
+
+    // Choke button: opens an inline action picker. The leaf chain node
+    // is set later in the async chain-fetch below; we keep state.drillChoke
+    // populated so the popover always knows the right target.
+    $('drillChoke').onclick = openDrillChokeBox;
   }
 
   if (!execId) {
@@ -6720,6 +7261,20 @@ async function renderDrill(a, execId) {
     const data = await res.json();
     const chain = data.chain || [];
     const events = data.events || [];
+
+    // Capture the leaf process so the Choke button has a target. The
+    // chain is parent→child, so the last element is the actual offending
+    // process. We also fall back to the most recent event's pid if the
+    // chain is empty (rare but happens when the tree's TTL has GC'd).
+    const leaf = chain.length ? chain[chain.length - 1] : null;
+    const leafPID = leaf ? (pick(leaf, 'pid', 'PID') || 0)
+                         : (events[0] ? pick(events[0], 'pid', 'PID') : 0);
+    const leafBin = leaf ? (pick(leaf, 'binary', 'Binary') || '')
+                         : (events[0] ? pick(events[0], 'binary', 'Binary') : '');
+    state.drillChoke = { execId, pid: leafPID, binary: leafBin };
+    // Hide the popover whenever the alert changes; it's per-alert state.
+    $('drillChokeBox').classList.add('hidden');
+    $('drillChokeStatus').textContent = '';
 
     $('drillEvents').textContent = events.length;
     $('drillDepth').textContent = chain.length;
@@ -6953,7 +7508,7 @@ function wire() {
   // Version-update toast: reload / dismiss
   $('versionToastReload').addEventListener('click', () => location.reload());
   $('versionToastDismiss').addEventListener('click', hideVersionToast);
-  $('sbExport').addEventListener('click', exportPDF);
+  $('sbExport').addEventListener('click', confirmExportPDF);
   $('sbHelp').addEventListener('click', showHelp);
   $('sbPolicies').addEventListener('click', showPoliciesModal);
   $('sbAttacks').addEventListener('click', showAttacksModal);
@@ -7031,8 +7586,18 @@ function wire() {
   });
 
   // Global keyboard shortcuts
+  // `inField` was previously `activeElement === searchInput`, which only
+  // shielded shortcuts while the global search box was focused. Every
+  // other input/textarea (alert notes, choke-reason, watchlist editor,
+  // policy DSL, etc.) leaked single-key shortcuts — typing "Thr…" in the
+  // choke reason box would fire `e`→exportPDF, `r`→resolve, etc. This
+  // expansion catches any text-entry surface, including contenteditable.
   document.addEventListener('keydown', (e) => {
-    const inField = document.activeElement === $('searchInput');
+    const ae = document.activeElement;
+    const inField = !!ae && (
+      ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' ||
+      ae.tagName === 'SELECT' || ae.isContentEditable
+    );
     if (e.key === '/' && !inField) {
       e.preventDefault(); $('searchInput').focus(); return;
     }

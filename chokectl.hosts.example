@@ -1,0 +1,15 @@
+# chokectl hosts file — one entry per line, # comments allowed.
+# Format:  <name>  <base-url>
+# `chokectl --hosts=PATH` overrides; otherwise CHOKECTL_HOSTS env var or
+# ./chokectl.hosts in the current directory.
+#
+# Auth uses $CHOKE_USER / $CHOKE_PASS (defaults: admin / ebpf-soc-demo).
+# Every host in this file must accept the same credentials.
+
+ebpf-1   http://192.168.252.3:8080
+# ebpf-2   http://192.168.252.4:8080
+# ebpf-3   http://10.0.1.13:8080
+# ebpf-4   http://10.0.1.14:8080
+# ebpf-5   http://10.0.1.15:8080
+# ebpf-6   http://10.0.1.16:8080
+# ebpf-7   http://10.0.1.17:8080
