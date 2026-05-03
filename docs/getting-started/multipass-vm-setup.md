@@ -15,7 +15,21 @@ multipass stop ebpf
 multipass delete ebpf
 multipass purge
 multipass delete --purge ebpf 2>&1 | tail -3; echo "---"; multipass list 2>&1 | head -10
+
+# Stop engine before redeploy
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ubuntu@192.168.252.4 "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64; sleep 1; sudo ss -tlnp | grep ':8080' || echo 'port-free'" 2>&1; echo "exit=$?"
+
+# Check engine state
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ubuntu@192.168.252.4 "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || echo 'port-free'" 2>&1; echo "exit=$?"
+
+# Run deploy remote
+make deploy-remote HOST=ubuntu@192.168.252.4 2>&1 | tail -40
+
+# Run redeploy remote
+make redeploy VM=ebpf
 ```
+
+
 
 ## 2. Re-apply policies and restart engine after VM reboot
 
@@ -76,6 +90,10 @@ multipass exec ebpf -- bash -c '
 make deploy 2>&1 | tail -50
 make deploy VM=ebpf-2
 make deploy VM=staging-east
+
+#Target Azure VM
+make redeploy-remote HOST=azureuser@20.238.49.130 \
+  SSH_OPTS="-i /Users/jeff/Code/safeai-security-client-key.pem"
 ```
 
 ## 6. Apply TracingPolicies into the kernel
@@ -156,13 +174,6 @@ multipass exec ebpf -- sudo bash /home/ubuntu/ebpf-poc/attacks/03-reverse-shell.
 multipass exec ebpf -- sudo bash /home/ubuntu/ebpf-poc/attacks/04-privilege-escalation.sh
 ```
 
-## 13. Remote deployment (Sample)
-
-```bash
-make deploy-remote HOST=ubuntu@192.168.252.4 2>&1 | tail -40
-
-```
-
 ## Operational helpers (anytime)
 
 ```bash
@@ -187,6 +198,29 @@ echo "---SERVED---"
 VM=192.168.252.3
 curl -sS -c /tmp/c.txt -o /dev/null -X POST -d 'user=admin&pass=ebpf-soc-demo' http://$VM:8080/api/login
 curl -sS -b /tmp/c.txt http://$VM:8080/ | grep -cE "classifyAlert|classifyBinary|cls-attack|hideBaseline|BASELINE_ROOT_PATTERNS"
+
+
+# Build Engine and VM deploy
+Cross-compile engine binary
+make build-linux 2>&1 | tail -10
+
+Build from repo root
+pwd; cd /Users/jeff/Code/eBPF && make build-linux 2>&1 | tail -10
+
+Stop engine before redeploy
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ubuntu@192.168.252.4 "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64 || true; sleep 1; sudo ss -tlnp | grep ':8080' || echo 'port-free'" 2>&1; echo "exit=$?"
+
+Confirm engine fully stopped
+ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 ubuntu@192.168.252.4 "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || echo 'port-free'" 2>&1; echo "exit=$?"
+
+Deploy to VM
+make deploy-remote HOST=ubuntu@192.168.252.4 2>&1 | tail -10
+
+Read deploy output
+tail -12 /private/tmp/claude-501/-Users-jeff-Code-eBPF/e99fdcb7-7961-4ce5-bd29-ad686f357b4e/tasks/bsuq34sym.output
+
+Smoke-test live-proc endpoint
+curl -s -m 5 -c /tmp/jc -d 'user=admin&pass=ebpf-soc-demo' http://192.168.252.4:8080/api/login -o /dev/null && curl -s -m 5 -b /tmp/jc 'http://192.168.252.4:8080/api/choke/proc/1' | head -c 600; echo
 ```
 
 

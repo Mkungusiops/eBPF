@@ -5,13 +5,40 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+// serverIdentity is resolved once at startup. The IP comes from the kernel's
+// route-selection for an arbitrary external destination — no packet is sent,
+// we just read the local address the kernel would bind. This surfaces the
+// engine host's primary IP even when the client reached it via a hostname,
+// reverse proxy, or tunnel.
+var (
+	serverIdentityOnce sync.Once
+	serverHostname     string
+	serverIP           string
+)
+
+func resolveServerIdentity() {
+	serverIdentityOnce.Do(func() {
+		serverHostname, _ = os.Hostname()
+		conn, err := net.Dial("udp", "1.1.1.1:80")
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		if a, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+			serverIP = a.IP.String()
+		}
+	})
+}
 
 // Auth gates the dashboard with a single admin user backed by bcrypt and
 // HttpOnly session cookies. Sessions live in-memory (lost on restart, which
@@ -212,8 +239,13 @@ func (a *Auth) HandleWhoami(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
 	}
+	resolveServerIdentity()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{"user": a.user})
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"user":      a.user,
+		"hostname":  serverHostname,
+		"server_ip": serverIP,
+	})
 }
 
 func newToken() string {

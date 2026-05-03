@@ -10,7 +10,7 @@ The per-host web UIs at `http://<host>:8080/` and `/choke` are
 unchanged — `chokectl` is the way to operate the **fleet** as a unit
 without juggling 7 browser tabs.
 
-> Tier 1 in [docs/architecture.md](architecture.md) — terminal only,
+> Tier 1 in [docs/architecture/overview.md](../architecture/overview.md) — terminal only,
 > no central web UI. Tier 2 (a fleet aggregator with a single SOC
 > dashboard) is documented but not yet built.
 
@@ -44,7 +44,7 @@ EOF
 
 `chokectl` reads `./chokectl.hosts` by default. Override with the
 `--hosts=PATH` flag or the `CHOKECTL_HOSTS` env var. See
-[`chokectl.hosts.example`](../chokectl.hosts.example) for the format.
+[`chokectl.hosts.example`](../../chokectl.hosts.example) for the format.
 
 ```
 # chokectl hosts file — one entry per line, # comments allowed.
@@ -407,10 +407,10 @@ You're on an older `chokectl`. The script self-documents:
 
 ## Related
 
-- [Architecture overview](architecture.md) — where the gateway fits in
+- [Architecture overview](../architecture/overview.md) — where the gateway fits in
   the engine
-- [State ladder](state-ladder.md) — what each transition action means
-- [Multipass deploy](run-on-multipass-vm.md) — single-host setup that
+- [State ladder](../architecture/state-ladder.md) — what each transition action means
+- [Multipass deploy](../operations/run-on-multipass-vm.md) — single-host setup that
   the fleet is built on
-- [`scripts/chokectl`](../scripts/chokectl) — the script itself
-- [`chokectl.hosts.example`](../chokectl.hosts.example) — sample config
+- [`scripts/chokectl`](../../scripts/chokectl) — the script itself
+- [`chokectl.hosts.example`](../../chokectl.hosts.example) — sample config

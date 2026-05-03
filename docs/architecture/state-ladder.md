@@ -133,18 +133,18 @@ row's hash incorporates the prior row's hash.
 
 ## Related
 
-- [`internal/choke/circuit/circuit.go`](../engine/internal/choke/circuit/circuit.go)
+- [`internal/choke/circuit/circuit.go`](../../engine/internal/choke/circuit/circuit.go)
   — the state machine itself (`Evaluate`, `Force`, `Snapshot`,
   thresholds).
-- [`internal/choke/gateway.go`](../engine/internal/choke/gateway.go)
+- [`internal/choke/gateway.go`](../../engine/internal/choke/gateway.go)
   — wires circuit + enforcer + store + broadcast.
-- [`internal/enforce/cgroupv2/`](../engine/internal/enforce/cgroupv2/)
+- [`internal/enforce/cgroupv2/`](../../engine/internal/enforce/cgroupv2/)
   — the cgroup v2 backend that physically moves PIDs and freezes them.
-- [`internal/enforce/severer.go`](../engine/internal/enforce/severer.go)
+- [`internal/enforce/severer.go`](../../engine/internal/enforce/severer.go)
   — the SIGKILL actuator.
-- [`internal/store/decisions.go`](../engine/internal/store/decisions.go)
+- [`internal/store/decisions.go`](../../engine/internal/store/decisions.go)
   — the hash-chained audit log.
-- [`docs/architecture.md`](architecture.md)
+- [`docs/architecture/overview.md`](overview.md)
   — broader system overview (where the gateway fits in the engine).
-- [`docs/run-on-multipass-vm.md`](run-on-multipass-vm.md)
+- [`docs/operations/run-on-multipass-vm.md`](../operations/run-on-multipass-vm.md)
   — deploy guide with the gateway flags spelled out.

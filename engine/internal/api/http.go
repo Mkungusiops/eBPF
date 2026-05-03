@@ -48,6 +48,10 @@ type Server struct {
 	// gateway is wired in after construction via SetGateway() so the HTTP
 	// listener can start before all the choke wiring has finished.
 	gateway *choke.Gateway
+	// fleet is the optional Tier-1 multi-host control plane. nil when the
+	// engine was started without --fleet-hosts; the /api/fleet/* handlers
+	// 503 in that case.
+	fleet *Fleet
 
 	subsMu sync.Mutex
 	subs   map[chan Broadcast]struct{}
@@ -114,6 +118,20 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/choke/processes", s.handleChokeProcesses)
 	mux.HandleFunc("/api/choke/proc/", s.handleChokeProcLive)
 	mux.HandleFunc("/api/choke/jail", s.handleChokeJail)
+
+	// Tier 1 fleet console — only mounted when --fleet-hosts was set.
+	// Routes are always registered so the UI 503s cleanly with a useful
+	// message rather than 404ing when fleet mode is disabled.
+	mux.HandleFunc("/fleet", s.handleFleetConsole)
+	mux.HandleFunc("/api/fleet/hosts", s.handleFleetHosts)
+	mux.HandleFunc("/api/fleet/state", s.handleFleetState)
+	mux.HandleFunc("/api/fleet/cgroups", s.handleFleetCgroups)
+	mux.HandleFunc("/api/fleet/decisions", s.handleFleetDecisions)
+	mux.HandleFunc("/api/fleet/alerts", s.handleFleetAlerts)
+	mux.HandleFunc("/api/fleet/preset", s.handleFleetPreset)
+	mux.HandleFunc("/api/fleet/thresholds", s.handleFleetThresholds)
+	mux.HandleFunc("/api/fleet/kill-switch", s.handleFleetKillSwitch)
+	mux.HandleFunc("/api/fleet/thaw", s.handleFleetThaw)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
 	return http.ListenAndServe(addr, s.auth.Middleware(mux))

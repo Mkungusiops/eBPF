@@ -4,7 +4,7 @@ Step-by-step recipe for getting this PoC running on a freshly-provisioned
 Linux server (cloud VM, bare metal, or hypervisor guest). Designed so the
 person reading this hasn't seen the codebase before.
 
-For the architecture and design rationale, see [architecture.md](architecture.md).
+For the architecture and design rationale, see [architecture/overview.md](../architecture/overview.md).
 
 ## 1. Server prerequisites
 

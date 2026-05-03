@@ -22,16 +22,22 @@ exec_id so a single process is the unit of control.
 > **Production path is Multipass / real Linux only.** `make fake`
 > exists for unit tests and frontend iteration but is **not** the
 > deploy story. To exercise the gateway against real eBPF events,
-> see [docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md).
+> see [docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md).
 
-| Doc                                                     | Purpose                                              |
-|---------------------------------------------------------|------------------------------------------------------|
-| **README.md** (this file)                               | One-page overview + quick start                      |
-| [docs/architecture.md](docs/architecture.md)            | How everything works, components, data flow         |
-| [docs/deploy-linux-server.md](docs/deploy-linux-server.md) | Step-by-step deploy on a fresh Linux server         |
-| [docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md) | Local Linux VM on macOS via Multipass               |
-| [docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md) | Day-to-day ops runbook once the VM is set up        |
-| [docs/build.md](docs/build.md)                          | Original 5-day build plan that produced this codebase|
+| Doc                                                                                       | Purpose                                              |
+|-------------------------------------------------------------------------------------------|------------------------------------------------------|
+| **README.md** (this file)                                                                 | One-page overview + quick start                      |
+| [docs/](docs/README.md)                                                                   | Full documentation index                             |
+| [docs/architecture/overview.md](docs/architecture/overview.md)                            | How everything works, components, data flow          |
+| [docs/architecture/state-ladder.md](docs/architecture/state-ladder.md)                    | Choke gateway state transitions                      |
+| [docs/getting-started/multipass-vm-setup.md](docs/getting-started/multipass-vm-setup.md)  | Local Linux VM on macOS via Multipass                |
+| [docs/deployment/linux-server.md](docs/deployment/linux-server.md)                        | Step-by-step deploy on a fresh Linux server          |
+| [docs/deployment/azure.md](docs/deployment/azure.md)                                      | Azure deployment guide                               |
+| [docs/deployment/commands.md](docs/deployment/commands.md)                                | Deployment command reference                         |
+| [docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md)          | Day-to-day ops runbook once the VM is set up         |
+| [docs/operations/reset-engine-and-policies.md](docs/operations/reset-engine-and-policies.md) | Reset the engine and reload policies              |
+| [docs/reference/chokectl.md](docs/reference/chokectl.md)                                  | `chokectl` fleet CLI reference                       |
+| [docs/development/build-plan.md](docs/development/build-plan.md)                          | Original 5-day build plan that produced this codebase|
 
 ## Repository layout
 
@@ -39,7 +45,7 @@ exec_id so a single process is the unit of control.
 .
 ├── README.md                                # this file
 ├── Makefile                                 # build / test / fake / tarball / clean
-├── docs/                                    # architecture + deployment guides
+├── docs/                                    # architecture, deployment, ops, reference, development
 ├── scripts/setup.sh                         # idempotent Day-1 install on a fresh VM
 ├── policies/                                # Tetragon TracingPolicy YAMLs
 │   ├── network-watch.yaml                   # policy name: outbound-connections
@@ -87,7 +93,7 @@ Tetragon only runs on Linux — actual events flow only on a Linux host.
 
 **Prerequisite**: a Multipass VM named `ebpf` running Ubuntu 22.04+
 (kernel ≥ 5.15, BTF enabled). First-time setup:
-[docs/multipass-mac-local-vm-deploy.md](docs/multipass-mac-local-vm-deploy.md).
+[docs/getting-started/multipass-vm-setup.md](docs/getting-started/multipass-vm-setup.md).
 
 ```bash
 make deploy
@@ -127,7 +133,7 @@ multipass exec ebpf -- cat /sys/fs/cgroup/choke-quarantined/cgroup.procs
 ```
 
 For the full step-by-step walkthrough (or to debug a `make deploy`
-failure), see **[docs/run-on-multipass-vm.md](docs/run-on-multipass-vm.md)**.
+failure), see **[docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md)**.
 
 ## How detection works
 
@@ -217,7 +223,7 @@ Tested end-to-end during development:
   MITRE coverage, IOCs, and network panel populate correctly.
 
 For component-level details and what was changed during the most recent
-session, see [docs/architecture.md](docs/architecture.md).
+session, see [docs/architecture/overview.md](docs/architecture/overview.md).
 
 ## Limitations
 

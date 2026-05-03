@@ -130,6 +130,22 @@
   }
   .row { margin-bottom: 14px; }
 
+  .pass-wrap { position: relative; }
+  .pass-wrap input { padding-right: 38px; }
+  .pass-toggle {
+    position: absolute; right: 6px; top: 50%;
+    transform: translateY(-50%);
+    background: transparent; border: 0; padding: 6px;
+    color: var(--mute);
+    cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    transition: color 120ms ease, background 120ms ease;
+  }
+  .pass-toggle:hover { color: var(--text); background: rgba(148,163,184,0.12); }
+  .pass-toggle:focus-visible { outline: none; color: var(--text); box-shadow: 0 0 0 2px rgba(34,211,238,0.4); }
+  .pass-toggle svg { width: 16px; height: 16px; display: block; }
+
   button[type="submit"] {
     width: 100%;
     background: linear-gradient(180deg, rgba(34,211,238,0.95), rgba(34,211,238,0.75));
@@ -212,7 +228,13 @@
     </div>
     <div class="row">
       <label for="pass">Password</label>
-      <input id="pass" name="pass" type="password" autocomplete="current-password" required>
+      <div class="pass-wrap">
+        <input id="pass" name="pass" type="password" autocomplete="current-password" required>
+        <button type="button" id="passToggle" class="pass-toggle" aria-label="Show password" aria-pressed="false" tabindex="-1">
+          <svg id="eyeOpen" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <svg id="eyeOff"  viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><path d="M17.94 17.94A10.94 10.94 0 0 1 12 19c-7 0-11-7-11-7a19.79 19.79 0 0 1 5.06-5.94"/><path d="M9.9 4.24A10.94 10.94 0 0 1 12 4c7 0 11 7 11 7a19.79 19.79 0 0 1-3.16 4.19"/><path d="M14.12 14.12a3 3 0 0 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>
+        </button>
+      </div>
     </div>
     <button type="submit">Sign in</button>
   </form>
@@ -247,6 +269,22 @@
     applyTheme(lsGet('soc.theme', 'dark'));
     document.getElementById('themeToggle').addEventListener('click', function () {
       applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
+    });
+  })();
+
+  (function () {
+    var btn  = document.getElementById('passToggle');
+    var inp  = document.getElementById('pass');
+    var open = document.getElementById('eyeOpen');
+    var off  = document.getElementById('eyeOff');
+    if (!btn || !inp) return;
+    btn.addEventListener('click', function () {
+      var show = inp.type === 'password';
+      inp.type = show ? 'text' : 'password';
+      btn.setAttribute('aria-pressed', show ? 'true' : 'false');
+      btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+      open.style.display = show ? 'none'   : 'inline';
+      off.style.display  = show ? 'inline' : 'none';
     });
   })();
 </script>

@@ -55,6 +55,10 @@ func main() {
 		severAt      = flag.Int("sever-at", 40, "chain score at which to sever (SIGKILL)")
 		cgroupRoot   = flag.String("cgroup-root", cgroupv2.DefaultRoot, "cgroup v2 unified mount; choke-{throttled,tarpit,quarantined} are created under this root")
 		critBinsRaw  = flag.String("system-critical", "", "comma-separated list of binaries exempt from SCORE-DRIVEN auto-enforce (manual overrides still apply); empty = use the default safe list (sshd, systemd, dockerd, …)")
+		// Tier 1 fleet console (Fleet Console at /fleet). When this points at
+		// a chokectl-format hosts file, /api/fleet/* endpoints fan out to
+		// each peer and the embedded UI lets one operator drive N hosts.
+		fleetHosts   = flag.String("fleet-hosts", "", "path to chokectl.hosts file; enables the /fleet console and /api/fleet/* fanout endpoints")
 	)
 	flag.Parse()
 	api.SetPolicyDir(*policiesDir)
@@ -79,6 +83,13 @@ func main() {
 		log.Fatalf("auth: %v", err)
 	}
 	httpSrv := api.NewServer(st, pt, broadcast, auth)
+	if *fleetHosts != "" {
+		// Same credentials chokectl uses by default; the engine itself acts
+		// as the operator presenting them to peers. Per-peer audit chains
+		// remain the tamper-evident record.
+		httpSrv.SetFleet(api.NewFleet(*fleetHosts, *authUser, *authPass))
+		log.Printf("[fleet] console enabled at /fleet (hosts=%s)", *fleetHosts)
+	}
 	go func() {
 		if err := httpSrv.Start(*httpAddr); err != nil {
 			log.Fatalf("http: %v", err)

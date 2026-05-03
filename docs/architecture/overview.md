@@ -65,7 +65,7 @@ or more in-kernel eBPF programs and emits structured events to userspace
 via gRPC. We pin to **`quay.io/cilium/tetragon:v1.6.1`** because the
 `:latest` tag is no longer published.
 
-Three policies are loaded in [policies/](../policies):
+Three policies are loaded in [policies/](../../policies):
 
 | Policy                  | Kprobe                     | What it catches                                                     | MITRE              |
 |-------------------------|----------------------------|---------------------------------------------------------------------|--------------------|
@@ -74,7 +74,7 @@ Three policies are loaded in [policies/](../policies):
 | `sensitive-file-access` | `security_file_permission` | Reads/writes of `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/`, **`/var/lib/ebpf-engine/honey/`** | T1003 CredAccess + honeypot |
 
 The honeypot prefix is the directory the engine seeds with five decoy
-credential-style files on startup ([honeypots.go](../engine/internal/api/honeypots.go)).
+credential-style files on startup ([honeypots.go](../../engine/internal/api/honeypots.go)).
 Because no legitimate process should ever read those files, **any hit
 under that prefix is a high-confidence signal** — the dashboard surfaces
 them with a 🍯 *honey* badge alongside the regular severity.
@@ -82,30 +82,30 @@ them with a 🍯 *honey* badge alongside the regular severity.
 `process_exec` events are emitted for **every** `execve` for free —
 they're the spine of the process tree.
 
-### Engine ([engine/](../engine))
+### Engine ([engine/](../../engine))
 
 A Go binary, ~24 MB statically linked (`CGO_ENABLED=0`), no runtime
 dependencies. Responsibilities:
 
 - **gRPC client** — subscribes to Tetragon's `GetEvents` stream over
   `unix:///var/run/tetragon/tetragon.sock`.
-- **Process tree** ([engine/internal/tree](../engine/internal/tree)) —
+- **Process tree** ([engine/internal/tree](../../engine/internal/tree)) —
   in-memory tree keyed by Tetragon's stable `exec_id` (which survives PID
   reuse), TTL-bounded so old branches GC out.
-- **Scorer** ([engine/internal/score](../engine/internal/score)) — adds
+- **Scorer** ([engine/internal/score](../../engine/internal/score)) — adds
   per-event scores to nodes, walks ancestors (≤10 hops) summing, emits an
   alert when the chain crosses a severity threshold.
-- **Store** ([engine/internal/store](../engine/internal/store)) — SQLite
+- **Store** ([engine/internal/store](../../engine/internal/store)) — SQLite
   with `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`.
   Persists `events` and `alerts` tables.
-- **HTTP API + SSE fanout** ([engine/internal/api/http.go](../engine/internal/api/http.go))
+- **HTTP API + SSE fanout** ([engine/internal/api/http.go](../../engine/internal/api/http.go))
   — serves the embedded UI, JSON APIs, and a Server-Sent Events stream
   for live updates. Every alert/event broadcasts to all subscribers.
-- **Auth** ([engine/internal/api/auth.go](../engine/internal/api/auth.go))
+- **Auth** ([engine/internal/api/auth.go](../../engine/internal/api/auth.go))
   — bcrypt-hashed credentials, HttpOnly cookie sessions with 24h TTL,
   constant-time comparison, simple per-IP rate limiting.
 
-### Dashboard ([engine/internal/api/index.html](../engine/internal/api/index.html))
+### Dashboard ([engine/internal/api/index.html](../../engine/internal/api/index.html))
 
 A single-page web app served from the engine binary via `go:embed`. No
 build step, no node_modules. Uses Tailwind via CDN and zero JS frameworks.
@@ -160,7 +160,7 @@ build step, no node_modules. Uses Tailwind via CDN and zero JS frameworks.
 | Catch-up          | On reconnect, fetches `/api/alerts` and `/api/events` and merges anything missed during the gap          |
 | Cache             | Engine sets `Cache-Control: no-cache` on the dashboard so updates are picked up without hard-reloads     |
 
-### Auth ([engine/internal/api/auth.go](../engine/internal/api/auth.go))
+### Auth ([engine/internal/api/auth.go](../../engine/internal/api/auth.go))
 
 A single admin user with bcrypt-hashed credentials. The plaintext password
 is hashed once at startup and never stored.
@@ -226,7 +226,7 @@ sessions.
 2. **Tetragon** — receives the kprobe, builds a `process_kprobe` event
    with the policy name, args, and the `exec_id` of the calling process.
    Streams it over gRPC.
-3. **Engine consumer** ([engine/cmd/engine/main.go](../engine/cmd/engine/main.go)):
+3. **Engine consumer** ([engine/cmd/engine/main.go](../../engine/cmd/engine/main.go)):
    - Inserts the event into `events` (SQLite, WAL).
    - Looks up or creates the node in the process tree.
    - Adds the event's score to the node.
@@ -248,10 +248,23 @@ sessions.
 ├── Makefile                                 # build / test / fake / tarball / clean
 ├── ebpf-poc-amd64.tar.gz                    # produced by `make tarball`
 ├── docs/
-│   ├── build.md                             # original 5-day build plan
-│   ├── architecture.md                      # this file
-│   ├── deploy-linux-server.md               # production deployment guide
-│   └── multipass-mac-local-vm-deploy.md     # local Linux VM on macOS via Multipass
+│   ├── README.md                            # documentation index
+│   ├── architecture/
+│   │   ├── overview.md                      # this file
+│   │   └── state-ladder.md                  # choke gateway state machine
+│   ├── getting-started/
+│   │   └── multipass-vm-setup.md            # local Linux VM on macOS via Multipass
+│   ├── deployment/
+│   │   ├── linux-server.md                  # production deployment guide
+│   │   ├── azure.md                         # Azure deployment
+│   │   └── commands.md                      # deployment command reference
+│   ├── operations/
+│   │   ├── run-on-multipass-vm.md           # day-to-day ops runbook
+│   │   └── reset-engine-and-policies.md     # reset engine + reload policies
+│   ├── reference/
+│   │   └── chokectl.md                      # chokectl fleet CLI reference
+│   └── development/
+│       └── build-plan.md                    # original 5-day build plan
 ├── scripts/
 │   └── setup.sh                             # idempotent Day-1 install on a fresh VM
 ├── policies/
@@ -289,7 +302,7 @@ can correlate code with rationale:
 
 | File                                       | Change                                                                                                        |
 |--------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `Makefile`                                 | `tarball` target now references `docs/build.md` (was `build.md` at root, which moved)                          |
+| `Makefile`                                 | `tarball` target now references `docs/development/build-plan.md` (was `build.md` at root, which moved)         |
 | `policies/sensitive-files.yaml`            | Removed the `/home/` prefix that caused a feedback loop: engine writing to `events.db` triggered the policy   |
 | `engine/internal/store/sqlite.go`          | Open SQLite with `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` — fixes `SQLITE_BUSY` under load |
 | `engine/internal/api/index.go`             | Switched from a const string to `//go:embed` so the HTML lives in a real file (also embeds login + favicon)   |
@@ -331,7 +344,7 @@ that the kprobes inspect.
   in-kernel prevention. Not done because the demo wants visibility,
   not enforcement.
 - **No baseline learning.** Scoring is fixed in
-  [scorer.go](../engine/internal/score/scorer.go). Real deployments
+  [scorer.go](../../engine/internal/score/scorer.go). Real deployments
   would tune per-environment.
 - **Single user, in-memory sessions.** Auth is a real gate, but it's
   one admin and sessions don't survive engine restart. For multi-user

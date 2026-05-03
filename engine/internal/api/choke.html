@@ -130,6 +130,52 @@ tailwind.config = {
   @media (max-width: 1399px) { .area-tape { grid-area: tape; } }
   @media (max-width: 979px)  { .area-tape { grid-area: tape; } }
 
+  /* ───── Workspace viewport-bound — eliminates the L-shaped gap that
+     appears when the tracked-processes column is taller than the
+     state ladder / thresholds / cgroups stack. The grid row 1 is
+     pinned to a viewport-relative height so all column tops AND
+     bottoms align; the procList + tape + left scroll internally.
+     Offsets account for: topbar (≈148px) + threat-intel ribbon
+     (≈148px) + main padding (32px) + ops status bar (≈28px). */
+  main.layout {
+    --ws-offset: 360px;
+    min-height: 480px;
+  }
+  /* 3-col layout: one row, all 3 panels share the same bounded height. */
+  @media (min-width: 1400px) {
+    main.layout {
+      grid-template-rows: minmax(420px, calc(100vh - var(--ws-offset)));
+    }
+  }
+  /* 2-col + tape layout: row 1 bounded, tape gets its own row. */
+  @media (max-width: 1399px) and (min-width: 980px) {
+    main.layout {
+      grid-template-rows: minmax(420px, calc(100vh - var(--ws-offset))) minmax(360px, 60vh);
+    }
+  }
+  /* Stacked: each panel gets a bounded height so the page is one
+     long predictable scroll instead of one giant column. */
+  @media (max-width: 979px) {
+    main.layout {
+      grid-template-rows: minmax(360px, 60vh) minmax(420px, 70vh) minmax(360px, 60vh);
+    }
+  }
+  /* Allow children to honor the bounded grid row height — required
+     for `flex-1 overflow-auto` on procList + tape to actually scroll.
+     The inline `min-height:75vh` on .area-center / .area-tape is
+     overridden via !important so the bound takes effect. */
+  .area-left, .area-center, .area-tape {
+    min-height: 0 !important;
+    max-height: 100%;
+    overflow: hidden;
+  }
+  /* Left column is a flow of stacked glass tiles (no internal
+     scroller), so make the whole column scroll vertically when its
+     content exceeds the bounded height. */
+  .area-left { overflow-y: auto; }
+  .area-left::-webkit-scrollbar { width: 6px; }
+  .area-left::-webkit-scrollbar-thumb { background: rgb(var(--soc-line)); border-radius: 3px; }
+
   /* ─────────── State badges ─── */
   .state-badge {
     display:inline-flex; align-items:center; gap:6px;
@@ -873,107 +919,1038 @@ tailwind.config = {
   /* ─────────── Help panel ─── */
   .help-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 14px; font-size: 11px; }
   .help-grid > div { display: flex; align-items: center; gap: 8px; }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     Enterprise additions — Threat Intelligence ribbon, KPI sparklines,
+     operations status bar. All theme-aware via existing CSS variables;
+     do not introduce hard-coded colors that aren't already in the system.
+     ═══════════════════════════════════════════════════════════════════ */
+
+  /* ───── Enterprise topbar — deterministic 2-row layout, no flex-wrap
+     gaps. Replaces the original sticky <header class="glass …">. Two
+     visually-distinct rows: identity + status (top), then controls +
+     telemetry + actions (bottom). Both rows nowrap by default; on
+     narrow viewports they wrap gracefully. */
+  .topbar {
+    position: sticky; top: 0; z-index: 30;
+    background: var(--soc-glass-bg);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  .topbar-row {
+    display: flex; align-items: center; gap: 10px;
+    height: 50px; padding: 0 18px;
+    min-width: 0; flex-wrap: nowrap;
+  }
+  .topbar-primary { border-bottom: 1px solid var(--soc-glass-bd); }
+  .topbar-secondary { background: rgba(0,0,0,0.10); height: 48px; }
+  body.theme-light .topbar-secondary { background: rgba(15,23,42,0.025); }
+  .topbar-flex { flex: 1; min-width: 0; }
+  .topbar-divider { width: 1px; height: 22px; background: var(--soc-glass-bd); flex-shrink: 0; }
+
+  /* Brand cluster — back link, divider, page mark, mode pill */
+  .brand-cluster {
+    display: inline-flex; align-items: center; gap: 10px;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .brand-back {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; color: var(--soc-mute);
+    padding: 4px 8px; border-radius: 4px;
+    border: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+    cursor: pointer; text-decoration: none;
+    transition: all 120ms;
+  }
+  .brand-back:hover {
+    color: rgb(var(--soc-text));
+    border-color: rgba(34,211,238,0.45);
+    background: rgba(34,211,238,0.06);
+  }
+  .brand-back svg { display:block; }
+  .brand-mark {
+    font-size: 13px; font-weight: 800; letter-spacing: 0.10em;
+    color: rgb(var(--soc-text));
+  }
+  .brand-sep { width: 1px; height: 18px; background: var(--soc-glass-bd); }
+
+  /* Search input on the topbar */
+  .topbar-search {
+    width: 100%; max-width: 620px; height: 32px; flex: 1; min-width: 0;
+  }
+
+  /* Status cluster (audit + live pills) */
+  .status-cluster { display: inline-flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+  /* User cluster — icon buttons + name + avatar */
+  .user-cluster { display: inline-flex; align-items: center; gap: 4px; flex-shrink: 0; }
+  .icon-btn {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 5px;
+    background: var(--soc-input-bg);
+    color: var(--soc-mute);
+    cursor: pointer; padding: 0;
+    transition: all 120ms;
+  }
+  .icon-btn:hover {
+    border-color: rgba(34,211,238,0.5);
+    color: rgb(var(--soc-text));
+    background: rgba(34,211,238,0.08);
+  }
+  .icon-btn svg { display: block; }
+  .user-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    margin-left: 6px; padding-left: 12px;
+    border-left: 1px solid var(--soc-glass-bd);
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: rgb(var(--soc-text));
+    height: 28px;
+  }
+  .user-avatar {
+    width: 24px; height: 24px;
+    border-radius: 9999px;
+    background: linear-gradient(135deg, rgba(34,211,238,0.45), rgba(59,130,246,0.45));
+    border: 1px solid rgba(34,211,238,0.55);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 800; letter-spacing: 0.04em;
+    color: rgb(var(--soc-text)); text-transform: uppercase;
+  }
+
+  /* Time-range pill — segmented control */
+  .range-pill {
+    display: inline-flex; align-items: stretch; height: 32px;
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 5px;
+    background: var(--soc-input-bg);
+    overflow: hidden; flex-shrink: 0;
+  }
+  .range-pill button {
+    padding: 0 12px;
+    font-size: 11px; font-family: ui-monospace, monospace;
+    color: var(--soc-mute);
+    background: transparent;
+    cursor: pointer;
+    transition: all 100ms;
+    border: 0;
+    border-right: 1px solid var(--soc-glass-bd);
+    line-height: 1;
+  }
+  .range-pill button:last-child { border-right: 0; }
+  .range-pill button:hover { color: rgb(var(--soc-text)); background: rgba(34,211,238,0.06); }
+  /* Active range button — JS adds .bg-soc-panel2 + .text-soc-accent.
+     Match those tokens to our visual style. */
+  .range-pill button.bg-soc-panel2 {
+    background: rgba(34,211,238,0.16);
+    color: rgb(var(--soc-accent));
+  }
+
+  /* KPI cluster wrapper — keeps the 3 tiles tight, no flex wrap inside */
+  .kpi-cluster { display: inline-flex; align-items: stretch; gap: 6px; flex-shrink: 0; }
+
+  /* Scope pill — tracked-process count */
+  .scope-pill {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 32px; padding: 0 12px;
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 5px;
+    background: var(--soc-input-bg);
+    font-size: 11px;
+    color: var(--soc-mute);
+    font-family: ui-monospace, monospace;
+    white-space: nowrap; flex-shrink: 0;
+  }
+  .scope-pill .num {
+    font-weight: 800; color: rgb(var(--soc-text)); font-size: 13px;
+  }
+  .scope-pill svg { color: rgb(var(--soc-accent)); display: block; }
+
+  /* Refresh pill group — matches the segmented look of range-pill */
+  .refresh-pill-group {
+    display: inline-flex; align-items: stretch; height: 32px;
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 5px;
+    background: var(--soc-input-bg);
+    overflow: hidden;
+    position: relative;
+    flex-shrink: 0;
+  }
+  .refresh-pill-group > button {
+    border: 0; background: transparent; cursor: pointer; padding: 0 8px;
+    color: var(--soc-mute);
+    transition: all 100ms;
+  }
+  .refresh-pill-group > button + button {
+    border-left: 1px solid var(--soc-glass-bd);
+    padding: 0 6px;
+  }
+  .refresh-pill-group > button:hover { color: rgb(var(--soc-accent)); background: rgba(34,211,238,0.06); }
+  .refresh-pill-group > button:disabled { opacity: 0.4; cursor: not-allowed; }
+  .refresh-pill-group #refreshIcon.spinning { color: rgb(var(--soc-accent)); }
+
+  /* Action cluster — the 4 incident-response action buttons */
+  .action-cluster { display: inline-flex; align-items: stretch; gap: 6px; flex-shrink: 0; }
+  .act-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 32px; padding: 0 12px;
+    border-radius: 5px;
+    border: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+    color: rgb(var(--soc-text));
+    font-size: 11px; font-weight: 600;
+    letter-spacing: 0.04em;
+    cursor: pointer;
+    transition: all 120ms;
+    white-space: nowrap;
+  }
+  .act-btn:hover { border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); }
+  .act-btn svg { display: block; flex-shrink: 0; }
+  .act-btn.warn { color: #c2410c; border-color: rgba(251,146,60,0.5); }
+  .act-btn.warn:hover { background: rgba(251,146,60,0.12); }
+  .act-btn.err  { color: #be123c; border-color: rgba(244,63,94,0.5); }
+  .act-btn.err:hover  { background: rgba(244,63,94,0.16); }
+  .act-btn.kill {
+    color: #be123c;
+    border-color: rgba(244,63,94,0.7);
+    background: rgba(244,63,94,0.10);
+    font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+  }
+  .act-btn.kill:hover { background: rgba(244,63,94,0.22); }
+  body:not(.theme-light) .act-btn.warn { color: #fdba74; }
+  body:not(.theme-light) .act-btn.err  { color: #fda4af; }
+  body:not(.theme-light) .act-btn.kill { color: #fda4af; }
+
+  /* Responsive — at < 1180px, allow rows to wrap onto multiple lines
+     gracefully but keep the cluster grouping intact. */
+  @media (max-width: 1180px) {
+    .topbar-row { flex-wrap: wrap; height: auto; min-height: 50px; padding-top: 6px; padding-bottom: 6px; }
+    .topbar-search { order: 99; flex-basis: 100%; max-width: 100%; }
+  }
+
+  /* Tighten the spacing between the header and the IR Presets / Threat
+     Intel ribbon below — the user wants no visible gaps. The presets
+     bar carries a subtle top border instead of a margin. */
+  .topbar-trail {
+    background: rgba(0,0,0,0.04);
+    border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  body:not(.theme-light) .topbar-trail { background: rgba(0,0,0,0.18); }
+  .topbar-trail-inner {
+    padding: 8px 18px;
+    display: flex; align-items: center; gap: 12px;
+    flex-wrap: wrap;
+  }
+  .topbar-trail-label {
+    font-size: 9.5px; letter-spacing: 0.10em; text-transform: uppercase;
+    color: rgb(var(--soc-dim)); font-weight: 800; flex-shrink: 0;
+  }
+  .topbar-trail-foot {
+    margin-left: auto; font-size: 10px; color: var(--soc-mute);
+  }
+
+  /* Tighten preset buttons inside the inline trail bar */
+  .topbar-trail .preset-row { gap: 6px; flex-wrap: nowrap; min-width: 0; overflow-x: auto; }
+  .topbar-trail .preset-btn {
+    min-width: 0; padding: 5px 10px;
+    flex-direction: row; align-items: center; gap: 6px;
+  }
+  .topbar-trail .preset-btn .preset-name { font-size: 10.5px; }
+  .topbar-trail .preset-btn .preset-sub  { font-size: 9.5px; opacity: 0.85; }
+  @media (max-width: 1180px) {
+    .topbar-trail .preset-btn .preset-sub { display: none; }
+  }
+
+  /* KPI sparklines + delta — squeezed under the existing kpi-value */
+  .kpi { min-width: 92px; padding: 4px 12px 5px; gap: 1px; }
+  .kpi-row { display:flex; align-items:baseline; gap:6px; }
+  .kpi-spark { display:flex; align-items:flex-end; gap:1px; height:12px; margin-top:2px; width:100%; opacity: 0.85; }
+  .kpi-spark .b { flex:1; min-width:1px; border-radius:1px; transition: height 200ms; }
+  .kpi-delta {
+    font-size:9px; font-family: ui-monospace, monospace; font-weight:700;
+    padding: 0 4px; border-radius: 3px; line-height: 13px; letter-spacing: 0.02em;
+  }
+  .kpi-delta.up   { color:#fda4af; background:rgba(244,63,94,0.18);  border:1px solid rgba(244,63,94,0.45); }
+  .kpi-delta.down { color:#86efac; background:rgba(16,185,129,0.16); border:1px solid rgba(16,185,129,0.45); }
+  .kpi-delta.flat { color: var(--soc-mute); background: rgba(148,163,184,0.12); border:1px solid var(--soc-glass-bd); }
+  body.theme-light .kpi-delta.up   { color:#be123c; }
+  body.theme-light .kpi-delta.down { color:#047857; }
+
+  /* Threat Intelligence ribbon — 4-card grid below the IR presets.
+     Each card is its own glass tile; collapses to 2 cols, then 1, on
+     narrow viewports so the ribbon never overflows the viewport. */
+  .ti-ribbon {
+    display: grid;
+    gap: 12px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  @media (max-width: 1399px) { .ti-ribbon { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+  @media (max-width: 700px)  { .ti-ribbon { grid-template-columns: 1fr; } }
+  .ti-card {
+    border: 1px solid var(--soc-glass-bd); border-radius: 8px;
+    padding: 10px 12px 12px; background: var(--soc-glass-bg);
+    min-width: 0; min-height: 116px; display: flex; flex-direction: column; gap: 8px;
+    position: relative; overflow: hidden;
+  }
+  .ti-card::before {
+    content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px;
+    background: linear-gradient(180deg, rgba(34,211,238,0.5), rgba(34,211,238,0));
+    opacity: 0.6;
+  }
+  .ti-card.sev::before    { background: linear-gradient(180deg, rgba(244,63,94,0.65), rgba(244,63,94,0)); }
+  .ti-card.warn::before   { background: linear-gradient(180deg, rgba(250,204,21,0.65), rgba(250,204,21,0)); }
+  .ti-card.health::before { background: linear-gradient(180deg, rgba(16,185,129,0.65), rgba(16,185,129,0)); }
+  .ti-head {
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+  }
+  .ti-title {
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.10em; text-transform: uppercase;
+    color: rgb(var(--soc-dim)); white-space: nowrap;
+  }
+  .ti-meta {
+    font-size: 9.5px; font-family: ui-monospace, monospace; color: var(--soc-mute);
+    margin-left: auto; white-space: nowrap;
+  }
+  .ti-body { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 4px; }
+
+  /* Velocity card — large number + trend + 60-bar histogram */
+  .ti-vel-num   { font-size: 26px; font-family: ui-monospace, monospace; font-weight: 700; color: rgb(var(--soc-text)); line-height: 1; letter-spacing: -0.02em; }
+  .ti-vel-unit  { font-size: 10px; color: var(--soc-mute); margin-left: 4px; letter-spacing: 0.05em; text-transform: uppercase; }
+  .ti-vel-row   { display:flex; align-items:flex-end; gap: 8px; }
+  .ti-vel-spark { display:flex; align-items:flex-end; gap:1px; height: 28px; flex: 1; min-width: 0; padding-top: 2px; }
+  .ti-vel-spark .b { flex:1; min-width:2px; border-radius:1px; transition: height 200ms; opacity: 0.9; }
+  .ti-vel-foot  { font-size: 10px; color: var(--soc-mute); display: flex; gap: 8px; align-items: center; }
+  .ti-vel-peak  { font-family: ui-monospace, monospace; color: rgb(var(--soc-text)); font-weight: 700; }
+
+  /* Top-binaries / top-reasons rows — tight, scannable list */
+  .ti-list { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .ti-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) 36px;
+    align-items: center; gap: 8px; min-width: 0; font-size: 11px;
+  }
+  .ti-row .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, monospace; color: rgb(var(--soc-text)); }
+  .ti-row .label .pre { color: var(--soc-mute); }
+  .ti-row .meter {
+    position: relative; height: 12px; border-radius: 2px;
+    background: var(--soc-track); overflow: hidden; grid-column: 1 / -1; margin-top: 1px;
+    border: 1px solid var(--soc-glass-bd);
+  }
+  .ti-row .meter > .fill { position: absolute; left: 0; top: 0; bottom: 0; transition: width 240ms ease; }
+  .ti-row .num { font-family: ui-monospace, monospace; font-size: 10.5px; color: var(--soc-mute); text-align: right; }
+  .ti-row.high .num { color: #fda4af; font-weight: 700; }
+  .ti-row.warn .num { color: #fcd34d; font-weight: 700; }
+  body.theme-light .ti-row.high .num { color: #be123c; }
+  body.theme-light .ti-row.warn .num { color: #b45309; }
+  .ti-bar2 {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px;
+    font-size: 11px; min-width: 0;
+  }
+  .ti-bar2 > .label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ti-bar2 > .num   { font-family: ui-monospace, monospace; color: var(--soc-mute); }
+
+  /* Risk distribution histogram — 5 bins (T/Tp/Q/S/Crit) */
+  .ti-hist { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; flex: 1; align-items: end; min-height: 64px; }
+  .ti-hist .col { display:flex; flex-direction:column; align-items:center; gap: 4px; min-width: 0; }
+  .ti-hist .bar { width: 100%; max-width: 36px; border-radius: 2px 2px 0 0; min-height: 2px; transition: height 220ms; }
+  .ti-hist .lbl { font-size: 9px; letter-spacing: 0.06em; color: var(--soc-mute); font-family: ui-monospace, monospace; text-transform: uppercase; }
+  .ti-hist .cnt { font-size: 10.5px; font-family: ui-monospace, monospace; color: rgb(var(--soc-text)); font-weight: 700; }
+
+  /* System health card — 2-col KV, with status dot */
+  .ti-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 10.5px; align-items: baseline; min-width: 0; }
+  .ti-kv .k { color: var(--soc-mute); text-transform: uppercase; letter-spacing: 0.06em; font-weight: 600; font-size: 9px; white-space: nowrap; }
+  .ti-kv .v { font-family: ui-monospace, monospace; color: rgb(var(--soc-text)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ti-kv .v.ok { color: #6ee7b7; }
+  .ti-kv .v.warn { color: #fcd34d; }
+  .ti-kv .v.err  { color: #fda4af; }
+  body.theme-light .ti-kv .v.ok { color: #047857; }
+  body.theme-light .ti-kv .v.warn { color: #b45309; }
+  body.theme-light .ti-kv .v.err  { color: #be123c; }
+  .ti-health-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 999px; font-size: 9.5px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    border: 1px solid; margin-left: auto;
+  }
+  .ti-health-pill.ok    { background: rgba(16,185,129,0.14); color: #047857; border-color: rgba(16,185,129,0.45); }
+  .ti-health-pill.warn  { background: rgba(250,204,21,0.16); color: #a16207; border-color: rgba(250,204,21,0.5); }
+  .ti-health-pill.err   { background: rgba(244,63,94,0.18); color: #be123c; border-color: rgba(244,63,94,0.5); }
+  body:not(.theme-light) .ti-health-pill.ok   { color: #6ee7b7; }
+  body:not(.theme-light) .ti-health-pill.warn { color: #fde68a; }
+  body:not(.theme-light) .ti-health-pill.err  { color: #fda4af; }
+  .ti-health-pill::before { content:''; width:6px; height:6px; border-radius:9999px; background: currentColor; box-shadow: 0 0 6px currentColor; }
+
+  /* Empty state for intel cards */
+  .ti-empty {
+    display:flex; align-items:center; justify-content:center;
+    flex:1; color: var(--soc-mute); font-size: 11px; letter-spacing: 0.04em;
+    text-align:center; padding: 8px 4px;
+  }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     Pill popovers — enterprise interactions for the 4 status pills:
+       host (online/offline) · live (stream) · audit (decisions ok) · mode (enforcing)
+     Each pill is clickable; clicking opens a slide-down popover anchored
+     under the pill with telemetry, recent state transitions, and actions.
+     One unified design language; specific content per pill.
+     ═══════════════════════════════════════════════════════════════════ */
+  .pp {
+    position: fixed; z-index: 65;
+    width: min(440px, 92vw);
+    max-height: 72vh;
+    background: rgb(var(--soc-panel));
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 10px;
+    box-shadow: var(--soc-shadow-md);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    animation: dd-slide 140ms ease-out;
+  }
+  .pp-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; border-bottom: 1px solid var(--soc-glass-bd);
+    background: linear-gradient(180deg, rgba(34,211,238,0.04), transparent);
+  }
+  .pp-head .title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(var(--soc-text)); }
+  .pp-head .meta { font-size: 10.5px; color: var(--soc-mute); font-family: ui-monospace, monospace; margin-left: auto; }
+  .pp-head .pp-state-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 9px; border-radius: 999px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    border: 1px solid;
+  }
+  .pp-head .pp-state-pill::before { content:''; width:6px; height:6px; border-radius:9999px; background: currentColor; box-shadow: 0 0 6px currentColor; }
+  .pp-state-ok    { color: #047857; background: rgba(16,185,129,0.14); border-color: rgba(16,185,129,0.45); }
+  .pp-state-warn  { color: #a16207; background: rgba(250,204,21,0.16); border-color: rgba(250,204,21,0.5); }
+  .pp-state-err   { color: #be123c; background: rgba(244,63,94,0.18);  border-color: rgba(244,63,94,0.5); }
+  .pp-state-info  { color: #1d4ed8; background: rgba(59,130,246,0.16); border-color: rgba(59,130,246,0.45); }
+  body:not(.theme-light) .pp-state-ok   { color: #6ee7b7; }
+  body:not(.theme-light) .pp-state-warn { color: #fde68a; }
+  body:not(.theme-light) .pp-state-err  { color: #fda4af; }
+  body:not(.theme-light) .pp-state-info { color: #93c5fd; }
+
+  .pp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+  .pp-body::-webkit-scrollbar { width: 6px; }
+  .pp-body::-webkit-scrollbar-thumb { background: rgb(var(--soc-line)); border-radius: 3px; }
+  .pp-section { margin-bottom: 14px; }
+  .pp-section:last-child { margin-bottom: 0; }
+  .pp-section-title {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.10em; text-transform: uppercase;
+    color: rgb(var(--soc-dim)); margin-bottom: 6px;
+  }
+
+  /* 2-col stat grid (key/value pairs) */
+  .pp-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+  .pp-stat .k { color: var(--soc-mute); font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-bottom: 1px; }
+  .pp-stat .v { color: rgb(var(--soc-text)); font-weight: 700; font-family: ui-monospace, monospace; font-size: 11.5px; word-break: break-all; }
+  .pp-stat .v.ok   { color: #6ee7b7; }
+  .pp-stat .v.warn { color: #fcd34d; }
+  .pp-stat .v.err  { color: #fda4af; }
+  body.theme-light .pp-stat .v.ok   { color: #047857; }
+  body.theme-light .pp-stat .v.warn { color: #b45309; }
+  body.theme-light .pp-stat .v.err  { color: #be123c; }
+  .pp-stat .v.copyable { cursor: copy; padding: 0 4px; margin: 0 -4px; border-radius: 3px; }
+  .pp-stat .v.copyable:hover { background: rgba(34,211,238,0.10); }
+
+  /* History row — compact event log with timestamp + description */
+  .pp-row {
+    display: grid; grid-template-columns: 64px 1fr auto; gap: 8px;
+    padding: 6px 0; font-size: 11px; align-items: center;
+    border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  .pp-row:last-child { border-bottom: 0; }
+  .pp-row .ts { font-family: ui-monospace, monospace; color: var(--soc-mute); font-size: 10px; }
+  .pp-row .desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: rgb(var(--soc-text)); }
+  .pp-row .v { font-family: ui-monospace, monospace; font-size: 10px; color: var(--soc-mute); }
+  .pp-row .pill-mini {
+    font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .pp-row .pill-mini.ok   { background: rgba(16,185,129,0.16); color: #047857; border: 1px solid rgba(16,185,129,0.4); }
+  .pp-row .pill-mini.warn { background: rgba(250,204,21,0.16); color: #a16207; border: 1px solid rgba(250,204,21,0.5); }
+  .pp-row .pill-mini.err  { background: rgba(244,63,94,0.18); color: #be123c; border: 1px solid rgba(244,63,94,0.5); }
+  body:not(.theme-light) .pp-row .pill-mini.ok   { color: #6ee7b7; }
+  body:not(.theme-light) .pp-row .pill-mini.warn { color: #fde68a; }
+  body:not(.theme-light) .pp-row .pill-mini.err  { color: #fda4af; }
+
+  /* Endpoint health table (host popover) */
+  .pp-endpoint {
+    display: grid; grid-template-columns: 1fr auto 60px;
+    gap: 8px; padding: 6px 0; font-size: 11px; align-items: center;
+    border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  .pp-endpoint:last-child { border-bottom: 0; }
+  .pp-endpoint .path { font-family: ui-monospace, monospace; color: rgb(var(--soc-text)); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pp-endpoint .lat  { font-family: ui-monospace, monospace; color: var(--soc-mute); font-size: 10px; text-align: right; }
+
+  /* Mode preset buttons inside popover — compact 2x2 grid */
+  .pp-mode-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+  .pp-mode-btn {
+    display: flex; flex-direction: column; align-items: flex-start; gap: 2px;
+    padding: 8px 10px; border-radius: 6px;
+    border: 1px solid var(--soc-glass-bd); background: var(--soc-input-bg);
+    color: rgb(var(--soc-text)); cursor: pointer; transition: all 120ms;
+    text-align: left; min-width: 0;
+  }
+  .pp-mode-btn:hover { border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.06); }
+  .pp-mode-btn .name { font-size: 10.5px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; }
+  .pp-mode-btn .sub  { font-size: 9.5px; color: var(--soc-mute); font-family: ui-monospace, monospace; }
+  .pp-mode-btn.containment .name { color: #be123c; }
+  .pp-mode-btn.forensic    .name { color: #1d4ed8; }
+  .pp-mode-btn.maintenance .name { color: #a16207; }
+  .pp-mode-btn.def         .name { color: #047857; }
+  body:not(.theme-light) .pp-mode-btn.containment .name { color: #fda4af; }
+  body:not(.theme-light) .pp-mode-btn.forensic    .name { color: #93c5fd; }
+  body:not(.theme-light) .pp-mode-btn.maintenance .name { color: #fde68a; }
+  body:not(.theme-light) .pp-mode-btn.def         .name { color: #6ee7b7; }
+
+  /* Action bar — primary + secondary actions pinned to popover footer */
+  .pp-actions {
+    display: flex; gap: 6px; align-items: center;
+    padding: 10px 14px; border-top: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+  }
+  .pp-actions .pp-flex { flex: 1; }
+  .pp-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 6px 12px; border-radius: 5px;
+    border: 1px solid var(--soc-glass-bd); background: var(--soc-input-bg);
+    color: rgb(var(--soc-text)); cursor: pointer; transition: all 120ms;
+    font-weight: 600;
+  }
+  .pp-btn:hover { border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); }
+  .pp-btn.primary { border-color: rgba(34,211,238,0.5); color: rgb(var(--soc-accent)); }
+  .pp-btn.primary:hover { background: rgba(34,211,238,0.14); }
+  .pp-btn.danger  { color: #be123c; border-color: rgba(244,63,94,0.5); }
+  .pp-btn.danger:hover  { background: rgba(244,63,94,0.16); }
+  .pp-btn.warn    { color: #c2410c; border-color: rgba(251,146,60,0.5); }
+  .pp-btn.warn:hover    { background: rgba(251,146,60,0.12); }
+  body:not(.theme-light) .pp-btn.danger { color: #fda4af; }
+  body:not(.theme-light) .pp-btn.warn   { color: #fdba74; }
+  .pp-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  /* Make existing pills clearly clickable. Apply a subtle hover ring +
+     cursor pointer + tiny chev indicator. */
+  .audit-pill, .live-pill, .mode-pill, .host-pill {
+    cursor: pointer; user-select: none;
+    transition: filter 100ms, transform 60ms;
+  }
+  .audit-pill:hover, .live-pill:hover, .mode-pill:hover, .host-pill:hover { filter: brightness(1.1); }
+  .audit-pill:active, .live-pill:active, .mode-pill:active, .host-pill:active { transform: translateY(1px); }
+  .pill-chev { font-size: 8px; opacity: 0.65; margin-left: 4px; }
+
+  /* Host pill — same visual family as live-pill so the topbar reads
+     symmetrically. State-driven background. */
+  .host-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 12px;
+    font-size: 11px; line-height: 1;
+    background: rgba(34,197,94,0.10); border: 1px solid rgba(34,197,94,0.35);
+  }
+  .host-pill .live-dot-pill { width: 6px; height: 6px; border-radius: 9999px; background: #10b981; box-shadow: 0 0 6px #10b981; flex-shrink: 0; }
+  .host-pill.host-slow { background: rgba(250,204,21,0.10); border-color: rgba(250,204,21,0.45); }
+  .host-pill.host-slow .live-dot-pill { background: #facc15; box-shadow: 0 0 6px #facc15; }
+  .host-pill.host-down { background: rgba(244,63,94,0.12); border-color: rgba(244,63,94,0.5); }
+  .host-pill.host-down .live-dot-pill { background: #f43f5e; box-shadow: 0 0 6px #f43f5e; animation: pulse-red 1.6s infinite; }
+  .host-pill .host-text { color: rgb(var(--soc-text)); white-space: nowrap; }
+  .host-pill .host-ip   { color: var(--soc-mute); font-family: ui-monospace, monospace; font-size: 10px; }
+
+  /* ───── Notifications bell + alert center ─────
+     A bell icon in the user cluster that lights up when high-severity
+     events arrive. Unread count badge rendered as a small pill on the
+     icon. Click opens a slide-down panel listing recent alerts. */
+  .notif-btn { position: relative; }
+  .notif-btn.has-unread { color: #fda4af; border-color: rgba(244,63,94,0.45); }
+  .notif-btn.has-unread:hover { background: rgba(244,63,94,0.10); border-color: rgba(244,63,94,0.7); }
+  body.theme-light .notif-btn.has-unread { color: #be123c; }
+  .notif-badge {
+    position: absolute; top: -4px; right: -4px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    border-radius: 9999px;
+    background: #f43f5e; color: #fff;
+    font-size: 9px; font-weight: 800; letter-spacing: 0.03em;
+    display: inline-flex; align-items: center; justify-content: center;
+    box-shadow: 0 0 0 2px rgb(var(--soc-bg));
+    animation: notif-pop 240ms ease-out;
+  }
+  @keyframes notif-pop { from { transform: scale(0); } to { transform: scale(1); } }
+  .notif-panel {
+    position: fixed; top: 56px; right: 18px; z-index: 60;
+    width: min(420px, 92vw); max-height: 70vh;
+    background: rgb(var(--soc-panel));
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 8px;
+    box-shadow: var(--soc-shadow-md);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    animation: dd-slide 140ms ease-out;
+  }
+  @keyframes dd-slide { from { opacity: 0; transform: translateY(-6px); } to { opacity: 1; transform: translateY(0); } }
+  .notif-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  .notif-head .title { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: rgb(var(--soc-text)); }
+  .notif-head .count { font-size: 10px; color: var(--soc-mute); font-family: ui-monospace, monospace; }
+  .notif-list { flex: 1; overflow-y: auto; }
+  .notif-list::-webkit-scrollbar { width: 6px; }
+  .notif-list::-webkit-scrollbar-thumb { background: rgb(var(--soc-line)); border-radius: 3px; }
+  .notif-item {
+    display: grid; grid-template-columns: 80px 1fr 22px; gap: 10px;
+    padding: 8px 14px; border-bottom: 1px solid var(--soc-glass-bd);
+    font-size: 11px; cursor: pointer;
+    transition: background 100ms;
+    align-items: start; position: relative;
+  }
+  /* Per-row × dismiss — appears on hover to keep the panel uncluttered
+     by default. Stops propagation in JS so it doesn't open the drill. */
+  .notif-x {
+    width: 22px; height: 22px;
+    border: 0; background: transparent;
+    color: var(--soc-mute);
+    font-size: 16px; line-height: 1; cursor: pointer;
+    border-radius: 4px;
+    opacity: 0; transition: opacity 100ms, background 100ms, color 100ms;
+    align-self: start;
+  }
+  .notif-item:hover .notif-x { opacity: 0.7; }
+  .notif-x:hover {
+    opacity: 1 !important;
+    background: rgba(244,63,94,0.15);
+    color: #fda4af;
+  }
+  body.theme-light .notif-x:hover { color: #be123c; }
+  .notif-item:hover { background: rgba(34,211,238,0.06); }
+  .notif-item.unread { background: rgba(244,63,94,0.04); border-left: 2px solid rgba(244,63,94,0.7); padding-left: 12px; }
+  .notif-item .ts { color: var(--soc-mute); font-family: ui-monospace, monospace; font-size: 10.5px; }
+  .notif-item .body { min-width: 0; }
+  .notif-item .body .reason {
+    color: rgb(var(--soc-text));
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .notif-item .body .meta {
+    color: var(--soc-mute); font-family: ui-monospace, monospace; font-size: 10px;
+    margin-top: 2px;
+  }
+  .notif-empty {
+    padding: 28px 14px; text-align: center; color: var(--soc-mute); font-size: 11px;
+  }
+  .notif-foot {
+    display: flex; gap: 8px; align-items: center;
+    padding: 8px 14px; border-top: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+  }
+  .notif-foot .lbl { font-size: 10px; color: var(--soc-mute); }
+  .notif-foot button { font-size: 10px; padding: 3px 8px; }
+
+  /* ───── Admin profile dropdown ─────
+     Anchored under the user-pill in the topbar. Shows identity, session
+     telemetry, workspace preferences, and account actions. */
+  .profile-menu {
+    position: fixed; top: 56px; right: 18px; z-index: 65;
+    width: min(360px, 92vw);
+    background: rgb(var(--soc-panel));
+    border: 1px solid var(--soc-glass-bd);
+    border-radius: 10px;
+    box-shadow: var(--soc-shadow-md);
+    overflow: hidden;
+    animation: dd-slide 140ms ease-out;
+  }
+  .profile-card {
+    display: grid; grid-template-columns: 56px 1fr; gap: 14px;
+    padding: 14px;
+    background: linear-gradient(135deg, rgba(34,211,238,0.10), rgba(59,130,246,0.04));
+    border-bottom: 1px solid var(--soc-glass-bd);
+    align-items: center;
+  }
+  .profile-avatar-lg {
+    width: 56px; height: 56px;
+    border-radius: 9999px;
+    background: linear-gradient(135deg, rgba(34,211,238,0.55), rgba(59,130,246,0.55));
+    border: 1px solid rgba(34,211,238,0.65);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 24px; font-weight: 800; color: rgb(var(--soc-text)); text-transform: uppercase;
+    box-shadow: 0 6px 14px -6px rgba(34,211,238,0.6);
+  }
+  .profile-card .name { font-size: 14px; font-weight: 700; color: rgb(var(--soc-text)); margin-bottom: 2px; }
+  .profile-card .meta { font-size: 11px; color: var(--soc-mute); font-family: ui-monospace, monospace; }
+  .profile-card .role {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 2px 8px; border-radius: 999px; margin-top: 6px;
+    background: rgba(34,211,238,0.15); color: rgb(var(--soc-accent));
+    border: 1px solid rgba(34,211,238,0.45);
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  .profile-section {
+    padding: 10px 14px; border-bottom: 1px solid var(--soc-glass-bd);
+  }
+  .profile-section:last-child { border-bottom: 0; }
+  .profile-section-title {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.10em; text-transform: uppercase;
+    color: var(--soc-mute); margin-bottom: 8px;
+  }
+  .profile-stats {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 12px;
+    font-size: 11px; font-family: ui-monospace, monospace;
+  }
+  .profile-stat .k { color: var(--soc-mute); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; display: block; }
+  .profile-stat .v { color: rgb(var(--soc-text)); font-weight: 700; }
+  .profile-prefs { display: flex; flex-direction: column; gap: 6px; }
+  .profile-pref-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center;
+    font-size: 11px; color: var(--soc-mute);
+  }
+  .profile-pref-row > select,
+  .profile-pref-row > .pref-toggle {
+    font-size: 11px; padding: 3px 8px; height: 26px;
+  }
+  .pref-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 4px;
+    border: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+    color: rgb(var(--soc-text));
+    cursor: pointer; font-size: 11px;
+  }
+  .pref-toggle:hover { border-color: rgba(34,211,238,0.5); }
+  .profile-actions { display: flex; gap: 8px; flex-wrap: wrap; padding: 10px 14px; }
+  .profile-actions > * { flex: 1 1 auto; }
+  .profile-link, .profile-signout {
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 7px 12px; border-radius: 5px;
+    border: 1px solid var(--soc-glass-bd);
+    background: var(--soc-input-bg);
+    color: rgb(var(--soc-text));
+    font-size: 11px; font-weight: 600;
+    cursor: pointer; text-decoration: none;
+    transition: all 120ms;
+  }
+  .profile-link:hover { border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.08); color: rgb(var(--soc-text)); }
+  .profile-signout { color: #be123c; border-color: rgba(244,63,94,0.5); }
+  .profile-signout:hover { background: rgba(244,63,94,0.14); }
+  body:not(.theme-light) .profile-signout { color: #fda4af; }
+
+  /* Avatar can host either a single uppercase glyph (default) or a
+     user-uploaded image. When an image is set, we hide the glyph by
+     setting font-size:0 on the host so leftover text doesn't bleed
+     through. The image fills the bubble via background-image+cover. */
+  .user-avatar.has-image,
+  .profile-avatar-lg.has-image {
+    background-size: cover;
+    background-position: center;
+    color: transparent;
+  }
+
+  /* Edit overlay on the large profile avatar — appears on hover with
+     a small camera glyph + "Change". Click anywhere on the avatar
+     opens the hidden file picker. */
+  .profile-avatar-wrap {
+    position: relative; width: 56px; height: 56px;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .profile-avatar-wrap .edit-overlay {
+    position: absolute; inset: 0; border-radius: 9999px;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px;
+    background: rgba(0,0,0,0.55);
+    color: #fff; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    opacity: 0; transition: opacity 120ms ease;
+    pointer-events: none;
+  }
+  .profile-avatar-wrap:hover .edit-overlay,
+  .profile-avatar-wrap:focus-within .edit-overlay { opacity: 1; }
+  .profile-avatar-wrap .edit-overlay svg { display: block; }
+  .profile-avatar-wrap input[type="file"] { display: none; }
+
+  /* "Remove picture" link rendered when one is set */
+  .profile-avatar-actions {
+    display: flex; gap: 6px; margin-top: 6px;
+    font-size: 10px;
+  }
+  .profile-avatar-actions a {
+    color: var(--soc-mute); text-decoration: underline; text-underline-offset: 2px;
+    cursor: pointer;
+  }
+  .profile-avatar-actions a:hover { color: rgb(var(--soc-text)); }
+  .profile-avatar-actions a.danger:hover { color: #fda4af; }
+  body.theme-light .profile-avatar-actions a.danger:hover { color: #be123c; }
+
+  /* User-pill becomes a button when profile dropdown is wired */
+  .user-pill { cursor: pointer; transition: background 100ms; border-radius: 4px; padding-right: 4px; }
+  .user-pill:hover { background: rgba(34,211,238,0.06); }
+  .user-pill.open { background: rgba(34,211,238,0.10); }
+  .user-pill .chev { color: var(--soc-mute); font-size: 9px; transition: transform 140ms; margin-left: 2px; }
+  .user-pill.open .chev { transform: rotate(180deg); }
+
+  /* ───── KPI / threat-intel click-through cues ─────
+     Both surfaces become clickable filters. We give them subtle hover
+     affordance, plus a tiny "drill" arrow that appears on hover. */
+  .kpi.kpi-clickable { cursor: pointer; transition: border-color 120ms, background 120ms, transform 80ms; }
+  .kpi.kpi-clickable:hover {
+    border-color: rgba(34,211,238,0.45);
+    background: rgba(34,211,238,0.06);
+    transform: translateY(-1px);
+  }
+  .kpi.kpi-clickable.active {
+    border-color: rgba(34,211,238,0.7);
+    background: rgba(34,211,238,0.12);
+    box-shadow: inset 0 0 0 1px rgba(34,211,238,0.4);
+  }
+
+  .ti-bar2 { cursor: pointer; transition: background 100ms; padding: 1px 4px; border-radius: 3px; margin: -1px -4px; }
+  .ti-bar2:hover { background: rgba(34,211,238,0.06); }
+  .ti-bar2.active { background: rgba(34,211,238,0.12); }
+
+  /* Filter-active strip — appears below the topbar when any KPI/TI
+     filter is locked, with a one-click clear. */
+  .filter-strip {
+    display: none;
+    align-items: center; gap: 10px;
+    padding: 6px 18px;
+    background: rgba(34,211,238,0.10);
+    border-bottom: 1px solid rgba(34,211,238,0.35);
+    font-size: 11px;
+  }
+  .filter-strip.show { display: flex; }
+  .filter-strip .lbl { font-size: 9.5px; letter-spacing: 0.08em; text-transform: uppercase; color: rgb(var(--soc-accent)); font-weight: 800; }
+  .filter-strip .chip-active {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px; border-radius: 999px;
+    background: var(--soc-input-bg);
+    border: 1px solid rgba(34,211,238,0.5);
+    color: rgb(var(--soc-text));
+    font-family: ui-monospace, monospace;
+  }
+  .filter-strip .chip-active .x {
+    margin-left: 4px; cursor: pointer; opacity: 0.7;
+    width: 14px; height: 14px; border-radius: 9999px;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .filter-strip .chip-active .x:hover { background: rgba(244,63,94,0.18); color: #fda4af; opacity: 1; }
+  .filter-strip .clear-all {
+    margin-left: auto; cursor: pointer;
+    font-size: 10px; color: var(--soc-mute);
+    padding: 3px 8px; border-radius: 3px; border: 1px solid var(--soc-glass-bd);
+  }
+  .filter-strip .clear-all:hover { color: rgb(var(--soc-text)); border-color: rgba(34,211,238,0.5); }
+
+  /* Operations status bar — pinned bottom, compact, theme-aware. Sits
+     above the bulk-action bar's z-stack and stays out of the way of
+     drills (z-60). Click any cell to copy where applicable. */
+  .ops-statusbar {
+    position: sticky; bottom: 0; z-index: 25;
+    display: grid;
+    grid-template-columns: auto 1fr auto auto auto auto;
+    align-items: center; gap: 16px;
+    padding: 6px 16px;
+    background: rgb(var(--soc-panel) / 0.85);
+    backdrop-filter: blur(8px);
+    border-top: 1px solid var(--soc-glass-bd);
+    font-size: 10.5px;
+    color: var(--soc-mute);
+    font-family: ui-monospace, monospace;
+  }
+  .ops-statusbar .ops-cell { display: inline-flex; align-items: center; gap: 6px; min-width: 0; white-space: nowrap; }
+  .ops-statusbar .ops-cell .lbl { color: rgb(var(--soc-mute)); text-transform: uppercase; letter-spacing: 0.08em; font-size: 9px; font-weight: 700; }
+  .ops-statusbar .ops-cell .val { color: rgb(var(--soc-text)); font-weight: 600; }
+  .ops-statusbar .ops-cell.copyable { cursor: copy; padding: 1px 6px; border-radius: 3px; transition: background 80ms ease; }
+  .ops-statusbar .ops-cell.copyable:hover { background: rgba(34,211,238,0.10); }
+  .ops-statusbar .ops-spacer { min-width: 0; }
+  .ops-statusbar .ops-pulse {
+    width: 6px; height: 6px; border-radius: 9999px; background: #10b981;
+    box-shadow: 0 0 6px #10b981; animation: pulse-green 2.4s infinite;
+  }
+  .ops-statusbar .ops-pulse.warn { background:#f59e0b; box-shadow: 0 0 6px #f59e0b; }
+  .ops-statusbar .ops-pulse.err  { background:#f43f5e; box-shadow: 0 0 6px #f43f5e; animation: pulse-red 1.6s infinite; }
+  @media (max-width: 980px) {
+    .ops-statusbar { grid-template-columns: 1fr; gap: 4px 16px; padding: 6px 12px 12px; }
+    .ops-statusbar .ops-cell { white-space: normal; }
+  }
 </style>
 </head>
 <body class="min-h-screen">
 
-<!-- ───────── Sticky top bar ───────── -->
-<header class="glass sticky top-0 z-30 border-b px-5 py-3 flex items-center gap-3 flex-wrap">
-  <div class="flex items-center gap-3 min-w-0">
-    <a href="/" class="text-soc-mute hover:text-soc-text text-xs flex items-center gap-1" title="Back to SOC dashboard">
-      <span class="text-base leading-none">‹</span> SOC
-    </a>
-    <div class="text-soc-mute text-xs">/</div>
-    <div class="font-bold tracking-wide text-sm whitespace-nowrap">CHOKE GATEWAY</div>
-    <span id="modePill" class="mode-pill mode-detect-only">— —</span>
+<!-- ───────── Enterprise sticky topbar ─────────
+     Two deterministic rows. Row 1 = identity, search, status, user.
+     Row 2 = controls (time range), telemetry (KPIs), and actions.
+     No flex-wrap gaps; flexes via .topbar-flex pinning each cluster. -->
+<header class="topbar">
+
+  <!-- Row 1: identity + search + status + user -->
+  <div class="topbar-row topbar-primary">
+    <div class="brand-cluster">
+      <a href="/" class="brand-back" title="Back to SOC dashboard">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        SOC
+      </a>
+      <span class="brand-sep"></span>
+      <span class="brand-mark">CHOKE GATEWAY</span>
+      <span id="modePill" class="mode-pill mode-detect-only" tabindex="0" role="button" aria-haspopup="dialog"
+            title="Enforcement mode — click for details">— —<span class="pill-chev">▾</span></span>
+    </div>
+
+    <!-- Global search — same DSL as the SOC dashboard. Drives both the
+         Tracked Processes filter and the Decision Tape filter so a
+         single query covers both panels. Press / to focus. -->
+    <input id="chokeSearch" type="search"
+           placeholder='Search… (try: pid:1574 binary:bash state:quarantined action:sever score:>50)'
+           class="topbar-search text-[12px]">
+
+    <span class="topbar-flex"></span>
+
+    <div class="status-cluster">
+      <!-- Host (online/offline) pill — server-reachability layer
+           independent of the SSE feed. Periodic ping to /api/whoami
+           tracks HTTP-level health + latency; click for a panel with
+           per-endpoint health + diagnostics. -->
+      <span id="hostPill" class="host-pill" tabindex="0" role="button" aria-haspopup="dialog"
+            title="Host reachability — click for details">
+        <span class="live-dot-pill"></span>
+        <span class="host-text" id="hostPillText">host —</span>
+        <span class="host-ip" id="hostPillIp"></span>
+        <span class="pill-chev">▾</span>
+      </span>
+      <span class="audit-pill audit-ok mono" id="auditPill" tabindex="0" role="button" aria-haspopup="dialog"
+            title="Audit chain — click for details">
+        <span class="live-dot"></span><span id="auditLabel">audit ok · — </span>
+        <span class="pill-chev">▾</span>
+      </span>
+      <span id="liveStatus" class="live-pill" tabindex="0" role="button" aria-haspopup="dialog"
+            title="Live data feed — click for details">
+        <span class="live-dot-pill"></span>
+        <span id="liveStatusText" class="live-text">connecting…</span>
+        <span id="liveSinceText" class="live-since"></span>
+        <span class="pill-chev">▾</span>
+      </span>
+    </div>
+
+    <div class="user-cluster">
+      <button id="notifBtn" class="icon-btn notif-btn" title="Recent alerts" aria-label="Notifications">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span id="notifBadge" class="notif-badge" style="display:none">0</span>
+      </button>
+      <button id="paletteBtn" class="icon-btn" title="Command palette (⌘K)" aria-label="Command palette">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 9h6v6H9z"/><path d="M9 9V6a3 3 0 1 0-3 3h3M9 15v3a3 3 0 1 1-3-3h3M15 9V6a3 3 0 1 1 3 3h-3M15 15v3a3 3 0 1 0 3-3h-3"/></svg>
+      </button>
+      <button id="helpBtn" class="icon-btn" title="Keyboard shortcuts (?)" aria-label="Keyboard shortcuts">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 1 1 5.91 1c0 2-3 2-3 4"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </button>
+      <button id="themeBtn" class="icon-btn" title="Toggle light / dark theme" aria-label="Toggle theme">
+        <svg id="themeIconDark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        <svg id="themeIconLight" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none"><circle cx="12" cy="12" r="4"/><line x1="12" y1="2" x2="12" y2="4"/><line x1="12" y1="20" x2="12" y2="22"/><line x1="4.93" y1="4.93" x2="6.34" y2="6.34"/><line x1="17.66" y1="17.66" x2="19.07" y2="19.07"/><line x1="2" y1="12" x2="4" y2="12"/><line x1="20" y1="12" x2="22" y2="12"/><line x1="4.93" y1="19.07" x2="6.34" y2="17.66"/><line x1="17.66" y1="6.34" x2="19.07" y2="4.93"/></svg>
+      </button>
+      <span id="userPill" class="user-pill" tabindex="0" role="button" aria-label="Open profile menu">
+        <span class="user-avatar" id="userAvatar">·</span>
+        <span id="user">—</span>
+        <span class="chev">▾</span>
+      </span>
+    </div>
   </div>
 
-  <!-- Global search — same DSL as the SOC dashboard. Drives the
-       Tracked Processes filter + the Decision Tape filter together so
-       a single query covers both panels. Bare numerics auto-broaden to
-       PID matches. Press / from anywhere to focus. -->
-  <input id="chokeSearch" type="search"
-         placeholder='Search… (try: pid:1574 binary:bash state:quarantined action:sever score:>50)'
-         class="text-[12px]" style="min-width: 320px; flex: 1; max-width: 520px;">
+  <!-- Row 2: range + KPIs + spacer + refresh + scope + actions -->
+  <div class="topbar-row topbar-secondary">
+    <!-- Time window selector — drives the Decision Tape filter + KPI
+         tile counts. Persisted in localStorage("choke.window"). -->
+    <div id="rangeSelect" class="range-pill">
+      <button data-range="5">5m</button>
+      <button data-range="30">30m</button>
+      <button data-range="60">1h</button>
+      <button data-range="1440">24h</button>
+    </div>
 
-  <!-- Time window selector — same pattern as the SOC dashboard. Drives
-       the Decision Tape filter + KPI tile counts. Persisted in
-       localStorage under `choke.window` so it survives reload. -->
-  <div id="rangeSelect" class="flex border rounded-md overflow-hidden text-[11px]" style="border-color: var(--soc-glass-bd); background: var(--soc-input-bg);">
-    <button data-range="5"    class="px-3 py-1 hover:bg-soc-panel2">5m</button>
-    <button data-range="30"   class="px-3 py-1 hover:bg-soc-panel2">30m</button>
-    <button data-range="60"   class="px-3 py-1 hover:bg-soc-panel2">1h</button>
-    <button data-range="1440" class="px-3 py-1 hover:bg-soc-panel2">24h</button>
+    <!-- Live KPIs — count + delta-vs-previous + 12-bin sparkline. -->
+    <div class="kpi-cluster">
+      <div id="kpiDecRate" class="kpi" title="Decisions in the selected time window (vs. previous equal window)">
+        <span class="kpi-label" id="kpiDecLabel">dec/30m</span>
+        <div class="kpi-row"><span class="kpi-value">—</span><span class="kpi-delta flat" id="kpiDecDelta"></span></div>
+        <div class="kpi-spark" id="kpiDecSpark"></div>
+      </div>
+      <div id="kpiSever" class="kpi" title="Severs in the selected window (vs. previous equal window)">
+        <span class="kpi-label" id="kpiSeverLabel">sever 30m</span>
+        <div class="kpi-row"><span class="kpi-value">—</span><span class="kpi-delta flat" id="kpiSeverDelta"></span></div>
+        <div class="kpi-spark" id="kpiSeverSpark"></div>
+      </div>
+      <div id="kpiThrottle" class="kpi" title="Throttle/tarpit/quarantine in the selected window (vs. previous equal window)">
+        <span class="kpi-label" id="kpiThrotLabel">throt 30m</span>
+        <div class="kpi-row"><span class="kpi-value">—</span><span class="kpi-delta flat" id="kpiThrotDelta"></span></div>
+        <div class="kpi-spark" id="kpiThrotSpark"></div>
+      </div>
+    </div>
+
+    <span class="topbar-flex"></span>
+
+    <!-- Refresh control: ⟳ one-shot, ▾ auto-refresh dropdown. Spinner
+         on the icon while a snapshot fetch is in flight. -->
+    <div class="refresh-pill-group" id="refreshControl">
+      <button id="softRefreshBtn" title="Refresh now (snapshot · no page reload)" aria-label="Refresh now">
+        <svg id="refreshIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+      </button>
+      <button id="refreshMenuBtn" title="Auto-refresh settings" aria-label="Auto-refresh settings">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"/></svg>
+      </button>
+      <div id="refreshMenu" class="hidden absolute right-0 top-full mt-1 z-50">
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Auto-refresh</div>
+        <div id="refreshIntervals" class="grid grid-cols-4 gap-1 mb-3"></div>
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Status</div>
+        <div id="refreshStatus" class="text-[11px] font-mono text-soc-text leading-relaxed"></div>
+      </div>
+    </div>
+
+    <span class="scope-pill" title="Tracked processes">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3"/></svg>
+      <span class="num" id="trackedCount">0</span>
+      <span>tracked</span>
+    </span>
+
+    <span class="topbar-divider"></span>
+
+    <div class="action-cluster">
+      <button id="jailBtn" class="act-btn err" title="Pick any running process and jail it (j)">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        Jail Process
+      </button>
+      <button id="forensicBtn" class="act-btn" title="Download a JSON snapshot of the entire gateway state for incident response">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        Snapshot
+      </button>
+      <button id="thawBtn" class="act-btn warn" title="Release the quarantined cgroup so frozen processes resume">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="2" x2="12" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"/><line x1="18.4" y1="5.6" x2="5.6" y2="18.4"/></svg>
+        Thaw
+      </button>
+      <button id="killSwitchBtn" class="act-btn kill" title="Emergency stop — disengage every enforcer in the chain.&#10;Decisions are still recorded.">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+        KILL-SWITCH
+      </button>
+    </div>
   </div>
 
-  <!-- Live KPIs — at-a-glance throughput within the selected window. -->
-  <div class="flex items-center gap-2">
-    <div id="kpiDecRate" class="kpi" title="Decisions in the selected time window">
-      <span class="kpi-label" id="kpiDecLabel">dec/30m</span><span class="kpi-value">—</span>
-    </div>
-    <div id="kpiSever" class="kpi" title="Severs in the selected window">
-      <span class="kpi-label" id="kpiSeverLabel">sever 30m</span><span class="kpi-value">—</span>
-    </div>
-    <div id="kpiThrottle" class="kpi" title="Throttle/tarpit/quarantine in the selected window">
-      <span class="kpi-label" id="kpiThrotLabel">throt 30m</span><span class="kpi-value">—</span>
-    </div>
-  </div>
-
-  <div class="flex-1"></div>
-
-  <span class="audit-pill audit-ok mono" id="auditPill" title="Click to re-verify the decision audit chain">
-    <span class="live-dot"></span><span id="auditLabel">audit ok · — </span>
-  </span>
-
-  <!-- Connection live-pill — green=live, yellow=connecting/reconnecting,
-       red=offline, slate=paused. Mirrors the SOC dashboard so operators
-       have one consistent vocabulary for "is this page live?". -->
-  <span id="liveStatus" class="live-pill" title="Live data feed">
-    <span class="live-dot-pill"></span>
-    <span id="liveStatusText" class="live-text">connecting…</span>
-    <span id="liveSinceText" class="live-since"></span>
-  </span>
-
-  <!-- Refresh control: click ⟳ for one-shot refresh, click ▾ for the
-       auto-refresh dropdown. Same shape as the SOC dashboard so an
-       operator switching pages reaches for the same control. -->
-  <div class="relative inline-flex items-center" id="refreshControl">
-    <button id="softRefreshBtn" class="px-1.5 py-1 text-soc-mute hover:text-soc-accent rounded-l border border-soc-line border-r-0" title="Refresh now (snapshot · no page reload)">
-      <svg id="refreshIcon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-    </button>
-    <button id="refreshMenuBtn" class="px-1 py-1 text-soc-mute hover:text-soc-accent rounded-r border border-soc-line" title="Refresh settings">
-      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><polyline points="6 9 12 15 18 9"/></svg>
-    </button>
-    <div id="refreshMenu" class="hidden absolute right-0 top-full mt-1 z-50">
-      <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-2">Auto-refresh</div>
-      <div id="refreshIntervals" class="grid grid-cols-4 gap-1 mb-3"></div>
-      <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Status</div>
-      <div id="refreshStatus" class="text-[11px] font-mono text-soc-text leading-relaxed"></div>
+  <!-- Trail bar: incident response presets, flush-mounted under row 2
+       so the header reads as one cohesive top region (no gap). -->
+  <div class="topbar-trail">
+    <div class="topbar-trail-inner">
+      <span class="topbar-trail-label">Incident Response</span>
+      <div class="preset-row">
+        <button class="preset-btn preset-containment" data-preset="containment" title="(c) Aggressive — every suspicious chain hits choke immediately. Use during active attacks.">
+          <span class="preset-name flex items-center gap-2">⚠ Containment <span class="preset-key">c</span></span>
+          <span class="preset-sub">throttle@1, sever@60</span>
+        </button>
+        <button class="preset-btn preset-forensic" data-preset="forensic" title="(f) Engages kill-switch — record everything, enforce nothing. Preserves evidence.">
+          <span class="preset-name flex items-center gap-2">🔍 Forensic <span class="preset-key">f</span></span>
+          <span class="preset-sub">kill-switch on</span>
+        </button>
+        <button class="preset-btn preset-maintenance" data-preset="maintenance" title="(m) Stop choking entirely. Use during planned maintenance windows.">
+          <span class="preset-name flex items-center gap-2">🔧 Maintenance <span class="preset-key">m</span></span>
+          <span class="preset-sub">thresholds 1000+</span>
+        </button>
+        <button class="preset-btn preset-default" data-preset="default" title="(d) Restore everyday safe defaults.">
+          <span class="preset-name flex items-center gap-2">✓ Default <span class="preset-key">d</span></span>
+          <span class="preset-sub">10/30/60/100</span>
+        </button>
+      </div>
+      <span class="topbar-trail-foot">Each preset is audited as a single decision row.</span>
     </div>
   </div>
-
-  <div class="text-xs text-soc-mute mono">tracked <span id="trackedCount" class="text-soc-text font-bold">0</span></div>
-
-  <button id="jailBtn" class="btn btn-tiny btn-err" title="Pick any running process and jail it (j)">
-    🔒 Jail Process
-  </button>
-  <button id="forensicBtn" class="btn btn-tiny" title="Download a JSON snapshot of the entire gateway state for incident response">
-    📥 Snapshot
-  </button>
-  <button id="thawBtn" class="btn btn-tiny btn-warn" title="Release the quarantined cgroup so frozen processes resume">
-    ❄ Thaw
-  </button>
-  <button id="killSwitchBtn" class="btn btn-err" title="Emergency stop — disengage every enforcer in the chain.&#10;Decisions are still recorded.">
-    <span>◉</span> KILL-SWITCH
-  </button>
-
-  <button id="paletteBtn" class="btn btn-tiny" title="Command palette (⌘K)" aria-label="Command palette">⌘K</button>
-  <button id="helpBtn" class="btn btn-tiny" title="Keyboard shortcuts (?)">?</button>
-  <button id="themeBtn" class="btn btn-tiny" title="Toggle light / dark theme" aria-label="Toggle theme">
-    <span id="themeIconDark">◐</span><span id="themeIconLight" style="display:none">☀</span>
-  </button>
-
-  <div id="user" class="text-xs text-soc-mute mono"></div>
 </header>
 
 <!-- ───────── Stale-stream banner (shows on prolonged silence) ───────── -->
@@ -985,29 +1962,80 @@ tailwind.config = {
   <button id="staleReconnectBtn" class="stale-action">Force reconnect</button>
 </div>
 
-<!-- ───────── Incident Response Presets bar ───────── -->
-<section class="px-5 pt-4">
-  <div class="glass rounded-lg p-3 flex items-center gap-3 flex-wrap">
-    <div class="text-xs uppercase tracking-widest text-soc-dim font-bold mr-2">Incident Response</div>
-    <div class="preset-row">
-      <button class="preset-btn preset-containment" data-preset="containment" title="(c) Aggressive — every suspicious chain hits choke immediately. Use during active attacks.">
-        <span class="preset-name flex items-center gap-2">⚠ Containment <span class="preset-key">c</span></span>
-        <span class="preset-sub">throttle@1, sever@60</span>
-      </button>
-      <button class="preset-btn preset-forensic" data-preset="forensic" title="(f) Engages kill-switch — record everything, enforce nothing. Preserves evidence.">
-        <span class="preset-name flex items-center gap-2">🔍 Forensic <span class="preset-key">f</span></span>
-        <span class="preset-sub">kill-switch on</span>
-      </button>
-      <button class="preset-btn preset-maintenance" data-preset="maintenance" title="(m) Stop choking entirely. Use during planned maintenance windows.">
-        <span class="preset-name flex items-center gap-2">🔧 Maintenance <span class="preset-key">m</span></span>
-        <span class="preset-sub">thresholds 1000+</span>
-      </button>
-      <button class="preset-btn preset-default" data-preset="default" title="(d) Restore everyday safe defaults.">
-        <span class="preset-name flex items-center gap-2">✓ Default <span class="preset-key">d</span></span>
-        <span class="preset-sub">10/30/60/100</span>
-      </button>
+<!-- ───────── Active filter strip ─────────
+     Slides in below the topbar whenever the operator has locked any
+     KPI, top-offender, or signal-pattern filter. Each chip has its own
+     × to clear, plus a "clear all" link. -->
+<div id="filterStrip" class="filter-strip">
+  <span class="lbl">Filters</span>
+  <span id="filterChips" class="flex items-center gap-2 flex-wrap"></span>
+  <span id="filterClearAll" class="clear-all">clear all</span>
+</div>
+
+<!-- ───────── Threat Intelligence Overview ribbon ─────────
+     Four glass cards giving operators a top-of-funnel read on what is
+     happening right now, derived locally from S.decisions + S.circuits
+     + S.state. Flush-mounted under the topbar (no gap). -->
+<section class="px-5 pt-3">
+  <div class="ti-ribbon">
+
+    <!-- Decision velocity -->
+    <div class="ti-card" id="tiVelCard" title="Decision rate over the last 60 minutes (per-minute bins)">
+      <div class="ti-head">
+        <span class="ti-title">Decision Velocity</span>
+        <span class="ti-meta" id="tiVelMeta">—</span>
+      </div>
+      <div class="ti-body">
+        <div class="ti-vel-row">
+          <div>
+            <span class="ti-vel-num" id="tiVelNum">—</span>
+            <span class="ti-vel-unit" id="tiVelUnit">/ min</span>
+          </div>
+          <div class="ti-vel-spark" id="tiVelSpark"></div>
+        </div>
+        <div class="ti-vel-foot">
+          <span>peak <span class="ti-vel-peak" id="tiVelPeak">—</span></span>
+          <span>·</span>
+          <span id="tiVelTrend">no change</span>
+        </div>
+      </div>
     </div>
-    <div class="ml-auto text-[10px] text-soc-mute">Each preset is audited as a single decision row.</div>
+
+    <!-- Top offending binaries -->
+    <div class="ti-card sev" id="tiBinCard" title="Top binaries by decision count in the selected window">
+      <div class="ti-head">
+        <span class="ti-title">Top Offenders</span>
+        <span class="ti-meta" id="tiBinMeta">—</span>
+      </div>
+      <div class="ti-body" id="tiBinBody"></div>
+    </div>
+
+    <!-- Top reasons / signals -->
+    <div class="ti-card warn" id="tiReasonCard" title="Most-frequent decision reasons in the selected window">
+      <div class="ti-head">
+        <span class="ti-title">Signal Patterns</span>
+        <span class="ti-meta" id="tiReasonMeta">—</span>
+      </div>
+      <div class="ti-body" id="tiReasonBody"></div>
+    </div>
+
+    <!-- System health -->
+    <div class="ti-card health" id="tiHealthCard" title="Engine + audit chain health">
+      <div class="ti-head">
+        <span class="ti-title">System Health</span>
+        <span class="ti-health-pill ok" id="tiHealthPill">healthy</span>
+      </div>
+      <div class="ti-body">
+        <div class="ti-kv">
+          <span class="k">audit</span>     <span class="v" id="tiHealthAudit">—</span>
+          <span class="k">tracked</span>   <span class="v" id="tiHealthTracked">—</span>
+          <span class="k">bpf maps</span>  <span class="v" id="tiHealthMaps">—</span>
+          <span class="k">cgroups</span>   <span class="v" id="tiHealthCgroups">—</span>
+          <span class="k">stream</span>    <span class="v" id="tiHealthStream">—</span>
+        </div>
+      </div>
+    </div>
+
   </div>
 </section>
 
@@ -1220,6 +2248,288 @@ buckets:
 <!-- ───────── Decision-tape hover preview popover ───────── -->
 <div id="tapeHoverPop" class="tape-hover-pop hidden"></div>
 
+<!-- ───────── Pill popovers ─────────
+     One popover per status pill. All hidden by default; opened by
+     pillRouter when the matching pill is clicked. Closed on outside-
+     click / Escape / clicking the same pill again. Content is
+     populated by render functions called on open + on relevant ticks. -->
+<div id="ppHost" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Host reachability</span>
+    <span class="pp-state-pill" id="ppHostState">unknown</span>
+    <span class="meta" id="ppHostMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Server</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">host</span><span class="v copyable" id="ppHostHost">—</span></div>
+        <div class="pp-stat"><span class="k">server IP</span><span class="v copyable" id="ppHostServerIp">—</span></div>
+        <div class="pp-stat"><span class="k">hostname</span><span class="v copyable" id="ppHostServerName">—</span></div>
+        <div class="pp-stat"><span class="k">last RTT</span><span class="v" id="ppHostRtt">—</span></div>
+        <div class="pp-stat"><span class="k">last ok</span><span class="v" id="ppHostLastOk">—</span></div>
+        <div class="pp-stat"><span class="k">recent fail</span><span class="v" id="ppHostFails">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Endpoint health</div>
+      <div id="ppHostEndpoints"></div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Recent transitions</div>
+      <div id="ppHostHistory"><div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no transitions yet</span><span class="v"></span></div></div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppHostPing" title="Ping every endpoint right now">Ping all</button>
+    <button class="pp-btn primary" id="ppHostDiagnose" title="Run diagnostics — fetch /api/whoami + /api/choke/state and report timing">Run diagnostics</button>
+  </div>
+</div>
+
+<div id="ppLive" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Live data stream</span>
+    <span class="pp-state-pill" id="ppLiveState">connecting</span>
+    <span class="meta" id="ppLiveMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Connection</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">state</span><span class="v" id="ppLiveStateVal">—</span></div>
+        <div class="pp-stat"><span class="k">since</span><span class="v" id="ppLiveSince">—</span></div>
+        <div class="pp-stat"><span class="k">last message</span><span class="v" id="ppLiveLastMsg">—</span></div>
+        <div class="pp-stat"><span class="k">retries</span><span class="v" id="ppLiveRetries">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Throughput</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">total messages</span><span class="v" id="ppLiveTotal">0</span></div>
+        <div class="pp-stat"><span class="k">msg/sec (60s)</span><span class="v" id="ppLiveRate">0.00</span></div>
+        <div class="pp-stat"><span class="k">tape buffer</span><span class="v" id="ppLiveBuf">0 / 400</span></div>
+        <div class="pp-stat"><span class="k">last id</span><span class="v" id="ppLiveLastId">—</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Recent connection events</div>
+      <div id="ppLiveHistory"></div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <button class="pp-btn warn" id="ppLivePause" title="Pause local stream rendering">Pause</button>
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppLiveSnapshot" title="Pull a fresh snapshot of state, circuits, decisions">Snapshot now</button>
+    <button class="pp-btn primary" id="ppLiveReconnect" title="Drop the current EventSource and reconnect immediately">Force reconnect</button>
+  </div>
+</div>
+
+<div id="ppAudit" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Audit chain</span>
+    <span class="pp-state-pill" id="ppAuditState">ok</span>
+    <span class="meta" id="ppAuditMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Chain</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">status</span><span class="v" id="ppAuditStatus">—</span></div>
+        <div class="pp-stat"><span class="k">decisions chained</span><span class="v" id="ppAuditTotal">0</span></div>
+        <div class="pp-stat"><span class="k">last verified</span><span class="v" id="ppAuditLastVer">—</span></div>
+        <div class="pp-stat"><span class="k">verify duration</span><span class="v" id="ppAuditDur">—</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Head</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat" style="grid-column: 1 / -1;"><span class="k">head id · hash</span><span class="v copyable" id="ppAuditHead">—</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Verification history</div>
+      <div id="ppAuditHistory"><div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no verifications yet</span><span class="v"></span></div></div>
+    </div>
+    <div class="pp-section" id="ppAuditBreakSection" style="display:none;">
+      <div class="pp-section-title" style="color:#fda4af;">Chain break detail</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">bad_at</span><span class="v err" id="ppAuditBadAt">—</span></div>
+        <div class="pp-stat"><span class="k">bad_field</span><span class="v err" id="ppAuditBadField">—</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <button class="pp-btn" id="ppAuditCopy" title="Copy the head identifier">Copy head</button>
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppAuditExport" title="Download decisions JSONL for offline verification">Export JSONL</button>
+    <button class="pp-btn primary" id="ppAuditVerify" title="Re-walk the chain and report integrity">Re-verify now</button>
+  </div>
+</div>
+
+<div id="ppMode" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Enforcement mode</span>
+    <span class="pp-state-pill" id="ppModeState">—</span>
+    <span class="meta" id="ppModeMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Current</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">mode</span><span class="v" id="ppModeCur">—</span></div>
+        <div class="pp-stat"><span class="k">dry-run</span><span class="v" id="ppModeDry">—</span></div>
+        <div class="pp-stat"><span class="k">kill-switch</span><span class="v" id="ppModeKill">—</span></div>
+        <div class="pp-stat"><span class="k">tracked</span><span class="v" id="ppModeTracked">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Session activity in this mode</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">decisions</span><span class="v" id="ppModeDecCnt">0</span></div>
+        <div class="pp-stat"><span class="k">severs</span><span class="v err" id="ppModeSevCnt">0</span></div>
+        <div class="pp-stat"><span class="k">throt/tarpit</span><span class="v warn" id="ppModeThrotCnt">0</span></div>
+        <div class="pp-stat"><span class="k">presets fired</span><span class="v" id="ppModePresetCnt">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Quick presets</div>
+      <div class="pp-mode-grid">
+        <button class="pp-mode-btn containment" data-pp-preset="containment">
+          <span class="name">⚠ Containment</span><span class="sub">throttle@1, sever@60</span>
+        </button>
+        <button class="pp-mode-btn forensic" data-pp-preset="forensic">
+          <span class="name">🔍 Forensic</span><span class="sub">kill-switch on</span>
+        </button>
+        <button class="pp-mode-btn maintenance" data-pp-preset="maintenance">
+          <span class="name">🔧 Maintenance</span><span class="sub">thresholds 1000+</span>
+        </button>
+        <button class="pp-mode-btn def" data-pp-preset="default">
+          <span class="name">✓ Default</span><span class="sub">10/30/60/100</span>
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <button class="pp-btn danger" id="ppModeKillToggle" title="Engage / disengage emergency kill-switch">◉ Kill-switch</button>
+    <span class="pp-flex"></span>
+    <span class="text-[10px] text-soc-mute">Each change is audited.</span>
+  </div>
+</div>
+
+<!-- ───────── Tracked-process row context menu (right-click) ─────────
+     Mirrors the tape ctx-menu pattern: same .ctx-menu visual class,
+     positioned at click coords, dismissed on outside-click / Escape. -->
+<div id="procCtxMenu" class="ctx-menu hidden">
+  <div class="ctx-menu-item" data-pcm-act="drill">↗ Drill into process</div>
+  <div class="ctx-menu-item" data-pcm-act="pin">📌 <span class="pin-label">Pin to Watchlist</span></div>
+  <div class="ctx-menu-item" data-pcm-act="filter-bin">⌖ Filter to this binary</div>
+  <div class="ctx-menu-item" data-pcm-act="filter-exec">⌖ Filter tape to this exec_id</div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item" data-pcm-act="copy-pid">📋 Copy PID</div>
+  <div class="ctx-menu-item" data-pcm-act="copy-exec">📋 Copy exec_id</div>
+  <div class="ctx-menu-item" data-pcm-act="copy-bin">📋 Copy binary</div>
+  <div class="ctx-menu-sep"></div>
+  <div class="ctx-menu-item" data-pcm-act="throttle">↓ Throttle</div>
+  <div class="ctx-menu-item" data-pcm-act="tarpit">≋ Tarpit</div>
+  <div class="ctx-menu-item danger" data-pcm-act="quarantine">⌖ Quarantine (freeze)</div>
+  <div class="ctx-menu-item danger" data-pcm-act="sever">✕ Sever (SIGKILL)</div>
+</div>
+
+<!-- ───────── Notifications panel ─────────
+     Anchored below the bell icon. Shows the rolling stream of
+     high-severity decisions (severs + audit chain alerts). Unread
+     state stored in localStorage by decision id. -->
+<div id="notifPanel" class="notif-panel hidden">
+  <div class="notif-head">
+    <span class="title">Alerts</span>
+    <span id="notifMeta" class="count">—</span>
+    <span class="flex-1"></span>
+    <button id="notifMarkAll" class="btn btn-tiny" title="Mark all alerts as read">✓ mark all read</button>
+  </div>
+  <div id="notifList" class="notif-list"></div>
+  <div class="notif-foot">
+    <span class="lbl">High-severity decisions auto-promote here.</span>
+    <span class="flex-1"></span>
+    <button id="notifClearAll" class="btn btn-tiny btn-err" title="Dismiss every alert in this buffer (cannot be undone)">✕ clear all</button>
+    <button id="notifRestore"  class="btn btn-tiny" title="Restore previously dismissed alerts" style="display:none;">↺ restore</button>
+  </div>
+</div>
+
+<!-- ───────── Admin profile dropdown ─────────
+     Opens when the operator clicks the user-pill in the topbar. Shows
+     identity, session telemetry, workspace preferences, and account
+     actions including sign out. -->
+<div id="profileMenu" class="profile-menu hidden">
+  <div class="profile-card">
+    <label class="profile-avatar-wrap" id="profileAvatarWrap" title="Change profile picture">
+      <span class="profile-avatar-lg" id="profileAvatar">·</span>
+      <span class="edit-overlay" aria-hidden="true">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        <span>Change</span>
+      </span>
+      <input type="file" id="profileAvatarInput" accept="image/png,image/jpeg,image/webp,image/gif">
+    </label>
+    <div>
+      <div class="name" id="profileName">—</div>
+      <div class="meta" id="profileMeta">—</div>
+      <span class="role" id="profileRole">Operator</span>
+      <div class="profile-avatar-actions" id="profileAvatarActions">
+        <a id="profileAvatarChange">Change picture</a>
+        <a id="profileAvatarRemove" class="danger" style="display:none;">Remove</a>
+      </div>
+    </div>
+  </div>
+
+  <div class="profile-section">
+    <div class="profile-section-title">Session</div>
+    <div class="profile-stats">
+      <div class="profile-stat"><span class="k">started</span><span class="v" id="profileStarted">—</span></div>
+      <div class="profile-stat"><span class="k">duration</span><span class="v" id="profileDuration">—</span></div>
+      <div class="profile-stat"><span class="k">acked</span><span class="v" id="profileAcked">0</span></div>
+      <div class="profile-stat"><span class="k">decisions seen</span><span class="v" id="profileDecCount">0</span></div>
+    </div>
+  </div>
+
+  <div class="profile-section">
+    <div class="profile-section-title">Workspace</div>
+    <div class="profile-prefs">
+      <div class="profile-pref-row">
+        <span>Theme</span>
+        <button id="profileTheme" class="pref-toggle">Dark</button>
+      </div>
+      <div class="profile-pref-row">
+        <span>Density</span>
+        <button id="profileDensity" class="pref-toggle">Comfortable</button>
+      </div>
+      <div class="profile-pref-row">
+        <span>Default window</span>
+        <select id="profileWindow">
+          <option value="5">5 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="60">1 hour</option>
+          <option value="1440">24 hours</option>
+        </select>
+      </div>
+    </div>
+  </div>
+
+  <div class="profile-actions">
+    <a href="/" class="profile-link" title="Back to SOC dashboard">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+      SOC dashboard
+    </a>
+    <button id="profileSnapshot" class="profile-link" title="Download a JSON snapshot of the entire gateway state">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Snapshot
+    </button>
+    <a href="/api/logout" class="profile-signout" title="Sign out of the console">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+      Sign out
+    </a>
+  </div>
+</div>
+
 <!-- ───────── Drill-in slide-over ───────── -->
 <aside id="drill" class="drill">
   <header class="px-4 py-3 border-b flex items-center gap-3" style="border-color: var(--soc-glass-bd);">
@@ -1396,6 +2706,21 @@ buckets:
   </div>
 </div>
 
+<!-- ───────── Operations status bar (sticky bottom) ─────────
+     Compact, always-visible footer showing: live audit-chain head,
+     enforcement mode, tracked-process count, decision id range loaded
+     in the client buffer, operator session, console uptime, and a
+     stream-health pulse. Copy-on-click for the audit cell. -->
+<footer id="opsStatusBar" class="ops-statusbar">
+  <span class="ops-cell"><span class="ops-pulse" id="opsPulse"></span><span class="lbl">stream</span></span>
+  <span class="ops-cell ops-spacer"></span>
+  <span class="ops-cell copyable" id="opsAuditCell" title="Audit chain · click to copy"><span class="lbl">chain</span><span class="val" id="opsAuditVal">—</span></span>
+  <span class="ops-cell"><span class="lbl">mode</span><span class="val" id="opsModeVal">—</span></span>
+  <span class="ops-cell"><span class="lbl">scope</span><span class="val" id="opsTrackedVal">—</span></span>
+  <span class="ops-cell"><span class="lbl">tape</span><span class="val" id="opsDecVal">—</span></span>
+  <span class="ops-cell"><span class="lbl">session</span><span class="val" id="opsUserVal">—</span> · <span class="val" id="opsUptimeVal">0s</span></span>
+</footer>
+
 <script>
 // ─────────── Theme (matches SOC's `soc.theme` localStorage convention)
 // SOC's lsSet/lsGet JSON-encode all values, so the stored form of "light"
@@ -1557,7 +2882,12 @@ async function hydrate() {
   const who = await fetch('/api/whoami').then(r => r.ok ? r.json() : null).catch(()=>null);
   if (!who) { location.href = '/login'; return; }
   S.whoami = who.user;
+  S.serverIP = who.server_ip || '';
+  S.serverHostname = who.hostname || '';
   $('user').textContent = who.user;
+  // Avatar bubble — single uppercase glyph from the user's name.
+  const ua = $('userAvatar');
+  if (ua) ua.textContent = (who.user || '·').slice(0,1).toUpperCase();
 
   await Promise.all([refreshState(), refreshCircuits(), refreshBuckets(), refreshDecisions(), refreshCgroups()]);
   render();
@@ -1745,7 +3075,19 @@ if (refreshChokeState.intervalSec > 0) {
 }
 
 async function refreshState()    { const j = await fetch('/api/choke/state').then(r => r.ok ? r.json() : null).catch(()=>null);    if (!j) return; S.state = j; applyHeader(); applyLadder(); applyThresholds(); }
-async function refreshCircuits() { const j = await fetch('/api/choke/circuits').then(r => r.ok ? r.json() : []).catch(()=>[]);    S.circuits = j || []; renderProcList(); }
+async function refreshCircuits() {
+  const j = await fetch('/api/choke/circuits').then(r => r.ok ? r.json() : []).catch(()=>[]);
+  let arr = j || [];
+  // Long-running fake-mode sessions accumulate thousands of circuits;
+  // keep the most-interesting top 2000 by score so memory + filter
+  // costs stay bounded. Anything dropped here is still on the server
+  // and reappears on a fresh snapshot (e.g. after reload).
+  if (arr.length > 2000) {
+    arr = arr.slice().sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 2000);
+  }
+  S.circuits = arr;
+  renderProcList();
+}
 async function refreshBuckets()  { const j = await fetch('/api/choke/buckets').then(r => r.ok ? r.json() : []).catch(()=>[]);     S.buckets = j || []; renderBuckets(); }
 async function refreshCgroups()  { const j = await fetch('/api/choke/cgroups').then(r => r.ok ? r.json() : {}).catch(()=>({}));   S.cgroups = j || {}; renderCgroups(); }
 async function refreshDecisions(){ const j = await fetch('/api/decisions?limit=200').then(r => r.ok ? r.json() : []).catch(()=>[]); S.decisions = j || []; renderTape(); updateKpis(); }
@@ -1755,7 +3097,10 @@ function applyHeader() {
   if (!S.state) return;
   const m = S.state.kill_switched ? 'kill-switched' : S.state.mode;
   const pill = $('modePill');
-  pill.textContent = m === 'kill-switched' ? 'KILL-SWITCHED' : m.toUpperCase();
+  // Use innerHTML to preserve the pill-chev marker we render alongside
+  // the mode label. Plain textContent would clobber it on every refresh.
+  const label = m === 'kill-switched' ? 'KILL-SWITCHED' : m.toUpperCase();
+  pill.innerHTML = `${escapeHtml(label)}<span class="pill-chev">▾</span>`;
   pill.className = 'mode-pill mode-' + m;
   $('trackedCount').textContent = S.state.tracked || 0;
   const a = S.state.audit || {};
@@ -1765,11 +3110,9 @@ function applyHeader() {
   $('auditLabel').textContent = ok
     ? `audit ok · ${a.total||0} decisions`
     : `chain broken at id ${a.bad_at} (${a.bad_field})`;
-  ap.onclick = async () => {
-    const r = await fetch('/api/verify-chain').then(r => r.json()).catch(()=>null);
-    if (!r) return;
-    S.state.audit = r; applyHeader();
-  };
+  // Audit pill click is now wired to open the audit popover (instead
+  // of the legacy in-place re-verify); the popover offers re-verify
+  // as an explicit action button.
   $('killSwitchBtn').textContent = S.state.kill_switched ? '◉ DISENGAGE KILL-SWITCH' : '◉ KILL-SWITCH';
   $('killSwitchBtn').className = 'btn ' + (S.state.kill_switched ? 'btn-warn' : 'btn-err');
 }
@@ -1939,10 +3282,18 @@ $('thrCommit').onclick = async () => {
 };
 
 // ─────────── Process list ─────
+// Cap rendered rows. The fake-events DB can accumulate thousands of
+// circuits over a long-running session; rendering them all rebuilds
+// huge HTML strings and freezes the page. Anything above the cap shows
+// a "N more — refine the filter" tail row so the operator knows the
+// list is truncated. Sorted by score (desc) so the most-interesting
+// circuits stay visible.
+const PROC_RENDER_CAP = 300;
+
 function renderProcList() {
   const q = (S.procFilter||'').toLowerCase();
   const gq = S.globalSearchQ;
-  const visible = S.circuits
+  let visible = S.circuits
     .filter(c => S.procStates.has(c.state))
     .filter(c => !q || (
       (c.binary||'').toLowerCase().includes(q) ||
@@ -1950,13 +3301,26 @@ function renderProcList() {
       (c.exec_id||'').toLowerCase().includes(q)
     ))
     .filter(c => chokeCircuitMatchesQuery(c, gq));
-  S.visibleProcs = visible;
-  $('procCount').textContent = `${visible.length} / ${S.circuits.length} shown`;
+
+  // Sort by score desc so the highest-risk circuits make the cap.
+  visible.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  const totalMatch = visible.length;
+  const truncated  = totalMatch > PROC_RENDER_CAP;
+  const rendered   = truncated ? visible.slice(0, PROC_RENDER_CAP) : visible;
+
+  S.visibleProcs = rendered;
+  $('procCount').textContent = truncated
+    ? `${PROC_RENDER_CAP} of ${totalMatch} (capped) · ${S.circuits.length} tracked`
+    : `${totalMatch} / ${S.circuits.length} shown`;
 
   const sevAt = S.state?.thresholds?.sever_at || 100;
   const dense = S.density === 'compact';
 
-  const rows = visible.map((c, i) => {
+  // Build the row HTML in a single pass. Per-row event listeners are
+  // intentionally avoided — we use one delegated handler per event
+  // type on #procList, set up once outside this function.
+  const rows = rendered.map((c, i) => {
     const sel = S.selected.has(c.exec_id) ? 'selected' : '';
     const focus = (i === S.kbdRow) ? 'kbd-focus' : '';
     const annoPill = c.annotation && c.annotation.note
@@ -1989,41 +3353,71 @@ function renderProcList() {
         </div>
       </div>`;
   }).join('');
-  $('procList').innerHTML = rows || '<div class="text-soc-mute text-xs px-4 py-12 text-center">No processes match the current filter.</div>';
-  $('procList').querySelectorAll('.proc-row').forEach(row => {
+
+  let body = rows || '<div class="text-soc-mute text-xs px-4 py-12 text-center">No processes match the current filter.</div>';
+  if (truncated) {
+    body += `<div class="text-soc-mute text-xs px-4 py-3 text-center" style="border-top:1px dashed var(--soc-glass-bd);">
+      ${totalMatch - PROC_RENDER_CAP} more match — narrow the filter to see them.
+    </div>`;
+  }
+  $('procList').innerHTML = body;
+  updateBulkBar();
+}
+
+// Delegated handlers — wired ONCE, then they pick up rows for every
+// future render. Replaces the per-row addEventListener loop that
+// scaled to 4×N listeners on each renderProcList() call.
+(function wireProcListDelegation() {
+  const list = document.getElementById('procList');
+  if (!list) return;
+
+  list.addEventListener('click', e => {
+    const row = e.target.closest('.proc-row');
+    if (!row) return;
     const exec = row.dataset.exec;
     const pid  = +row.dataset.pid;
     const bin  = row.dataset.bin;
-    row.addEventListener('click', e => {
-      if (e.target.closest('.actions') || e.target.closest('input') || e.target.closest('.copy-exec') || e.target.closest('.copy-pid')) return;
-      openDrill(exec);
-    });
-    row.querySelector('.row-check').addEventListener('change', e => {
+    // Action buttons: throttle / tarpit / quarantine / sever.
+    const actBtn = e.target.closest('.actions button[data-act]');
+    if (actBtn) {
       e.stopPropagation();
-      if (e.target.checked) S.selected.add(exec); else S.selected.delete(exec);
-      row.classList.toggle('selected', e.target.checked);
-      updateBulkBar();
-    });
-    row.querySelector('.copy-exec')?.addEventListener('click', e => {
+      confirmManual({exec_id: exec, pid, binary: bin, action: actBtn.dataset.act});
+      return;
+    }
+    // Copy exec_id.
+    const ce = e.target.closest('.copy-exec');
+    if (ce) {
       e.stopPropagation();
-      const v = e.currentTarget.dataset.copy;
+      const v = ce.dataset.copy;
       copyToClipboard(v).then(ok => toast(ok ? 'exec_id copied' : 'copy failed', ok ? 'ok' : 'err'));
-    });
-    row.querySelector('.copy-pid')?.addEventListener('click', e => {
+      return;
+    }
+    // Copy PID.
+    const cp = e.target.closest('.copy-pid');
+    if (cp) {
       e.stopPropagation();
-      const v = e.currentTarget.dataset.copy;
+      const v = cp.dataset.copy;
       if (!v) return;
       copyToClipboard(v).then(ok => toast(ok ? `pid ${v} copied` : 'copy failed', ok ? 'ok' : 'err'));
-    });
-    row.querySelectorAll('.actions button').forEach(b => {
-      b.addEventListener('click', e => {
-        e.stopPropagation();
-        confirmManual({exec_id: exec, pid, binary: bin, action: b.dataset.act});
-      });
-    });
+      return;
+    }
+    // Anywhere else in the row → drill in (unless on a checkbox).
+    if (e.target.closest('input')) return;
+    if (exec) openDrill(exec);
   });
-  updateBulkBar();
-}
+
+  list.addEventListener('change', e => {
+    const cb = e.target.closest('.row-check');
+    if (!cb) return;
+    const row = cb.closest('.proc-row');
+    if (!row) return;
+    const exec = row.dataset.exec;
+    e.stopPropagation();
+    if (cb.checked) S.selected.add(exec); else S.selected.delete(exec);
+    row.classList.toggle('selected', cb.checked);
+    updateBulkBar();
+  });
+})();
 $('procFilter').addEventListener('input', e => { S.procFilter = e.target.value; renderProcList(); });
 $('stateFilters').addEventListener('click', e => {
   if (!e.target.classList.contains('chip')) return;
@@ -3042,11 +4436,33 @@ function connectStream() {
       const first = $('tape').querySelector('.tape-row');
       if (first) first.classList.add('flash');
       if (S.tapeAutoScroll) $('tape').scrollTop = 0;
-      refreshCircuits(); refreshState(); refreshCgroups();
+      // Coalesce per-message snapshot fetches. Without this, a busy
+      // host (>5 decisions/sec) re-pulls /api/choke/circuits +
+      // /api/choke/state on every event, which on accumulated
+      // sessions (5000+ tracked) tanks the UI for seconds. The
+      // debounced versions fire at most once per 750ms regardless of
+      // how many decisions arrived.
+      debouncedRefreshCircuits();
+      debouncedRefreshState();
+      debouncedRefreshCgroups();
       updateKpis();
     }
   };
 }
+
+// Debounce helpers — coalesce bursts of identical calls into one
+// fetch. Used by the SSE handler so a flood of decisions doesn't
+// translate into a flood of /api/choke/* round-trips.
+function _chokeDebounce(fn, ms) {
+  let t = null;
+  return function() {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => { t = null; fn(); }, ms);
+  };
+}
+const debouncedRefreshCircuits = _chokeDebounce(() => refreshCircuits(), 750);
+const debouncedRefreshState    = _chokeDebounce(() => refreshState(),    750);
+const debouncedRefreshCgroups  = _chokeDebounce(() => refreshCgroups(),  900);
 
 function scheduleReconnect() {
   if (stream.reconnectTimer) return;
@@ -4210,6 +5626,1516 @@ function escapeAttr(s) { return (s||'').replace(/"/g,'&quot;').replace(/&/g,'&am
 function truncate(s, n) { if (!s) return ''; return s.length > n ? s.slice(0,n)+'…' : s; }
 
 hydrate();
+
+// ═══════════════════════════════════════════════════════════════════
+// Enterprise additions — Threat Intelligence ribbon, KPI sparklines,
+// operations status bar. All driven from S.decisions / S.circuits /
+// S.state — no new backend calls. Each renderer is idempotent and
+// safe to call from any tick that already mutates those collections.
+// ═══════════════════════════════════════════════════════════════════
+
+// Build N evenly-spaced time buckets ending at `nowMs`, each spanning
+// `bucketSec` seconds. Returns counts per bucket for the predicate.
+function tiBucketize(decisions, nowMs, bucketSec, nBuckets, predicate) {
+  const out = new Array(nBuckets).fill(0);
+  const bucketMs = bucketSec * 1000;
+  const start = nowMs - nBuckets * bucketMs;
+  for (const d of decisions) {
+    if (predicate && !predicate(d)) continue;
+    const t = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+    if (t < start || t > nowMs) continue;
+    const idx = Math.min(nBuckets - 1, Math.floor((t - start) / bucketMs));
+    if (idx >= 0) out[idx]++;
+  }
+  return out;
+}
+function tiSeverityColor(action) {
+  return action === 'sever' ? '#f43f5e'
+       : action === 'quarantine' ? '#fb923c'
+       : action === 'tarpit' ? '#facc15'
+       : action === 'throttle' ? '#3b82f6'
+       : '#94a3b8';
+}
+function tiStateColor(state) {
+  return ({ severed:'#f43f5e', quarantined:'#fb923c', tarpit:'#facc15', throttled:'#3b82f6', pristine:'#94a3b8' })[state] || '#94a3b8';
+}
+// Top-K aggregation by an arbitrary key extractor.
+function tiTopK(decisions, keyFn, k) {
+  const m = new Map();
+  for (const d of decisions) {
+    const key = keyFn(d);
+    if (!key) continue;
+    const cur = m.get(key) || { count: 0, maxAction: 'throttle', sample: d };
+    cur.count++;
+    // Track the most-severe action seen for color coding.
+    const order = { sever:5, quarantine:4, tarpit:3, throttle:2, thaw:1 };
+    if ((order[d.action]||0) > (order[cur.maxAction]||0)) cur.maxAction = d.action;
+    m.set(key, cur);
+  }
+  return [...m.entries()]
+    .map(([key, v]) => ({ key, ...v }))
+    .sort((a,b) => b.count - a.count)
+    .slice(0, k);
+}
+function tiInWindow(d, cutoff) {
+  const t = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+  return t >= cutoff;
+}
+
+// ─────────── Threat Intelligence ribbon ───────────
+function renderThreatIntel() {
+  const now = Date.now();
+  const winMs = S.windowMin * 60_000;
+  const cutoff = now - winMs;
+  const inWin = S.decisions.filter(d => tiInWindow(d, cutoff));
+
+  // 1. Decision velocity card
+  // 30 bins across the selected window — 30s for 5m, 1m for 30m, 2m
+  // for 1h, 48m for 24h. Picks a bucket size that keeps the spark at
+  // roughly 30 bars regardless of window length.
+  const NBINS = 30;
+  const bucketSec = Math.max(1, Math.floor((S.windowMin * 60) / NBINS));
+  const counts = tiBucketize(S.decisions, now, bucketSec, NBINS, null);
+  const totalNow = inWin.length;
+  // Rate label adapts: if window <= 60m show /min, otherwise /hr.
+  const perMin = S.windowMin > 0 ? (totalNow / S.windowMin) : 0;
+  $('tiVelNum').textContent = (S.windowMin <= 60)
+    ? perMin.toFixed(perMin < 10 ? 1 : 0)
+    : (totalNow / (S.windowMin/60)).toFixed(0);
+  $('tiVelUnit').textContent = (S.windowMin <= 60) ? '/ min avg' : '/ hr avg';
+  $('tiVelMeta').textContent = `${totalNow} total · ${NBINS}×${bucketSec < 60 ? bucketSec+'s' : (bucketSec/60)+'m'}`;
+
+  const peak = counts.reduce((m, c) => Math.max(m, c), 0);
+  $('tiVelPeak').textContent = peak;
+
+  // Trend: compare recent half of window vs older half
+  const half = Math.floor(NBINS / 2);
+  const recent = counts.slice(NBINS - half).reduce((s,n)=>s+n, 0);
+  const prior  = counts.slice(0, half).reduce((s,n)=>s+n, 0);
+  const trendEl = $('tiVelTrend');
+  if (prior === 0 && recent === 0) {
+    trendEl.textContent = 'no activity';
+    trendEl.style.color = '';
+  } else if (prior === 0) {
+    trendEl.textContent = '↑ new activity';
+    trendEl.style.color = '#fda4af';
+  } else {
+    const pct = Math.round(100 * (recent - prior) / prior);
+    if (Math.abs(pct) < 5) {
+      trendEl.textContent = '≈ stable'; trendEl.style.color = '';
+    } else if (pct > 0) {
+      trendEl.textContent = `↑ ${pct}% recent half`; trendEl.style.color = '#fda4af';
+    } else {
+      trendEl.textContent = `↓ ${-pct}% recent half`; trendEl.style.color = '#6ee7b7';
+    }
+  }
+
+  // Velocity spark — colored per-bucket by max severity in that bin.
+  const sparkMax = Math.max(1, peak);
+  const tiVelSpark = $('tiVelSpark');
+  tiVelSpark.innerHTML = counts.map((c, i) => {
+    // Determine max action in this bucket
+    const binStart = now - (NBINS - i) * bucketSec * 1000;
+    const binEnd   = binStart + bucketSec * 1000;
+    let maxAct = 'throttle';
+    const order = { sever:5, quarantine:4, tarpit:3, throttle:2, thaw:1 };
+    for (const d of S.decisions) {
+      const t = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+      if (t < binStart || t >= binEnd) continue;
+      if ((order[d.action]||0) > (order[maxAct]||0)) maxAct = d.action;
+    }
+    const h = c === 0 ? 2 : Math.max(2, Math.round(28 * (c / sparkMax)));
+    const color = c === 0 ? 'rgba(127,127,127,0.18)' : tiSeverityColor(maxAct);
+    return `<div class="b" style="height:${h}px;background:${color};" title="bin +${i*bucketSec}s · ${c} decisions"></div>`;
+  }).join('');
+
+  // 2. Top binaries card
+  const topBins = tiTopK(inWin, d => d.binary || null, 5);
+  const binMax = Math.max(1, ...topBins.map(b => b.count));
+  $('tiBinMeta').textContent = `${topBins.length} of ${new Set(inWin.map(d=>d.binary).filter(Boolean)).size}`;
+  if (topBins.length === 0) {
+    $('tiBinBody').innerHTML = '<div class="ti-empty">no decisions in this window</div>';
+  } else {
+    $('tiBinBody').innerHTML = topBins.map(b => {
+      const pct = (b.count / binMax) * 100;
+      const color = tiSeverityColor(b.maxAction);
+      const cls = b.maxAction === 'sever' ? 'high' : (b.maxAction === 'quarantine' || b.maxAction === 'tarpit' ? 'warn' : '');
+      const path = b.key;
+      const slash = path.lastIndexOf('/');
+      const name = slash >= 0 ? path.slice(slash+1) : path;
+      const dir  = slash >= 0 ? path.slice(0, slash+1) : '';
+      return `<div class="ti-bar2 ${cls}" title="${escapeAttr(path)} · ${b.count} decisions · max action: ${b.maxAction}">
+        <span class="label"><span class="text-soc-mute">${escapeHtml(dir)}</span>${escapeHtml(name)}</span>
+        <span class="num">${b.count}</span>
+        <div class="meter" style="grid-column: 1 / -1;"><div class="fill" style="width:${pct}%; background:${color}; opacity:0.75;"></div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // 3. Top reasons card — collapse near-identical reasons (drop trailing
+  // counts/numbers so "Access to credential file: /etc/shadow 4" and "…12"
+  // group together).
+  const reasonKey = r => (r||'').replace(/\s+\d+\s*$/, '').trim();
+  const topReasons = tiTopK(inWin, d => reasonKey(d.reason), 5);
+  const reasonMax = Math.max(1, ...topReasons.map(r => r.count));
+  $('tiReasonMeta').textContent = `${topReasons.length} patterns`;
+  if (topReasons.length === 0) {
+    $('tiReasonBody').innerHTML = '<div class="ti-empty">no decisions in this window</div>';
+  } else {
+    $('tiReasonBody').innerHTML = topReasons.map(r => {
+      const pct = (r.count / reasonMax) * 100;
+      const color = tiSeverityColor(r.maxAction);
+      const cls = r.maxAction === 'sever' ? 'high' : (r.maxAction === 'quarantine' || r.maxAction === 'tarpit' ? 'warn' : '');
+      return `<div class="ti-bar2 ${cls}" title="${escapeAttr(r.key)}">
+        <span class="label">${escapeHtml(r.key)}</span>
+        <span class="num">${r.count}</span>
+        <div class="meter" style="grid-column: 1 / -1;"><div class="fill" style="width:${pct}%; background:${color}; opacity:0.75;"></div></div>
+      </div>`;
+    }).join('');
+  }
+
+  // 4. System health card
+  const audit = S.state?.audit || {};
+  const auditOk = audit.ok !== false;
+  const tracked = S.state?.tracked || 0;
+  const cgRows = Object.values(S.cgroups || {}).reduce((s, v) => s + (Array.isArray(v) ? v.length : (v?.count||0)), 0);
+  const bpfMaps = (S.buckets || []).length;
+  const liveText = $('liveStatusText')?.textContent || '—';
+  const stale = liveText.toLowerCase().includes('stale') || liveText.toLowerCase().includes('offline');
+  const reconnecting = liveText.toLowerCase().includes('connect') || liveText.toLowerCase().includes('reconnect');
+
+  const healthPill = $('tiHealthPill');
+  if (!auditOk) {
+    healthPill.className = 'ti-health-pill err'; healthPill.textContent = 'chain broken';
+  } else if (stale) {
+    healthPill.className = 'ti-health-pill err'; healthPill.textContent = 'stream offline';
+  } else if (reconnecting) {
+    healthPill.className = 'ti-health-pill warn'; healthPill.textContent = 'connecting';
+  } else if (S.state?.kill_switched) {
+    healthPill.className = 'ti-health-pill warn'; healthPill.textContent = 'kill-switched';
+  } else {
+    healthPill.className = 'ti-health-pill ok'; healthPill.textContent = 'healthy';
+  }
+
+  const auditEl = $('tiHealthAudit');
+  if (auditOk) {
+    auditEl.className = 'v ok';
+    auditEl.textContent = `ok · ${audit.total||0} chained`;
+  } else {
+    auditEl.className = 'v err';
+    auditEl.textContent = `broken @ id ${audit.bad_at||'?'}`;
+  }
+  $('tiHealthTracked').textContent = `${tracked} processes`;
+  $('tiHealthMaps').textContent    = bpfMaps ? `${bpfMaps} entries` : '0 entries';
+  $('tiHealthCgroups').textContent = cgRows ? `${cgRows} pids` : '0 pids';
+  const streamEl = $('tiHealthStream');
+  if (stale) { streamEl.className = 'v err'; streamEl.textContent = liveText; }
+  else if (reconnecting) { streamEl.className = 'v warn'; streamEl.textContent = liveText; }
+  else { streamEl.className = 'v ok'; streamEl.textContent = liveText; }
+}
+
+// ─────────── KPI sparklines + deltas ───────────
+function renderKpiSpark(barsEl, counts, color) {
+  if (!barsEl) return;
+  const peak = Math.max(1, ...counts);
+  barsEl.innerHTML = counts.map(c => {
+    const h = c === 0 ? 2 : Math.max(2, Math.round(12 * (c / peak)));
+    const op = c === 0 ? 0.18 : 0.85;
+    return `<div class="b" style="height:${h}px;background:${color};opacity:${op};"></div>`;
+  }).join('');
+}
+function renderKpiDelta(el, cur, prev) {
+  if (!el) return;
+  if (cur === 0 && prev === 0) {
+    el.className = 'kpi-delta flat'; el.textContent = '—'; return;
+  }
+  if (prev === 0) {
+    el.className = 'kpi-delta up'; el.textContent = '↑ new'; return;
+  }
+  const pct = Math.round(100 * (cur - prev) / prev);
+  if (Math.abs(pct) < 5) {
+    el.className = 'kpi-delta flat'; el.textContent = '≈'; return;
+  }
+  if (pct > 0) { el.className = 'kpi-delta up';   el.textContent = `↑${pct}%`; }
+  else         { el.className = 'kpi-delta down'; el.textContent = `↓${-pct}%`; }
+}
+function renderKpiSparks() {
+  const nowMs = Date.now();
+  const winMs = S.windowMin * 60_000;
+  const cutoffNow  = nowMs - winMs;
+  const cutoffPrev = nowMs - 2 * winMs;
+  const decsNow  = S.decisions.filter(d => tiInWindow(d, cutoffNow));
+  const decsPrev = S.decisions.filter(d => {
+    const t = d.timestamp ? new Date(d.timestamp).getTime() : 0;
+    return t >= cutoffPrev && t < cutoffNow;
+  });
+
+  // 12-bin sparkline across the current window.
+  const NB = 12;
+  const bs = Math.max(1, Math.floor((S.windowMin * 60) / NB));
+  const allBins   = tiBucketize(S.decisions, nowMs, bs, NB, null);
+  const sevBins   = tiBucketize(S.decisions, nowMs, bs, NB, d => d.action === 'sever');
+  const throtBins = tiBucketize(S.decisions, nowMs, bs, NB,
+    d => d.action === 'throttle' || d.action === 'tarpit' || d.action === 'quarantine');
+
+  renderKpiSpark($('kpiDecSpark'),    allBins,   'rgb(var(--soc-accent))');
+  renderKpiSpark($('kpiSeverSpark'),  sevBins,   '#f43f5e');
+  renderKpiSpark($('kpiThrotSpark'),  throtBins, '#facc15');
+
+  const cnt = (decs, fn) => decs.filter(fn).length;
+  renderKpiDelta($('kpiDecDelta'),    decsNow.length, decsPrev.length);
+  renderKpiDelta($('kpiSeverDelta'),  cnt(decsNow, d=>d.action==='sever'),
+                                       cnt(decsPrev, d=>d.action==='sever'));
+  renderKpiDelta($('kpiThrotDelta'),  cnt(decsNow, d=>d.action==='throttle'||d.action==='tarpit'||d.action==='quarantine'),
+                                       cnt(decsPrev, d=>d.action==='throttle'||d.action==='tarpit'||d.action==='quarantine'));
+}
+
+// ─────────── Operations status bar ───────────
+const __OPS_BOOT_MS = Date.now();
+function fmtUptime(ms) {
+  const s = Math.floor(ms/1000);
+  if (s < 60)   return `${s}s`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s`;
+  const h = Math.floor(s/3600), m = Math.floor((s%3600)/60);
+  return `${h}h ${m}m`;
+}
+function renderOpsStatusBar() {
+  const bar = $('opsStatusBar');
+  if (!bar) return;
+  const audit = S.state?.audit || {};
+  const auditOk = audit.ok !== false;
+  const auditHash = audit.head_hash || audit.head || audit.tip || '';
+  const auditShort = auditHash ? (auditHash.length > 12 ? auditHash.slice(0,12) + '…' : auditHash) : `${audit.total || 0} chained`;
+  const liveText = ($('liveStatusText')?.textContent || '').toLowerCase();
+  const stream = liveText.includes('live') ? 'ok' : (liveText.includes('connect') ? 'warn' : 'err');
+  const decTotal = (S.decisions || []).length;
+  const decFirstId = decTotal ? (S.decisions[decTotal-1]?.id ?? '?') : '—';
+  const decLastId  = decTotal ? (S.decisions[0]?.id ?? '?') : '—';
+
+  $('opsAuditCell').className = 'ops-cell copyable';
+  $('opsAuditCell').dataset.copy = auditHash || String(audit.total || '');
+  $('opsAuditVal').textContent = auditOk ? auditShort : `BROKEN @ ${audit.bad_at || '?'}`;
+  $('opsAuditVal').style.color = auditOk ? '' : '#fda4af';
+
+  $('opsModeVal').textContent = S.state?.kill_switched
+    ? 'KILL-SWITCHED'
+    : (S.state?.mode ? S.state.mode.toUpperCase() : '—');
+
+  $('opsTrackedVal').textContent = `${S.state?.tracked || 0} tracked`;
+  $('opsDecVal').textContent = `${decTotal} loaded · #${decFirstId}–#${decLastId}`;
+  $('opsUserVal').textContent = S.whoami || '—';
+  $('opsUptimeVal').textContent = fmtUptime(Date.now() - __OPS_BOOT_MS);
+
+  const pulse = $('opsPulse');
+  pulse.className = 'ops-pulse ' + (stream === 'ok' ? '' : stream);
+}
+
+// ─────────── Wire everything into the existing render lifecycle ───────────
+(function wireEnterprisePanels() {
+  const _origRender   = render;
+  const _origUpdateKp = updateKpis;
+  const _origAppHdr   = applyHeader;
+  // Re-render intel + sparklines + status bar whenever the existing
+  // pipeline already triggers a render.
+  window.render    = function() {
+    _origRender();
+    try { renderThreatIntel(); renderKpiSparks(); renderOpsStatusBar(); } catch (e) { console && console.warn(e); }
+  };
+  window.updateKpis = function() {
+    _origUpdateKp();
+    try { renderThreatIntel(); renderKpiSparks(); renderOpsStatusBar(); } catch (e) { console && console.warn(e); }
+  };
+  window.applyHeader = function() {
+    _origAppHdr();
+    try { renderOpsStatusBar(); } catch (e) {}
+  };
+  // Also tick the uptime + stream cell once a second so the footer
+  // stays fresh even when nothing else changed.
+  setInterval(() => { try { renderOpsStatusBar(); } catch (e) {} }, 1000);
+
+  // Wire copy-on-click for any .copyable cells in the status bar.
+  document.addEventListener('click', e => {
+    const c = e.target.closest('.ops-statusbar .copyable');
+    if (!c) return;
+    const v = c.dataset.copy || c.querySelector('.val')?.textContent || '';
+    if (!v) return;
+    copyToClipboard(v).then(ok => toast(ok ? 'copied' : 'copy failed', ok ? 'ok' : 'err'));
+  });
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// Interactions: profile menu, notifications, KPI/TI click-through,
+// proc-row context menu. All purely client-side; persistence via
+// localStorage so operator choices survive reload.
+// ═══════════════════════════════════════════════════════════════════
+
+// Per-session counters used by the profile menu.
+const Sess = {
+  bootMs: Date.now(),
+  ackedThisSession: 0,
+  notifSeen: (() => {
+    try { return new Set(JSON.parse(localStorage.getItem('choke.notif.seen')||'[]')); }
+    catch (e) { return new Set(); }
+  })(),
+  // IDs the operator has explicitly dismissed (clear-all or per-item ×).
+  // Distinct from notifSeen because dismissed alerts don't render at all,
+  // while seen alerts still appear but in the read state.
+  notifDismissed: (() => {
+    try { return new Set(JSON.parse(localStorage.getItem('choke.notif.dismissed')||'[]')); }
+    catch (e) { return new Set(); }
+  })(),
+  // Sticky flag that hides the audit-chain alert when the operator
+  // dismisses it. Auto-clears when a fresh chain break is detected.
+  notifAuditDismissedAt: (() => {
+    try { return parseInt(localStorage.getItem('choke.notif.auditDismissedAt')||'0', 10) || 0; }
+    catch (e) { return 0; }
+  })(),
+  // Active filters layered on top of the existing global search.
+  // Stored as { kind: 'kpi-sever'|'kpi-throt'|'kpi-dec'|'binary'|'reason', value: string }
+  activeFilters: [],
+};
+function persistNotifSeen() {
+  try { localStorage.setItem('choke.notif.seen', JSON.stringify([...Sess.notifSeen].slice(-2000))); }
+  catch (e) {}
+}
+function persistNotifDismissed() {
+  try { localStorage.setItem('choke.notif.dismissed', JSON.stringify([...Sess.notifDismissed].slice(-5000))); }
+  catch (e) {}
+}
+// True if the audit-chain banner was dismissed AFTER the current break
+// was first observed. Resets when a NEW break (different bad_at) appears.
+function isAuditAlertDismissed() {
+  const a = S.state?.audit;
+  if (!a || a.ok !== false) return true;          // no break = nothing to show
+  // Use bad_at as a fingerprint for "this break". If the user dismissed
+  // a prior break and then a new one occurred at a different id, force
+  // the alert back to the top.
+  const fp = (a.bad_at || 0) + ':' + (a.bad_field || '');
+  return Sess.notifAuditDismissedAt === hashStr(fp);
+}
+function dismissAuditAlert() {
+  const a = S.state?.audit;
+  if (!a || a.ok !== false) return;
+  const fp = (a.bad_at || 0) + ':' + (a.bad_field || '');
+  Sess.notifAuditDismissedAt = hashStr(fp);
+  try { localStorage.setItem('choke.notif.auditDismissedAt', String(Sess.notifAuditDismissedAt)); }
+  catch (e) {}
+}
+function hashStr(s) {
+  let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+// ─────────── Notifications ───────────
+// "High-severity" = sever, plus broken audit chain. Aggregated from
+// S.decisions. Unread = decision id not in Sess.notifSeen.
+function getRecentAlerts(limit = 60) {
+  // High-severity decisions, newest first, with operator-dismissed
+  // entries filtered out so "clear all" and per-item × actually hide
+  // them from the panel.
+  const sevs = (S.decisions || [])
+    .filter(d => d.action === 'sever' || d.action === 'quarantine')
+    .filter(d => !d.id || !Sess.notifDismissed.has(d.id))
+    .slice(0, limit);
+  return sevs;
+}
+function renderNotifBadge() {
+  const alerts = getRecentAlerts();
+  let unread = 0;
+  for (const a of alerts) if (a.id && !Sess.notifSeen.has(a.id)) unread++;
+  // Audit chain alerts — count only when not explicitly dismissed by
+  // the operator for this particular break fingerprint.
+  if (S.state?.audit && S.state.audit.ok === false && !isAuditAlertDismissed()) unread++;
+  const btn = $('notifBtn');
+  const badge = $('notifBadge');
+  if (!btn || !badge) return;
+  if (unread > 0) {
+    btn.classList.add('has-unread');
+    badge.style.display = 'inline-flex';
+    badge.textContent = unread > 99 ? '99+' : String(unread);
+  } else {
+    btn.classList.remove('has-unread');
+    badge.style.display = 'none';
+  }
+}
+function renderNotifPanel() {
+  const list = $('notifList');
+  const meta = $('notifMeta');
+  if (!list) return;
+  const alerts = getRecentAlerts();
+  const showAudit = S.state?.audit && S.state.audit.ok === false && !isAuditAlertDismissed();
+  meta.textContent = alerts.length ? `${alerts.length} recent` : 'no recent alerts';
+  // Audit chain alert pinned at top when broken (and not dismissed).
+  let html = '';
+  if (showAudit) {
+    html += `<div class="notif-item unread" data-audit="1">
+      <div class="ts">audit</div>
+      <div class="body">
+        <div class="reason" style="color:#fda4af;font-weight:700;">⚠ Audit chain broken</div>
+        <div class="meta">at id ${S.state.audit.bad_at || '?'} · field ${S.state.audit.bad_field || '?'}</div>
+      </div>
+      <button class="notif-x" data-x-audit="1" title="Dismiss this alert">×</button>
+    </div>`;
+  }
+  if (alerts.length === 0 && !html) {
+    html = '<div class="notif-empty">No high-severity events in the current buffer.</div>';
+  } else {
+    html += alerts.map(d => {
+      const unread = d.id && !Sess.notifSeen.has(d.id);
+      const sevColor = d.action === 'sever' ? '#fda4af' : '#fdba74';
+      const ts = d.timestamp ? new Date(d.timestamp).toLocaleTimeString(undefined, {hour12:false}) : '';
+      return `<div class="notif-item ${unread?'unread':''}" data-exec="${escapeAttr(d.exec_id||'')}" data-id="${d.id||0}">
+        <div class="ts">${ts}<br><span style="color:${sevColor};font-weight:700;text-transform:uppercase;font-size:9.5px;">${d.action}</span></div>
+        <div class="body">
+          <div class="reason">${escapeHtml(d.reason||'(no reason)')}</div>
+          <div class="meta">pid ${d.pid||'?'} · ${escapeHtml(d.binary||'(unknown)')}</div>
+        </div>
+        <button class="notif-x" data-x-id="${d.id||0}" title="Dismiss this alert">×</button>
+      </div>`;
+    }).join('');
+  }
+  list.innerHTML = html;
+  // Per-item dismiss × — stops propagation so the row click that
+  // would otherwise open the drill panel doesn't fire.
+  list.querySelectorAll('.notif-x').forEach(x => {
+    x.addEventListener('click', e => {
+      e.stopPropagation();
+      if (x.dataset.xAudit) {
+        dismissAuditAlert();
+      } else {
+        const id = +x.dataset.xId;
+        if (id) { Sess.notifDismissed.add(id); persistNotifDismissed(); }
+      }
+      renderNotifBadge();
+      renderNotifPanel();
+      updateNotifFootButtons();
+    });
+  });
+  list.querySelectorAll('.notif-item[data-exec]').forEach(item => {
+    item.addEventListener('click', () => {
+      const id = +item.dataset.id;
+      if (id) { Sess.notifSeen.add(id); persistNotifSeen(); renderNotifBadge(); }
+      const exec = item.dataset.exec;
+      if (exec) { closeNotifPanel(); openDrill(exec); }
+    });
+  });
+  updateNotifFootButtons();
+}
+// Toggle visibility/state of the foot buttons based on whether there's
+// anything to clear or restore.
+function updateNotifFootButtons() {
+  const hasAlerts = getRecentAlerts().length > 0
+    || (S.state?.audit && S.state.audit.ok === false && !isAuditAlertDismissed());
+  const hasDismissed = Sess.notifDismissed.size > 0 || Sess.notifAuditDismissedAt !== 0;
+  const clearBtn = $('notifClearAll');
+  const restoreBtn = $('notifRestore');
+  if (clearBtn)   clearBtn.disabled = !hasAlerts;
+  if (clearBtn)   clearBtn.style.opacity = hasAlerts ? '' : '0.4';
+  if (restoreBtn) restoreBtn.style.display = hasDismissed ? '' : 'none';
+}
+function openNotifPanel() {
+  const p = $('notifPanel');
+  closeProfileMenu();
+  p.classList.remove('hidden');
+  renderNotifPanel();
+}
+function closeNotifPanel() { $('notifPanel').classList.add('hidden'); }
+function markAllNotifRead() {
+  for (const a of getRecentAlerts()) if (a.id) Sess.notifSeen.add(a.id);
+  persistNotifSeen();
+  renderNotifBadge();
+  renderNotifPanel();
+}
+// Dismiss every alert currently visible in the panel — both decision
+// rows and the audit-chain banner if active. Persisted so they stay
+// gone across reloads. The "restore" button (revealed only when there
+// is something to restore) lets the operator undo this.
+function clearAllNotif() {
+  const visible = getRecentAlerts();
+  if (visible.length === 0
+      && !(S.state?.audit && S.state.audit.ok === false && !isAuditAlertDismissed())) {
+    return;
+  }
+  let n = 0;
+  for (const a of visible) if (a.id) { Sess.notifDismissed.add(a.id); n++; }
+  // Also dismiss the audit alert if it's currently showing.
+  let audit = false;
+  if (S.state?.audit && S.state.audit.ok === false && !isAuditAlertDismissed()) {
+    dismissAuditAlert(); audit = true;
+  }
+  persistNotifDismissed();
+  renderNotifBadge();
+  renderNotifPanel();
+  toast(`Cleared ${n}${audit ? ' + audit' : ''} alert${n === 1 ? '' : 's'}`, 'ok');
+}
+// Restore previously dismissed alerts so the operator can re-triage
+// them without having to wait for fresh decisions to repopulate.
+function restoreDismissed() {
+  const n = Sess.notifDismissed.size + (Sess.notifAuditDismissedAt ? 1 : 0);
+  if (n === 0) return;
+  Sess.notifDismissed.clear();
+  Sess.notifAuditDismissedAt = 0;
+  persistNotifDismissed();
+  try { localStorage.removeItem('choke.notif.auditDismissedAt'); } catch (e) {}
+  renderNotifBadge();
+  renderNotifPanel();
+  toast(`Restored ${n} dismissed alert${n === 1 ? '' : 's'}`, 'ok');
+}
+
+// ─────────── Profile menu ───────────
+function fmtClockTime(ms) {
+  const d = new Date(ms);
+  return d.toLocaleTimeString(undefined, {hour12:false}) + ' · ' + d.toLocaleDateString();
+}
+function renderProfileMenu() {
+  const name = S.whoami || '—';
+  $('profileName').textContent = name;
+  $('profileAvatar').textContent = (name || '·').slice(0,1).toUpperCase();
+  $('profileMeta').textContent = `console · ${location.host}`;
+  $('profileStarted').textContent = fmtClockTime(Sess.bootMs);
+  $('profileDuration').textContent = fmtUptime(Date.now() - Sess.bootMs);
+  $('profileAcked').textContent = String(Sess.ackedThisSession);
+  $('profileDecCount').textContent = String((S.decisions||[]).length);
+  $('profileTheme').textContent = document.body.classList.contains('theme-light') ? 'Light' : 'Dark';
+  $('profileDensity').textContent = S.density === 'compact' ? 'Compact' : 'Comfortable';
+  const sel = $('profileWindow');
+  if (sel) sel.value = String(S.windowMin);
+}
+function openProfileMenu() {
+  closeNotifPanel();
+  $('profileMenu').classList.remove('hidden');
+  $('userPill').classList.add('open');
+  renderProfileMenu();
+}
+function closeProfileMenu() {
+  $('profileMenu').classList.add('hidden');
+  $('userPill')?.classList.remove('open');
+}
+
+// Ack tracking — bump the counter when the operator hits ack via tape
+// bulk-bar or context menu. Wraps the existing saveAcked path lazily.
+(function instrumentAck() {
+  const orig = window.saveAcked;
+  if (typeof orig !== 'function') return;
+  let lastSize = (S.tapeAcked || new Set()).size;
+  window.saveAcked = function() {
+    const sz = (S.tapeAcked || new Set()).size;
+    if (sz > lastSize) Sess.ackedThisSession += (sz - lastSize);
+    lastSize = sz;
+    return orig.apply(this, arguments);
+  };
+})();
+
+// ─────────── Active-filter strip + KPI/TI click-through ───────────
+// Filters layer on top of the existing tape filters. We use the
+// existing chokeDecisionMatchesQuery / S.tapeActions infrastructure
+// where possible; for binary/reason filters we install a custom
+// matcher hook that renderTape consults.
+function applyKpiFilter(kind) {
+  // Toggle: if same kind already active, clear it.
+  const idx = Sess.activeFilters.findIndex(f => f.kind === kind);
+  // Each KPI is exclusive (only one KPI bucket at a time).
+  Sess.activeFilters = Sess.activeFilters.filter(f => !f.kind.startsWith('kpi-'));
+  if (idx === -1) {
+    Sess.activeFilters.push({ kind, value: kind });
+  }
+  syncFilters();
+}
+function applyBinaryFilter(binary) {
+  if (!binary) return;
+  Sess.activeFilters = Sess.activeFilters.filter(f => f.kind !== 'binary');
+  Sess.activeFilters.push({ kind: 'binary', value: binary });
+  syncFilters();
+}
+function applyReasonFilter(reason) {
+  if (!reason) return;
+  Sess.activeFilters = Sess.activeFilters.filter(f => f.kind !== 'reason');
+  Sess.activeFilters.push({ kind: 'reason', value: reason });
+  syncFilters();
+}
+function clearFilter(kind) {
+  Sess.activeFilters = Sess.activeFilters.filter(f => f.kind !== kind);
+  syncFilters();
+}
+function clearAllFilters() {
+  Sess.activeFilters = [];
+  syncFilters();
+}
+function syncFilters() {
+  // Map KPI bucket filters → tape action set.
+  const kpi = Sess.activeFilters.find(f => f.kind.startsWith('kpi-'));
+  if (kpi) {
+    if (kpi.kind === 'kpi-sever')      S.tapeActions = new Set(['sever']);
+    else if (kpi.kind === 'kpi-throt') S.tapeActions = new Set(['throttle','tarpit','quarantine']);
+    else                               S.tapeActions = new Set(['throttle','tarpit','quarantine','sever','thaw']);
+  } else {
+    S.tapeActions = new Set(['throttle','tarpit','quarantine','sever','thaw']);
+  }
+  // Reflect chip "on" state in the existing tape filter row.
+  document.querySelectorAll('#tapeFilters .chip[data-act]').forEach(el => {
+    el.classList.toggle('on', S.tapeActions.has(el.dataset.act));
+  });
+  // KPI tile active state.
+  ['kpiDecRate','kpiSever','kpiThrottle'].forEach(id => $(id)?.classList.remove('active'));
+  if (kpi?.kind === 'kpi-dec')   $('kpiDecRate').classList.add('active');
+  if (kpi?.kind === 'kpi-sever') $('kpiSever').classList.add('active');
+  if (kpi?.kind === 'kpi-throt') $('kpiThrottle').classList.add('active');
+
+  renderFilterStrip();
+  // Re-render both tape and proc list since binary/reason filters
+  // affect both.
+  try { renderTape(); renderProcList(); } catch (e) {}
+}
+function renderFilterStrip() {
+  const strip = $('filterStrip');
+  if (!strip) return;
+  if (Sess.activeFilters.length === 0) {
+    strip.classList.remove('show');
+    return;
+  }
+  strip.classList.add('show');
+  $('filterChips').innerHTML = Sess.activeFilters.map(f => {
+    let label = f.kind;
+    if (f.kind === 'kpi-sever') label = 'Severs only';
+    else if (f.kind === 'kpi-throt') label = 'Throttle/Tarpit/Quarantine';
+    else if (f.kind === 'kpi-dec') label = 'All decisions';
+    else if (f.kind === 'binary') label = 'binary: ' + f.value;
+    else if (f.kind === 'reason') label = 'reason: ' + truncate(f.value, 48);
+    return `<span class="chip-active" data-fkind="${escapeAttr(f.kind)}">${escapeHtml(label)}<span class="x" title="Remove this filter">×</span></span>`;
+  }).join('');
+  $('filterChips').querySelectorAll('.x').forEach(x => {
+    x.addEventListener('click', e => {
+      e.stopPropagation();
+      const kind = x.parentElement.dataset.fkind;
+      clearFilter(kind);
+    });
+  });
+}
+$('filterClearAll')?.addEventListener('click', clearAllFilters);
+
+// Hook into the existing tape filter so binary/reason filters apply.
+// We extend chokeDecisionMatchesQuery via a wrapper.
+(function extendTapeMatcher() {
+  const _matchProc = window.chokeCircuitMatchesQuery;
+  const _matchDec  = window.chokeDecisionMatchesQuery;
+  if (typeof _matchDec !== 'function') return;
+  window.chokeDecisionMatchesQuery = function(d, q) {
+    if (!_matchDec(d, q)) return false;
+    for (const f of Sess.activeFilters) {
+      if (f.kind === 'binary' && (d.binary||'') !== f.value) return false;
+      if (f.kind === 'reason') {
+        const dk = (d.reason||'').replace(/\s+\d+\s*$/, '').trim();
+        if (dk !== f.value) return false;
+      }
+    }
+    return true;
+  };
+  if (typeof _matchProc === 'function') {
+    window.chokeCircuitMatchesQuery = function(c, q) {
+      if (!_matchProc(c, q)) return false;
+      for (const f of Sess.activeFilters) {
+        if (f.kind === 'binary' && (c.binary||'') !== f.value) return false;
+      }
+      return true;
+    };
+  }
+})();
+
+// ─────────── Wire KPI tiles + threat-intel rows ───────────
+function wireKpiClickThrough() {
+  const wire = (id, kind) => {
+    const el = $(id);
+    if (!el) return;
+    el.classList.add('kpi-clickable');
+    el.addEventListener('click', () => applyKpiFilter(kind));
+  };
+  wire('kpiDecRate', 'kpi-dec');
+  wire('kpiSever',   'kpi-sever');
+  wire('kpiThrottle','kpi-throt');
+
+  // Threat-intel rows: delegate so they survive re-renders.
+  const ti = document.querySelector('.ti-ribbon');
+  if (ti) {
+    ti.addEventListener('click', e => {
+      const row = e.target.closest('.ti-bar2');
+      if (!row) return;
+      // Determine which card via parent id.
+      const card = row.closest('.ti-card');
+      if (!card) return;
+      const label = row.querySelector('.label')?.textContent?.trim() || '';
+      if (!label) return;
+      if (card.id === 'tiBinCard') {
+        // Reconstruct full path from dir+name spans.
+        const full = (row.title || label) || '';
+        const path = full.split(' · ')[0]; // title prefix is path
+        applyBinaryFilter(path || label);
+      } else if (card.id === 'tiReasonCard') {
+        applyReasonFilter(row.title || label);
+      }
+    });
+  }
+}
+
+// ─────────── Proc-row right-click context menu ───────────
+function openProcCtxMenu(x, y, ctx) {
+  const m = $('procCtxMenu');
+  m.classList.remove('hidden');
+  // Position so the menu stays in viewport.
+  const w = 240, h = 380;
+  m.style.left = Math.min(x, window.innerWidth - w - 8) + 'px';
+  m.style.top  = Math.min(y, window.innerHeight - h - 8) + 'px';
+  m.dataset.ctxExec = ctx.exec || '';
+  m.dataset.ctxPid  = ctx.pid || 0;
+  m.dataset.ctxBin  = ctx.binary || '';
+  // Toggle pin label
+  const label = m.querySelector('.pin-label');
+  if (label) label.textContent = isPinned(ctx.exec) ? 'Unpin from Watchlist' : 'Pin to Watchlist';
+}
+function closeProcCtxMenu() { $('procCtxMenu')?.classList.add('hidden'); }
+function isPinned(exec) {
+  if (!exec) return false;
+  try {
+    const arr = JSON.parse(localStorage.getItem('choke.watchlist')||'[]');
+    return arr.includes(exec);
+  } catch (e) { return false; }
+}
+function togglePin(exec) {
+  if (!exec) return;
+  try {
+    let arr = JSON.parse(localStorage.getItem('choke.watchlist')||'[]');
+    if (arr.includes(exec)) {
+      arr = arr.filter(x => x !== exec);
+      toast('Unpinned from Watchlist', 'ok');
+    } else {
+      arr.push(exec);
+      toast('Pinned to Watchlist', 'ok');
+    }
+    localStorage.setItem('choke.watchlist', JSON.stringify(arr.slice(-200)));
+  } catch (e) {}
+}
+$('procCtxMenu')?.addEventListener('click', e => {
+  const item = e.target.closest('.ctx-menu-item');
+  if (!item) return;
+  const m = $('procCtxMenu');
+  const exec = m.dataset.ctxExec;
+  const pid  = +m.dataset.ctxPid;
+  const bin  = m.dataset.ctxBin;
+  closeProcCtxMenu();
+  switch (item.dataset.pcmAct) {
+    case 'drill':       if (exec) openDrill(exec); break;
+    case 'pin':         togglePin(exec); break;
+    case 'filter-bin':  applyBinaryFilter(bin); break;
+    case 'filter-exec': S.tapeFilterExec = exec; renderTape(); break;
+    case 'copy-pid':    copyToClipboard(String(pid||'')).then(ok => toast(ok && pid ? `pid ${pid} copied` : 'copy failed', ok && pid ? 'ok' : 'err')); break;
+    case 'copy-exec':   copyToClipboard(exec||'').then(ok => toast(ok ? 'exec_id copied' : 'copy failed', ok ? 'ok' : 'err')); break;
+    case 'copy-bin':    copyToClipboard(bin||'').then(ok => toast(ok ? 'binary copied' : 'copy failed', ok ? 'ok' : 'err')); break;
+    case 'throttle':
+    case 'tarpit':
+    case 'quarantine':
+    case 'sever':
+      if (exec) confirmManual({exec_id: exec, pid, binary: bin, action: item.dataset.pcmAct});
+      break;
+  }
+});
+// Delegated right-click handler on the proc list.
+document.addEventListener('contextmenu', e => {
+  const row = e.target.closest('#procList .proc-row');
+  if (!row) return;
+  e.preventDefault();
+  openProcCtxMenu(e.clientX, e.clientY, {
+    exec: row.dataset.exec, pid: +row.dataset.pid, binary: row.dataset.bin,
+  });
+});
+document.addEventListener('click', e => {
+  if (!e.target.closest('#procCtxMenu')) closeProcCtxMenu();
+  if (!e.target.closest('#notifPanel')   && !e.target.closest('#notifBtn'))  closeNotifPanel();
+  if (!e.target.closest('#profileMenu')  && !e.target.closest('#userPill')) closeProfileMenu();
+});
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeProcCtxMenu(); closeNotifPanel(); closeProfileMenu();
+  }
+});
+
+// ─────────── Wire bell + profile + profile prefs ───────────
+$('notifBtn')?.addEventListener('click', e => {
+  e.stopPropagation();
+  if ($('notifPanel').classList.contains('hidden')) openNotifPanel();
+  else closeNotifPanel();
+});
+$('notifMarkAll')?.addEventListener('click', markAllNotifRead);
+$('notifClearAll')?.addEventListener('click', clearAllNotif);
+$('notifRestore')?.addEventListener('click', restoreDismissed);
+
+$('userPill')?.addEventListener('click', e => {
+  e.stopPropagation();
+  if ($('profileMenu').classList.contains('hidden')) openProfileMenu();
+  else closeProfileMenu();
+});
+$('userPill')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('userPill').click(); }
+});
+
+$('profileTheme')?.addEventListener('click', () => {
+  applyTheme(document.body.classList.contains('theme-light') ? 'dark' : 'light');
+  renderProfileMenu();
+});
+$('profileDensity')?.addEventListener('click', () => {
+  toggleDensity();
+  renderProfileMenu();
+});
+$('profileWindow')?.addEventListener('change', e => {
+  setWindow(parseInt(e.target.value, 10));
+});
+$('profileSnapshot')?.addEventListener('click', () => {
+  closeProfileMenu();
+  $('forensicBtn')?.click();
+});
+
+// ─────────── Avatar / profile picture ───────────
+// Storage convention is shared with the SOC dashboard (same origin /
+// localStorage namespace) so a picture set on either page is reflected
+// on the other after reload. Encoded as a JPEG data URL after a center-
+// cropped 128×128 canvas resize so the value stays well under the
+// localStorage 5MB origin cap even with hundreds of operators.
+const AVATAR_KEY = (user) => 'soc.avatar.' + (user || 'default');
+const AVATAR_MAX = 128;          // px on the longest side
+const AVATAR_QUALITY = 0.85;     // JPEG quality
+const AVATAR_BYTE_CAP = 200_000; // refuse pictures that compress >200KB
+
+function getStoredAvatar(user) {
+  try { return localStorage.getItem(AVATAR_KEY(user)) || ''; }
+  catch (e) { return ''; }
+}
+function setStoredAvatar(user, dataURL) {
+  try {
+    localStorage.setItem(AVATAR_KEY(user), dataURL);
+    // Broadcast to other tabs of either page so they update live.
+    window.dispatchEvent(new StorageEvent('storage', { key: AVATAR_KEY(user), newValue: dataURL }));
+  } catch (e) { console && console.warn('avatar save failed', e); }
+}
+function clearStoredAvatar(user) {
+  try { localStorage.removeItem(AVATAR_KEY(user)); }
+  catch (e) {}
+}
+// Read an image File, draw center-cropped to a 128×128 canvas, return a
+// JPEG data URL. Rejects on cap miss or load errors so the operator
+// gets a clear toast instead of a silent failure.
+function processAvatarFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('no file'));
+    if (!file.type.startsWith('image/')) return reject(new Error('not an image'));
+    if (file.size > 8 * 1024 * 1024) return reject(new Error('image too large (>8MB source)'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload  = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode failed'));
+      img.onload  = () => {
+        const c = document.createElement('canvas');
+        c.width = AVATAR_MAX; c.height = AVATAR_MAX;
+        const ctx = c.getContext('2d');
+        // Center-cover crop: scale so the shorter side fills the
+        // canvas, center-anchor the longer side.
+        const s = Math.min(img.width, img.height);
+        const sx = (img.width - s) / 2;
+        const sy = (img.height - s) / 2;
+        ctx.drawImage(img, sx, sy, s, s, 0, 0, AVATAR_MAX, AVATAR_MAX);
+        const url = c.toDataURL('image/jpeg', AVATAR_QUALITY);
+        if (url.length > AVATAR_BYTE_CAP) return reject(new Error('compressed picture too large'));
+        resolve(url);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// Apply the stored avatar (or default initial) to every avatar surface
+// on the page. Called on hydrate + every time the value changes + on
+// cross-tab storage events.
+function applyUserAvatar() {
+  const user = S.whoami || '';
+  const url = getStoredAvatar(user);
+  const initial = (user || '·').slice(0,1).toUpperCase();
+
+  const small = $('userAvatar');
+  const big   = $('profileAvatar');
+  const removeLink = $('profileAvatarRemove');
+  for (const el of [small, big]) {
+    if (!el) continue;
+    if (url) {
+      el.classList.add('has-image');
+      el.style.backgroundImage = `url("${url}")`;
+      el.textContent = '';                 // hide initial when image is set
+    } else {
+      el.classList.remove('has-image');
+      el.style.backgroundImage = '';
+      el.textContent = initial;
+    }
+  }
+  if (removeLink) removeLink.style.display = url ? '' : 'none';
+}
+
+// File picker → process → save → re-apply.
+async function pickAndApplyAvatar(file) {
+  if (!file) return;
+  try {
+    const url = await processAvatarFile(file);
+    setStoredAvatar(S.whoami || '', url);
+    applyUserAvatar();
+    toast('Profile picture updated', 'ok');
+  } catch (e) {
+    toast('Picture update failed: ' + (e.message || 'unknown'), 'err');
+  }
+}
+$('profileAvatarInput')?.addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  pickAndApplyAvatar(file);
+  // Reset so picking the same file again re-fires the change event.
+  e.target.value = '';
+});
+$('profileAvatarChange')?.addEventListener('click', () => $('profileAvatarInput')?.click());
+$('profileAvatarRemove')?.addEventListener('click', () => {
+  if (!confirm('Remove your profile picture?')) return;
+  clearStoredAvatar(S.whoami || '');
+  applyUserAvatar();
+  toast('Profile picture removed', 'ok');
+});
+
+// Cross-tab + cross-page sync: any storage event on this user's
+// avatar key re-applies live, so changing it on the SOC dashboard
+// updates the choke topbar without a reload.
+window.addEventListener('storage', e => {
+  if (!e.key) return;
+  if (e.key === AVATAR_KEY(S.whoami || '')) applyUserAvatar();
+});
+
+// Apply on first hydrate after we know who the operator is.
+(function hookAvatarApply() {
+  const _origRender = window.render;
+  let applied = false;
+  window.render = function() {
+    _origRender();
+    if (!applied && S.whoami) { applied = true; try { applyUserAvatar(); } catch (e) {} }
+  };
+  // Also re-apply whenever the profile menu opens, to pick up changes
+  // made on the SOC page in the same tab.
+  const _origOpen = openProfileMenu;
+  window.openProfileMenu = function() { _origOpen(); try { applyUserAvatar(); } catch (e) {} };
+})();
+
+// ═══════════════════════════════════════════════════════════════════
+// Pill popovers — host / live / audit / mode
+// ═══════════════════════════════════════════════════════════════════
+
+// Relative-time formatter used by every popover. Mirrors the SOC
+// dashboard's `agoFor` semantics so an operator switching pages
+// reads the same vocabulary.
+function fmtRel(ms) {
+  if (!ms) return '—';
+  const sec = Math.max(0, Math.floor((Date.now() - ms) / 1000));
+  if (sec < 5)   return 'just now';
+  if (sec < 60)  return sec + 's ago';
+  if (sec < 3600) return Math.floor(sec/60) + 'm ago';
+  if (sec < 86400) return Math.floor(sec/3600) + 'h ago';
+  return Math.floor(sec/86400) + 'd ago';
+}
+
+// Telemetry the popovers read from. Updated incrementally by hooks
+// installed below; survives across renders without rebuilding the DOM.
+const Pills = {
+  // Host (server reachability via lightweight /api/whoami pings)
+  host: {
+    state: 'unknown',          // 'ok' | 'slow' | 'down' | 'unknown'
+    lastOkAt: 0,
+    lastTriedAt: 0,
+    lastRttMs: null,
+    failsInRow: 0,
+    history: [],               // [{t, state, rtt, code}]
+    endpoints: {},              // {path: {ok, rtt, code, t}}
+  },
+  // Live (SSE feed)
+  live: {
+    state: 'connecting',
+    sinceMs: Date.now(),
+    lastMsgAt: 0,
+    totalMsgs: 0,
+    msgsByMinute: [],          // sliding [{t, n}] for last 60s
+    history: [],               // [{t, state, note}]
+    paused: false,
+  },
+  // Audit (decision chain integrity)
+  audit: {
+    history: [],               // [{t, ok, total, durMs, badAt, badField}]
+    lastResp: null,             // last /api/verify-chain response
+  },
+  // Mode (per-mode session counters)
+  mode: {
+    currentMode: '',
+    modeChangedAt: Date.now(),
+    counters: {                // reset on mode change
+      decisions: 0, severs: 0, throt: 0, presets: 0,
+    },
+  },
+};
+
+// Slow threshold for host pill (RTT in ms above which we go yellow).
+const HOST_SLOW_MS = 800;
+
+// ─────────── Open/close router ───────────
+// Only one popover open at a time. Re-clicking the same pill closes
+// it. Esc / outside click closes.
+let _ppOpen = null;
+const PP_PILLS = {
+  host:  { popover: 'ppHost',  pill: 'hostPill',    render: renderHostPopover  },
+  live:  { popover: 'ppLive',  pill: 'liveStatus',  render: renderLivePopover  },
+  audit: { popover: 'ppAudit', pill: 'auditPill',   render: renderAuditPopover },
+  mode:  { popover: 'ppMode',  pill: 'modePill',    render: renderModePopover  },
+};
+function _ppPosition(name) {
+  const p = $(PP_PILLS[name].pill);
+  const pp = $(PP_PILLS[name].popover);
+  if (!p || !pp) return;
+  const r = p.getBoundingClientRect();
+  pp.classList.remove('hidden');
+  // Position above (default below); flip if below the viewport edge.
+  const margin = 8;
+  const w = pp.offsetWidth || 440;
+  let left = Math.min(window.innerWidth - w - margin, Math.max(margin, r.left + r.width / 2 - w / 2));
+  let top  = r.bottom + 6;
+  pp.style.left = left + 'px';
+  pp.style.top  = top + 'px';
+}
+function openPillPopover(name) {
+  if (_ppOpen === name) { closePillPopover(); return; }
+  closePillPopover();
+  // Close other dropdowns the page has so they don't stack on top.
+  try { closeNotifPanel(); closeProfileMenu(); } catch (e) {}
+  PP_PILLS[name].render();
+  _ppPosition(name);
+  _ppOpen = name;
+}
+function closePillPopover() {
+  if (!_ppOpen) return;
+  $(PP_PILLS[_ppOpen].popover)?.classList.add('hidden');
+  _ppOpen = null;
+}
+// Reposition open popovers on resize / scroll so they track the pill.
+window.addEventListener('resize', () => { if (_ppOpen) _ppPosition(_ppOpen); });
+window.addEventListener('scroll', () => { if (_ppOpen) _ppPosition(_ppOpen); }, true);
+
+['host','live','audit','mode'].forEach(name => {
+  const el = $(PP_PILLS[name].pill);
+  if (!el) return;
+  el.addEventListener('click', e => { e.stopPropagation(); openPillPopover(name); });
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openPillPopover(name); }
+  });
+});
+document.addEventListener('click', e => {
+  if (!_ppOpen) return;
+  if (e.target.closest('.pp')) return;
+  if (e.target.closest('#' + PP_PILLS[_ppOpen].pill)) return;
+  closePillPopover();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closePillPopover(); });
+
+// ─────────── Host pill — periodic ping + state transitions ───────────
+const HOST_ENDPOINTS = ['/api/whoami', '/api/choke/state', '/api/choke/circuits', '/api/decisions?limit=1'];
+
+async function pingEndpoint(path) {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(path, { cache: 'no-store' });
+    const ms = Math.round(performance.now() - t0);
+    return { path, ok: r.ok, code: r.status, rtt: ms, t: Date.now() };
+  } catch (e) {
+    return { path, ok: false, code: 0, rtt: Math.round(performance.now() - t0), t: Date.now(), err: String(e.message || e) };
+  }
+}
+async function hostPingTick() {
+  const res = await pingEndpoint('/api/whoami');
+  Pills.host.lastTriedAt = res.t;
+  Pills.host.endpoints[res.path] = res;
+  Pills.host.lastRttMs = res.rtt;
+  let next;
+  if (!res.ok) { Pills.host.failsInRow++; next = 'down'; }
+  else if (res.rtt > HOST_SLOW_MS) { Pills.host.failsInRow = 0; Pills.host.lastOkAt = res.t; next = 'slow'; }
+  else { Pills.host.failsInRow = 0; Pills.host.lastOkAt = res.t; next = 'ok'; }
+  if (next !== Pills.host.state) {
+    Pills.host.history.unshift({ t: res.t, state: next, rtt: res.rtt, code: res.code });
+    Pills.host.history = Pills.host.history.slice(0, 20);
+    Pills.host.state = next;
+  }
+  applyHostPillUI();
+}
+function applyHostPillUI() {
+  const el = $('hostPill');
+  if (!el) return;
+  el.classList.remove('host-slow', 'host-down');
+  let label = 'host live';
+  if (Pills.host.state === 'slow') { el.classList.add('host-slow'); label = 'host slow'; }
+  else if (Pills.host.state === 'down') { el.classList.add('host-down'); label = 'host down'; }
+  $('hostPillText').textContent = label;
+  $('hostPillIp').textContent   = S.serverIP ? (location.host + ' · ' + S.serverIP) : location.host;
+  // If popover is open, update telemetry live.
+  if (_ppOpen === 'host') renderHostPopover();
+}
+async function pingAllEndpoints() {
+  const results = await Promise.all(HOST_ENDPOINTS.map(pingEndpoint));
+  for (const r of results) Pills.host.endpoints[r.path] = r;
+  if (_ppOpen === 'host') renderHostPopover();
+  toast(`Pinged ${results.length} endpoints`, 'ok');
+}
+async function runHostDiagnostics() {
+  await pingAllEndpoints();
+  const fails = Object.values(Pills.host.endpoints).filter(r => !r.ok).length;
+  const slow  = Object.values(Pills.host.endpoints).filter(r => r.ok && r.rtt > HOST_SLOW_MS).length;
+  if (fails > 0) toast(`Diagnostics: ${fails} endpoint${fails===1?'':'s'} failing`, 'err');
+  else if (slow > 0) toast(`Diagnostics: ${slow} endpoint${slow===1?'':'s'} slow (>${HOST_SLOW_MS}ms)`, 'err');
+  else toast('Diagnostics: all endpoints healthy', 'ok');
+}
+function renderHostPopover() {
+  const sp = $('ppHostState');
+  const stateClass = ({ ok:'pp-state-ok', slow:'pp-state-warn', down:'pp-state-err', unknown:'pp-state-info' })[Pills.host.state] || 'pp-state-info';
+  sp.className = 'pp-state-pill ' + stateClass;
+  sp.textContent = Pills.host.state;
+  $('ppHostMeta').textContent = Pills.host.lastTriedAt ? 'last ping ' + fmtRel(Pills.host.lastTriedAt) : '';
+  const host = $('ppHostHost'); host.textContent = location.host; host.dataset.copy = location.host;
+  const sip = $('ppHostServerIp');
+  if (sip) { const v = S.serverIP || '—'; sip.textContent = v; sip.dataset.copy = S.serverIP || ''; }
+  const sname = $('ppHostServerName');
+  if (sname) { const v = S.serverHostname || '—'; sname.textContent = v; sname.dataset.copy = S.serverHostname || ''; }
+  $('ppHostRtt').textContent = Pills.host.lastRttMs == null ? '—' : Pills.host.lastRttMs + ' ms';
+  $('ppHostLastOk').textContent = Pills.host.lastOkAt ? fmtRel(Pills.host.lastOkAt) : '—';
+  $('ppHostFails').textContent = Pills.host.failsInRow;
+
+  // Endpoint table
+  const ee = $('ppHostEndpoints');
+  const rows = HOST_ENDPOINTS.map(p => {
+    const r = Pills.host.endpoints[p];
+    if (!r) return `<div class="pp-endpoint"><span class="path">${escapeHtml(p)}</span><span class="pill-mini" style="background:rgba(148,163,184,0.18);color:#94a3b8;border:1px solid rgba(148,163,184,0.4);">—</span><span class="lat">—</span></div>`;
+    const cls = !r.ok ? 'err' : (r.rtt > HOST_SLOW_MS ? 'warn' : 'ok');
+    const labl = !r.ok ? 'down' : (r.rtt > HOST_SLOW_MS ? 'slow' : 'ok');
+    return `<div class="pp-endpoint">
+      <span class="path">${escapeHtml(p)}</span>
+      <span class="pill-mini ${cls}">${labl}${r.code?` ${r.code}`:''}</span>
+      <span class="lat">${r.rtt} ms</span>
+    </div>`;
+  }).join('');
+  ee.innerHTML = rows;
+
+  // History
+  const hist = Pills.host.history;
+  $('ppHostHistory').innerHTML = hist.length ? hist.map(h => {
+    const cls = h.state === 'down' ? 'err' : (h.state === 'slow' ? 'warn' : 'ok');
+    return `<div class="pp-row"><span class="ts">${fmtRel(h.t)}</span><span class="desc">→ ${escapeHtml(h.state)}</span><span class="pill-mini ${cls}">${h.rtt} ms</span></div>`;
+  }).join('') : `<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no transitions yet</span><span class="v"></span></div>`;
+}
+$('ppHostPing')?.addEventListener('click', pingAllEndpoints);
+$('ppHostDiagnose')?.addEventListener('click', runHostDiagnostics);
+$('ppHost')?.addEventListener('click', e => {
+  const c = e.target.closest('.copyable');
+  if (!c) return;
+  const v = c.dataset.copy || c.textContent;
+  copyToClipboard(v).then(ok => toast(ok ? 'copied' : 'copy failed', ok ? 'ok' : 'err'));
+});
+// Kick off the ping loop. Initial ping fires immediately so the pill
+// starts in a real state instead of "unknown".
+hostPingTick();
+setInterval(hostPingTick, 8000);
+
+// ─────────── Live pill — track state transitions + msg rate ───────────
+function _liveBumpRate() {
+  const now = Date.now();
+  Pills.live.msgsByMinute.push(now);
+  // Drop entries older than 60s.
+  const cutoff = now - 60_000;
+  while (Pills.live.msgsByMinute.length && Pills.live.msgsByMinute[0] < cutoff) Pills.live.msgsByMinute.shift();
+}
+// Hook the existing setLiveState so we record transitions for the popover.
+(function hookSetLiveState() {
+  if (typeof window.setLiveState !== 'function') return;
+  const _orig = window.setLiveState;
+  window.setLiveState = function(state) {
+    if (state !== Pills.live.state) {
+      Pills.live.history.unshift({ t: Date.now(), state, note: '' });
+      Pills.live.history = Pills.live.history.slice(0, 20);
+      Pills.live.state = state;
+      Pills.live.sinceMs = Date.now();
+    }
+    _orig(state);
+    if (_ppOpen === 'live') renderLivePopover();
+  };
+})();
+// Hook the SSE onmessage to count messages for the rate gauge.
+(function hookOnMessage() {
+  if (typeof stream === 'undefined' || !stream.es) {
+    // Stream isn't open yet — install a setInterval that re-checks.
+    const probe = setInterval(() => {
+      if (typeof stream !== 'undefined' && stream.es && !stream.es._chokePillHooked) {
+        stream.es._chokePillHooked = true;
+        const _orig = stream.es.onmessage;
+        stream.es.onmessage = function(e) {
+          Pills.live.totalMsgs++;
+          Pills.live.lastMsgAt = Date.now();
+          _liveBumpRate();
+          return _orig?.call(this, e);
+        };
+        clearInterval(probe);
+      }
+    }, 200);
+  }
+})();
+// Lightweight tick: even without a new SSE message we want the
+// "since" / "last message" timers to keep refreshing.
+setInterval(() => { if (_ppOpen === 'live') renderLivePopover(); }, 1000);
+
+function renderLivePopover() {
+  const state = Pills.live.state;
+  const sp = $('ppLiveState');
+  const cls = state === 'live' ? 'pp-state-ok' :
+              state === 'reconnect' || state === 'connecting' ? 'pp-state-warn' :
+              state === 'paused' ? 'pp-state-info' : 'pp-state-err';
+  sp.className = 'pp-state-pill ' + cls;
+  sp.textContent = state;
+  $('ppLiveMeta').textContent = 'since ' + fmtRel(Pills.live.sinceMs);
+
+  $('ppLiveStateVal').textContent = state;
+  $('ppLiveSince').textContent    = fmtRel(Pills.live.sinceMs);
+  $('ppLiveLastMsg').textContent  = Pills.live.lastMsgAt ? fmtRel(Pills.live.lastMsgAt) : '—';
+  $('ppLiveRetries').textContent  = (typeof stream !== 'undefined') ? (stream.retries || 0) : 0;
+  $('ppLiveTotal').textContent    = Pills.live.totalMsgs;
+  const rate = Pills.live.msgsByMinute.length / 60;
+  $('ppLiveRate').textContent     = rate.toFixed(2);
+  $('ppLiveBuf').textContent      = `${(S.decisions||[]).length} / 400`;
+  $('ppLiveLastId').textContent   = (S.decisions[0] || {}).id || '—';
+
+  const hist = Pills.live.history;
+  $('ppLiveHistory').innerHTML = hist.length ? hist.map(h => {
+    const cls = h.state === 'live' ? 'ok' : (h.state === 'down' ? 'err' : 'warn');
+    return `<div class="pp-row"><span class="ts">${fmtRel(h.t)}</span><span class="desc">→ ${escapeHtml(h.state)}</span><span class="pill-mini ${cls}">${h.state}</span></div>`;
+  }).join('') : `<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no transitions yet</span><span class="v"></span></div>`;
+
+  // Pause toggle label
+  const pauseBtn = $('ppLivePause');
+  if (pauseBtn) pauseBtn.textContent = Pills.live.paused ? 'Resume' : 'Pause';
+}
+$('ppLiveReconnect')?.addEventListener('click', () => {
+  // Reuse the existing force-reconnect path so we don't drift.
+  $('staleReconnectBtn')?.click();
+  toast('Reconnecting stream…', 'ok');
+});
+$('ppLiveSnapshot')?.addEventListener('click', () => {
+  $('softRefreshBtn')?.click();
+});
+$('ppLivePause')?.addEventListener('click', () => {
+  Pills.live.paused = !Pills.live.paused;
+  S.tapeAutoScroll = !Pills.live.paused;
+  toast(Pills.live.paused ? 'Stream rendering paused' : 'Stream rendering resumed', 'ok');
+  renderLivePopover();
+});
+
+// ─────────── Audit pill — verification history + actions ───────────
+async function reverifyAuditChain() {
+  const t0 = performance.now();
+  try {
+    const r = await fetch('/api/verify-chain').then(r => r.json());
+    const dur = Math.round(performance.now() - t0);
+    Pills.audit.lastResp = r;
+    Pills.audit.history.unshift({
+      t: Date.now(), ok: r.ok !== false, total: r.total || 0, durMs: dur,
+      badAt: r.bad_at, badField: r.bad_field,
+    });
+    Pills.audit.history = Pills.audit.history.slice(0, 20);
+    S.state = S.state || {}; S.state.audit = r;
+    applyHeader();
+    if (_ppOpen === 'audit') renderAuditPopover();
+    toast(r.ok !== false ? `Chain ok · ${r.total} decisions (${dur}ms)` : `Chain BROKEN @ id ${r.bad_at}`, r.ok !== false ? 'ok' : 'err');
+  } catch (e) {
+    toast('Verify failed: ' + (e.message || e), 'err');
+  }
+}
+function renderAuditPopover() {
+  const a = (S.state && S.state.audit) || {};
+  const ok = a.ok !== false;
+  const sp = $('ppAuditState');
+  sp.className = 'pp-state-pill ' + (ok ? 'pp-state-ok' : 'pp-state-err');
+  sp.textContent = ok ? 'ok' : 'broken';
+  $('ppAuditMeta').textContent = a.total ? `${a.total} chained` : '';
+
+  $('ppAuditStatus').className = 'v ' + (ok ? 'ok' : 'err');
+  $('ppAuditStatus').textContent = ok ? 'verified' : 'broken';
+  $('ppAuditTotal').textContent  = a.total || 0;
+  const last = Pills.audit.history[0];
+  $('ppAuditLastVer').textContent = last ? fmtRel(last.t) : '—';
+  $('ppAuditDur').textContent     = last ? last.durMs + ' ms' : '—';
+
+  const head = $('ppAuditHead');
+  const headVal = a.head_hash || a.head || a.tip || `#${a.total||0}`;
+  head.textContent = headVal;
+  head.dataset.copy = headVal;
+
+  const hist = Pills.audit.history;
+  $('ppAuditHistory').innerHTML = hist.length ? hist.map(h => {
+    const cls = h.ok ? 'ok' : 'err';
+    return `<div class="pp-row"><span class="ts">${fmtRel(h.t)}</span><span class="desc">${h.ok ? 'verified' : `broken @ id ${h.badAt} (${escapeHtml(h.badField||'?')})`}</span><span class="pill-mini ${cls}">${h.durMs} ms</span></div>`;
+  }).join('') : `<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">click "Re-verify now" to check the chain</span><span class="v"></span></div>`;
+
+  const breakSec = $('ppAuditBreakSection');
+  if (!ok) {
+    breakSec.style.display = '';
+    $('ppAuditBadAt').textContent    = a.bad_at || '—';
+    $('ppAuditBadField').textContent = a.bad_field || '—';
+  } else {
+    breakSec.style.display = 'none';
+  }
+}
+$('ppAuditVerify')?.addEventListener('click', reverifyAuditChain);
+$('ppAuditCopy')?.addEventListener('click', () => {
+  const v = $('ppAuditHead')?.dataset.copy || $('ppAuditHead')?.textContent || '';
+  if (!v) return;
+  copyToClipboard(v).then(ok => toast(ok ? 'head copied' : 'copy failed', ok ? 'ok' : 'err'));
+});
+$('ppAuditExport')?.addEventListener('click', () => {
+  // Pull the latest decisions buffer + drop as JSONL.
+  const blob = new Blob(
+    [(S.decisions || []).map(d => JSON.stringify(d)).join('\n')],
+    { type: 'application/x-ndjson' }
+  );
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `decisions-${Date.now()}.jsonl`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('Decisions exported', 'ok');
+});
+$('ppAudit')?.addEventListener('click', e => {
+  const c = e.target.closest('.copyable');
+  if (!c) return;
+  const v = c.dataset.copy || c.textContent;
+  copyToClipboard(v).then(ok => toast(ok ? 'copied' : 'copy failed', ok ? 'ok' : 'err'));
+});
+
+// ─────────── Mode pill — preset shortcuts + kill-switch toggle ───────────
+// Reset the per-mode session counters whenever the operator changes
+// mode so "session activity in this mode" reflects the active scope.
+(function hookModeChanges() {
+  // Detect mode/kill-switch transitions by polling S.state.
+  let lastKey = '';
+  setInterval(() => {
+    if (!S.state) return;
+    const key = (S.state.kill_switched ? 'kill' : (S.state.mode || ''));
+    if (key && key !== lastKey) {
+      lastKey = key;
+      Pills.mode.currentMode = key;
+      Pills.mode.modeChangedAt = Date.now();
+      Pills.mode.counters = { decisions: 0, severs: 0, throt: 0, presets: 0 };
+      if (_ppOpen === 'mode') renderModePopover();
+    }
+  }, 1000);
+})();
+// Hook tape ingestion so per-mode counters move.
+(function hookDecisionsForMode() {
+  // Wrap renderTape just to piggyback on its frequency. For each new
+  // decision (id higher than last seen), bump counters appropriately.
+  let lastSeenId = 0;
+  const _r = window.renderTape;
+  if (typeof _r !== 'function') return;
+  window.renderTape = function() {
+    _r();
+    const top = (S.decisions[0] || {}).id || 0;
+    if (top > lastSeenId) {
+      // Walk the buffer until the previous lastSeenId.
+      for (const d of (S.decisions || [])) {
+        if ((d.id || 0) <= lastSeenId) break;
+        Pills.mode.counters.decisions++;
+        if (d.action === 'sever') Pills.mode.counters.severs++;
+        else if (d.action === 'throttle' || d.action === 'tarpit' || d.action === 'quarantine') Pills.mode.counters.throt++;
+      }
+      lastSeenId = top;
+      if (_ppOpen === 'mode') renderModePopover();
+    }
+  };
+})();
+function renderModePopover() {
+  const m = (S.state && S.state.mode) || '—';
+  const dry = (S.state && S.state.dry_run) ? 'on' : 'off';
+  const kill = S.state && S.state.kill_switched;
+  const sp = $('ppModeState');
+  if (kill) { sp.className = 'pp-state-pill pp-state-err'; sp.textContent = 'kill-switched'; }
+  else if (m === 'enforcing') { sp.className = 'pp-state-pill pp-state-err'; sp.textContent = 'enforcing'; }
+  else if (m === 'dry-run')   { sp.className = 'pp-state-pill pp-state-warn'; sp.textContent = 'dry-run'; }
+  else                        { sp.className = 'pp-state-pill pp-state-info'; sp.textContent = m || 'detect-only'; }
+  $('ppModeMeta').textContent = 'since ' + fmtRel(Pills.mode.modeChangedAt);
+
+  $('ppModeCur').textContent      = kill ? 'kill-switched' : m;
+  $('ppModeDry').textContent      = dry;
+  $('ppModeKill').className       = 'v ' + (kill ? 'err' : '');
+  $('ppModeKill').textContent     = kill ? 'engaged' : 'standby';
+  $('ppModeTracked').textContent  = (S.state && S.state.tracked) || 0;
+  $('ppModeDecCnt').textContent   = Pills.mode.counters.decisions;
+  $('ppModeSevCnt').textContent   = Pills.mode.counters.severs;
+  $('ppModeThrotCnt').textContent = Pills.mode.counters.throt;
+  $('ppModePresetCnt').textContent= Pills.mode.counters.presets;
+
+  const kbtn = $('ppModeKillToggle');
+  if (kbtn) {
+    kbtn.textContent = kill ? '◉ Disengage kill-switch' : '◉ Engage kill-switch';
+    kbtn.className = 'pp-btn ' + (kill ? 'warn' : 'danger');
+  }
+}
+// Preset shortcut buttons dispatch to existing applyPreset() flow.
+$('ppMode')?.addEventListener('click', e => {
+  const p = e.target.closest('[data-pp-preset]');
+  if (!p) return;
+  const name = p.dataset.ppPreset;
+  Pills.mode.counters.presets++;
+  if (typeof applyPreset === 'function') {
+    applyPreset(name);
+  } else {
+    document.querySelector(`[data-preset="${name}"]`)?.click();
+  }
+});
+$('ppModeKillToggle')?.addEventListener('click', () => {
+  closePillPopover();
+  $('killSwitchBtn')?.click();
+});
+
+// ─────────── Periodic refresh of host pill UI ───────────
+applyHostPillUI();
+
+// Final wiring: extend the render lifecycle to also tick the bell
+// badge. The render path runs the full tile + tape + procList pass,
+// so we coalesce bursts of calls (SSE flood, multi-tick snapshots)
+// into at most one render every 120ms via requestAnimationFrame +
+// trailing leading-edge throttle. Without this a busy host triggers
+// 50+ renders/second and locks the page.
+(function extendForBellAndThrottle() {
+  const _r = window.render;
+  const _u = window.updateKpis;
+  let pendingRender = false, lastRenderAt = 0, RAF_THROTTLE_MS = 120;
+  window.render = function() {
+    const now = Date.now();
+    if (now - lastRenderAt > RAF_THROTTLE_MS) {
+      lastRenderAt = now;
+      _r();
+      try { renderNotifBadge(); } catch (e) {}
+      return;
+    }
+    if (pendingRender) return;
+    pendingRender = true;
+    setTimeout(() => {
+      pendingRender = false;
+      lastRenderAt = Date.now();
+      _r();
+      try { renderNotifBadge(); } catch (e) {}
+    }, RAF_THROTTLE_MS - (now - lastRenderAt));
+  };
+  window.updateKpis = function() { _u(); try { renderNotifBadge(); } catch (e) {} };
+  setTimeout(() => { try { wireKpiClickThrough(); renderNotifBadge(); } catch (e) {} }, 0);
+})();
+
 </script>
 </body>
 </html>

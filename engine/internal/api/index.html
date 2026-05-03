@@ -458,6 +458,67 @@ tailwind.config = {
   .kp-heat.calm  { background: rgba(34,197,94,0.15); color: #bbf7d0; border: 1px solid rgba(34,197,94,0.4); }
   .kp-heat.idle  { background: rgba(148,163,184,0.10); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
 
+  /* Kprobe / Honeypot panel — toolbar + sortable + expandable cards */
+  .panel-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .panel-toolbar input.search,
+  .panel-toolbar select {
+    background: var(--soc-input-bg, rgba(15,23,42,0.6));
+    border: 1px solid var(--soc-input-bd, rgba(31,42,68,0.95));
+    color: rgb(var(--soc-text)); border-radius: 4px;
+    padding: 4px 8px; font-size: 11px; font-family: ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .panel-toolbar input.search { min-width: 160px; }
+  .panel-toolbar .sort-grp { display: inline-flex; gap: 0; border: 1px solid rgba(31,42,68,0.95); border-radius: 4px; overflow: hidden; }
+  .panel-toolbar .sort-btn { padding: 4px 8px; font-size: 10px; background: transparent; color: #94a3b8; cursor: pointer; border: 0; border-right: 1px solid rgba(31,42,68,0.95); text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel-toolbar .sort-btn:last-child { border-right: 0; }
+  .panel-toolbar .sort-btn.active { background: rgba(34,211,238,0.12); color: #67e8f9; }
+  .panel-toolbar .sort-btn:hover { color: #e2e8f0; }
+  .panel-toolbar .filter-pills { display: inline-flex; gap: 4px; }
+  .panel-toolbar .fp { padding: 3px 8px; font-size: 10px; border: 1px solid rgba(31,42,68,0.95); border-radius: 999px; color: #94a3b8; cursor: pointer; background: transparent; text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel-toolbar .fp.active { background: rgba(34,211,238,0.12); color: #67e8f9; border-color: rgba(34,211,238,0.35); }
+  .panel-toolbar .util-btn { margin-left: auto; padding: 4px 10px; font-size: 10px; border: 1px solid rgba(31,42,68,0.95); border-radius: 4px; color: #cbd5e1; background: transparent; cursor: pointer; text-transform: uppercase; letter-spacing: 0.05em; }
+  .panel-toolbar .util-btn + .util-btn { margin-left: 4px; }
+  .panel-toolbar .util-btn:hover { color: #67e8f9; border-color: rgba(34,211,238,0.5); }
+
+  body.theme-light .panel-toolbar input.search,
+  body.theme-light .panel-toolbar select { color: #0f172a; background: #ffffff; border-color: rgba(148,163,184,0.55); }
+  body.theme-light .panel-toolbar .fp { color: #475569; border-color: rgba(148,163,184,0.55); }
+  body.theme-light .panel-toolbar .fp.active { background: rgba(8,145,178,0.12); color: #0e7490; border-color: rgba(8,145,178,0.45); }
+  body.theme-light .panel-toolbar .sort-btn { color: #475569; border-color: rgba(148,163,184,0.55); }
+  body.theme-light .panel-toolbar .sort-btn.active { background: rgba(8,145,178,0.12); color: #0e7490; }
+  body.theme-light .panel-toolbar .sort-grp { border-color: rgba(148,163,184,0.55); }
+  body.theme-light .panel-toolbar .util-btn { color: #475569; border-color: rgba(148,163,184,0.55); }
+
+  /* Expandable card (kprobe + honeypot share this) */
+  .ent-card { cursor: pointer; transition: border-color 120ms ease, background-color 120ms ease; }
+  .ent-card:hover { border-color: rgba(34,211,238,0.35); }
+  .ent-card.over-threshold { border-color: rgba(244,63,94,0.55); box-shadow: 0 0 0 1px rgba(244,63,94,0.15) inset; }
+  .ent-card.is-hot         { border-color: rgba(244,63,94,0.45); }
+  .ent-card.expanded { border-color: rgba(34,211,238,0.5); }
+  .ent-detail { padding-top: 10px; margin-top: 8px; border-top: 1px dashed rgba(148,163,184,0.25); }
+  .ent-chevron { color: #94a3b8; font-size: 10px; transition: transform 120ms ease; display: inline-block; }
+  .ent-card.expanded .ent-chevron { transform: rotate(90deg); }
+  .ent-emitters { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 4px 12px; }
+  .ent-emitter-row { font-size: 10px; display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; border-bottom: 1px dotted rgba(148,163,184,0.15); }
+  .ent-emitter-row .bin { font-family: ui-monospace,SFMono-Regular,Menlo,monospace; color: rgb(var(--soc-text)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ent-emitter-row .cnt { color: #94a3b8; flex-shrink: 0; }
+  .ent-action-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .ent-action-btn { padding: 4px 10px; font-size: 10px; border: 1px solid rgba(31,42,68,0.95); border-radius: 4px; color: #cbd5e1; background: transparent; cursor: pointer; text-transform: uppercase; letter-spacing: 0.05em; font-family: inherit; }
+  .ent-action-btn:hover { color: #67e8f9; border-color: rgba(34,211,238,0.5); }
+  .ent-action-btn.danger { color: #fda4af; border-color: rgba(244,63,94,0.45); }
+  .ent-action-btn.danger:hover { color: #fecdd3; border-color: rgba(244,63,94,0.7); background: rgba(244,63,94,0.08); }
+  body.theme-light .ent-action-btn { color: #475569; border-color: rgba(148,163,184,0.55); }
+  body.theme-light .ent-action-btn:hover { color: #0e7490; border-color: rgba(8,145,178,0.5); }
+  body.theme-light .ent-emitter-row .bin { color: #0f172a; }
+
+  /* Recent-access table inside honeypot expanded view */
+  .ent-access-table { font-size: 10px; width: 100%; border-collapse: collapse; }
+  .ent-access-table th { text-align: left; color: #94a3b8; font-weight: 500; padding: 4px 6px; text-transform: uppercase; letter-spacing: 0.05em; font-size: 9px; border-bottom: 1px solid rgba(148,163,184,0.2); }
+  .ent-access-table td { padding: 3px 6px; border-bottom: 1px dotted rgba(148,163,184,0.12); font-family: ui-monospace,SFMono-Regular,Menlo,monospace; }
+  .ent-access-table tr:hover td { background: rgba(34,211,238,0.04); }
+
+  .ent-empty { padding: 24px 12px; text-align: center; color: #94a3b8; font-size: 11px; border: 1px dashed rgba(148,163,184,0.25); border-radius: 6px; }
+
   /* Correlation graph toolbar */
   .graph-tool {
     background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.25);
@@ -923,6 +984,35 @@ tailwind.config = {
     display: flex; align-items: center; justify-content: center;
     font-size: 22px; font-weight: 700; color: #0f172a;
     box-shadow: 0 0 0 2px rgba(34,211,238,0.25);
+    background-size: cover; background-position: center;
+  }
+  .avatar-circle.has-image { color: transparent; }
+  /* Wrapper that enables the change-picture overlay on hover. The
+     wrapper is a <label> so clicking it opens the hidden file input. */
+  .avatar-wrap {
+    position: relative; width: 56px; height: 56px;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .avatar-wrap .edit-overlay {
+    position: absolute; inset: 0; border-radius: 50%;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 2px;
+    background: rgba(0,0,0,0.55);
+    color: #fff; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    opacity: 0; transition: opacity 120ms ease;
+    pointer-events: none;
+  }
+  .avatar-wrap:hover .edit-overlay,
+  .avatar-wrap:focus-within .edit-overlay { opacity: 1; }
+  .avatar-wrap .edit-overlay svg { display: block; }
+  .avatar-wrap input[type="file"] { display: none; }
+  /* Sidebar avatar bubble — small, circular, sits left of sidebarUser
+     text; falls back to the default user icon when no picture is set. */
+  .sb-avatar {
+    width: 18px; height: 18px; border-radius: 50%;
+    background-size: cover; background-position: center;
+    flex-shrink: 0;
+    box-shadow: 0 0 0 1px rgba(34,211,238,0.4);
   }
   .kpi-clickable { cursor: pointer; transition: transform 100ms ease, box-shadow 100ms ease, border-color 100ms ease; }
   .kpi-clickable:hover { transform: translateY(-1px); box-shadow: 0 6px 18px -8px rgba(34,211,238,0.35); border-color: rgba(34,211,238,0.4); }
@@ -1023,9 +1113,123 @@ tailwind.config = {
     font-size: 11px;
     cursor: default;
     line-height: 1.3;
+    transition: border-color 100ms ease, background-color 100ms ease, transform 60ms ease;
   }
   .mitre-cell.observed { cursor: pointer; }
   .mitre-cell.observed:hover { border-color: rgba(34,211,238,0.5); }
+  .mitre-cell:hover { transform: translateY(-1px); }
+
+  /* ─── Light-theme overrides for the MITRE Navigator ───
+     Without these, .mitre-cell's hardcoded dark rgba leaks into the
+     light theme as muddy grey cards with washed-out text. We give
+     unobserved cells a crisp white card with a slate border, and
+     observed cells a pink wash that mirrors the dark-theme rose
+     palette while staying legible on white. */
+  body.theme-light .mitre-col h4 {
+    color: #475569;
+    border-bottom-color: rgba(203,213,225,0.95);
+  }
+  body.theme-light .mitre-cell {
+    background: #ffffff;
+    border-color: rgba(148,163,184,0.40);
+    box-shadow: 0 1px 0 rgba(15,23,42,0.03);
+  }
+  body.theme-light .mitre-cell .font-mono {
+    /* Tailwind .text-soc-accent already inherits the per-theme
+       --soc-accent, so the ID stays the right teal. We only need to
+       firm up its weight against the white background. */
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+  body.theme-light .mitre-cell .text-rose-300 { color: #be123c; font-weight: 700; }
+  body.theme-light .mitre-cell:hover {
+    border-color: rgba(8,145,178,0.55);
+    background: rgba(8,145,178,0.04);
+  }
+  body.theme-light .mitre-cell.observed {
+    /* Tailwind cells override .observed via inline rgba, so we have
+       to bump specificity and use !important for the light-theme
+       wash to win. The observed state's pink is preserved but
+       lightened so dark technique-id text remains readable. */
+    background: rgba(244,63,94,0.10) !important;
+    border-color: rgba(244,63,94,0.40) !important;
+  }
+  body.theme-light .mitre-cell.observed .font-mono { color: #0e7490; }
+  body.theme-light .mitre-cell.observed .text-rose-300 { color: #be123c; }
+  body.theme-light .mitre-cell.observed:hover {
+    background: rgba(244,63,94,0.15) !important;
+    border-color: rgba(244,63,94,0.65) !important;
+  }
+  body.theme-light .mitre-coverage { box-shadow: inset 0 0 0 1px rgba(148,163,184,0.30); }
+
+  /* The Coverage / Observed inline pills + the drill panel inside the
+     MITRE modal use Tailwind's bg-soc-panel/40 which resolves to a
+     near-transparent white in light theme. Bump them to a real
+     visible background + crisp border so they read as actual pills. */
+  body.theme-light #mitreModal .bg-soc-panel\/40 {
+    background: rgb(248 250 252) !important;
+  }
+  body.theme-light #mitreModal .border-soc-line {
+    border-color: rgba(148,163,184,0.40) !important;
+  }
+  body.theme-light #mitreModal .text-rose-300 { color: #be123c !important; }
+  body.theme-light #mitreModal h2 { color: #0f172a; }
+  body.theme-light #mitreModal p  { color: #475569; }
+  body.theme-light #mitreModal .graph-tool {
+    background: #ffffff;
+    color: #0e7490;
+    border-color: rgba(8,145,178,0.45);
+  }
+  body.theme-light #mitreModal .graph-tool:hover {
+    background: rgba(8,145,178,0.06);
+    border-color: rgba(8,145,178,0.7);
+  }
+
+  /* ─── Fleet modal — host directory ─── */
+  /* Wide, high-contrast status pills. The previous 22px/9pt pill was too
+     cramped for "DOWN" and the muted alpha made up/down read the same at
+     a glance — ops want one-glance triage, not a typography puzzle. */
+  #fleetModal .pill-mini {
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 10px; padding: 3px 10px; border-radius: 4px; font-weight: 800;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    min-width: 64px; height: 22px; line-height: 1;
+    background: rgba(148,163,184,0.22); color: #cbd5e1; border: 1px solid rgba(148,163,184,0.55);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
+  }
+  #fleetModal .pill-mini::before {
+    content: ""; width: 6px; height: 6px; border-radius: 50%;
+    background: currentColor; margin-right: 6px; box-shadow: 0 0 6px currentColor;
+  }
+  #fleetModal .pill-mini.ok   { background: rgba(16,185,129,0.22); color: #34d399; border-color: rgba(16,185,129,0.65); }
+  #fleetModal .pill-mini.warn { background: rgba(250,204,21,0.22); color: #fbbf24; border-color: rgba(250,204,21,0.7); }
+  #fleetModal .pill-mini.err  { background: rgba(244,63,94,0.26);  color: #fb7185; border-color: rgba(244,63,94,0.8); }
+  body.theme-light #fleetModal .pill-mini      { background: rgb(241 245 249); color: #475569; border-color: rgba(148,163,184,0.7); }
+  body.theme-light #fleetModal .pill-mini.ok   { background: rgba(16,185,129,0.14); color: #047857; border-color: rgba(16,185,129,0.55); }
+  body.theme-light #fleetModal .pill-mini.warn { background: rgba(250,204,21,0.18); color: #b45309; border-color: rgba(250,204,21,0.6); }
+  body.theme-light #fleetModal .pill-mini.err  { background: rgba(244,63,94,0.12); color: #be123c; border-color: rgba(244,63,94,0.55); }
+
+  /* Fleet row tint by state — down hosts get a faint rose wash so the
+     bad row jumps out without the operator having to read the pill. */
+  .fleet-row { transition: background-color 100ms ease; }
+  .fleet-row:last-child { border-bottom: 0; }
+  .fleet-row:hover { background: rgba(34,211,238,0.05); }
+  .fleet-row.row-down { background: rgba(244,63,94,0.06); }
+  .fleet-row.row-down:hover { background: rgba(244,63,94,0.10); }
+  .fleet-row.row-warn { background: rgba(250,204,21,0.05); }
+  body.theme-light .fleet-row:hover { background: rgba(8,145,178,0.05); }
+  body.theme-light .fleet-row.row-down { background: rgba(244,63,94,0.08); }
+  body.theme-light .fleet-row.row-warn { background: rgba(250,204,21,0.08); }
+
+  /* Light-theme parity for the fleet modal's pill cards + form */
+  body.theme-light #fleetModal .bg-soc-panel\/40 { background: rgb(248 250 252) !important; }
+  body.theme-light #fleetModal .bg-soc-panel\/60 { background: rgb(255 255 255) !important; }
+  body.theme-light #fleetModal .border-soc-line  { border-color: rgba(148,163,184,0.40) !important; }
+  body.theme-light #fleetModal h2                { color: #0f172a; }
+  body.theme-light #fleetModal p                 { color: #475569; }
+  body.theme-light #fleetModal .text-rose-300    { color: #be123c !important; }
+  body.theme-light #fleetModal input,
+  body.theme-light #fleetModal textarea          { color: #0f172a; background: #ffffff; }
 
   /* ─── Cmd+K palette ─── */
   #paletteModal {
@@ -1089,6 +1293,174 @@ tailwind.config = {
   body.theme-light .pal-kind               { background: rgba(15,23,42,0.04); color: #475569; border-color: rgba(203,213,225,0.95); }
   body.theme-light .pal-item .pal-meta     { color: #64748b; }
   body.theme-light .pal-empty              { color: #64748b; }
+
+  /* ═══════════════════════════════════════════════════════════════════
+     Pill popovers — same enterprise interaction pattern as the choke
+     gateway's pills, ported into the SOC dashboard for: live, host,
+     risk. Click any pill → slide-down popover anchored under it with
+     telemetry, recent transitions, and one-click actions.
+     ═══════════════════════════════════════════════════════════════════ */
+  .pp {
+    position: fixed; z-index: 65;
+    width: min(440px, 92vw);
+    max-height: 72vh;
+    background: rgb(15, 23, 42);
+    border: 1px solid var(--soc-glass-border);
+    border-radius: 10px;
+    box-shadow: 0 20px 60px -20px rgba(0,0,0,0.7);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  body.theme-light .pp { background: #ffffff; box-shadow: 0 20px 60px -20px rgba(15,23,42,0.25); }
+  .pp.hidden { display: none; }
+  .pp-head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 11px 14px; border-bottom: 1px solid var(--soc-glass-border);
+    background: linear-gradient(180deg, rgba(34,211,238,0.04), transparent);
+  }
+  .pp-head .title { font-size: 12px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #e2e8f0; }
+  body.theme-light .pp-head .title { color: #0f172a; }
+  .pp-head .meta  { font-size: 10.5px; color: #94a3b8; font-family: ui-monospace, monospace; margin-left: auto; }
+  .pp-head .pp-state-pill {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 9px; border-radius: 999px;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase;
+    border: 1px solid;
+  }
+  .pp-head .pp-state-pill::before { content:''; width:6px; height:6px; border-radius:9999px; background: currentColor; box-shadow: 0 0 6px currentColor; }
+  .pp-state-ok    { color: #6ee7b7; background: rgba(16,185,129,0.16); border-color: rgba(16,185,129,0.45); }
+  .pp-state-warn  { color: #fde68a; background: rgba(250,204,21,0.16); border-color: rgba(250,204,21,0.5); }
+  .pp-state-err   { color: #fda4af; background: rgba(244,63,94,0.18);  border-color: rgba(244,63,94,0.5); }
+  .pp-state-info  { color: #93c5fd; background: rgba(59,130,246,0.16); border-color: rgba(59,130,246,0.45); }
+  body.theme-light .pp-state-ok   { color: #047857; }
+  body.theme-light .pp-state-warn { color: #b45309; }
+  body.theme-light .pp-state-err  { color: #be123c; }
+  body.theme-light .pp-state-info { color: #1d4ed8; }
+
+  .pp-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }
+  .pp-body::-webkit-scrollbar { width: 6px; }
+  .pp-body::-webkit-scrollbar-thumb { background: #1f2a44; border-radius: 3px; }
+  body.theme-light .pp-body::-webkit-scrollbar-thumb { background: #cbd5e1; }
+  .pp-section { margin-bottom: 14px; }
+  .pp-section:last-child { margin-bottom: 0; }
+  .pp-section-title {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.10em; text-transform: uppercase;
+    color: #94a3b8; margin-bottom: 6px;
+  }
+  body.theme-light .pp-section-title { color: #475569; }
+
+  .pp-stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px 14px; }
+  .pp-stat .k { color: #64748b; font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; display: block; margin-bottom: 1px; }
+  .pp-stat .v { color: #e2e8f0; font-weight: 700; font-family: ui-monospace, monospace; font-size: 11.5px; word-break: break-all; }
+  body.theme-light .pp-stat .k { color: #475569; }
+  body.theme-light .pp-stat .v { color: #0f172a; }
+  .pp-stat .v.ok   { color: #6ee7b7; }
+  .pp-stat .v.warn { color: #fcd34d; }
+  .pp-stat .v.err  { color: #fda4af; }
+  body.theme-light .pp-stat .v.ok   { color: #047857; }
+  body.theme-light .pp-stat .v.warn { color: #b45309; }
+  body.theme-light .pp-stat .v.err  { color: #be123c; }
+  .pp-stat .v.copyable { cursor: copy; padding: 0 4px; margin: 0 -4px; border-radius: 3px; }
+  .pp-stat .v.copyable:hover { background: rgba(34,211,238,0.12); }
+
+  .pp-row {
+    display: grid; grid-template-columns: 64px 1fr auto; gap: 8px;
+    padding: 6px 0; font-size: 11px; align-items: center;
+    border-bottom: 1px solid var(--soc-glass-border);
+  }
+  .pp-row:last-child { border-bottom: 0; }
+  .pp-row .ts   { font-family: ui-monospace, monospace; color: #94a3b8; font-size: 10px; }
+  .pp-row .desc { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #e2e8f0; }
+  body.theme-light .pp-row .desc { color: #0f172a; }
+  body.theme-light .pp-row .ts   { color: #64748b; }
+  .pp-row .pill-mini {
+    font-size: 9px; padding: 1px 6px; border-radius: 3px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .pp-row .pill-mini.ok   { background: rgba(16,185,129,0.16); color: #6ee7b7; border: 1px solid rgba(16,185,129,0.4); }
+  .pp-row .pill-mini.warn { background: rgba(250,204,21,0.16); color: #fde68a; border: 1px solid rgba(250,204,21,0.5); }
+  .pp-row .pill-mini.err  { background: rgba(244,63,94,0.18);  color: #fda4af; border: 1px solid rgba(244,63,94,0.5); }
+  body.theme-light .pp-row .pill-mini.ok   { color: #047857; }
+  body.theme-light .pp-row .pill-mini.warn { color: #b45309; }
+  body.theme-light .pp-row .pill-mini.err  { color: #be123c; }
+
+  .pp-endpoint {
+    display: grid; grid-template-columns: 1fr auto 60px;
+    gap: 8px; padding: 6px 0; font-size: 11px; align-items: center;
+    border-bottom: 1px solid var(--soc-glass-border);
+  }
+  .pp-endpoint:last-child { border-bottom: 0; }
+  .pp-endpoint .path { font-family: ui-monospace, monospace; color: #e2e8f0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  body.theme-light .pp-endpoint .path { color: #0f172a; }
+  .pp-endpoint .lat  { font-family: ui-monospace, monospace; color: #94a3b8; font-size: 10px; text-align: right; }
+
+  .pp-actions {
+    display: flex; gap: 6px; align-items: center;
+    padding: 10px 14px; border-top: 1px solid var(--soc-glass-border);
+    background: rgba(15,23,42,0.6);
+  }
+  body.theme-light .pp-actions { background: rgba(248,250,252,0.85); }
+  .pp-actions .pp-flex { flex: 1; }
+  .pp-btn {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 11px; padding: 6px 12px; border-radius: 5px;
+    border: 1px solid var(--soc-glass-border);
+    background: rgba(15,23,42,0.6); color: #e2e8f0; cursor: pointer; transition: all 120ms;
+    font-weight: 600;
+  }
+  body.theme-light .pp-btn { background: #ffffff; color: #0f172a; }
+  .pp-btn:hover { border-color: rgba(34,211,238,0.5); background: rgba(34,211,238,0.10); }
+  .pp-btn.primary { border-color: rgba(34,211,238,0.5); color: #67e8f9; }
+  .pp-btn.primary:hover { background: rgba(34,211,238,0.16); }
+  .pp-btn.danger  { color: #fda4af; border-color: rgba(244,63,94,0.5); }
+  .pp-btn.danger:hover  { background: rgba(244,63,94,0.16); }
+  .pp-btn.warn    { color: #fdba74; border-color: rgba(251,146,60,0.5); }
+  .pp-btn.warn:hover    { background: rgba(251,146,60,0.14); }
+  body.theme-light .pp-btn.primary { color: #0e7490; }
+  body.theme-light .pp-btn.danger  { color: #be123c; }
+  body.theme-light .pp-btn.warn    { color: #c2410c; }
+
+  /* Pill chev + clickable hover ring */
+  .live-pill, #hostBlock, #riskGauge {
+    cursor: pointer; user-select: none;
+    transition: filter 100ms, transform 60ms;
+  }
+  .live-pill:hover, #hostBlock:hover, #riskGauge:hover { filter: brightness(1.15); }
+  .live-pill:active, #hostBlock:active, #riskGauge:active { transform: translateY(1px); }
+  .pill-chev { font-size: 8px; opacity: 0.65; margin-left: 4px; }
+
+  /* Host pill — give the host text the same pill look as live, with
+     a status dot driven by reachability + RTT. */
+  #hostBlock {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 12px;
+    background: rgba(34,197,94,0.10); border: 1px solid rgba(34,197,94,0.35);
+    font-size: 11px; line-height: 1;
+  }
+  #hostBlock .host-dot { width: 6px; height: 6px; border-radius: 9999px; background: #10b981; box-shadow: 0 0 6px #10b981; flex-shrink: 0; }
+  #hostBlock.host-slow { background: rgba(250,204,21,0.10); border-color: rgba(250,204,21,0.45); }
+  #hostBlock.host-slow .host-dot { background: #facc15; box-shadow: 0 0 6px #facc15; }
+  #hostBlock.host-down { background: rgba(244,63,94,0.12); border-color: rgba(244,63,94,0.5); }
+  #hostBlock.host-down .host-dot { background: #f43f5e; box-shadow: 0 0 6px #f43f5e; animation: pulse-red 1.6s infinite; }
+  body.theme-light #hostBlock { background: rgba(16,185,129,0.10); }
+  body.theme-light #hostBlock.host-slow { background: rgba(250,204,21,0.12); }
+  body.theme-light #hostBlock.host-down { background: rgba(244,63,94,0.10); }
+
+  /* Risk gauge becomes a button with hover ring + halo. */
+  #riskGauge { border-radius: 50%; transition: filter 120ms, box-shadow 120ms; }
+  #riskGauge:hover { box-shadow: 0 0 0 2px rgba(34,211,238,0.45); }
+
+  /* Risk-breakdown rows inside the risk popover */
+  .pp-risk-row {
+    display: grid; grid-template-columns: 90px 1fr auto; gap: 10px; align-items: center;
+    padding: 4px 0; font-size: 11px;
+  }
+  .pp-risk-row .lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+  .pp-risk-row .bar { height: 6px; border-radius: 3px; background: #1f2a44; overflow: hidden; }
+  body.theme-light .pp-risk-row .bar { background: #e2e8f0; }
+  .pp-risk-row .fill { height: 100%; transition: width 240ms ease; }
+  .pp-risk-row .num { font-family: ui-monospace, monospace; font-size: 10.5px; color: #e2e8f0; min-width: 36px; text-align: right; }
+  body.theme-light .pp-risk-row .num { color: #0f172a; }
 </style>
 </head>
 <body class="min-h-screen">
@@ -1109,6 +1481,7 @@ tailwind.config = {
     <div class="sb-item" id="sbHoneypots"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3 4 8v8l8 5 8-5V8z"/><path d="M9 13h6"/><path d="M12 11v5"/></svg><span class="sb-text">Honeypots</span><span class="sb-tip">Honeypots</span></div>
     <div class="sb-item" id="sbKprobes"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-7 4 14 2-7h6"/></svg><span class="sb-text">Kprobe Perf</span><span class="sb-tip">Kprobe Perf</span></div>
     <a class="sb-item" id="sbChoke" href="/choke" style="text-decoration:none; color:inherit;"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><line x1="6" y1="18" x2="18" y2="6"/></svg><span class="sb-text">Choke Gateway</span><span class="sb-tip">Choke Gateway · /choke</span></a>
+    <div class="sb-item" id="sbFleet"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="6" cy="18" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6h7M6 8.5v7M18 8.5v7M8.5 18h7"/></svg><span class="sb-text">Fleet</span><span class="sb-tip">Fleet · multi-host control</span><span class="sb-badge" id="sbFleetBadge"></span></div>
   </div>
 
   <div class="sb-section">
@@ -1167,8 +1540,10 @@ tailwind.config = {
     </div>
 
     <div class="flex items-center gap-4 text-xs text-soc-dim">
-      <!-- Risk gauge -->
-      <div class="flex items-center gap-2" title="System risk score (0–100), weighted by recent alert severity">
+      <!-- Risk gauge — click for breakdown popover -->
+      <div id="riskBlock" class="flex items-center gap-2" tabindex="0" role="button" aria-haspopup="dialog"
+           title="System risk score (0–100), weighted by recent alert severity — click for breakdown"
+           style="cursor:pointer;">
         <svg id="riskGauge" width="44" height="44" viewBox="0 0 44 44">
           <circle cx="22" cy="22" r="18" stroke="#1f2a44" stroke-width="3" fill="none"/>
           <circle id="riskArc" class="gauge-arc" cx="22" cy="22" r="18"
@@ -1181,7 +1556,7 @@ tailwind.config = {
                 font-size="11" font-weight="700" fill="#e2e8f0" font-family="ui-monospace,monospace">0</text>
         </svg>
         <div class="flex flex-col leading-tight">
-          <span class="text-[10px] uppercase tracking-widest text-soc-mute">risk</span>
+          <span class="text-[10px] uppercase tracking-widest text-soc-mute">risk <span class="pill-chev">▾</span></span>
           <span id="riskLabel" class="text-[11px] text-soc-text">low</span>
         </div>
       </div>
@@ -1193,14 +1568,19 @@ tailwind.config = {
         <button data-range="1440" class="px-3 py-1.5 hover:bg-soc-panel2">24h</button>
       </div>
 
-      <div class="flex items-center gap-2">
+      <span id="hostBlock" tabindex="0" role="button" aria-haspopup="dialog"
+            title="Host reachability — click for details">
+        <span class="host-dot"></span>
         <span class="text-soc-mute">host</span>
         <span id="hostLabel" class="text-soc-text font-mono">—</span>
-      </div>
-      <div id="liveStatus" class="live-pill" title="Live data feed">
+        <span class="pill-chev">▾</span>
+      </span>
+      <div id="liveStatus" class="live-pill" tabindex="0" role="button" aria-haspopup="dialog"
+           title="Live data feed — click for details">
         <span class="live-dot"></span>
         <span id="liveStatusText" class="live-text">connecting…</span>
         <span id="liveSinceText" class="live-since"></span>
+        <span class="pill-chev">▾</span>
       </div>
       <div class="relative inline-flex items-center" id="refreshControl">
         <button id="softRefreshBtn" class="px-1.5 py-1 text-soc-mute hover:text-soc-accent rounded-l border border-soc-line border-r-0" title="Refresh now (snapshot · no page reload)">
@@ -1789,6 +2169,89 @@ tailwind.config = {
   </div>
 </div>
 
+<!-- ─────────── FLEET MODAL ───────────
+     Multi-host directory + reachability dashboard. Hosts are stored in
+     localStorage `soc.fleet.hosts` so the operator can register peer
+     deployments (e.g. from chokectl.hosts) and one-click jump between
+     them. Reachability is sampled with a same-credentials fetch to
+     /api/whoami; HTTP code + RTT drive the per-row pill. -->
+<div id="fleetModal" class="modal-back" onclick="if(event.target===this) closeFleet()">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(900px, 96vw); max-height: 92vh; overflow-y: auto;">
+    <div class="flex items-start justify-between mb-3">
+      <div>
+        <h2 class="text-base font-semibold text-soc-text">Fleet</h2>
+        <p class="text-[11px] text-soc-mute">Multi-host control plane. Each row pings <span class="font-mono">/api/whoami</span> and surfaces mode, kill-switch and tracked count when the host accepts the same credentials.</p>
+      </div>
+      <button onclick="closeFleet()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+    </div>
+
+    <!-- Aggregate KPIs -->
+    <div class="grid grid-cols-4 gap-2 mb-3 text-[11px]">
+      <div class="bg-soc-panel/40 border border-soc-line rounded px-3 py-2">
+        <div class="text-soc-mute uppercase text-[9px] tracking-widest">Hosts</div>
+        <div class="text-soc-text font-bold font-mono text-[16px]" id="fleetCountTotal">0</div>
+      </div>
+      <div class="bg-soc-panel/40 border border-soc-line rounded px-3 py-2">
+        <div class="text-soc-mute uppercase text-[9px] tracking-widest">Reachable</div>
+        <div class="font-bold font-mono text-[16px]" id="fleetCountUp" style="color:#6ee7b7;">0</div>
+      </div>
+      <div class="bg-soc-panel/40 border border-soc-line rounded px-3 py-2">
+        <div class="text-soc-mute uppercase text-[9px] tracking-widest">Down</div>
+        <div class="font-bold font-mono text-[16px]" id="fleetCountDown" style="color:#fda4af;">0</div>
+      </div>
+      <div class="bg-soc-panel/40 border border-soc-line rounded px-3 py-2">
+        <div class="text-soc-mute uppercase text-[9px] tracking-widest">Tracked (sum)</div>
+        <div class="text-soc-text font-bold font-mono text-[16px]" id="fleetSumTracked">—</div>
+      </div>
+    </div>
+
+    <!-- Add-host form -->
+    <form id="fleetAddForm" class="flex gap-2 mb-3 text-[11px] flex-wrap">
+      <input id="fleetAddName" type="text" placeholder="name (e.g. ebpf-2)" required
+             class="bg-soc-panel/60 border border-soc-line rounded px-2 py-1.5 text-soc-text placeholder:text-soc-mute"
+             style="width: 160px;">
+      <input id="fleetAddUrl" type="url" placeholder="http://192.168.x.y:8080" required
+             class="bg-soc-panel/60 border border-soc-line rounded px-2 py-1.5 text-soc-text placeholder:text-soc-mute flex-1"
+             style="min-width: 240px;">
+      <button type="submit" class="px-3 py-1.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 font-semibold">+ Add host</button>
+      <button type="button" id="fleetPingAll" class="px-3 py-1.5 rounded border border-soc-line text-soc-text hover:bg-soc-panel2" title="Ping every host now">⟳ Ping all</button>
+      <button type="button" id="fleetImport" class="px-3 py-1.5 rounded border border-soc-line text-soc-text hover:bg-soc-panel2" title="Bulk import from chokectl.hosts text">⤓ Import</button>
+    </form>
+
+    <!-- Hosts table -->
+    <div class="border border-soc-line rounded overflow-hidden">
+      <div class="grid text-[10px] uppercase tracking-widest text-soc-mute font-mono px-3 py-2 border-b border-soc-line bg-soc-panel/40"
+           style="grid-template-columns: 26px 1fr 1.5fr 80px 120px 100px 90px 130px;">
+        <div></div>
+        <div>name</div>
+        <div>url</div>
+        <div>RTT</div>
+        <div>mode</div>
+        <div>tracked</div>
+        <div>audit</div>
+        <div class="text-right">actions</div>
+      </div>
+      <div id="fleetRows"></div>
+    </div>
+
+    <!-- Bulk-import textarea (hidden until "Import" clicked) -->
+    <div id="fleetImportBox" class="hidden mt-3">
+      <div class="text-[11px] text-soc-mute mb-1">Paste chokectl.hosts contents (one <span class="font-mono">name url</span> pair per line; <span class="font-mono">#</span> comments ok):</div>
+      <textarea id="fleetImportText" rows="6" class="w-full bg-soc-panel/60 border border-soc-line rounded p-2 font-mono text-[11px] text-soc-text"
+                placeholder="ebpf-1   http://192.168.252.3:8080&#10;ebpf-2   http://192.168.252.4:8080"></textarea>
+      <div class="flex gap-2 mt-2">
+        <button id="fleetImportApply" class="px-3 py-1.5 rounded border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 font-semibold text-[11px]">Apply</button>
+        <button id="fleetImportCancel" class="px-3 py-1.5 rounded border border-soc-line text-soc-text hover:bg-soc-panel2 text-[11px]">Cancel</button>
+        <span class="ml-auto text-[10px] text-soc-mute">existing names are merged; URL changes update in place.</span>
+      </div>
+    </div>
+
+    <p class="text-[10px] text-soc-mute mt-3">
+      Cross-origin probes use <span class="font-mono">credentials: 'include'</span>. To populate mode / tracked / audit for a peer, log in to that host once in another tab — the cookie is reused for subsequent probes.
+    </p>
+  </div>
+</div>
+
 <!-- ─────────── WATCHLIST MODAL ─────────── -->
 <div id="watchlistModal" class="modal-back" onclick="if(event.target===this) closeWatchlistModal()">
   <div class="modal-card glass rounded-lg p-5" style="width: min(620px, 92vw); max-height: 92vh; overflow-y: auto;">
@@ -1805,11 +2268,11 @@ tailwind.config = {
 
 <!-- ─────────── HONEYPOTS MODAL (stub) ─────────── -->
 <div id="honeypotsModal" class="modal-back" onclick="if(event.target===this) closeHoneypotsPanel()">
-  <div class="modal-card glass rounded-lg p-5" style="width: min(560px, 92vw);">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(820px, 94vw); max-height: 86vh;">
     <div class="flex items-start justify-between mb-3">
       <div>
         <h2 class="text-base font-semibold text-soc-text">Honeypot files</h2>
-        <p class="text-[11px] text-soc-mute">Decoy credential files. Any access fires a critical alert with a 🍯 badge.</p>
+        <p class="text-[11px] text-soc-mute">Decoy credential files. Any access fires a critical alert with a 🍯 badge. Click a row to drill in.</p>
       </div>
       <button onclick="closeHoneypotsPanel()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
     </div>
@@ -1817,13 +2280,13 @@ tailwind.config = {
   </div>
 </div>
 
-<!-- ─────────── KPROBES MODAL (stub) ─────────── -->
+<!-- ─────────── KPROBES MODAL — per-policy kernel-side stats ─────────── -->
 <div id="kprobesModal" class="modal-back" onclick="if(event.target===this) closeKprobesPanel()">
-  <div class="modal-card glass rounded-lg p-5" style="width: min(680px, 92vw);">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(920px, 94vw); max-height: 86vh;">
     <div class="flex items-start justify-between mb-3">
       <div>
         <h2 class="text-base font-semibold text-soc-text">Kprobe performance</h2>
-        <p class="text-[11px] text-soc-mute">Per-policy kprobe stats: posts, kernel memory, mode.</p>
+        <p class="text-[11px] text-soc-mute">Per-policy kprobe stats: posts, kernel memory, mode. Click a card to drill in.</p>
       </div>
       <button onclick="closeKprobesPanel()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
     </div>
@@ -1853,6 +2316,113 @@ tailwind.config = {
 
 <!-- ─────────── RISK BREAKDOWN POPOVER ─────────── -->
 <div id="riskPopover" class="popover hidden" style="width: 360px;"></div>
+
+<!-- ─────────── PILL POPOVERS (live · host · risk) ───────────
+     Click any of the topbar status pills (live, host, risk gauge) to
+     open the matching popover with telemetry, recent state changes,
+     and one-click actions. Same interaction model as the choke
+     gateway page so an operator switching pages keeps muscle memory. -->
+<div id="ppLive" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Live data stream</span>
+    <span class="pp-state-pill" id="ppLiveState">connecting</span>
+    <span class="meta" id="ppLiveMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Connection</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">state</span><span class="v" id="ppLiveStateVal">—</span></div>
+        <div class="pp-stat"><span class="k">since</span><span class="v" id="ppLiveSince">—</span></div>
+        <div class="pp-stat"><span class="k">last message</span><span class="v" id="ppLiveLastMsg">—</span></div>
+        <div class="pp-stat"><span class="k">retries</span><span class="v" id="ppLiveRetries">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Throughput</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">total messages</span><span class="v" id="ppLiveTotal">0</span></div>
+        <div class="pp-stat"><span class="k">msg/sec (60s)</span><span class="v" id="ppLiveRate">0.00</span></div>
+        <div class="pp-stat"><span class="k">alerts buffered</span><span class="v" id="ppLiveAlerts">0</span></div>
+        <div class="pp-stat"><span class="k">events buffered</span><span class="v" id="ppLiveEvents">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Recent connection events</div>
+      <div id="ppLiveHistory"></div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <button class="pp-btn warn" id="ppLivePause" title="Pause local stream rendering">Pause</button>
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppLiveSnapshot" title="Pull a fresh snapshot of alerts + events">Snapshot now</button>
+    <button class="pp-btn primary" id="ppLiveReconnect" title="Drop the current EventSource and reconnect immediately">Force reconnect</button>
+  </div>
+</div>
+
+<div id="ppHost" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Host reachability</span>
+    <span class="pp-state-pill" id="ppHostState">unknown</span>
+    <span class="meta" id="ppHostMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Server</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">host</span><span class="v copyable" id="ppHostHost">—</span></div>
+        <div class="pp-stat"><span class="k">last RTT</span><span class="v" id="ppHostRtt">—</span></div>
+        <div class="pp-stat"><span class="k">last ok</span><span class="v" id="ppHostLastOk">—</span></div>
+        <div class="pp-stat"><span class="k">recent fail</span><span class="v" id="ppHostFails">0</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Endpoint health</div>
+      <div id="ppHostEndpoints"></div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Recent transitions</div>
+      <div id="ppHostHistory"></div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppHostPing" title="Ping every endpoint right now">Ping all</button>
+    <button class="pp-btn primary" id="ppHostDiagnose" title="Run diagnostics — check every endpoint and report timing">Run diagnostics</button>
+  </div>
+</div>
+
+<div id="ppRisk" class="pp hidden">
+  <div class="pp-head">
+    <span class="title">Risk score</span>
+    <span class="pp-state-pill" id="ppRiskState">low</span>
+    <span class="meta" id="ppRiskMeta">—</span>
+  </div>
+  <div class="pp-body">
+    <div class="pp-section">
+      <div class="pp-section-title">Current</div>
+      <div class="pp-stat-grid">
+        <div class="pp-stat"><span class="k">score</span><span class="v" id="ppRiskScore">0</span></div>
+        <div class="pp-stat"><span class="k">label</span><span class="v" id="ppRiskLabel">—</span></div>
+        <div class="pp-stat"><span class="k">window</span><span class="v" id="ppRiskWin">30m</span></div>
+        <div class="pp-stat"><span class="k">trend</span><span class="v" id="ppRiskTrend">—</span></div>
+      </div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Severity contribution</div>
+      <div id="ppRiskBreakdown"></div>
+    </div>
+    <div class="pp-section">
+      <div class="pp-section-title">Top contributors</div>
+      <div id="ppRiskTop"></div>
+    </div>
+  </div>
+  <div class="pp-actions">
+    <span class="pp-flex"></span>
+    <button class="pp-btn" id="ppRiskExplain" title="Show how the score is computed">How is this computed?</button>
+    <button class="pp-btn primary" id="ppRiskJump" title="Jump to the alert triage view filtered to critical+high">Triage critical</button>
+  </div>
+</div>
 
 <!-- ─────────── HELP MODAL ─────────── -->
 <div id="helpModal" class="modal-back" onclick="if(event.target===this) closeHelp()">
@@ -2022,10 +2592,16 @@ const state = {
 };
 
 // ─────────── Stream connection ───────────
+// lastMessageAt: any SSE frame, including heartbeats. Drives the
+// connection-staleness watchdog (a silent socket means the listener died).
+// lastEventAt: only real payloads (event/alert/decision). Drives the
+// user-facing "· Xs ago" tail so heartbeats can't make a quiet stream
+// look chatty.
 const stream = {
   es: null,
   retries: 0,
   lastMessageAt: 0,
+  lastEventAt: 0,
   reconnectTimer: null,
 };
 
@@ -2055,6 +2631,142 @@ const escHTML = (s) => String(s == null ? '' : s)
   .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
   .replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const sevOf = (a) => String(pick(a, 'severity', 'Severity') || 'info').toLowerCase();
+
+// ─────────── Avatar / profile picture ───────────
+// Shared with the Choke Gateway page via the `soc.avatar.<user>`
+// localStorage namespace so a picture set on either page reflects on
+// the other. Pictures are center-cropped to 128×128 JPEG so the stored
+// payload stays well under the 5MB origin cap.
+const AVATAR_KEY = (user) => 'soc.avatar.' + (user || 'default');
+const AVATAR_MAX = 128;
+const AVATAR_QUALITY = 0.85;
+const AVATAR_BYTE_CAP = 200_000;
+function __avatarUser() {
+  // Lookup the operator name from whichever surface already has it.
+  return ($('sidebarUser')?.textContent
+       || $('userLabel')?.textContent
+       || 'admin').trim();
+}
+function getStoredAvatar(user) {
+  try { return localStorage.getItem(AVATAR_KEY(user)) || ''; }
+  catch (e) { return ''; }
+}
+function setStoredAvatar(user, dataURL) {
+  try {
+    localStorage.setItem(AVATAR_KEY(user), dataURL);
+    // Cross-tab sync — fire a synthetic storage event so the choke
+    // page (or another SOC tab) re-applies without a reload.
+    window.dispatchEvent(new StorageEvent('storage', { key: AVATAR_KEY(user), newValue: dataURL }));
+  } catch (e) { console && console.warn('avatar save failed', e); }
+}
+function clearStoredAvatar(user) {
+  try { localStorage.removeItem(AVATAR_KEY(user)); }
+  catch (e) {}
+}
+// Read an image file → 128×128 center-cropped JPEG data URL.
+function processAvatarFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!file) return reject(new Error('no file'));
+    if (!file.type.startsWith('image/')) return reject(new Error('not an image'));
+    if (file.size > 8 * 1024 * 1024) return reject(new Error('image too large (>8MB source)'));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload  = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode failed'));
+      img.onload  = () => {
+        const c = document.createElement('canvas');
+        c.width = AVATAR_MAX; c.height = AVATAR_MAX;
+        const ctx = c.getContext('2d');
+        const s = Math.min(img.width, img.height);
+        const sx = (img.width - s) / 2;
+        const sy = (img.height - s) / 2;
+        ctx.drawImage(img, sx, sy, s, s, 0, 0, AVATAR_MAX, AVATAR_MAX);
+        const url = c.toDataURL('image/jpeg', AVATAR_QUALITY);
+        if (url.length > AVATAR_BYTE_CAP) return reject(new Error('compressed picture too large'));
+        resolve(url);
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+// Apply the stored picture (or default initial) to every avatar
+// surface on the page: sidebar, profile-modal big circle. Tolerant of
+// missing nodes — the profile modal is built lazily.
+function applyUserAvatar() {
+  const user = __avatarUser();
+  const url = getStoredAvatar(user);
+  const initial = (user || '?').slice(0,1).toUpperCase();
+
+  // Profile modal big avatar.
+  const big = document.getElementById('profileAvatar');
+  if (big) {
+    if (url) {
+      big.classList.add('has-image');
+      big.style.backgroundImage = `url("${url}")`;
+      big.textContent = '';
+    } else {
+      big.classList.remove('has-image');
+      big.style.backgroundImage = '';
+      big.textContent = initial;
+    }
+  }
+  const removeLink = document.getElementById('profileAvatarRemove');
+  if (removeLink) removeLink.style.display = url ? '' : 'none';
+
+  // Sidebar avatar bubble — replaces the default user icon when a
+  // picture is set, restored when cleared.
+  const sbUser = document.getElementById('sbUser');
+  if (sbUser) {
+    let bubble = sbUser.querySelector('.sb-avatar');
+    const defaultIcon = sbUser.querySelector(':scope > svg');
+    if (url) {
+      if (!bubble) {
+        bubble = document.createElement('span');
+        bubble.className = 'sb-avatar';
+        sbUser.insertBefore(bubble, sbUser.firstChild);
+      }
+      bubble.style.backgroundImage = `url("${url}")`;
+      if (defaultIcon) defaultIcon.style.display = 'none';
+    } else {
+      if (bubble) bubble.remove();
+      if (defaultIcon) defaultIcon.style.display = '';
+    }
+  }
+}
+async function pickAndApplyAvatar(file) {
+  if (!file) return;
+  try {
+    const url = await processAvatarFile(file);
+    setStoredAvatar(__avatarUser(), url);
+    applyUserAvatar();
+    socToast && socToast('Profile picture updated', 'ok');
+  } catch (e) {
+    socToast && socToast('Picture update failed: ' + (e.message || 'unknown'), 'err');
+  }
+}
+// Lightweight toast (auto-dismiss). Doesn't depend on any other SOC
+// helper so it's safe to call from anywhere on the page.
+function socToast(msg, kind = 'ok') {
+  const el = document.createElement('div');
+  el.style.cssText =
+    'position:fixed;right:18px;bottom:18px;z-index:9999;padding:8px 14px;' +
+    'border-radius:6px;font-size:11px;font-family:ui-monospace,Menlo,monospace;' +
+    'box-shadow:0 6px 20px -8px rgba(0,0,0,0.6);' +
+    (kind === 'err'
+      ? 'background:rgba(244,63,94,0.15);color:#fda4af;border:1px solid rgba(244,63,94,0.5);'
+      : 'background:rgba(16,185,129,0.15);color:#86efac;border:1px solid rgba(16,185,129,0.5);');
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity 200ms'; el.style.opacity = '0'; }, 1800);
+  setTimeout(() => el.remove(), 2100);
+}
+// Cross-tab + cross-page sync.
+window.addEventListener('storage', e => {
+  if (!e.key) return;
+  if (e.key === AVATAR_KEY(__avatarUser())) applyUserAvatar();
+});
 
 // Heuristic: identify events generated by the engine watching its own files
 function isSelfNoise(ev) {
@@ -2090,6 +2802,10 @@ async function loadInitial() {
       window.location.href = '/login';
     }
   } catch (e) {}
+  // Apply any saved avatar to the sidebar bubble + (lazily) the
+  // profile modal once whoami is in. Safe if helpers aren't loaded
+  // (this code runs near boot).
+  try { applyUserAvatar(); } catch (e) {}
 }
 
 // Pull /api/alerts and /api/events. Used on first load and on reconnect to
@@ -2166,10 +2882,12 @@ function renderLiveStatus() {
   else if (liveness.state === 'reconnect') { pill.classList.add('state-reconnect'); label = 'reconnecting'; }
   else if (liveness.state === 'connecting') { pill.classList.add('state-reconnect'); label = 'connecting'; }
   $('liveStatusText').textContent = label;
-  // Last-event ticker — only shown when we've ever received data
+  // Last-event ticker — uses lastEventAt (real payloads only) so the
+  // 15s heartbeat doesn't make an idle stream look like activity. Empty
+  // until we've actually received something to count.
   const since = $('liveSinceText');
-  if (stream.lastMessageAt > 0) {
-    const ago = Math.max(0, Math.floor((Date.now() - stream.lastMessageAt) / 1000));
+  if (stream.lastEventAt > 0) {
+    const ago = Math.max(0, Math.floor((Date.now() - stream.lastEventAt) / 1000));
     since.textContent = ago < 1 ? '· just now'
       : ago < 60 ? '· ' + ago + 's ago'
       : ago < 3600 ? '· ' + Math.floor(ago / 60) + 'm ago'
@@ -2461,8 +3179,13 @@ function connectStream() {
     stream.lastMessageAt = Date.now();
     try {
       const b = JSON.parse(msg.data);
+      if (b.type === 'heartbeat') return;
+      stream.lastEventAt = Date.now();
       if (b.type === 'event') onEvent(b.payload);
-      if (b.type === 'alert') onAlert(b.payload);
+      else if (b.type === 'alert') onAlert(b.payload);
+      // Decisions are rendered on /choke (the gateway's own page);
+      // here we only count them as live activity so the pill ticker
+      // reflects real traffic instead of the 15s keepalive.
     } catch (e) { console.error(e); }
   };
 }
@@ -3123,13 +3846,26 @@ function renderAdminProfile() {
 
   const body = $('profileBody');
   body.innerHTML =
-    // Identity card
+    // Identity card — avatar wrapper hosts the edit overlay + hidden
+    // file input; profileAvatarChange / Remove links provide explicit
+    // entry points for keyboard / a11y access.
     '<div class="bg-soc-panel/40 border border-soc-line rounded-lg p-4 flex items-center gap-4">' +
-      '<div class="avatar-circle">' + escHTML(initial) + '</div>' +
+      '<label class="avatar-wrap" id="profileAvatarWrap" title="Change profile picture">' +
+        '<div class="avatar-circle" id="profileAvatar">' + escHTML(initial) + '</div>' +
+        '<span class="edit-overlay" aria-hidden="true">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>' +
+          '<span>Change</span>' +
+        '</span>' +
+        '<input type="file" id="profileAvatarInput" accept="image/png,image/jpeg,image/webp,image/gif">' +
+      '</label>' +
       '<div class="flex-1 min-w-0">' +
         '<div class="text-[15px] font-semibold text-soc-text">' + escHTML(user) + '</div>' +
         '<div class="text-[11px] text-soc-mute">SOC Operator · session-cookie auth</div>' +
         '<div class="text-[10px] text-soc-mute font-mono mt-1">' + escHTML(location.hostname) + '</div>' +
+        '<div class="flex gap-3 mt-2 text-[10px]">' +
+          '<a id="profileAvatarChange" class="text-cyan-400 hover:text-cyan-300 cursor-pointer underline underline-offset-2">Change picture</a>' +
+          '<a id="profileAvatarRemove" class="text-rose-300 hover:text-rose-200 cursor-pointer underline underline-offset-2" style="display:none;">Remove</a>' +
+        '</div>' +
       '</div>' +
       '<a href="/api/logout" class="text-[11px] px-3 py-1.5 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10">Sign out</a>' +
     '</div>' +
@@ -3228,6 +3964,21 @@ function renderAdminProfile() {
   $('prefDefaultRange').addEventListener('change', (e) => lsSet('soc.prefDefaultRange', Number(e.target.value)));
   $('prefGroupAlerts').addEventListener('change', (e) => lsSet('soc.prefGroupAlerts', e.target.checked));
   $('prefHideNoise').addEventListener('change',   (e) => lsSet('soc.prefHideNoise', e.target.checked));
+
+  // Avatar — apply current picture, wire change/remove links + file input.
+  applyUserAvatar();
+  $('profileAvatarInput').addEventListener('change', e => {
+    const file = e.target.files && e.target.files[0];
+    pickAndApplyAvatar(file);
+    e.target.value = '';
+  });
+  $('profileAvatarChange').addEventListener('click', () => $('profileAvatarInput').click());
+  $('profileAvatarRemove').addEventListener('click', () => {
+    if (!confirm('Remove your profile picture?')) return;
+    clearStoredAvatar(__avatarUser());
+    applyUserAvatar();
+    socToast && socToast('Profile picture removed', 'ok');
+  });
   $('profileWipeLocal').addEventListener('click', () => {
     if (!confirm('Wipe ack state, notes, pins, saved views, and notification history? Cannot be undone.')) return;
     ['soc.alertStates','soc.alertNotes','soc.pinnedAlerts','soc.savedViews','soc.notifyHistory','soc.watchlist']
@@ -4861,6 +5612,223 @@ function showMitreNavigator() {
 }
 function closeMitreNavigator() { $('mitreModal').classList.remove('open'); }
 
+// ═══════════════════════════════════════════════════════════════════
+// Fleet — multi-host directory with reachability + quick links
+// Hosts persist in localStorage (`soc.fleet.hosts`); a periodic probe
+// fans out same-credentials fetches to every host while the modal is
+// open. Cross-origin probes that lack a session cookie still surface
+// reachability + RTT via the network response, just without state.
+// ═══════════════════════════════════════════════════════════════════
+
+const FLEET_KEY = 'soc.fleet.hosts';
+let _fleetTimer = null;
+const _fleetState = new Map();   // name → { ok, rtt, code, mode, kill, tracked, audit, t }
+
+function loadFleet() {
+  try {
+    const raw = localStorage.getItem(FLEET_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw);
+      if (Array.isArray(arr) && arr.length) return arr;
+    }
+  } catch (e) {}
+  // Default seed: this host's origin under name "this".
+  return [{ name: 'this', url: location.origin }];
+}
+function saveFleet(arr) {
+  try { localStorage.setItem(FLEET_KEY, JSON.stringify(arr)); } catch (e) {}
+}
+function fleetHosts() { return loadFleet(); }
+
+function openFleet() {
+  $('fleetModal').classList.add('open');
+  renderFleetRows();
+  fleetPingAll();
+  // Re-ping every 10s while the modal is open.
+  if (_fleetTimer) clearInterval(_fleetTimer);
+  _fleetTimer = setInterval(fleetPingAll, 10000);
+}
+function closeFleet() {
+  $('fleetModal').classList.remove('open');
+  if (_fleetTimer) { clearInterval(_fleetTimer); _fleetTimer = null; }
+}
+
+function renderFleetRows() {
+  const hosts = fleetHosts();
+  const body  = $('fleetRows');
+  if (!hosts.length) {
+    body.innerHTML = '<div class="px-3 py-6 text-center text-soc-mute text-[11px]">No hosts registered. Add one above.</div>';
+    updateFleetSummary();
+    return;
+  }
+  body.innerHTML = hosts.map(h => {
+    const s = _fleetState.get(h.name) || {};
+    const rtt = s.rtt != null ? s.rtt + ' ms' : '—';
+    let pillCls = 'pill-mini', pillTxt = 'unknown', rowCls = '';
+    if (s.ok === true)  { pillCls = 'pill-mini ok';   pillTxt = 'up'; }
+    if (s.ok === false) { pillCls = 'pill-mini err';  pillTxt = 'down'; rowCls = ' row-down'; }
+    if (s.ok === true && s.rtt > 800) { pillCls = 'pill-mini warn'; pillTxt = 'slow'; rowCls = ' row-warn'; }
+    const mode = s.mode || (s.kill ? 'kill-switched' : '—');
+    const tracked = s.tracked != null ? s.tracked : '—';
+    let audit = '—';
+    if (s.audit && s.audit.ok === true)  audit = '✓ ' + (s.audit.total || 0);
+    if (s.audit && s.audit.ok === false) audit = '⚠ broken';
+    return '<div class="grid items-center px-3 py-2 border-b border-soc-line text-[11px] fleet-row' + rowCls + '" data-name="' + escHTML(h.name) + '" ' +
+           'style="grid-template-columns: 76px 1fr 1.5fr 80px 120px 100px 90px 130px;">' +
+      '<span class="' + pillCls + '" title="' + escHTML(pillTxt) + '">' + escHTML(pillTxt) + '</span>' +
+      '<div class="font-mono text-soc-text truncate" title="' + escHTML(h.name) + '">' + escHTML(h.name) + '</div>' +
+      '<div class="font-mono text-soc-mute truncate" title="' + escHTML(h.url) + '">' + escHTML(h.url) + '</div>' +
+      '<div class="font-mono text-soc-text">' + escHTML(rtt) + '</div>' +
+      '<div class="font-mono"><span class="text-soc-text" style="text-transform:uppercase;letter-spacing:0.04em;">' + escHTML(mode) + '</span>' +
+        (s.kill ? ' <span class="ml-1 text-rose-300">KILL</span>' : '') + '</div>' +
+      '<div class="font-mono text-soc-text">' + escHTML(String(tracked)) + '</div>' +
+      '<div class="font-mono ' + (s.audit && s.audit.ok === false ? 'text-rose-300' : 'text-soc-mute') + '">' + escHTML(audit) + '</div>' +
+      '<div class="text-right flex gap-1 justify-end">' +
+        '<a class="px-2 py-1 rounded border border-soc-line text-soc-text hover:bg-soc-panel2 text-[10px]" href="' + escHTML(h.url) + '/" target="_blank" title="Open SOC dashboard on this host">SOC</a>' +
+        '<a class="px-2 py-1 rounded border border-soc-line text-soc-text hover:bg-soc-panel2 text-[10px]" href="' + escHTML(h.url) + '/choke" target="_blank" title="Open Choke gateway on this host">Choke</a>' +
+        '<button class="px-2 py-1 rounded border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 text-[10px] fleet-rm" data-rm="' + escHTML(h.name) + '" title="Remove host">×</button>' +
+      '</div>' +
+    '</div>';
+  }).join('');
+  // Wire delete + row-click (open SOC).
+  body.querySelectorAll('.fleet-rm').forEach(b => {
+    b.addEventListener('click', e => {
+      e.stopPropagation();
+      const name = b.dataset.rm;
+      if (!confirm('Remove ' + name + ' from the fleet?')) return;
+      const next = fleetHosts().filter(h => h.name !== name);
+      saveFleet(next);
+      _fleetState.delete(name);
+      renderFleetRows();
+    });
+  });
+  updateFleetSummary();
+}
+
+function updateFleetSummary() {
+  const hosts = fleetHosts();
+  let up = 0, down = 0, tracked = 0, knownTracked = false;
+  for (const h of hosts) {
+    const s = _fleetState.get(h.name);
+    if (!s) continue;
+    if (s.ok === true)  up++;
+    if (s.ok === false) down++;
+    if (typeof s.tracked === 'number') { tracked += s.tracked; knownTracked = true; }
+  }
+  $('fleetCountTotal').textContent = hosts.length;
+  $('fleetCountUp').textContent    = up;
+  $('fleetCountDown').textContent  = down;
+  $('fleetSumTracked').textContent = knownTracked ? tracked : '—';
+  // Sidebar badge: number of down hosts (red) when any.
+  const badge = $('sbFleetBadge');
+  if (badge) {
+    if (down > 0) {
+      badge.textContent = String(down);
+      badge.classList.add('show', 'unread');
+    } else {
+      badge.classList.remove('show', 'unread');
+      badge.textContent = '';
+    }
+  }
+}
+
+async function probeOneHost(h) {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(h.url + '/api/whoami', {
+      cache: 'no-store',
+      credentials: 'include',  // reuse the operator's session cookie cross-origin
+    });
+    const rtt = Math.round(performance.now() - t0);
+    const next = { ok: r.ok, code: r.status, rtt, t: Date.now() };
+    if (r.ok) {
+      // Authenticated — pull state for richer telemetry.
+      try {
+        const sRes = await fetch(h.url + '/api/choke/state', { credentials: 'include' });
+        if (sRes.ok) {
+          const s = await sRes.json();
+          next.mode = s.mode || '';
+          next.kill = !!s.kill_switched;
+          next.tracked = s.tracked || 0;
+          next.audit = s.audit || null;
+        }
+      } catch (e) {}
+    }
+    _fleetState.set(h.name, next);
+  } catch (e) {
+    _fleetState.set(h.name, { ok: false, code: 0, rtt: Math.round(performance.now() - t0), t: Date.now() });
+  }
+}
+async function fleetPingAll() {
+  const hosts = fleetHosts();
+  await Promise.all(hosts.map(probeOneHost));
+  renderFleetRows();
+}
+
+// Add-host form
+$('fleetAddForm')?.addEventListener('submit', e => {
+  e.preventDefault();
+  const name = $('fleetAddName').value.trim();
+  let url    = $('fleetAddUrl').value.trim();
+  if (!name || !url) return;
+  // Normalize URL — strip trailing slash, prepend http:// if missing scheme.
+  if (!/^https?:\/\//.test(url)) url = 'http://' + url;
+  url = url.replace(/\/$/, '');
+  const arr = fleetHosts();
+  // Replace if name exists, otherwise append.
+  const idx = arr.findIndex(h => h.name === name);
+  if (idx >= 0) arr[idx] = { name, url };
+  else          arr.push({ name, url });
+  saveFleet(arr);
+  $('fleetAddName').value = '';
+  $('fleetAddUrl').value = '';
+  renderFleetRows();
+  fleetPingAll();
+});
+
+// Ping all + import buttons
+$('fleetPingAll')?.addEventListener('click', fleetPingAll);
+$('fleetImport')?.addEventListener('click', () => {
+  $('fleetImportBox').classList.toggle('hidden');
+});
+$('fleetImportApply')?.addEventListener('click', () => {
+  const txt = $('fleetImportText').value || '';
+  const hosts = fleetHosts();
+  const byName = new Map(hosts.map(h => [h.name, h]));
+  let added = 0, updated = 0;
+  for (const raw of txt.split('\n')) {
+    const line = raw.split('#')[0].trim();
+    if (!line) continue;
+    const parts = line.split(/\s+/);
+    if (parts.length < 2) continue;
+    const name = parts[0]; let url = parts.slice(1).join(' ');
+    if (!/^https?:\/\//.test(url)) url = 'http://' + url;
+    url = url.replace(/\/$/, '');
+    if (byName.has(name)) { byName.get(name).url = url; updated++; }
+    else { byName.set(name, { name, url }); added++; }
+  }
+  saveFleet([...byName.values()]);
+  $('fleetImportText').value = '';
+  $('fleetImportBox').classList.add('hidden');
+  socToast('Imported: ' + added + ' added · ' + updated + ' updated', 'ok');
+  renderFleetRows();
+  fleetPingAll();
+});
+$('fleetImportCancel')?.addEventListener('click', () => {
+  $('fleetImportBox').classList.add('hidden');
+  $('fleetImportText').value = '';
+});
+
+// Background ping every 60s even when modal is closed, so the sidebar
+// badge stays current. This is cheap (one HEAD-ish call per host) and
+// only runs after the user has registered a fleet.
+setInterval(() => {
+  if (_fleetTimer) return;  // already running fast pings
+  if (fleetHosts().length === 0) return;
+  fleetPingAll();
+}, 60_000);
+fleetPingAll();
+
 // ─────────── Cmd+K Command Palette ───────────
 const PALETTE_ACTIONS = [
   { kind: 'action', label: 'Show MITRE Navigator',         run: () => showMitreNavigator() },
@@ -4981,102 +5949,323 @@ function runSelectedPalette() {
 
 // ─────────── Honeypots panel ───────────
 state.honeypotPrefix = '';
+const _hpUI = {
+  search:  lsGet('soc.hpUI.search', ''),
+  filter:  lsGet('soc.hpUI.filter', 'all'),   // all|triggered|recent|dormant|untouched
+  sortBy:  lsGet('soc.hpUI.sortBy', 'hits'),  // hits|last|path|bytes
+  sortDir: lsGet('soc.hpUI.sortDir', 'desc'),
+  expanded: new Set(),
+};
+let _hpLastFiles = null;
+let _hpLastPrefix = '';
+let _hpFocusSearch = null;
+let _hpRefreshTimer = null;
+
 async function showHoneypotsPanel() {
   $('honeypotsModal').classList.add('open');
   $('honeypotsBody').innerHTML = '<div class="text-soc-mute text-[12px]">loading…</div>';
+  await loadHoneypots();
+  // Refresh access stats every 5s while open (decoy file list is stable;
+  // it's the alert correlation that ticks).
+  if (_hpRefreshTimer) clearInterval(_hpRefreshTimer);
+  _hpRefreshTimer = setInterval(() => {
+    if ($('honeypotsModal').classList.contains('open')) renderHoneypotsPanel();
+    else { clearInterval(_hpRefreshTimer); _hpRefreshTimer = null; }
+  }, 5000);
+}
+
+async function loadHoneypots() {
   try {
     const r = await fetch('/api/honeypots');
     if (!r.ok) throw new Error('http ' + r.status);
     const data = await r.json();
     state.honeypotPrefix = data.prefix || '';
-    if (!data.files || !data.files.length) {
-      $('honeypotsBody').innerHTML = '<div class="text-soc-mute">no honeypots seeded</div>';
-      return;
-    }
-
-    // Per-file aggregation: hit count, last accessed, recent accesses
-    const stats = {};
-    for (const f of data.files) stats[f.path] = { hits: 0, lastAccess: 0, accesses: [] };
-    const now = Date.now();
-    for (const a of state.alerts) {
-      const desc = String(pick(a, 'description', 'Description') || '');
-      const title = String(pick(a, 'title', 'Title') || '');
-      const ts   = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
-      for (const f of data.files) {
-        if (desc.includes(f.path) || title.includes(f.path)) {
-          const s = stats[f.path];
-          s.hits++;
-          if (ts > s.lastAccess) s.lastAccess = ts;
-          s.accesses.push({ ts, alertId: pick(a, 'id', 'ID'), title });
-        }
-      }
-    }
-
-    const statusOf = (s) => {
-      if (s.hits === 0) return { cls: 'untouched', label: 'untouched' };
-      const ageMin = (now - s.lastAccess) / 60000;
-      if (ageMin < 1)  return { cls: 'triggered', label: 'triggered · ' + Math.floor(now - s.lastAccess) / 1000 + 's ago' };
-      if (ageMin < 5)  return { cls: 'recent',    label: 'recent · ' + Math.floor(ageMin) + 'm ago' };
-      return { cls: 'dormant', label: 'dormant · ' + Math.floor(ageMin) + 'm ago' };
-    };
-
-    const totalHits = Object.values(stats).reduce((s, v) => s + v.hits, 0);
-    const triggeredCount = Object.values(stats).filter(s => (now - s.lastAccess) / 60000 < 1 && s.hits > 0).length;
-
-    $('honeypotsBody').innerHTML =
-      '<div class="grid grid-cols-3 gap-2 mb-3">' +
-        '<div class="stat-tile"><div class="stat-label">Decoys</div><div class="stat-value">' + data.files.length + '</div><div class="stat-sub">files seeded</div></div>' +
-        '<div class="stat-tile"><div class="stat-label">Total hits</div><div class="stat-value text-rose-300">' + totalHits + '</div><div class="stat-sub">alerts triggered</div></div>' +
-        '<div class="stat-tile"><div class="stat-label">Hot now</div><div class="stat-value">' + triggeredCount + '</div><div class="stat-sub">triggered &lt;1min</div></div>' +
-      '</div>' +
-      '<div class="text-[11px] text-soc-mute mb-3">Prefix: <span class="font-mono text-soc-text">' + escHTML(data.prefix) + '</span> — any access fires a 🍯 alert.</div>' +
-      data.files.map(f => {
-        const s = stats[f.path];
-        const st = statusOf(s);
-        const lastStr = s.lastAccess ? new Date(s.lastAccess).toLocaleTimeString() : '—';
-        // Mini timeline of accesses over the past 30 minutes (in 1-min buckets)
-        const buckets = 30;
-        const arr = new Array(buckets).fill(0);
-        for (const acc of s.accesses) {
-          const minAgo = Math.floor((now - acc.ts) / 60000);
-          if (minAgo >= 0 && minAgo < buckets) arr[buckets - 1 - minAgo]++;
-        }
-        const maxBar = Math.max(1, ...arr);
-        const sparkBars = arr.map(v => {
-          const h = v > 0 ? Math.max(2, (v / maxBar) * 22) : 1;
-          const fill = v > 0 ? '#f43f5e' : 'rgba(148,163,184,0.18)';
-          return '<div style="width:5px;height:' + h + 'px;background:' + fill + ';border-radius:0.5px;"></div>';
-        }).join('');
-        return '<div class="p-3 bg-soc-panel/40 border border-soc-line rounded mb-2" data-hp-path="' + escHTML(f.path) + '">' +
-          '<div class="flex items-center justify-between gap-3 mb-1">' +
-            '<div class="flex-1 min-w-0">' +
-              '<div class="font-mono text-[12px] text-soc-text truncate">🍯 ' + escHTML(f.path) + '</div>' +
-              '<div class="text-[11px] text-soc-dim mt-0.5">' + escHTML(f.description) + ' · ' + f.bytes + ' bytes</div>' +
-            '</div>' +
-            '<span class="hp-badge hp-' + st.cls + '">' + st.label + '</span>' +
-          '</div>' +
-          '<div class="flex items-end gap-0.5 mb-2 px-1 py-1 bg-soc-panel/50 rounded h-[28px]" title="Accesses in the last 30 minutes (1-min buckets)">' + sparkBars + '</div>' +
-          '<div class="flex items-center gap-3 text-[10px] text-soc-mute">' +
-            '<span class="font-mono">hits <span class="text-soc-text">' + s.hits + '</span></span>' +
-            '<span class="font-mono">last access <span class="text-soc-text">' + lastStr + '</span></span>' +
-            (s.hits > 0 ? '<button class="ml-auto text-cyan-400 hover:text-cyan-300" data-hp-jump="' + escHTML(f.path) + '">jump to alerts →</button>' : '') +
-          '</div>' +
-        '</div>';
-      }).join('');
-
-    $('honeypotsBody').querySelectorAll('[data-hp-jump]').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const path = btn.dataset.hpJump;
-        state.iocFilter = { kind: 'file', value: path };
-        closeHoneypotsPanel();
-        renderFilterChips(); renderAlertList();
-      });
-    });
+    _hpLastPrefix = state.honeypotPrefix;
+    _hpLastFiles = data.files || [];
+    renderHoneypotsPanel();
   } catch (err) {
     $('honeypotsBody').innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
   }
 }
-function closeHoneypotsPanel() { $('honeypotsModal').classList.remove('open'); }
+
+function renderHoneypotsPanel() {
+  // First load failed — the catch in loadHoneypots already painted an
+  // error; don't paint over it from the 5s refresh tick.
+  if (_hpLastFiles == null) return;
+  const files = _hpLastFiles;
+  if (!files.length) {
+    $('honeypotsBody').innerHTML = '<div class="ent-empty">No honeypots seeded.</div>';
+    return;
+  }
+  const now = Date.now();
+
+  // Per-file aggregation: hit count, last access ts, full access list
+  const stats = {};
+  for (const f of files) stats[f.path] = { hits: 0, lastAccess: 0, accesses: [] };
+  for (const a of state.alerts) {
+    const desc = String(pick(a, 'description', 'Description') || '');
+    const title = String(pick(a, 'title', 'Title') || '');
+    const ts = new Date(pick(a, 'timestamp', 'Timestamp')).getTime();
+    const execID = pick(a, 'exec_id', 'ExecID') || '';
+    const sev = sevOf(a);
+    const score = pick(a, 'score', 'Score') || 0;
+    for (const f of files) {
+      if (desc.includes(f.path) || title.includes(f.path)) {
+        const s = stats[f.path];
+        s.hits++;
+        if (ts > s.lastAccess) s.lastAccess = ts;
+        s.accesses.push({ ts, alertId: pick(a, 'id', 'ID'), title, desc, execID, sev, score });
+      }
+    }
+  }
+
+  const statusOf = (s) => {
+    if (s.hits === 0) return { cls: 'untouched', label: 'untouched', tier: 'untouched' };
+    const ageMin = (now - s.lastAccess) / 60000;
+    if (ageMin < 1) return { cls: 'triggered', label: 'triggered · ' + Math.max(0, Math.floor((now - s.lastAccess) / 1000)) + 's ago', tier: 'triggered' };
+    if (ageMin < 5) return { cls: 'recent', label: 'recent · ' + Math.floor(ageMin) + 'm ago', tier: 'recent' };
+    return { cls: 'dormant', label: 'dormant · ' + Math.floor(ageMin) + 'm ago', tier: 'dormant' };
+  };
+
+  const totalHits = Object.values(stats).reduce((acc, v) => acc + v.hits, 0);
+  const triggeredCount = Object.values(stats).filter(s => (now - s.lastAccess) / 60000 < 1 && s.hits > 0).length;
+  const untouchedCount = Object.values(stats).filter(s => s.hits === 0).length;
+  const accessedCount  = files.length - untouchedCount;
+  const uniqueAttackers = new Set();
+  for (const path in stats) {
+    for (const acc of stats[path].accesses) if (acc.execID) uniqueAttackers.add(acc.execID);
+  }
+
+  // Filter
+  const q = (_hpUI.search || '').toLowerCase().trim();
+  const decorated = files.map(f => ({ ...f, st: statusOf(stats[f.path]), s: stats[f.path] }));
+  const filtered = decorated.filter(f => {
+    if (q && !(f.path.toLowerCase().includes(q) || (f.description || '').toLowerCase().includes(q))) return false;
+    switch (_hpUI.filter) {
+      case 'triggered': return f.st.tier === 'triggered';
+      case 'recent':    return f.st.tier === 'recent';
+      case 'dormant':   return f.st.tier === 'dormant';
+      case 'untouched': return f.st.tier === 'untouched';
+      default: return true;
+    }
+  });
+  // Sort
+  const dir = _hpUI.sortDir === 'asc' ? 1 : -1;
+  filtered.sort((a, b) => {
+    let v = 0;
+    switch (_hpUI.sortBy) {
+      case 'last':  v = (a.s.lastAccess || 0) - (b.s.lastAccess || 0); break;
+      case 'path':  v = a.path.localeCompare(b.path); break;
+      case 'bytes': v = (a.bytes || 0) - (b.bytes || 0); break;
+      default:      v = a.s.hits - b.s.hits; break;  // hits
+    }
+    return v * dir;
+  });
+
+  const sortPill = (key, label) =>
+    `<button class="sort-btn ${_hpUI.sortBy === key ? 'active' : ''}" data-hp-sort="${key}" title="Sort by ${label}">` +
+      escHTML(label) + (_hpUI.sortBy === key ? (_hpUI.sortDir === 'asc' ? ' ↑' : ' ↓') : '') +
+    '</button>';
+  const filterPill = (key, label, count) =>
+    `<button class="fp ${_hpUI.filter === key ? 'active' : ''}" data-hp-filter="${key}">` +
+      escHTML(label) + (count != null ? ' <span class="text-soc-mute">·' + count + '</span>' : '') +
+    '</button>';
+
+  $('honeypotsBody').innerHTML =
+    '<div class="grid grid-cols-4 gap-2 mb-3">' +
+      '<div class="stat-tile"><div class="stat-label">Decoys</div><div class="stat-value">' + files.length + '</div><div class="stat-sub">' + accessedCount + ' accessed</div></div>' +
+      '<div class="stat-tile"><div class="stat-label">Total hits</div><div class="stat-value text-rose-300">' + totalHits + '</div><div class="stat-sub">alerts triggered</div></div>' +
+      '<div class="stat-tile"><div class="stat-label">Hot now</div><div class="stat-value">' + triggeredCount + '</div><div class="stat-sub">triggered &lt;1min</div></div>' +
+      '<div class="stat-tile"><div class="stat-label">Unique attackers</div><div class="stat-value">' + uniqueAttackers.size + '</div><div class="stat-sub">distinct exec_id</div></div>' +
+    '</div>' +
+    '<div class="text-[11px] text-soc-mute mb-3">Prefix: <span class="font-mono text-soc-text">' + escHTML(_hpLastPrefix) + '</span> — any access fires a 🍯 alert.</div>' +
+    '<div class="panel-toolbar">' +
+      '<input id="hpSearch" class="search" type="search" placeholder="filter by path or description…" value="' + escHTML(_hpUI.search) + '" />' +
+      '<div class="filter-pills">' +
+        filterPill('all', 'all', files.length) +
+        filterPill('triggered', '🔥 triggered', decorated.filter(f => f.st.tier === 'triggered').length) +
+        filterPill('recent',    '⚡ recent',    decorated.filter(f => f.st.tier === 'recent').length) +
+        filterPill('dormant',   '· dormant',   decorated.filter(f => f.st.tier === 'dormant').length) +
+        filterPill('untouched', '○ untouched', untouchedCount) +
+      '</div>' +
+      '<div class="sort-grp">' +
+        sortPill('hits', 'hits') +
+        sortPill('last', 'last') +
+        sortPill('path', 'path') +
+        sortPill('bytes', 'size') +
+      '</div>' +
+      '<button class="util-btn" id="hpCopyAll" title="Copy all decoy paths to clipboard (one per line)">⎘ paths</button>' +
+      '<button class="util-btn" id="hpExportCsv" title="Download per-decoy hit summary as CSV">⇩ csv</button>' +
+      '<button class="util-btn" id="hpCollapseAll" title="Collapse all expanded rows">collapse</button>' +
+    '</div>' +
+    (filtered.length === 0
+      ? '<div class="ent-empty">No decoys match the current filter.</div>'
+      : filtered.map(f => {
+          const expanded = _hpUI.expanded.has(f.path);
+          const lastStr = f.s.lastAccess ? new Date(f.s.lastAccess).toLocaleTimeString() : '—';
+          const isHot = f.st.tier === 'triggered';
+          // Mini sparkline: 30 1-min buckets
+          const buckets = 30;
+          const arr = new Array(buckets).fill(0);
+          for (const acc of f.s.accesses) {
+            const minAgo = Math.floor((now - acc.ts) / 60000);
+            if (minAgo >= 0 && minAgo < buckets) arr[buckets - 1 - minAgo]++;
+          }
+          const maxBar = Math.max(1, ...arr);
+          const sparkBars = arr.map((v, i) => {
+            const h = v > 0 ? Math.max(2, (v / maxBar) * 22) : 1;
+            const fill = v > 0 ? '#f43f5e' : 'rgba(148,163,184,0.18)';
+            const minAgo = buckets - 1 - i;
+            const tip = v > 0 ? (v + ' access(es) · ' + minAgo + 'm ago') : 'no access · ' + minAgo + 'm ago';
+            return '<div title="' + escHTML(tip) + '" style="width:5px;height:' + h + 'px;background:' + fill + ';border-radius:0.5px;cursor:help;"></div>';
+          }).join('');
+
+          // Build expanded detail (recent accesses + actions)
+          const detail = expanded ? (() => {
+            const recent = f.s.accesses.slice().sort((a, b) => b.ts - a.ts).slice(0, 12);
+            const accessTable = recent.length
+              ? '<table class="ent-access-table">' +
+                  '<thead><tr><th>When</th><th>Sev</th><th>Score</th><th>Exec ID</th><th>Title</th></tr></thead>' +
+                  '<tbody>' + recent.map(acc => {
+                    const sevColor = acc.sev === 'critical' ? '#f43f5e' : acc.sev === 'high' ? '#fb923c' : acc.sev === 'medium' ? '#facc15' : '#94a3b8';
+                    return '<tr>' +
+                      '<td class="text-soc-mute">' + escHTML(new Date(acc.ts).toLocaleTimeString()) + '</td>' +
+                      '<td><span style="color:' + sevColor + ';text-transform:uppercase;font-weight:600;">' + escHTML(acc.sev) + '</span></td>' +
+                      '<td class="text-soc-text">' + acc.score + '</td>' +
+                      '<td class="text-soc-mute" title="' + escHTML(acc.execID) + '">' + escHTML(String(acc.execID).slice(0, 16) + (acc.execID.length > 16 ? '…' : '')) + '</td>' +
+                      '<td class="text-soc-text" style="max-width:340px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHTML(acc.title) + '">' + escHTML(acc.title) + '</td>' +
+                    '</tr>';
+                  }).join('') + '</tbody>' +
+                '</table>'
+              : '<div class="text-[10px] text-soc-mute italic">No accesses yet — this decoy is untouched.</div>';
+            const distinctAttackers = new Set(recent.map(a => a.execID).filter(Boolean));
+            return '<div class="ent-detail">' +
+              '<div class="grid grid-cols-3 gap-2 text-[10px] text-soc-mute mb-2">' +
+                '<div>file size <span class="font-mono text-soc-text">' + (f.bytes || 0) + ' bytes</span></div>' +
+                '<div>distinct attackers <span class="font-mono text-soc-text">' + distinctAttackers.size + '</span></div>' +
+                '<div>hits <span class="font-mono text-soc-text">' + f.s.hits + '</span></div>' +
+              '</div>' +
+              '<div class="text-[10px] text-soc-mute uppercase tracking-widest mb-1">Recent accesses (last ' + recent.length + ')</div>' +
+              accessTable +
+              '<div class="ent-action-row">' +
+                (f.s.hits > 0 ? '<button class="ent-action-btn" data-hp-jump="' + escHTML(f.path) + '">Filter alerts by this decoy</button>' : '') +
+                '<button class="ent-action-btn" data-hp-copy="' + escHTML(f.path) + '">Copy path</button>' +
+              '</div>' +
+            '</div>';
+          })() : '';
+
+          return '<div class="ent-card bg-soc-panel/40 border border-soc-line rounded p-3 mb-2 ' + (expanded ? 'expanded ' : '') + (isHot ? 'is-hot ' : '') + '" data-hp-path="' + escHTML(f.path) + '">' +
+            '<div class="flex items-center justify-between gap-3 mb-1">' +
+              '<div class="flex-1 min-w-0">' +
+                '<div class="font-mono text-[12px] text-soc-text truncate"><span class="ent-chevron mr-1">▶</span>🍯 ' + escHTML(f.path) + '</div>' +
+                '<div class="text-[11px] text-soc-dim mt-0.5">' + escHTML(f.description) + ' · ' + (f.bytes || 0) + ' bytes</div>' +
+              '</div>' +
+              '<span class="hp-badge hp-' + f.st.cls + '">' + escHTML(f.st.label) + '</span>' +
+            '</div>' +
+            '<div class="flex items-end gap-0.5 mb-2 px-1 py-1 bg-soc-panel/50 rounded h-[28px]" title="Accesses per minute over the last 30 minutes">' + sparkBars + '</div>' +
+            '<div class="flex items-center gap-3 text-[10px] text-soc-mute">' +
+              '<span class="font-mono">hits <span class="text-soc-text">' + f.s.hits + '</span></span>' +
+              '<span class="font-mono">last access <span class="text-soc-text">' + escHTML(lastStr) + '</span></span>' +
+              (f.s.hits > 0 ? '<span class="ml-auto text-cyan-400">click row to drill in →</span>' : '') +
+            '</div>' +
+            detail +
+          '</div>';
+        }).join(''));
+
+  // ── Wire up interactions ─────────────────────────────────────
+  const setUI = (k, v) => { _hpUI[k] = v; lsSet('soc.hpUI.' + k, v); renderHoneypotsPanel(); };
+  const sIn = $('hpSearch');
+  if (sIn) {
+    sIn.addEventListener('input', (e) => {
+      _hpFocusSearch = e.target.selectionStart;
+      setUI('search', e.target.value);
+    });
+    if (_hpFocusSearch != null) {
+      sIn.focus();
+      const pos = Math.min(_hpFocusSearch, sIn.value.length);
+      try { sIn.setSelectionRange(pos, pos); } catch (_) {}
+      _hpFocusSearch = null;
+    }
+  }
+  $('honeypotsBody').querySelectorAll('[data-hp-filter]').forEach(b => {
+    b.addEventListener('click', () => setUI('filter', b.dataset.hpFilter));
+  });
+  $('honeypotsBody').querySelectorAll('[data-hp-sort]').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.hpSort;
+      if (_hpUI.sortBy === k) {
+        _hpUI.sortDir = _hpUI.sortDir === 'asc' ? 'desc' : 'asc';
+        lsSet('soc.hpUI.sortDir', _hpUI.sortDir);
+      } else {
+        _hpUI.sortBy = k;
+        _hpUI.sortDir = 'desc';
+        lsSet('soc.hpUI.sortBy', k);
+        lsSet('soc.hpUI.sortDir', 'desc');
+      }
+      renderHoneypotsPanel();
+    });
+  });
+  $('honeypotsBody').querySelectorAll('.ent-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('button') || e.target.closest('input') || e.target.closest('a')) return;
+      const path = card.dataset.hpPath;
+      if (_hpUI.expanded.has(path)) _hpUI.expanded.delete(path);
+      else _hpUI.expanded.add(path);
+      renderHoneypotsPanel();
+    });
+  });
+  $('honeypotsBody').querySelectorAll('[data-hp-jump]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const path = b.dataset.hpJump;
+      state.iocFilter = { kind: 'file', value: path };
+      closeHoneypotsPanel();
+      renderFilterChips(); renderAlertList();
+      socToast('Filtered alerts by decoy: ' + path.split('/').pop(), 'ok');
+    });
+  });
+  $('honeypotsBody').querySelectorAll('[data-hp-copy]').forEach(b => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await navigator.clipboard.writeText(b.dataset.hpCopy); socToast('Copied path', 'ok'); }
+      catch (_) { socToast('Copy failed', 'err'); }
+    });
+  });
+  $('hpCopyAll')?.addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(files.map(f => f.path).join('\n')); socToast('Copied ' + files.length + ' paths', 'ok'); }
+    catch (_) { socToast('Copy failed', 'err'); }
+  });
+  $('hpCollapseAll')?.addEventListener('click', () => {
+    _hpUI.expanded.clear();
+    renderHoneypotsPanel();
+  });
+  $('hpExportCsv')?.addEventListener('click', () => {
+    const header = 'path,description,bytes,hits,last_access,status,unique_attackers';
+    const lines = decorated.map(f => {
+      const distinct = new Set(f.s.accesses.map(a => a.execID).filter(Boolean));
+      return [
+        '"' + f.path.replace(/"/g, '""') + '"',
+        '"' + (f.description || '').replace(/"/g, '""') + '"',
+        f.bytes || 0,
+        f.s.hits,
+        f.s.lastAccess ? new Date(f.s.lastAccess).toISOString() : '',
+        f.st.tier,
+        distinct.size,
+      ].join(',');
+    });
+    const blob = new Blob([header + '\n' + lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'honeypots-' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    socToast('Exported ' + decorated.length + ' decoys', 'ok');
+  });
+}
+function closeHoneypotsPanel() {
+  $('honeypotsModal').classList.remove('open');
+  if (_hpRefreshTimer) { clearInterval(_hpRefreshTimer); _hpRefreshTimer = null; }
+}
 function isHoneypotPath(p) {
   return state.honeypotPrefix && p && String(p).indexOf(state.honeypotPrefix) >= 0;
 }
@@ -5085,6 +6274,18 @@ function isHoneypotPath(p) {
 // Kprobe rate samples: { policyName: [{ts, npost}, ...] } — keep last 30 samples
 const _kprobeSamples = {};
 let _kprobeRefreshTimer = null;
+// UI state — separate from data so the 5s refresh doesn't blow away the
+// operator's filters/sort/expansion. Persisted to localStorage so a
+// reopen lands on the same view.
+const _kprobeUI = {
+  search: lsGet('soc.kprobeUI.search', ''),
+  filter: lsGet('soc.kprobeUI.filter', 'all'),  // all|hot|warm|calm|idle|over
+  sortBy: lsGet('soc.kprobeUI.sortBy', 'rate'), // rate|posts|name|memory
+  sortDir: lsGet('soc.kprobeUI.sortDir', 'desc'),
+  expanded: new Set(),  // policy names currently expanded
+};
+let _kprobeLastSnapshot = null;  // last data snapshot (for re-renders without re-fetch)
+let _kprobeFocusSearch = null;   // caret position to restore after re-render
 
 async function showKprobesPanel() {
   $('kprobesModal').classList.add('open');
@@ -5115,104 +6316,293 @@ async function refreshKprobesPanel() {
       arr.push({ ts: now, npost: s.npost || 0 });
       if (arr.length > 30) arr.shift();
     }
-
-    const total = stats.reduce((acc, s) => acc + (s.npost || 0), 0) || 1;
-
-    // Top binaries hitting each policy (from live events)
-    const topByPolicy = {};
-    for (const e of state.events) {
-      const p = pick(e, 'policy_name', 'PolicyName');
-      if (!p) continue;
-      const bin = pick(e, 'binary', 'Binary');
-      if (!bin) continue;
-      if (!topByPolicy[p]) topByPolicy[p] = new Map();
-      topByPolicy[p].set(bin, (topByPolicy[p].get(bin) || 0) + 1);
-    }
-
-    // Aggregate summary: total enabled, total posts, hottest policy
-    const enabledN = stats.filter(s => s.state === 'enabled').length;
-    const totalPosts = stats.reduce((a, s) => a + (s.npost || 0), 0);
-    let hottest = null, hottestRate = 0;
-    for (const s of stats) {
-      const samples = _kprobeSamples[s.name] || [];
-      if (samples.length < 2) continue;
-      const f = samples[0], l = samples[samples.length - 1];
-      const dt = (l.ts - f.ts) / 1000;
-      const rate = dt > 0 ? Math.round(((l.npost - f.npost) / dt) * 60) : 0;
-      if (rate > hottestRate) { hottestRate = rate; hottest = s.name; }
-    }
-    const threshold = Number(lsGet('soc.kprobeThreshold', 100));
-    const overThreshold = hottestRate > threshold;
-
-    $('kprobesBody').innerHTML =
-      '<div class="grid grid-cols-4 gap-2 mb-3">' +
-        '<div class="stat-tile"><div class="stat-label">Policies</div><div class="stat-value">' + enabledN + '<span class="text-[10px] text-soc-mute font-normal"> / ' + stats.length + '</span></div><div class="stat-sub">enabled</div></div>' +
-        '<div class="stat-tile"><div class="stat-label">Total posts</div><div class="stat-value">' + totalPosts + '</div><div class="stat-sub">since engine start</div></div>' +
-        '<div class="stat-tile"><div class="stat-label">Hottest</div><div class="stat-value text-[14px] truncate" title="' + escHTML(hottest || '—') + '">' + (hottest ? escHTML(hottest.split('-').slice(0, 2).join('-')) : '—') + '</div><div class="stat-sub">' + hottestRate + '/min</div></div>' +
-        '<div class="stat-tile"' + (overThreshold ? ' style="border-color:rgba(244,63,94,0.55);"' : '') + '><div class="stat-label">Threshold</div><div class="flex items-center gap-1"><input id="kprobeThresholdIn" type="number" min="0" value="' + threshold + '" class="bg-soc-panel/60 border border-soc-line rounded px-1.5 py-0.5 text-[14px] font-mono font-bold text-soc-text w-[70px]"><span class="text-[10px] text-soc-mute">/min</span></div><div class="stat-sub' + (overThreshold ? ' text-rose-300' : '') + '">' + (overThreshold ? '⚠ EXCEEDED' : 'within limits') + '</div></div>' +
-      '</div>' +
-      '<div class="text-[11px] text-soc-mute mb-3">Live counts from <code>tetra tracingpolicy list</code> · refreshes every 5s · rate computed from sample deltas.</div>' +
-      stats.map(s => {
-        const pct = Math.round((s.npost / total) * 100);
-        const stateColor = s.state === 'enabled' ? 'text-emerald-400' : 'text-rose-400';
-        const samples = _kprobeSamples[s.name] || [];
-        let ratePerMin = 0;
-        if (samples.length >= 2) {
-          const first = samples[0], last = samples[samples.length - 1];
-          const deltaPosts = last.npost - first.npost;
-          const deltaSec   = (last.ts - first.ts) / 1000;
-          ratePerMin = deltaSec > 0 ? Math.round((deltaPosts / deltaSec) * 60) : 0;
-        }
-        const heatCls = ratePerMin > 60 ? 'hot' : ratePerMin > 10 ? 'warm' : ratePerMin > 0 ? 'calm' : 'idle';
-        const heatLabel = heatCls === 'hot' ? '🔥 hot' : heatCls === 'warm' ? '⚡ warm' : heatCls === 'calm' ? '✓ calm' : '○ idle';
-
-        // Sparkline of npost samples (delta between consecutive)
-        const deltas = [];
-        for (let i = 1; i < samples.length; i++) deltas.push(Math.max(0, samples[i].npost - samples[i-1].npost));
-        const maxD = Math.max(1, ...deltas);
-        const sparkBars = deltas.map(d => {
-          const h = Math.max(1, (d / maxD) * 24);
-          return '<div style="width:3px;height:' + h + 'px;background:rgba(34,211,238,0.55);border-radius:0.5px;"></div>';
-        }).join('');
-
-        // Top binaries for this policy
-        const top = [...(topByPolicy[s.name]?.entries() || [])]
-          .sort((a, b) => b[1] - a[1]).slice(0, 3);
-        const topRows = top.length
-          ? '<div class="text-[10px] text-soc-mute mt-2">Top emitters: ' +
-              top.map(([bin, n]) => '<span class="font-mono text-soc-text">' + escHTML(bin.split('/').pop()) + '</span>×' + n).join(' · ') +
-            '</div>'
-          : '';
-
-        return '<div class="bg-soc-panel/40 border border-soc-line rounded p-3 mb-2">' +
-          '<div class="flex items-center justify-between mb-1.5">' +
-            '<div>' +
-              '<span class="font-mono text-soc-text font-semibold">' + escHTML(s.name) + '</span>' +
-              '<span class="ml-2 text-[10px] uppercase ' + stateColor + '">' + escHTML(s.state) + '</span>' +
-              '<span class="ml-2 text-[10px] text-soc-mute">' + escHTML(s.mode) + '</span>' +
-              '<span class="ml-2 kp-heat ' + heatCls + '">' + heatLabel + '</span>' +
-            '</div>' +
-            '<div class="text-right">' +
-              '<div class="font-mono text-soc-text">' + s.npost + ' posts</div>' +
-              '<div class="text-[10px] text-soc-mute font-mono">' + ratePerMin + '/min</div>' +
-            '</div>' +
-          '</div>' +
-          '<div class="text-[10px] text-soc-mute mb-1">' + escHTML(s.sensors) + ' · ' + escHTML(s.kernel_memory) + '</div>' +
-          (sparkBars
-            ? '<div class="flex items-end gap-0.5 h-[26px]">' + sparkBars + '</div>'
-            : '<div class="h-1.5 bg-soc-panel/60 rounded overflow-hidden"><div class="h-full bg-soc-accent" style="width:' + pct + '%"></div></div>') +
-          topRows +
-        '</div>';
-      }).join('');
-
-    const tIn = $('kprobeThresholdIn');
-    if (tIn) tIn.addEventListener('change', (e) => {
-      const v = Math.max(0, Number(e.target.value) || 0);
-      lsSet('soc.kprobeThreshold', v);
-    });
+    _kprobeLastSnapshot = stats;
+    renderKprobesPanel();
   } catch (err) {
     $('kprobesBody').innerHTML = '<div class="text-rose-400">failed: ' + escHTML(String(err)) + '</div>';
   }
+}
+
+// Render uses the latest snapshot + UI state. Called on every refresh and
+// on every UI interaction (search/sort/filter/expand) without a refetch.
+function renderKprobesPanel() {
+  const stats = _kprobeLastSnapshot || [];
+  const now = Date.now();
+
+  // Top binaries hitting each policy (from live events)
+  const topByPolicy = {};
+  for (const e of state.events) {
+    const p = pick(e, 'policy_name', 'PolicyName');
+    if (!p) continue;
+    const bin = pick(e, 'binary', 'Binary');
+    if (!bin) continue;
+    if (!topByPolicy[p]) topByPolicy[p] = new Map();
+    topByPolicy[p].set(bin, (topByPolicy[p].get(bin) || 0) + 1);
+  }
+
+  // Decorate each row with derived fields once (rate, heat, samples, top emitters).
+  const rows = stats.map(s => {
+    const samples = _kprobeSamples[s.name] || [];
+    let rate = 0;
+    if (samples.length >= 2) {
+      const f = samples[0], l = samples[samples.length - 1];
+      const dt = (l.ts - f.ts) / 1000;
+      rate = dt > 0 ? Math.round(((l.npost - f.npost) / dt) * 60) : 0;
+    }
+    const heat = rate > 60 ? 'hot' : rate > 10 ? 'warm' : rate > 0 ? 'calm' : 'idle';
+    const top = [...(topByPolicy[s.name]?.entries() || [])].sort((a, b) => b[1] - a[1]);
+    // Parse "1.17 MB" → 1.17 (used only for sorting; display keeps the original string).
+    const memMB = (() => {
+      const m = String(s.kernel_memory || '').match(/([0-9.]+)\s*(B|KB|MB|GB)/i);
+      if (!m) return 0;
+      const v = parseFloat(m[1]) || 0;
+      return v * ({ B: 1/(1024*1024), KB: 1/1024, MB: 1, GB: 1024 }[m[2].toUpperCase()] || 0);
+    })();
+    return { ...s, samples, rate, heat, top, memMB };
+  });
+
+  const threshold = Number(lsGet('soc.kprobeThreshold', 100));
+  const enabledN = rows.filter(r => r.state === 'enabled').length;
+  const totalPosts = rows.reduce((a, r) => a + (r.npost || 0), 0);
+  const hottestRow = rows.slice().sort((a, b) => b.rate - a.rate)[0];
+  const hottestRate = hottestRow ? hottestRow.rate : 0;
+  const hottestName = hottestRow && hottestRate > 0 ? hottestRow.name : null;
+  const overThreshold = hottestRate > threshold;
+  const breachCount = rows.filter(r => r.rate > threshold).length;
+
+  // Filter
+  const q = (_kprobeUI.search || '').toLowerCase().trim();
+  const filtered = rows.filter(r => {
+    if (q && !r.name.toLowerCase().includes(q)) return false;
+    switch (_kprobeUI.filter) {
+      case 'hot':  return r.heat === 'hot';
+      case 'warm': return r.heat === 'warm';
+      case 'calm': return r.heat === 'calm';
+      case 'idle': return r.heat === 'idle';
+      case 'over': return r.rate > threshold;
+      default: return true;
+    }
+  });
+
+  // Sort
+  const dir = _kprobeUI.sortDir === 'asc' ? 1 : -1;
+  filtered.sort((a, b) => {
+    let v = 0;
+    switch (_kprobeUI.sortBy) {
+      case 'name':   v = a.name.localeCompare(b.name); break;
+      case 'posts':  v = a.npost - b.npost; break;
+      case 'memory': v = a.memMB - b.memMB; break;
+      default:       v = a.rate - b.rate; break;  // rate
+    }
+    return v * dir;
+  });
+
+  const sortPill = (key, label) =>
+    `<button class="sort-btn ${_kprobeUI.sortBy === key ? 'active' : ''}" data-kp-sort="${key}" title="Sort by ${label}">` +
+      escHTML(label) + (_kprobeUI.sortBy === key ? (_kprobeUI.sortDir === 'asc' ? ' ↑' : ' ↓') : '') +
+    '</button>';
+  const filterPill = (key, label, count) =>
+    `<button class="fp ${_kprobeUI.filter === key ? 'active' : ''}" data-kp-filter="${key}">` +
+      escHTML(label) + (count != null ? ' <span class="text-soc-mute">·' + count + '</span>' : '') +
+    '</button>';
+
+  $('kprobesBody').innerHTML =
+    // ── KPI row ─────────────────────────────────────────────────
+    '<div class="grid grid-cols-4 gap-2 mb-3">' +
+      '<div class="stat-tile"><div class="stat-label">Policies</div><div class="stat-value">' + enabledN + '<span class="text-[10px] text-soc-mute font-normal"> / ' + rows.length + '</span></div><div class="stat-sub">enabled</div></div>' +
+      '<div class="stat-tile"><div class="stat-label">Total posts</div><div class="stat-value">' + totalPosts.toLocaleString() + '</div><div class="stat-sub">since engine start</div></div>' +
+      '<div class="stat-tile"><div class="stat-label">Hottest</div><div class="stat-value text-[14px] truncate" title="' + escHTML(hottestName || '—') + '">' + (hottestName ? escHTML(hottestName.split('-').slice(0, 2).join('-')) : '—') + '</div><div class="stat-sub">' + hottestRate + '/min</div></div>' +
+      '<div class="stat-tile"' + (overThreshold ? ' style="border-color:rgba(244,63,94,0.55);"' : '') + '><div class="stat-label">Threshold</div><div class="flex items-center gap-1"><input id="kprobeThresholdIn" type="number" min="0" value="' + threshold + '" class="bg-soc-panel/60 border border-soc-line rounded px-1.5 py-0.5 text-[14px] font-mono font-bold text-soc-text w-[70px]"><span class="text-[10px] text-soc-mute">/min</span></div><div class="stat-sub' + (overThreshold ? ' text-rose-300' : '') + '">' + (overThreshold ? '⚠ ' + breachCount + ' EXCEEDED' : 'within limits') + '</div></div>' +
+    '</div>' +
+    '<div class="text-[11px] text-soc-mute mb-3">Live counts from <code>tetra tracingpolicy list</code> · refreshes every 5s · rate computed from sample deltas.</div>' +
+    // ── Toolbar ─────────────────────────────────────────────────
+    '<div class="panel-toolbar">' +
+      '<input id="kpSearch" class="search" type="search" placeholder="filter by name…" value="' + escHTML(_kprobeUI.search) + '" />' +
+      '<div class="filter-pills">' +
+        filterPill('all', 'all', rows.length) +
+        filterPill('hot', '🔥 hot', rows.filter(r => r.heat === 'hot').length) +
+        filterPill('warm', '⚡ warm', rows.filter(r => r.heat === 'warm').length) +
+        filterPill('calm', '✓ calm', rows.filter(r => r.heat === 'calm').length) +
+        filterPill('idle', '○ idle', rows.filter(r => r.heat === 'idle').length) +
+        filterPill('over', '⚠ over', breachCount) +
+      '</div>' +
+      '<div class="sort-grp">' +
+        sortPill('rate',   'rate') +
+        sortPill('posts',  'posts') +
+        sortPill('name',   'name') +
+        sortPill('memory', 'mem') +
+      '</div>' +
+      '<button class="util-btn" id="kpExportCsv" title="Download policy stats as CSV">⇩ csv</button>' +
+      '<button class="util-btn" id="kpCollapseAll" title="Collapse all expanded cards">collapse</button>' +
+    '</div>' +
+    // ── Cards ───────────────────────────────────────────────────
+    (filtered.length === 0
+      ? '<div class="ent-empty">No policies match the current filter.</div>'
+      : filtered.map(s => {
+          const stateColor = s.state === 'enabled' ? 'text-emerald-400' : 'text-rose-400';
+          const heatLabel = s.heat === 'hot' ? '🔥 hot' : s.heat === 'warm' ? '⚡ warm' : s.heat === 'calm' ? '✓ calm' : '○ idle';
+          const isOver = s.rate > threshold;
+          const expanded = _kprobeUI.expanded.has(s.name);
+          // Sparkline
+          const deltas = [];
+          for (let i = 1; i < s.samples.length; i++) deltas.push(Math.max(0, s.samples[i].npost - s.samples[i-1].npost));
+          const maxD = Math.max(1, ...deltas);
+          const sparkBars = deltas.map((d, i) => {
+            const h = Math.max(1, (d / maxD) * 24);
+            const c = d === 0 ? 'rgba(148,163,184,0.18)' : (s.heat === 'hot' ? 'rgba(244,63,94,0.7)' : s.heat === 'warm' ? 'rgba(251,146,60,0.7)' : 'rgba(34,211,238,0.55)');
+            const ago = Math.round(((now - s.samples[i+1].ts) / 1000));
+            return '<div title="+' + d + ' posts · ' + ago + 's ago" style="width:4px;height:' + h + 'px;background:' + c + ';border-radius:0.5px;cursor:help;"></div>';
+          }).join('');
+          // Top emitters preview (compact line, 3 binaries)
+          const topPreview = s.top.length
+            ? '<div class="text-[10px] text-soc-mute mt-2">Top emitters: ' +
+                s.top.slice(0, 3).map(([bin, n]) => '<span class="font-mono text-soc-text">' + escHTML(bin.split('/').pop()) + '</span>×' + n).join(' · ') +
+                (s.top.length > 3 ? ' <span class="text-soc-dim">· +' + (s.top.length - 3) + ' more</span>' : '') +
+              '</div>'
+            : '';
+          // Detail panel (only built when expanded — saves DOM cost)
+          const detail = expanded ? (() => {
+            const fullEmit = s.top.length
+              ? '<div class="ent-emitters mt-2">' +
+                  s.top.slice(0, 12).map(([bin, n]) =>
+                    '<div class="ent-emitter-row" title="' + escHTML(bin) + '"><span class="bin">' + escHTML(bin) + '</span><span class="cnt">×' + n + '</span></div>'
+                  ).join('') +
+                '</div>'
+              : '<div class="text-[10px] text-soc-mute italic">No live emitter data captured for this policy yet.</div>';
+            // Stats: min/max/avg of sample deltas
+            const dmin = deltas.length ? Math.min(...deltas) : 0;
+            const dmax = deltas.length ? Math.max(...deltas) : 0;
+            const davg = deltas.length ? Math.round(deltas.reduce((a, b) => a + b, 0) / deltas.length) : 0;
+            return '<div class="ent-detail">' +
+              '<div class="grid grid-cols-3 gap-2 text-[10px] text-soc-mute mb-2">' +
+                '<div>Δ min <span class="font-mono text-soc-text">' + dmin + '</span></div>' +
+                '<div>Δ max <span class="font-mono text-soc-text">' + dmax + '</span></div>' +
+                '<div>Δ avg <span class="font-mono text-soc-text">' + davg + '</span></div>' +
+              '</div>' +
+              '<div class="text-[10px] text-soc-mute uppercase tracking-widest mb-1">Emitter ranking (live events)</div>' +
+              fullEmit +
+              '<div class="ent-action-row">' +
+                '<button class="ent-action-btn" data-kp-filter-alerts="' + escHTML(s.name) + '">Filter alerts by this policy</button>' +
+                '<button class="ent-action-btn" data-kp-copy-name="' + escHTML(s.name) + '">Copy policy name</button>' +
+              '</div>' +
+            '</div>';
+          })() : '';
+
+          return '<div class="ent-card bg-soc-panel/40 border border-soc-line rounded p-3 mb-2 ' + (expanded ? 'expanded ' : '') + (isOver ? 'over-threshold ' : (s.heat === 'hot' ? 'is-hot ' : '')) + '" data-kp-name="' + escHTML(s.name) + '">' +
+            '<div class="flex items-center justify-between mb-1.5">' +
+              '<div class="min-w-0 flex-1">' +
+                '<span class="ent-chevron mr-1">▶</span>' +
+                '<span class="font-mono text-soc-text font-semibold">' + escHTML(s.name) + '</span>' +
+                '<span class="ml-2 text-[10px] uppercase ' + stateColor + '">' + escHTML(s.state) + '</span>' +
+                '<span class="ml-2 text-[10px] text-soc-mute">' + escHTML(s.mode) + '</span>' +
+                '<span class="ml-2 kp-heat ' + s.heat + '">' + heatLabel + '</span>' +
+                (isOver ? '<span class="ml-2 kp-heat hot" title="Above ' + threshold + '/min threshold">⚠ over</span>' : '') +
+              '</div>' +
+              '<div class="text-right flex-shrink-0">' +
+                '<div class="font-mono text-soc-text">' + s.npost.toLocaleString() + ' posts</div>' +
+                '<div class="text-[10px] text-soc-mute font-mono">' + s.rate + '/min</div>' +
+              '</div>' +
+            '</div>' +
+            '<div class="text-[10px] text-soc-mute mb-1">' + escHTML(s.sensors) + ' · ' + escHTML(s.kernel_memory) + '</div>' +
+            (sparkBars
+              ? '<div class="flex items-end gap-0.5 h-[26px]">' + sparkBars + '</div>'
+              : '<div class="h-1.5 bg-soc-panel/60 rounded overflow-hidden"><div class="h-full bg-soc-accent" style="width:' + Math.min(100, Math.round((s.npost / Math.max(1, totalPosts)) * 100)) + '%"></div></div>') +
+            topPreview +
+            detail +
+          '</div>';
+        }).join(''));
+
+  // ── Wire up interactions ─────────────────────────────────────
+  const setUI = (k, v) => { _kprobeUI[k] = v; lsSet('soc.kprobeUI.' + k, v); renderKprobesPanel(); };
+  const tIn = $('kprobeThresholdIn');
+  if (tIn) tIn.addEventListener('change', (e) => {
+    const v = Math.max(0, Number(e.target.value) || 0);
+    lsSet('soc.kprobeThreshold', v);
+    renderKprobesPanel();
+  });
+  const sIn = $('kpSearch');
+  if (sIn) {
+    sIn.addEventListener('input', (e) => {
+      // Re-render replaces this very input, so flag the caret position
+      // and let the next render restore focus + cursor (see _kprobeFocusSearch).
+      _kprobeFocusSearch = e.target.selectionStart;
+      setUI('search', e.target.value);
+    });
+    if (_kprobeFocusSearch != null) {
+      sIn.focus();
+      const pos = Math.min(_kprobeFocusSearch, sIn.value.length);
+      try { sIn.setSelectionRange(pos, pos); } catch (_) {}
+      _kprobeFocusSearch = null;
+    }
+  }
+  $('kprobesBody').querySelectorAll('[data-kp-filter]').forEach(b => {
+    b.addEventListener('click', () => setUI('filter', b.dataset.kpFilter));
+  });
+  $('kprobesBody').querySelectorAll('[data-kp-sort]').forEach(b => {
+    b.addEventListener('click', () => {
+      const k = b.dataset.kpSort;
+      if (_kprobeUI.sortBy === k) {
+        _kprobeUI.sortDir = _kprobeUI.sortDir === 'asc' ? 'desc' : 'asc';
+        lsSet('soc.kprobeUI.sortDir', _kprobeUI.sortDir);
+      } else {
+        _kprobeUI.sortBy = k;
+        _kprobeUI.sortDir = 'desc';
+        lsSet('soc.kprobeUI.sortBy', k);
+        lsSet('soc.kprobeUI.sortDir', 'desc');
+      }
+      renderKprobesPanel();
+    });
+  });
+  $('kprobesBody').querySelectorAll('.ent-card').forEach(card => {
+    card.addEventListener('click', (e) => {
+      // Don't toggle when an action button or the threshold input is clicked.
+      if (e.target.closest('button') || e.target.closest('input')) return;
+      const name = card.dataset.kpName;
+      if (_kprobeUI.expanded.has(name)) _kprobeUI.expanded.delete(name);
+      else _kprobeUI.expanded.add(name);
+      renderKprobesPanel();
+    });
+  });
+  $('kprobesBody').querySelectorAll('[data-kp-filter-alerts]').forEach(b => {
+    b.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const name = b.dataset.kpFilterAlerts;
+      // Use the canonical mitreFilter (it keys off guessPolicy, the same
+      // mapping the MITRE coverage panel uses). Substring matching on the
+      // alert JSON would miss us here — built-in alerts don't carry the
+      // policy name as a field, only the inferred classification does.
+      state.mitreFilter = name;
+      closeKprobesPanel();
+      renderFilterChips(); renderAlertList();
+      socToast('Filtered alerts by policy: ' + name, 'ok');
+    });
+  });
+  $('kprobesBody').querySelectorAll('[data-kp-copy-name]').forEach(b => {
+    b.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      try { await navigator.clipboard.writeText(b.dataset.kpCopyName); socToast('Copied: ' + b.dataset.kpCopyName, 'ok'); }
+      catch (_) { socToast('Copy failed', 'err'); }
+    });
+  });
+  $('kpCollapseAll')?.addEventListener('click', () => {
+    _kprobeUI.expanded.clear();
+    renderKprobesPanel();
+  });
+  $('kpExportCsv')?.addEventListener('click', () => {
+    const header = 'name,state,mode,sensors,kernel_memory,npost,nenforce,nmonitor,rate_per_min,heat,top_emitters';
+    const lines = rows.map(r => [
+      r.name, r.state, r.mode, r.sensors, r.kernel_memory,
+      r.npost, r.nenforce || 0, r.nmonitor || 0, r.rate, r.heat,
+      '"' + r.top.slice(0, 5).map(([b, n]) => b.split('/').pop() + 'x' + n).join(';') + '"'
+    ].join(','));
+    const blob = new Blob([header + '\n' + lines.join('\n')], { type: 'text/csv' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'kprobe-perf-' + new Date().toISOString().replace(/[:.]/g, '-') + '.csv';
+    document.body.appendChild(a); a.click(); a.remove();
+    URL.revokeObjectURL(a.href);
+    socToast('Exported ' + rows.length + ' policies', 'ok');
+  });
 }
 function closeKprobesPanel() { $('kprobesModal').classList.remove('open'); }
 
@@ -7520,6 +8910,7 @@ function wire() {
   $('sbPalette').addEventListener('click', openPalette);
   $('sbWatchlist').addEventListener('click', showWatchlistModal);
   $('sbTimeMachine').addEventListener('click', showTimeMachine);
+  $('sbFleet').addEventListener('click', openFleet);
 
   $('replayPlay').addEventListener('click', startReplay);
   $('replayStop').addEventListener('click', stopReplay);
@@ -7697,6 +9088,355 @@ function wire() {
     renderTopProcs();
   });
 }
+
+// ═══════════════════════════════════════════════════════════════════
+// Pill popovers — live · host · risk (SOC dashboard)
+// Mirrors the choke gateway's pill-popover pattern so an operator
+// switching pages keeps muscle memory. Telemetry is read from the
+// existing `state` + `stream` + `liveness` globals; no new endpoints.
+// ═══════════════════════════════════════════════════════════════════
+
+// Use the existing top-level `fmtRel` helper — declaring another one
+// at the same scope is a parse-time redeclaration that aborts the
+// entire <script>, leaving the page stuck on "connecting…" because
+// loadInitial / connectStream never run. The shared helper accepts
+// the same argument shape (ms or Date string), so this works as-is.
+
+const SocPills = {
+  host: {
+    state: 'unknown', lastOkAt: 0, lastTriedAt: 0, lastRttMs: null,
+    failsInRow: 0, history: [], endpoints: {},
+  },
+  live: {
+    state: 'connecting', sinceMs: Date.now(), lastMsgAt: 0,
+    totalMsgs: 0, msgsByMinute: [], history: [], paused: false,
+  },
+};
+const SOC_HOST_SLOW_MS = 800;
+const SOC_HOST_ENDPOINTS = ['/api/whoami', '/api/alerts', '/api/events', '/api/decisions?limit=1'];
+
+let _spOpen = null;
+const SP_PILLS = {
+  live: { popover: 'ppLive', pill: 'liveStatus', render: socRenderLivePopover },
+  host: { popover: 'ppHost', pill: 'hostBlock',  render: socRenderHostPopover },
+  risk: { popover: 'ppRisk', pill: 'riskBlock',  render: socRenderRiskPopover },
+};
+function _spPosition(name) {
+  const p = $(SP_PILLS[name].pill);
+  const pp = $(SP_PILLS[name].popover);
+  if (!p || !pp) return;
+  const r = p.getBoundingClientRect();
+  pp.classList.remove('hidden');
+  const margin = 8;
+  const w = pp.offsetWidth || 440;
+  let left = Math.min(window.innerWidth - w - margin, Math.max(margin, r.left + r.width / 2 - w / 2));
+  pp.style.left = left + 'px';
+  pp.style.top  = (r.bottom + 6) + 'px';
+}
+function openSocPill(name) {
+  if (_spOpen === name) { closeSocPill(); return; }
+  closeSocPill();
+  SP_PILLS[name].render();
+  _spPosition(name);
+  _spOpen = name;
+}
+function closeSocPill() {
+  if (!_spOpen) return;
+  $(SP_PILLS[_spOpen].popover)?.classList.add('hidden');
+  _spOpen = null;
+}
+window.addEventListener('resize', () => { if (_spOpen) _spPosition(_spOpen); });
+window.addEventListener('scroll', () => { if (_spOpen) _spPosition(_spOpen); }, true);
+['live','host','risk'].forEach(name => {
+  const el = $(SP_PILLS[name].pill);
+  if (!el) return;
+  el.addEventListener('click', e => { e.stopPropagation(); openSocPill(name); });
+  el.addEventListener('keydown', e => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSocPill(name); }
+  });
+});
+document.addEventListener('click', e => {
+  if (!_spOpen) return;
+  if (e.target.closest('.pp')) return;
+  if (e.target.closest('#' + SP_PILLS[_spOpen].pill)) return;
+  closeSocPill();
+});
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeSocPill(); });
+
+// ─────────── Host pill — periodic ping + state transitions ───────────
+async function socPingEndpoint(path) {
+  const t0 = performance.now();
+  try {
+    const r = await fetch(path, { cache: 'no-store' });
+    return { path, ok: r.ok, code: r.status, rtt: Math.round(performance.now() - t0), t: Date.now() };
+  } catch (e) {
+    return { path, ok: false, code: 0, rtt: Math.round(performance.now() - t0), t: Date.now() };
+  }
+}
+async function socHostPingTick() {
+  const res = await socPingEndpoint('/api/whoami');
+  SocPills.host.lastTriedAt = res.t;
+  SocPills.host.endpoints[res.path] = res;
+  SocPills.host.lastRttMs = res.rtt;
+  let next;
+  if (!res.ok) { SocPills.host.failsInRow++; next = 'down'; }
+  else if (res.rtt > SOC_HOST_SLOW_MS) { SocPills.host.failsInRow = 0; SocPills.host.lastOkAt = res.t; next = 'slow'; }
+  else { SocPills.host.failsInRow = 0; SocPills.host.lastOkAt = res.t; next = 'ok'; }
+  if (next !== SocPills.host.state) {
+    SocPills.host.history.unshift({ t: res.t, state: next, rtt: res.rtt, code: res.code });
+    SocPills.host.history = SocPills.host.history.slice(0, 20);
+    SocPills.host.state = next;
+  }
+  socApplyHostUI();
+}
+function socApplyHostUI() {
+  const el = $('hostBlock');
+  if (!el) return;
+  el.classList.remove('host-slow', 'host-down');
+  if (SocPills.host.state === 'slow') el.classList.add('host-slow');
+  else if (SocPills.host.state === 'down') el.classList.add('host-down');
+  if (_spOpen === 'host') socRenderHostPopover();
+}
+async function socPingAll() {
+  const results = await Promise.all(SOC_HOST_ENDPOINTS.map(socPingEndpoint));
+  for (const r of results) SocPills.host.endpoints[r.path] = r;
+  if (_spOpen === 'host') socRenderHostPopover();
+  showRefreshToast({ alerts: 0, events: 0 });  // reuse existing toast
+}
+async function socHostDiagnose() {
+  await socPingAll();
+  const fails = Object.values(SocPills.host.endpoints).filter(r => !r.ok).length;
+  const slow  = Object.values(SocPills.host.endpoints).filter(r => r.ok && r.rtt > SOC_HOST_SLOW_MS).length;
+  let msg = 'all endpoints healthy';
+  if (fails > 0) msg = fails + ' endpoint' + (fails===1?'':'s') + ' failing';
+  else if (slow > 0) msg = slow + ' endpoint' + (slow===1?'':'s') + ' slow (>' + SOC_HOST_SLOW_MS + 'ms)';
+  socToast('Diagnostics: ' + msg, fails ? 'err' : (slow ? 'err' : 'ok'));
+}
+function socRenderHostPopover() {
+  const sp = $('ppHostState');
+  const cls = ({ ok:'pp-state-ok', slow:'pp-state-warn', down:'pp-state-err', unknown:'pp-state-info' })[SocPills.host.state] || 'pp-state-info';
+  sp.className = 'pp-state-pill ' + cls;
+  sp.textContent = SocPills.host.state;
+  $('ppHostMeta').textContent = SocPills.host.lastTriedAt ? 'last ping ' + fmtRel(SocPills.host.lastTriedAt) : '';
+  const host = $('ppHostHost'); host.textContent = location.host; host.dataset.copy = location.host;
+  $('ppHostRtt').textContent = SocPills.host.lastRttMs == null ? '—' : SocPills.host.lastRttMs + ' ms';
+  $('ppHostLastOk').textContent = SocPills.host.lastOkAt ? fmtRel(SocPills.host.lastOkAt) : '—';
+  $('ppHostFails').textContent  = SocPills.host.failsInRow;
+
+  const rows = SOC_HOST_ENDPOINTS.map(p => {
+    const r = SocPills.host.endpoints[p];
+    if (!r) return '<div class="pp-endpoint"><span class="path">' + escHTML(p) + '</span><span class="pill-mini" style="background:rgba(148,163,184,0.18);color:#94a3b8;border:1px solid rgba(148,163,184,0.4);">—</span><span class="lat">—</span></div>';
+    const c = !r.ok ? 'err' : (r.rtt > SOC_HOST_SLOW_MS ? 'warn' : 'ok');
+    const labl = !r.ok ? 'down' : (r.rtt > SOC_HOST_SLOW_MS ? 'slow' : 'ok');
+    return '<div class="pp-endpoint"><span class="path">' + escHTML(p) + '</span><span class="pill-mini ' + c + '">' + labl + (r.code ? ' ' + r.code : '') + '</span><span class="lat">' + r.rtt + ' ms</span></div>';
+  }).join('');
+  $('ppHostEndpoints').innerHTML = rows;
+
+  const hist = SocPills.host.history;
+  $('ppHostHistory').innerHTML = hist.length ? hist.map(h => {
+    const c = h.state === 'down' ? 'err' : (h.state === 'slow' ? 'warn' : 'ok');
+    return '<div class="pp-row"><span class="ts">' + fmtRel(h.t) + '</span><span class="desc">→ ' + escHTML(h.state) + '</span><span class="pill-mini ' + c + '">' + h.rtt + ' ms</span></div>';
+  }).join('') : '<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no transitions yet</span><span class="v"></span></div>';
+}
+$('ppHostPing')?.addEventListener('click', socPingAll);
+$('ppHostDiagnose')?.addEventListener('click', socHostDiagnose);
+$('ppHost')?.addEventListener('click', e => {
+  const c = e.target.closest('.copyable');
+  if (!c) return;
+  const v = c.dataset.copy || c.textContent;
+  copyToClipboard(v).then(ok => socToast(ok ? 'copied' : 'copy failed', ok ? 'ok' : 'err'));
+});
+socHostPingTick();
+setInterval(socHostPingTick, 8000);
+
+// ─────────── Live pill — hook setLiveState + SSE for transitions ───────────
+function _socLiveBumpRate() {
+  const now = Date.now();
+  SocPills.live.msgsByMinute.push(now);
+  const cutoff = now - 60_000;
+  while (SocPills.live.msgsByMinute.length && SocPills.live.msgsByMinute[0] < cutoff) SocPills.live.msgsByMinute.shift();
+}
+(function _socHookLiveState() {
+  if (typeof window.setLiveState !== 'function') return;
+  const _orig = window.setLiveState;
+  window.setLiveState = function(state) {
+    if (state !== SocPills.live.state) {
+      SocPills.live.history.unshift({ t: Date.now(), state });
+      SocPills.live.history = SocPills.live.history.slice(0, 20);
+      SocPills.live.state = state;
+      SocPills.live.sinceMs = Date.now();
+    }
+    _orig(state);
+    if (_spOpen === 'live') socRenderLivePopover();
+  };
+})();
+(function _socHookSSE() {
+  const probe = setInterval(() => {
+    if (typeof stream !== 'undefined' && stream.es && !stream.es._socPillHooked) {
+      stream.es._socPillHooked = true;
+      const _orig = stream.es.onmessage;
+      stream.es.onmessage = function(e) {
+        // Skip heartbeats so the popover's "rate" and "total" reflect
+        // real payloads. Rate is the metric most users actually compare
+        // against to spot a wedged producer.
+        let isHeartbeat = false;
+        try { isHeartbeat = JSON.parse(e.data).type === 'heartbeat'; } catch (_) {}
+        if (!isHeartbeat) {
+          SocPills.live.totalMsgs++;
+          SocPills.live.lastMsgAt = Date.now();
+          _socLiveBumpRate();
+        }
+        return _orig?.call(this, e);
+      };
+      clearInterval(probe);
+    }
+  }, 200);
+})();
+setInterval(() => { if (_spOpen === 'live') socRenderLivePopover(); }, 1000);
+
+function socRenderLivePopover() {
+  const s = SocPills.live.state;
+  const sp = $('ppLiveState');
+  const c = s === 'live' ? 'pp-state-ok' : (s === 'paused' ? 'pp-state-info' : (s === 'down' ? 'pp-state-err' : 'pp-state-warn'));
+  sp.className = 'pp-state-pill ' + c;
+  sp.textContent = s;
+  $('ppLiveMeta').textContent = 'since ' + fmtRel(SocPills.live.sinceMs);
+  $('ppLiveStateVal').textContent = s;
+  $('ppLiveSince').textContent    = fmtRel(SocPills.live.sinceMs);
+  $('ppLiveLastMsg').textContent  = SocPills.live.lastMsgAt ? fmtRel(SocPills.live.lastMsgAt) : '—';
+  $('ppLiveRetries').textContent  = (typeof stream !== 'undefined') ? (stream.retries || 0) : 0;
+  $('ppLiveTotal').textContent    = SocPills.live.totalMsgs;
+  $('ppLiveRate').textContent     = (SocPills.live.msgsByMinute.length / 60).toFixed(2);
+  $('ppLiveAlerts').textContent   = (state.alerts || []).length;
+  $('ppLiveEvents').textContent   = (state.events || []).length;
+
+  const hist = SocPills.live.history;
+  $('ppLiveHistory').innerHTML = hist.length ? hist.map(h => {
+    const c = h.state === 'live' ? 'ok' : (h.state === 'down' ? 'err' : 'warn');
+    return '<div class="pp-row"><span class="ts">' + fmtRel(h.t) + '</span><span class="desc">→ ' + escHTML(h.state) + '</span><span class="pill-mini ' + c + '">' + escHTML(h.state) + '</span></div>';
+  }).join('') : '<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no transitions yet</span><span class="v"></span></div>';
+
+  const pauseBtn = $('ppLivePause');
+  if (pauseBtn) pauseBtn.textContent = SocPills.live.paused ? 'Resume' : 'Pause';
+}
+$('ppLiveReconnect')?.addEventListener('click', () => {
+  if (typeof stream !== 'undefined' && stream.es) {
+    try { stream.es.close(); } catch (e) {}
+    stream.es = null;
+  }
+  if (typeof stream !== 'undefined') stream.retries = 0;
+  if (typeof connectStream === 'function') connectStream();
+  socToast('Reconnecting stream…', 'ok');
+});
+$('ppLiveSnapshot')?.addEventListener('click', () => {
+  if (typeof softRefresh === 'function') softRefresh();
+});
+$('ppLivePause')?.addEventListener('click', () => {
+  SocPills.live.paused = !SocPills.live.paused;
+  state.streamPaused = SocPills.live.paused;
+  socToast(SocPills.live.paused ? 'Stream rendering paused' : 'Stream rendering resumed', 'ok');
+  socRenderLivePopover();
+});
+
+// ─────────── Risk pill — score breakdown + jump-to-triage ───────────
+function _socCounts() {
+  // Reuse the same severity-counting helper the gauge uses. We
+  // recompute here so the popover matches what's on screen even if
+  // the gauge hasn't ticked since the last alert arrived.
+  const cur = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const a of (state.alerts || [])) {
+    const s = sevOf(a);
+    if (cur[s] != null) cur[s]++;
+  }
+  return cur;
+}
+let _socRiskHistory = [];   // [{t, score}]
+function _socRiskTick() {
+  const score = computeRisk(_socCounts());
+  _socRiskHistory.push({ t: Date.now(), score });
+  if (_socRiskHistory.length > 60) _socRiskHistory.shift();
+  if (_spOpen === 'risk') socRenderRiskPopover();
+}
+setInterval(_socRiskTick, 5000);
+_socRiskTick();
+
+function socRenderRiskPopover() {
+  const cur = _socCounts();
+  const score = computeRisk(cur);
+  let label, cls;
+  if (score >= 70)      { label = 'critical'; cls = 'pp-state-err'; }
+  else if (score >= 40) { label = 'elevated'; cls = 'pp-state-warn'; }
+  else if (score >= 15) { label = 'guarded';  cls = 'pp-state-warn'; }
+  else                  { label = 'low';      cls = 'pp-state-ok'; }
+  const sp = $('ppRiskState');
+  sp.className = 'pp-state-pill ' + cls;
+  sp.textContent = label;
+  $('ppRiskMeta').textContent = (state.alerts||[]).length + ' alerts loaded';
+
+  $('ppRiskScore').textContent = score;
+  $('ppRiskLabel').textContent = label;
+  $('ppRiskWin').textContent   = (state.rangeMin || 30) + 'm';
+
+  // Trend: compare last vs first sample of recent ~5min window.
+  const cutoff = Date.now() - 5 * 60 * 1000;
+  const recent = _socRiskHistory.filter(x => x.t >= cutoff);
+  if (recent.length >= 2) {
+    const first = recent[0].score, last = recent[recent.length-1].score;
+    const delta = last - first;
+    const tEl = $('ppRiskTrend');
+    if (delta > 2)      { tEl.textContent = '↑ +' + delta + ' last 5m'; tEl.className = 'v err'; }
+    else if (delta < -2){ tEl.textContent = '↓ ' + delta + ' last 5m';  tEl.className = 'v ok'; }
+    else                { tEl.textContent = '≈ stable';                 tEl.className = 'v'; }
+  } else {
+    $('ppRiskTrend').textContent = '—';
+  }
+
+  // Severity breakdown — show contribution of each tier (count × weight).
+  const weights = { critical: 8, high: 3, medium: 1, low: 0, info: 0 };
+  const colors  = { critical: '#f43f5e', high: '#fb923c', medium: '#facc15', low: '#94a3b8', info: '#94a3b8' };
+  const total = score || 1;
+  $('ppRiskBreakdown').innerHTML = ['critical','high','medium','low','info'].map(s => {
+    const n = cur[s] || 0;
+    const w = weights[s];
+    const contrib = Math.min(100, n * w);
+    const pct = (contrib / Math.max(1, total)) * 100;
+    return '<div class="pp-risk-row">' +
+           '<span class="lbl">' + s + '</span>' +
+           '<div class="bar"><div class="fill" style="width:' + pct + '%; background:' + colors[s] + ';"></div></div>' +
+           '<span class="num">' + n + ' × ' + w + '</span>' +
+           '</div>';
+  }).join('');
+
+  // Top contributors — highest-severity alerts (newest first), top 5.
+  const sevRank = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+  const top = (state.alerts || [])
+    .slice()
+    .sort((a, b) => (sevRank[sevOf(b)]||0) - (sevRank[sevOf(a)]||0))
+    .slice(0, 5);
+  $('ppRiskTop').innerHTML = top.length ? top.map(a => {
+    const s = sevOf(a);
+    const c = (s === 'critical' || s === 'high') ? 'err' : (s === 'medium' ? 'warn' : 'ok');
+    const reason = pick(a, 'reason', 'Reason') || pick(a, 'message', 'Message') || '(no reason)';
+    return '<div class="pp-row"><span class="ts">' + escHTML(s) + '</span><span class="desc">' + escHTML(String(reason)) + '</span><span class="pill-mini ' + c + '">' + escHTML(s) + '</span></div>';
+  }).join('') : '<div class="pp-row"><span class="ts">—</span><span class="desc text-soc-mute">no alerts in buffer</span><span class="v"></span></div>';
+}
+$('ppRiskExplain')?.addEventListener('click', () => {
+  socToast('Risk = critical×8 + high×3 + medium×1, capped at 100', 'ok');
+});
+$('ppRiskJump')?.addEventListener('click', () => {
+  closeSocPill();
+  // Drive the existing search-DSL: the SOC search box already
+  // supports `severity:critical`. Setting it here re-uses the
+  // tested filter path instead of touching state internals.
+  const si = $('searchInput');
+  if (si) {
+    si.value = 'severity:critical';
+    si.dispatchEvent(new Event('input', { bubbles: true }));
+    si.focus();
+  }
+  document.getElementById('alertList')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  socToast('Filtered alert triage to critical', 'ok');
+});
 
 // ─────────── Boot ───────────
 wire();

@@ -1,0 +1,918 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Fleet Console — eBPF Choke Gateway</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<!-- No-FOUC theme bootstrap. Mirrors choke.html so the theme survives the jump. -->
+<script>
+  (function() {
+    var t = 'dark';
+    try {
+      var raw = localStorage.getItem('soc.theme');
+      if (raw != null) { try { t = JSON.parse(raw); } catch (e) { t = raw; } }
+    } catch (e) {}
+    if (t === 'light') document.documentElement.classList.add('theme-light');
+  })();
+</script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+tailwind.config = {
+  theme: {
+    extend: {
+      colors: {
+        soc: {
+          bg:'rgb(var(--soc-bg)/<alpha-value>)', panel:'rgb(var(--soc-panel)/<alpha-value>)',
+          panel2:'rgb(var(--soc-panel2)/<alpha-value>)', line:'rgb(var(--soc-line)/<alpha-value>)',
+          mute:'rgb(var(--soc-mute)/<alpha-value>)', text:'rgb(var(--soc-text)/<alpha-value>)',
+          dim:'rgb(var(--soc-dim)/<alpha-value>)', accent:'rgb(var(--soc-accent)/<alpha-value>)',
+          ok:'#10b981', warn:'#f59e0b', err:'#f43f5e', info:'#3b82f6'
+        }
+      },
+      fontFamily: { mono:['ui-monospace','SFMono-Regular','Menlo','monospace'] }
+    }
+  }
+}
+</script>
+<style>
+  :root {
+    --soc-bg:7 11 20; --soc-panel:15 23 42; --soc-panel2:17 29 51;
+    --soc-line:31 42 68; --soc-mute:100 116 139; --soc-text:226 232 240;
+    --soc-dim:148 163 184; --soc-accent:34 211 238;
+    --soc-glass-bg: rgba(15,23,42,0.62);
+    --soc-glass-bd: rgba(31,42,68,0.9);
+    --soc-input-bg: rgba(15,23,42,0.6);
+    --soc-input-bd: rgba(31,42,68,0.95);
+    --soc-row-hover: rgba(34,211,238,0.05);
+    --soc-row-sel: rgba(34,211,238,0.10);
+    --soc-shadow-md: 0 6px 20px -8px rgba(0,0,0,0.6);
+    --soc-body-grad: radial-gradient(60% 50% at 80% -10%, rgba(244,63,94,0.07), transparent 60%),
+                     radial-gradient(50% 50% at -10% 10%, rgba(34,211,238,0.06), transparent 60%);
+    color-scheme: dark;
+  }
+  html.theme-light, body.theme-light {
+    --soc-bg:241 245 249; --soc-panel:255 255 255; --soc-panel2:248 250 252;
+    --soc-line:203 213 225; --soc-mute:71 85 105; --soc-text:15 23 42;
+    --soc-dim:51 65 85; --soc-accent:8 145 178;
+    --soc-glass-bg: rgba(255,255,255,0.92);
+    --soc-glass-bd: rgba(203,213,225,0.95);
+    --soc-input-bg: rgba(255,255,255,0.95);
+    --soc-input-bd: rgba(203,213,225,0.95);
+    --soc-row-hover: rgba(8,145,178,0.06);
+    --soc-row-sel: rgba(8,145,178,0.10);
+    --soc-shadow-md: 0 6px 20px -8px rgba(15,23,42,0.18);
+    color-scheme: light;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  html, body { height: 100%; max-width: 100vw; overflow-x: hidden; }
+  body {
+    background: var(--soc-body-grad), rgb(var(--soc-bg));
+    color: rgb(var(--soc-text));
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+    transition: background-color 200ms ease, color 200ms ease;
+    -webkit-font-smoothing: antialiased;
+  }
+  .glass { background: var(--soc-glass-bg); backdrop-filter: blur(8px); border:1px solid var(--soc-glass-bd); border-radius: 12px; }
+  .panel { background: rgb(var(--soc-panel)); border:1px solid rgb(var(--soc-line)); border-radius: 12px; box-shadow: var(--soc-shadow-md); }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-feature-settings: "tnum"; }
+  .scrollbar::-webkit-scrollbar { width:6px; height:6px; }
+  .scrollbar::-webkit-scrollbar-thumb { background:rgb(var(--soc-line)); border-radius:3px; }
+
+  /* Pills */
+  .pill { display:inline-flex; align-items:center; gap:6px; padding:2px 8px; border-radius:999px; font-size:11px; font-weight:600; letter-spacing:.02em; border:1px solid transparent; }
+  .pill-ok   { background: rgba(16,185,129,.10); color:#34d399; border-color: rgba(16,185,129,.35); }
+  .pill-warn { background: rgba(245,158,11,.10); color:#fbbf24; border-color: rgba(245,158,11,.35); }
+  .pill-err  { background: rgba(244,63,94,.10);  color:#fb7185; border-color: rgba(244,63,94,.35); }
+  .pill-info { background: rgba(59,130,246,.10); color:#60a5fa; border-color: rgba(59,130,246,.35); }
+  .pill-mute { background: rgba(100,116,139,.10); color: rgb(var(--soc-dim)); border-color: rgba(100,116,139,.35); }
+
+  /* Status dot */
+  .dot { width:8px; height:8px; border-radius:999px; display:inline-block; }
+  .dot-ok   { background:#10b981; box-shadow: 0 0 0 3px rgba(16,185,129,.18); }
+  .dot-warn { background:#f59e0b; box-shadow: 0 0 0 3px rgba(245,158,11,.18); }
+  .dot-err  { background:#f43f5e; box-shadow: 0 0 0 3px rgba(244,63,94,.18); }
+  .dot-mute { background:rgb(var(--soc-mute)); }
+  @keyframes pulse-dot { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  .dot-live { animation: pulse-dot 1.6s ease-in-out infinite; }
+
+  /* Buttons */
+  .btn { display:inline-flex; align-items:center; gap:6px; padding:7px 12px; border-radius:8px; font-size:13px; font-weight:600; border:1px solid rgb(var(--soc-line)); background: rgb(var(--soc-panel2)); color: rgb(var(--soc-text)); transition: all 120ms ease; cursor: pointer; }
+  .btn:hover { border-color: rgb(var(--soc-accent)); background: var(--soc-row-hover); }
+  .btn:disabled { opacity:.5; cursor: not-allowed; }
+  .btn-primary { background: rgb(var(--soc-accent)); color:#001017; border-color: rgb(var(--soc-accent)); }
+  .btn-primary:hover { filter: brightness(1.08); }
+  .btn-danger { background: rgba(244,63,94,.12); color:#fb7185; border-color: rgba(244,63,94,.45); }
+  .btn-danger:hover { background: rgba(244,63,94,.20); }
+  .btn-sm { padding:4px 9px; font-size:11px; }
+
+  /* Inputs */
+  .inp { background: var(--soc-input-bg); border:1px solid var(--soc-input-bd); color: rgb(var(--soc-text)); border-radius:8px; padding:7px 10px; font-size:13px; width:100%; }
+  .inp:focus { outline: none; border-color: rgb(var(--soc-accent)); box-shadow: 0 0 0 3px rgba(34,211,238,.15); }
+
+  /* Tables */
+  table.fleet-tbl { width:100%; border-collapse: collapse; }
+  table.fleet-tbl th { text-align:left; font-size:11px; letter-spacing:.06em; text-transform:uppercase; color: rgb(var(--soc-dim)); padding:10px 12px; border-bottom: 1px solid rgb(var(--soc-line)); position: sticky; top: 0; background: rgb(var(--soc-panel)); z-index: 1; }
+  table.fleet-tbl td { padding:10px 12px; border-bottom: 1px solid rgba(var(--soc-line)); font-size: 13px; }
+  table.fleet-tbl tbody tr { transition: background 90ms; }
+  table.fleet-tbl tbody tr:hover { background: var(--soc-row-hover); }
+  table.fleet-tbl tbody tr.drift td { background: rgba(245,158,11,.06); }
+  table.fleet-tbl tbody tr.drift td:first-child { box-shadow: inset 3px 0 0 #f59e0b; }
+  table.fleet-tbl tbody tr.unreachable td { opacity: .65; }
+  table.fleet-tbl tbody tr.unreachable td:first-child { box-shadow: inset 3px 0 0 #f43f5e; }
+
+  /* Stat cards */
+  .stat { padding:14px 16px; }
+  .stat .label { font-size:11px; letter-spacing:.08em; text-transform:uppercase; color: rgb(var(--soc-dim)); }
+  .stat .value { font-size: 26px; font-weight: 700; line-height:1.05; margin-top:4px; }
+  .stat .sub   { font-size: 11px; color: rgb(var(--soc-mute)); margin-top:6px; }
+
+  /* Posture chooser cards */
+  .posture { padding:12px; border-radius:10px; border:1px solid rgb(var(--soc-line)); cursor:pointer; transition: all 120ms ease; background: rgb(var(--soc-panel2)); }
+  .posture:hover { border-color: rgb(var(--soc-accent)); }
+  .posture .name { font-weight: 700; font-size: 13px; }
+  .posture .desc { font-size: 11px; color: rgb(var(--soc-dim)); margin-top:4px; }
+  .posture[data-tone="default"]    .badge { color:#34d399; }
+  .posture[data-tone="containment"] .badge { color:#fb7185; }
+  .posture[data-tone="forensic"]   .badge { color:#fbbf24; }
+  .posture[data-tone="maintenance"] .badge { color:#94a3b8; }
+
+  /* Skeleton loader */
+  @keyframes shimmer { 0% { background-position: -400px 0; } 100% { background-position: 400px 0; } }
+  .skel { background: linear-gradient(90deg, rgba(100,116,139,.1) 0px, rgba(100,116,139,.18) 200px, rgba(100,116,139,.1) 400px); background-size: 800px 100%; animation: shimmer 1.4s linear infinite; border-radius: 4px; height: 12px; }
+
+  /* Toasts */
+  #toasts { position: fixed; right: 18px; bottom: 18px; display:flex; flex-direction: column; gap: 8px; z-index: 100; max-width: 380px; }
+  .toast { padding: 10px 14px; border-radius: 10px; border: 1px solid rgb(var(--soc-line)); background: rgb(var(--soc-panel)); box-shadow: var(--soc-shadow-md); font-size: 13px; display:flex; align-items: flex-start; gap: 10px; animation: slidein .18s ease-out; }
+  @keyframes slidein { from { transform: translateY(8px); opacity: 0; } to { transform: none; opacity: 1; } }
+  .toast.ok   { border-color: rgba(16,185,129,.45); }
+  .toast.err  { border-color: rgba(244,63,94,.45); }
+  .toast .ttitle { font-weight: 600; }
+  .toast .tbody  { color: rgb(var(--soc-dim)); margin-top: 2px; font-size: 12px; }
+
+  /* Modal */
+  .modal-shade { position: fixed; inset: 0; background: rgba(7,11,20,.62); backdrop-filter: blur(2px); z-index: 90; display:flex; align-items:center; justify-content:center; padding:24px; }
+  .modal { width: 100%; max-width: 460px; }
+
+  /* Decision feed rows */
+  .feed-row { display: grid; grid-template-columns: 84px 110px 100px 1fr; gap: 10px; align-items: center; padding: 6px 12px; border-bottom: 1px solid rgba(var(--soc-line)); font-size: 12px; }
+  .feed-row:hover { background: var(--soc-row-hover); }
+  .feed-row .ts { color: rgb(var(--soc-dim)); font-variant-numeric: tabular-nums; }
+  .feed-row .host { color: rgb(var(--soc-text)); font-weight: 600; }
+  .feed-row .reason { color: rgb(var(--soc-dim)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Action label */
+  .act { font-weight: 700; font-size: 11px; padding:1px 7px; border-radius:4px; letter-spacing:.04em; }
+  .act-throttle    { background: rgba(245,158,11,.14); color:#fbbf24; }
+  .act-tarpit      { background: rgba(244,63,94,.10);  color:#fb7185; }
+  .act-quarantine  { background: rgba(168,85,247,.14); color:#c4b5fd; }
+  .act-sever       { background: rgba(244,63,94,.20);  color:#fda4af; }
+  .act-allow       { background: rgba(16,185,129,.10); color:#6ee7b7; }
+  .act-default     { background: rgba(100,116,139,.14); color: rgb(var(--soc-dim)); }
+
+  /* Layout */
+  .topbar { backdrop-filter: blur(10px); background: rgba(7,11,20,.65); border-bottom: 1px solid rgb(var(--soc-line)); }
+  body.theme-light .topbar { background: rgba(255,255,255,.78); }
+
+  /* Subtle divider line above section titles */
+  .section-title { font-size: 11px; letter-spacing: .1em; text-transform: uppercase; color: rgb(var(--soc-dim)); font-weight: 600; }
+
+  /* Drift annotation */
+  .drift-mark { color: #fbbf24; font-weight: 700; }
+</style>
+</head>
+<body>
+
+<!-- ─────────── Top bar ─── -->
+<header class="topbar sticky top-0 z-40">
+  <div class="flex items-center px-5 py-3 gap-4">
+    <div class="flex items-center gap-3 min-w-0">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-soc-accent">
+        <path d="M12 2 4 6v6c0 5 3.5 8.5 8 10 4.5-1.5 8-5 8-10V6l-8-4Z"/>
+        <path d="M9 12l2 2 4-4"/>
+      </svg>
+      <div class="leading-tight">
+        <div class="text-[15px] font-semibold tracking-tight">Choke Fleet Console</div>
+        <div class="text-[11px] text-soc-dim">eBPF Threat Gateway · Tier&nbsp;1</div>
+      </div>
+    </div>
+
+    <div class="hidden md:flex items-center gap-4 ml-2 text-[12px] text-soc-dim">
+      <span class="flex items-center gap-1.5"><span id="liveDot" class="dot dot-mute"></span><span id="liveText">connecting…</span></span>
+      <span>·</span>
+      <span>auto-refresh <span id="refreshIvl" class="text-soc-text font-medium">5s</span></span>
+    </div>
+
+    <div class="flex-1"></div>
+
+    <nav class="hidden lg:flex items-center gap-1 text-[13px]">
+      <a href="/"       class="btn btn-sm">Single Host</a>
+      <a href="/choke"  class="btn btn-sm">Choke Console</a>
+      <span class="btn btn-sm" style="background:var(--soc-row-sel); border-color:rgb(var(--soc-accent)); color:rgb(var(--soc-accent));">Fleet</span>
+    </nav>
+
+    <button id="themeBtn" class="btn btn-sm" title="Toggle theme">◐</button>
+
+    <div class="flex items-center gap-2 pl-3 border-l border-soc-line">
+      <span class="text-[12px] text-soc-dim">signed in as</span>
+      <span id="who" class="text-[12px] font-semibold mono">…</span>
+      <a href="/api/logout" class="btn btn-sm">Sign out</a>
+    </div>
+  </div>
+</header>
+
+<!-- ─────────── Disabled banner (shown when fleet mode is off) ─── -->
+<div id="disabledBanner" class="hidden mx-5 mt-4 p-4 rounded-xl border border-soc-warn/40 bg-soc-warn/5">
+  <div class="flex items-start gap-3">
+    <span class="dot dot-warn mt-1"></span>
+    <div>
+      <div class="font-semibold text-soc-text">Fleet mode is not enabled on this engine</div>
+      <div class="text-[13px] text-soc-dim mt-1">
+        Restart the engine with <code class="mono px-1.5 py-0.5 bg-soc-panel2 rounded text-soc-text">--fleet-hosts=/path/to/chokectl.hosts</code>
+        to enable cross-host control. The single-host UI at <a href="/" class="text-soc-accent underline">/</a> remains available.
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ─────────── KPI strip ─── -->
+<section class="px-5 pt-5">
+  <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+    <div class="panel stat" id="kpiHosts">
+      <div class="label">Fleet size</div>
+      <div class="value mono" data-v="hosts">—</div>
+      <div class="sub" data-v="hostsSub">configured peers</div>
+    </div>
+    <div class="panel stat">
+      <div class="label">Healthy</div>
+      <div class="value mono" data-v="healthy" style="color:#34d399">—</div>
+      <div class="sub" data-v="healthySub">reachable + authed</div>
+    </div>
+    <div class="panel stat">
+      <div class="label">Enforcing</div>
+      <div class="value mono" data-v="enforcing">—</div>
+      <div class="sub">policy active</div>
+    </div>
+    <div class="panel stat">
+      <div class="label">Kill-switched</div>
+      <div class="value mono" data-v="killed" style="color:#fb7185">—</div>
+      <div class="sub">enforcement bypass</div>
+    </div>
+    <div class="panel stat">
+      <div class="label">Drift</div>
+      <div class="value mono" data-v="drift" style="color:#fbbf24">—</div>
+      <div class="sub" data-v="driftSub">vs fleet majority</div>
+    </div>
+    <div class="panel stat">
+      <div class="label">Audit chain</div>
+      <div class="value mono" data-v="audit">—</div>
+      <div class="sub" data-v="auditSub">tamper-evident</div>
+    </div>
+  </div>
+</section>
+
+<!-- ─────────── Main grid ─── -->
+<main class="px-5 pb-8 pt-5 grid gap-5" style="grid-template-columns: minmax(280px, 340px) minmax(0, 1fr) minmax(320px, 380px);">
+
+  <!-- ───── Left rail: posture + writes ───── -->
+  <aside class="space-y-5 min-w-0">
+
+    <!-- Targeting -->
+    <div class="panel p-4">
+      <div class="section-title mb-2">Apply changes to</div>
+      <div class="flex items-center gap-2 mt-1">
+        <button id="targAll"  class="btn btn-sm" style="background:var(--soc-row-sel); border-color:rgb(var(--soc-accent));">All hosts</button>
+        <button id="targSel"  class="btn btn-sm">Selected only</button>
+      </div>
+      <div id="targHint" class="text-[11px] text-soc-dim mt-2">Writes will fan out to every reachable peer.</div>
+    </div>
+
+    <!-- Postures -->
+    <div class="panel p-4">
+      <div class="section-title mb-3">Posture preset</div>
+      <div class="grid grid-cols-2 gap-2">
+        <button class="posture text-left" data-tone="default" data-name="default">
+          <div class="badge text-[10px] tracking-wider uppercase">Default</div>
+          <div class="name mt-0.5">Default</div>
+          <div class="desc">10/30/60/100 · kill-switch off</div>
+        </button>
+        <button class="posture text-left" data-tone="containment" data-name="containment">
+          <div class="badge text-[10px] tracking-wider uppercase">Severe</div>
+          <div class="name mt-0.5">Containment</div>
+          <div class="desc">1/3/8/60 · choke aggressively</div>
+        </button>
+        <button class="posture text-left" data-tone="forensic" data-name="forensic">
+          <div class="badge text-[10px] tracking-wider uppercase">Observe</div>
+          <div class="name mt-0.5">Forensic</div>
+          <div class="desc">tarpit early, sever late</div>
+        </button>
+        <button class="posture text-left" data-tone="maintenance" data-name="maintenance">
+          <div class="badge text-[10px] tracking-wider uppercase">Pause</div>
+          <div class="name mt-0.5">Maintenance</div>
+          <div class="desc">kill-switch on · raised thresholds</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Thresholds -->
+    <div class="panel p-4">
+      <div class="section-title mb-3">Thresholds</div>
+      <div class="grid grid-cols-4 gap-2">
+        <label class="text-[10px] text-soc-dim">Throttle <input id="thT"  class="inp mono mt-1" type="number" min="1"></label>
+        <label class="text-[10px] text-soc-dim">Tarpit   <input id="thTp" class="inp mono mt-1" type="number" min="1"></label>
+        <label class="text-[10px] text-soc-dim">Quarant. <input id="thQ"  class="inp mono mt-1" type="number" min="1"></label>
+        <label class="text-[10px] text-soc-dim">Sever    <input id="thS"  class="inp mono mt-1" type="number" min="1"></label>
+      </div>
+      <div class="text-[11px] text-soc-dim mt-2">Strict ascending: T &lt; Tp &lt; Q &lt; S</div>
+      <button id="applyTh" class="btn btn-primary btn-sm mt-3 w-full">Apply thresholds</button>
+    </div>
+
+    <!-- Kill switch / thaw -->
+    <div class="panel p-4">
+      <div class="section-title mb-3">Emergency controls</div>
+      <div class="flex flex-col gap-2">
+        <button id="ksOn"  class="btn btn-danger">Kill-switch ON&nbsp;·&nbsp;bypass enforcement</button>
+        <button id="ksOff" class="btn">Kill-switch OFF&nbsp;·&nbsp;resume enforcement</button>
+        <button id="thaw"  class="btn">Thaw quarantined cgroup</button>
+      </div>
+    </div>
+
+  </aside>
+
+  <!-- ───── Center: fleet table ───── -->
+  <section class="space-y-5 min-w-0">
+    <div class="panel">
+      <div class="flex items-center justify-between p-4 pb-3">
+        <div>
+          <div class="section-title">Fleet</div>
+          <div class="text-[12px] text-soc-dim mt-0.5"><span id="fleetSummary">…</span></div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="selAllBtn" class="btn btn-sm">Select all</button>
+          <button id="selNoneBtn" class="btn btn-sm">Clear</button>
+          <button id="refreshBtn" class="btn btn-sm">Refresh now</button>
+        </div>
+      </div>
+      <div class="overflow-x-auto scrollbar">
+        <table class="fleet-tbl mono">
+          <thead>
+            <tr>
+              <th style="width:34px"></th>
+              <th>Host</th>
+              <th>State</th>
+              <th>Mode</th>
+              <th>Kill</th>
+              <th>Thresholds</th>
+              <th>Tracked</th>
+              <th>Quarantined</th>
+              <th>Tarpit</th>
+              <th>Throttled</th>
+              <th>Audit</th>
+            </tr>
+          </thead>
+          <tbody id="fleetBody">
+            <tr><td colspan="11" class="text-center py-8 text-soc-dim">
+              <div class="skel mx-auto" style="width: 60%;"></div>
+              <div class="skel mx-auto mt-2" style="width: 40%;"></div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Cgroup tier breakdown -->
+    <div class="panel p-4">
+      <div class="flex items-center justify-between">
+        <div class="section-title">Cgroup tier inhabitants</div>
+        <span class="text-[11px] text-soc-dim">live PID counts</span>
+      </div>
+      <div id="cgroupBars" class="mt-3 space-y-2">
+        <div class="skel" style="width: 80%;"></div>
+        <div class="skel" style="width: 65%;"></div>
+        <div class="skel" style="width: 70%;"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───── Right rail: live decisions + alerts ───── -->
+  <aside class="space-y-5 min-w-0">
+    <div class="panel" style="display:flex; flex-direction:column; max-height: 520px;">
+      <div class="flex items-center justify-between p-4 pb-3 border-b border-soc-line">
+        <div>
+          <div class="section-title">Live decisions</div>
+          <div class="text-[12px] text-soc-dim mt-0.5">merged across the fleet · newest first</div>
+        </div>
+        <div class="flex items-center gap-1">
+          <span class="dot dot-ok dot-live"></span>
+          <span class="text-[11px] text-soc-dim">live</span>
+        </div>
+      </div>
+      <div id="decFeed" class="flex-1 overflow-y-auto scrollbar">
+        <div class="p-4 text-soc-dim text-[12px]">waiting for events…</div>
+      </div>
+    </div>
+
+    <div class="panel" style="display:flex; flex-direction:column; max-height: 360px;">
+      <div class="flex items-center justify-between p-4 pb-3 border-b border-soc-line">
+        <div class="section-title">Alerts</div>
+        <span class="text-[11px] text-soc-dim">latest 50</span>
+      </div>
+      <div id="alertFeed" class="flex-1 overflow-y-auto scrollbar p-3 space-y-2">
+        <div class="skel" style="width: 90%;"></div>
+        <div class="skel" style="width: 70%;"></div>
+        <div class="skel" style="width: 80%;"></div>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<!-- Toasts container -->
+<div id="toasts"></div>
+
+<!-- Confirm modal mount -->
+<div id="modalRoot"></div>
+
+<script>
+// ─────────── State ─────────────────────────────────────────────────────
+const state = {
+  hosts: [],            // [{name, url}]
+  rows:  {},            // name -> latest /api/choke/state payload
+  selected: new Set(),
+  applyMode: 'all',     // 'all' | 'sel'
+  decisions: [],        // merged
+  alerts: [],
+  refreshMs: 5000,
+};
+
+// ─────────── Helpers ───────────────────────────────────────────────────
+const $ = (sel, root=document) => root.querySelector(sel);
+const $$ = (sel, root=document) => Array.from(root.querySelectorAll(sel));
+
+function setVal(key, val) {
+  $$('[data-v="'+key+'"]').forEach(el => el.textContent = val);
+}
+
+function pad(n,w=2){ return String(n).padStart(w,'0'); }
+function fmtTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso.slice(11,19);
+  return pad(d.getHours())+':'+pad(d.getMinutes())+':'+pad(d.getSeconds());
+}
+
+function toast(kind, title, body) {
+  const el = document.createElement('div');
+  el.className = 'toast ' + (kind === 'err' ? 'err' : kind === 'ok' ? 'ok' : '');
+  el.innerHTML = '<span class="dot dot-'+(kind==='err'?'err':kind==='ok'?'ok':'warn')+' mt-1"></span><div><div class="ttitle"></div><div class="tbody"></div></div>';
+  el.querySelector('.ttitle').textContent = title;
+  el.querySelector('.tbody').textContent  = body || '';
+  $('#toasts').appendChild(el);
+  setTimeout(() => el.remove(), 6500);
+}
+
+function confirmModal({title, body, danger, onConfirm}) {
+  const root = $('#modalRoot');
+  root.innerHTML = `
+    <div class="modal-shade">
+      <div class="panel modal p-5">
+        <div class="text-[15px] font-semibold mb-1">${title}</div>
+        <div class="text-[13px] text-soc-dim">${body}</div>
+        <div class="flex justify-end gap-2 mt-5">
+          <button id="mCancel" class="btn">Cancel</button>
+          <button id="mOK" class="btn ${danger ? 'btn-danger' : 'btn-primary'}">${danger ? 'Apply anyway' : 'Confirm'}</button>
+        </div>
+      </div>
+    </div>`;
+  root.querySelector('#mCancel').onclick = () => root.innerHTML = '';
+  root.querySelector('#mOK').onclick = () => { root.innerHTML = ''; onConfirm(); };
+}
+
+async function api(path, opts={}) {
+  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  if (r.status === 401) { location.href = '/login'; throw new Error('unauthorized'); }
+  if (r.status === 503) {
+    $('#disabledBanner').classList.remove('hidden');
+    throw new Error('fleet mode disabled');
+  }
+  if (!r.ok) throw new Error(await r.text() || ('HTTP '+r.status));
+  return r.json();
+}
+
+// ─────────── Theme ─────────────────────────────────────────────────────
+function applyTheme(t) {
+  document.documentElement.classList.toggle('theme-light', t === 'light');
+  document.body.classList.toggle('theme-light', t === 'light');
+  try { localStorage.setItem('soc.theme', JSON.stringify(t)); } catch(e) {}
+}
+$('#themeBtn').onclick = () => {
+  const cur = document.documentElement.classList.contains('theme-light') ? 'light' : 'dark';
+  applyTheme(cur === 'light' ? 'dark' : 'light');
+};
+
+// ─────────── Whoami ─────────────────────────────────────────────────────
+fetch('/api/whoami', { credentials:'same-origin' })
+  .then(r => r.ok ? r.json() : null)
+  .then(d => { if (d && d.user) $('#who').textContent = d.user; })
+  .catch(()=>{});
+
+// ─────────── Targeting ─────────────────────────────────────────────────
+$('#targAll').onclick = () => setApply('all');
+$('#targSel').onclick = () => setApply('sel');
+function setApply(m) {
+  state.applyMode = m;
+  $('#targAll').style.background = m==='all' ? 'var(--soc-row-sel)' : '';
+  $('#targAll').style.borderColor = m==='all' ? 'rgb(var(--soc-accent))' : '';
+  $('#targSel').style.background = m==='sel' ? 'var(--soc-row-sel)' : '';
+  $('#targSel').style.borderColor = m==='sel' ? 'rgb(var(--soc-accent))' : '';
+  $('#targHint').textContent = m === 'all'
+    ? 'Writes will fan out to every reachable peer.'
+    : `Writes will hit ${state.selected.size} selected host(s).`;
+}
+
+$('#selAllBtn').onclick = () => {
+  state.hosts.forEach(h => state.selected.add(h.name));
+  renderFleet();
+  setApply('sel');
+};
+$('#selNoneBtn').onclick = () => { state.selected.clear(); renderFleet(); setApply('all'); };
+
+// ─────────── Loading + render ─────────────────────────────────────────
+async function loadHosts() {
+  try {
+    const r = await api('/api/fleet/hosts');
+    state.hosts = r.hosts || [];
+    setVal('hosts', state.hosts.length);
+    setVal('hostsSub', state.hosts.length === 1 ? '1 peer configured' : state.hosts.length + ' peers configured');
+  } catch (e) {
+    setVal('hosts', '0');
+  }
+}
+
+async function loadFleet() {
+  try {
+    const r = await api('/api/fleet/state');
+    const byName = {};
+    (r.hosts||[]).forEach(h => byName[h.name] = h);
+    state.rows = byName;
+    renderFleet();
+    renderKpis();
+    setLive(true);
+  } catch (e) {
+    setLive(false);
+  }
+}
+
+async function loadCgroups() {
+  try {
+    const r = await api('/api/fleet/cgroups');
+    renderCgroups(r.hosts || []);
+  } catch (e) {/* keep prior */}
+}
+
+async function loadDecisions() {
+  try {
+    const r = await api('/api/fleet/decisions?limit=80');
+    const merged = [];
+    (r.hosts||[]).forEach(h => {
+      if (!h.ok || !Array.isArray(h.data)) return;
+      h.data.forEach(d => merged.push({ ...d, _host: h.name }));
+    });
+    merged.sort((a,b) => (b.timestamp||'').localeCompare(a.timestamp||''));
+    state.decisions = merged.slice(0, 100);
+    renderDecisions();
+  } catch (e) {/* keep prior */}
+}
+
+async function loadAlerts() {
+  try {
+    const r = await api('/api/fleet/alerts');
+    const merged = [];
+    (r.hosts||[]).forEach(h => {
+      if (!h.ok || !Array.isArray(h.data)) return;
+      h.data.forEach(a => merged.push({ ...a, _host: h.name }));
+    });
+    merged.sort((a,b) => (b.timestamp||'').localeCompare(a.timestamp||''));
+    state.alerts = merged.slice(0, 50);
+    renderAlerts();
+  } catch (e) {/* keep prior */}
+}
+
+function setLive(ok) {
+  const dot = $('#liveDot'); const txt = $('#liveText');
+  dot.className = 'dot ' + (ok ? 'dot-ok dot-live' : 'dot-err');
+  txt.textContent = ok ? 'connected' : 'reconnecting…';
+}
+
+// ─────────── Drift detection ───────────────────────────────────────────
+// Majority value across hosts; rows that differ are flagged.
+function majority(values) {
+  const counts = new Map();
+  values.forEach(v => counts.set(v, (counts.get(v)||0)+1));
+  let best = null, bestN = 0;
+  counts.forEach((n,v) => { if (n > bestN) { best = v; bestN = n; } });
+  return best;
+}
+
+function thrKey(t) {
+  if (!t) return '?';
+  return [t.throttle_at, t.tarpit_at, t.quarantine_at, t.sever_at].join('/');
+}
+
+function detectDrift() {
+  const okRows = state.hosts.map(h => state.rows[h.name]).filter(r => r && r.ok && r.data);
+  const modes = okRows.map(r => r.data.mode);
+  const kills = okRows.map(r => r.data.kill_switched ? 'on' : 'off');
+  const thrs  = okRows.map(r => thrKey(r.data.thresholds));
+  return {
+    mode: majority(modes),
+    kill: majority(kills),
+    thr:  majority(thrs),
+  };
+}
+
+// ─────────── Render fleet table ────────────────────────────────────────
+function renderFleet() {
+  const tbody = $('#fleetBody');
+  tbody.innerHTML = '';
+  const m = detectDrift();
+  let healthy = 0, enforcing = 0, killed = 0, drift = 0;
+  let auditOk = 0, auditTotal = 0;
+
+  state.hosts.forEach(h => {
+    const row = state.rows[h.name];
+    const tr = document.createElement('tr');
+    if (!row || !row.ok) {
+      tr.classList.add('unreachable');
+      tr.innerHTML = `
+        <td><input type="checkbox" data-host="${h.name}"></td>
+        <td><div class="font-semibold">${h.name}</div><div class="text-[11px] text-soc-dim mono">${h.url}</div></td>
+        <td colspan="9"><span class="pill pill-err"><span class="dot dot-err"></span>unreachable</span> <span class="text-soc-dim text-[11px]">${row && row.error ? row.error : ''}</span></td>
+      `;
+      tbody.appendChild(tr);
+      return;
+    }
+    healthy++;
+    const d = row.data;
+    if (d.mode === 'enforcing') enforcing++;
+    if (d.kill_switched) killed++;
+    const counts = d.counts || {};
+
+    // drift
+    const driftMode = d.mode !== m.mode;
+    const driftKill = (d.kill_switched ? 'on' : 'off') !== m.kill;
+    const driftThr  = thrKey(d.thresholds) !== m.thr;
+    if (driftMode || driftKill || driftThr) { drift++; tr.classList.add('drift'); }
+
+    // audit
+    const a = d.audit || {};
+    if (a && typeof a.total === 'number') auditTotal += a.total;
+    if (a && a.ok) auditOk++;
+
+    const sel = state.selected.has(h.name);
+    tr.innerHTML = `
+      <td><input type="checkbox" data-host="${h.name}" ${sel?'checked':''}></td>
+      <td>
+        <div class="font-semibold">${h.name}</div>
+        <div class="text-[11px] text-soc-dim mono">${h.url}</div>
+      </td>
+      <td><span class="pill ${d.kill_switched ? 'pill-err' : 'pill-ok'}"><span class="dot ${d.kill_switched ? 'dot-err' : 'dot-ok'}"></span>${d.kill_switched ? 'bypass' : 'live'}</span></td>
+      <td>${driftMode ? '<span class="drift-mark" title="differs from fleet majority">⚠</span> ' : ''}<span class="pill ${d.mode==='enforcing'?'pill-info':'pill-mute'}">${d.mode||'?'}</span></td>
+      <td>${driftKill ? '<span class="drift-mark">⚠</span> ' : ''}${d.kill_switched ? 'on' : 'off'}</td>
+      <td>${driftThr ? '<span class="drift-mark">⚠</span> ' : ''}<span class="mono">${thrKey(d.thresholds)}</span></td>
+      <td class="mono">${d.tracked||0}</td>
+      <td class="mono">${counts.quarantined || 0}</td>
+      <td class="mono">${counts.tarpit || 0}</td>
+      <td class="mono">${counts.throttled || 0}</td>
+      <td>${
+        a.ok ? `<span class="pill pill-ok">ok&middot;${a.total||0}</span>`
+             : (a && a.bad_at != null ? `<span class="pill pill-err">BROKEN @ ${a.bad_at}</span>` : `<span class="pill pill-mute">—</span>`)
+      }</td>
+    `;
+    tbody.appendChild(tr);
+  });
+
+  // checkbox wiring
+  $$('#fleetBody input[type=checkbox]').forEach(cb => {
+    cb.onchange = () => {
+      if (cb.checked) state.selected.add(cb.dataset.host);
+      else state.selected.delete(cb.dataset.host);
+      if (state.selected.size > 0) setApply('sel'); else setApply('all');
+    };
+  });
+
+  // Summary
+  const total = state.hosts.length;
+  $('#fleetSummary').innerHTML = `${healthy}/${total} reachable · ${enforcing} enforcing · ${killed} kill-switched · ${drift} drift`;
+  state._kpi = { healthy, total, enforcing, killed, drift, auditOk, auditTotal };
+}
+
+function renderKpis() {
+  const k = state._kpi || {};
+  setVal('healthy', (k.healthy||0));
+  setVal('healthySub', `of ${k.total||0} configured`);
+  setVal('enforcing', k.enforcing||0);
+  setVal('killed', k.killed||0);
+  setVal('drift', k.drift||0);
+  setVal('driftSub', (k.drift||0) === 0 ? 'fleet aligned' : 'investigate ⚠ rows');
+  if (k.healthy === 0) {
+    setVal('audit', '—');
+    setVal('auditSub', 'no data');
+  } else {
+    setVal('audit', `${k.auditOk||0}/${k.healthy||0}`);
+    setVal('auditSub', (k.auditOk === k.healthy) ? 'all chains intact' : 'broken chain on a host');
+  }
+
+  // Pre-fill thresholds with majority values
+  const okRow = state.hosts.map(h => state.rows[h.name]).find(r => r && r.ok && r.data);
+  if (okRow && okRow.data && okRow.data.thresholds && !$('#thT').dataset.dirty) {
+    const t = okRow.data.thresholds;
+    if (!$('#thT').value) $('#thT').value  = t.throttle_at;
+    if (!$('#thTp').value) $('#thTp').value = t.tarpit_at;
+    if (!$('#thQ').value) $('#thQ').value  = t.quarantine_at;
+    if (!$('#thS').value) $('#thS').value  = t.sever_at;
+  }
+}
+
+function renderCgroups(hosts) {
+  const wrap = $('#cgroupBars');
+  if (!hosts.length) { wrap.innerHTML = '<div class="text-soc-dim text-[12px]">no data</div>'; return; }
+  // Find max for shared scale
+  let maxN = 1;
+  const rows = hosts.map(h => {
+    const c = (h.ok && h.data) ? h.data : {};
+    const t  = (c['choke-throttled'] || []).length;
+    const tp = (c['choke-tarpit'] || []).length;
+    const q  = (c['choke-quarantined'] || []).length;
+    maxN = Math.max(maxN, t, tp, q, 1);
+    return { name: h.name, ok: h.ok, t, tp, q };
+  });
+  wrap.innerHTML = rows.map(r => {
+    if (!r.ok) return `<div class="flex items-center gap-3 text-[12px]"><div class="w-20 text-soc-dim">${r.name}</div><div class="text-soc-err text-[11px]">unreachable</div></div>`;
+    const bar = (n, color) => `<div title="${n}" style="background:${color}; width:${(n/maxN*100).toFixed(0)}%; min-width:${n>0?'6px':'0'}; height:8px; border-radius:2px;"></div>`;
+    return `
+      <div class="flex items-center gap-3">
+        <div class="w-20 text-[12px] mono text-soc-text">${r.name}</div>
+        <div class="flex-1 grid grid-cols-3 gap-2 items-center">
+          <div class="flex items-center gap-2"><div class="text-[10px] text-soc-dim w-14">throttle</div>${bar(r.t, '#fbbf24')}<div class="mono text-[11px] w-6 text-right">${r.t}</div></div>
+          <div class="flex items-center gap-2"><div class="text-[10px] text-soc-dim w-14">tarpit</div>${bar(r.tp,'#fb7185')}<div class="mono text-[11px] w-6 text-right">${r.tp}</div></div>
+          <div class="flex items-center gap-2"><div class="text-[10px] text-soc-dim w-14">quarant.</div>${bar(r.q,'#c4b5fd')}<div class="mono text-[11px] w-6 text-right">${r.q}</div></div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function actClass(a) {
+  a = (a||'').toLowerCase();
+  if (a.includes('sever'))      return 'act-sever';
+  if (a.includes('quarantine')) return 'act-quarantine';
+  if (a.includes('tarpit'))     return 'act-tarpit';
+  if (a.includes('throttle'))   return 'act-throttle';
+  if (a.includes('allow'))      return 'act-allow';
+  return 'act-default';
+}
+
+function renderDecisions() {
+  const f = $('#decFeed');
+  if (!state.decisions.length) { f.innerHTML = '<div class="p-4 text-soc-dim text-[12px]">no decisions yet — fleet is quiet</div>'; return; }
+  f.innerHTML = state.decisions.slice(0, 60).map(d => `
+    <div class="feed-row">
+      <div class="ts mono">${fmtTime(d.timestamp)}</div>
+      <div class="host mono">${d._host}</div>
+      <div><span class="act ${actClass(d.action)}">${(d.action||'?').toUpperCase()}</span></div>
+      <div class="reason" title="${(d.binary||'')+' — '+(d.reason||'')}">${d.binary||'?'} <span class="text-soc-mute">·</span> ${d.reason||''}</div>
+    </div>`).join('');
+}
+
+function renderAlerts() {
+  const f = $('#alertFeed');
+  if (!state.alerts.length) { f.innerHTML = '<div class="text-soc-dim text-[12px] p-2">no recent alerts</div>'; return; }
+  f.innerHTML = state.alerts.slice(0, 50).map(a => {
+    const sev = (a.severity||'info').toLowerCase();
+    const pillCls = sev.includes('crit') ? 'pill-err' : sev.includes('high') ? 'pill-warn' : sev.includes('med') ? 'pill-info' : 'pill-mute';
+    return `
+      <div class="border border-soc-line rounded-lg p-2.5">
+        <div class="flex items-center gap-2 text-[11px]">
+          <span class="pill ${pillCls}">${(a.severity||'info').toUpperCase()}</span>
+          <span class="mono text-soc-dim">${fmtTime(a.timestamp)}</span>
+          <span class="mono text-soc-text">${a._host}</span>
+          ${a.score!=null?`<span class="ml-auto mono text-soc-dim">score ${a.score}</span>`:''}
+        </div>
+        <div class="mt-1.5 text-[12.5px]">${a.title || a.summary || '(no title)'}</div>
+      </div>`;
+  }).join('');
+}
+
+// ─────────── Writes ────────────────────────────────────────────────────
+function targets() {
+  return state.applyMode === 'sel' ? Array.from(state.selected) : null; // null = all
+}
+
+function reportFanout(label, hosts) {
+  const ok = hosts.filter(h => h.ok).length;
+  const fail = hosts.length - ok;
+  if (fail === 0) {
+    toast('ok', label + ' applied', `${ok}/${hosts.length} hosts succeeded.`);
+  } else {
+    toast('err', label + ': partial', `${ok}/${hosts.length} succeeded; failures: ` + hosts.filter(h=>!h.ok).map(h=>h.name+' ('+(h.error||h.status||'err')+')').join(', '));
+  }
+}
+
+async function applyPreset(name) {
+  const tgt = targets();
+  if (state.applyMode === 'sel' && (!tgt || !tgt.length)) {
+    toast('warn','No hosts selected','Pick at least one host or switch to All hosts.'); return;
+  }
+  const danger = name === 'containment' || name === 'maintenance';
+  const apply = async () => {
+    try {
+      const r = await api('/api/fleet/preset', {
+        method: 'POST',
+        headers: {'content-type':'application/json'},
+        body: JSON.stringify({ name, reason: 'fleet UI · '+name, targets: tgt })
+      });
+      reportFanout('Preset '+name, r.hosts || []);
+      loadFleet();
+    } catch (e) { toast('err','Preset failed', e.message); }
+  };
+  if (danger) {
+    confirmModal({
+      title: `Apply "${name}" preset?`,
+      body: name === 'containment'
+        ? 'Containment drops thresholds to <span class="mono">1/3/8/60</span> on every targeted host. Anything above the noise floor will be choked immediately.'
+        : 'Maintenance flips kill-switch <strong>on</strong> and raises thresholds beyond plausible chain scores. Enforcement will pause until you switch back to <span class="mono">default</span>.',
+      danger: true,
+      onConfirm: apply,
+    });
+  } else apply();
+}
+
+$$('.posture').forEach(b => b.onclick = () => applyPreset(b.dataset.name));
+
+['thT','thTp','thQ','thS'].forEach(id => $('#'+id).oninput = e => e.target.dataset.dirty = '1');
+$('#applyTh').onclick = async () => {
+  const t  = +$('#thT').value, tp = +$('#thTp').value, q = +$('#thQ').value, s = +$('#thS').value;
+  if (!(t>0 && tp>t && q>tp && s>q)) { toast('err','Invalid thresholds','Must be strictly ascending: T < Tp < Q < S'); return; }
+  const tgt = targets();
+  try {
+    const r = await api('/api/fleet/thresholds', {
+      method: 'PUT',
+      headers: {'content-type':'application/json'},
+      body: JSON.stringify({ throttle_at:t, tarpit_at:tp, quarantine_at:q, sever_at:s, targets: tgt })
+    });
+    reportFanout('Thresholds', r.hosts || []);
+    ['thT','thTp','thQ','thS'].forEach(id => delete $('#'+id).dataset.dirty);
+    loadFleet();
+  } catch (e) { toast('err','Threshold update failed', e.message); }
+};
+
+$('#ksOn').onclick = () => confirmModal({
+  title: 'Engage kill-switch?',
+  body: 'Kill-switch <strong>on</strong> bypasses enforcement on every targeted host. Decisions still log, but no kernel action fires.',
+  danger: true,
+  onConfirm: async () => {
+    try {
+      const r = await api('/api/fleet/kill-switch', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ on: true, targets: targets() })});
+      reportFanout('Kill-switch ON', r.hosts || []);
+      loadFleet();
+    } catch (e) { toast('err','kill-switch failed', e.message); }
+  }
+});
+$('#ksOff').onclick = async () => {
+  try {
+    const r = await api('/api/fleet/kill-switch', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ on: false, targets: targets() })});
+    reportFanout('Kill-switch OFF', r.hosts || []);
+    loadFleet();
+  } catch (e) { toast('err','kill-switch failed', e.message); }
+};
+$('#thaw').onclick = () => confirmModal({
+  title: 'Thaw quarantined cgroup?',
+  body: 'Releases every paused process in the <span class="mono">choke-quarantined</span> cgroup on targeted hosts. Use only when the incident is contained.',
+  onConfirm: async () => {
+    try {
+      const r = await api('/api/fleet/thaw', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ reason: 'fleet UI thaw', targets: targets() })});
+      reportFanout('Thaw', r.hosts || []);
+      loadFleet();
+    } catch (e) { toast('err','thaw failed', e.message); }
+  }
+});
+
+$('#refreshBtn').onclick = () => { loadFleet(); loadCgroups(); loadDecisions(); loadAlerts(); };
+
+// ─────────── Boot ──────────────────────────────────────────────────────
+async function tick() {
+  await Promise.all([loadFleet(), loadCgroups(), loadDecisions(), loadAlerts()]);
+}
+
+(async () => {
+  await loadHosts();
+  if (state.hosts.length === 0) {
+    setVal('healthy','0'); setVal('enforcing','0'); setVal('killed','0'); setVal('drift','—'); setVal('audit','—');
+    return;
+  }
+  await tick();
+  setInterval(tick, state.refreshMs);
+})();
+</script>
+</body>
+</html>

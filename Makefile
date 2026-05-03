@@ -52,7 +52,7 @@ policies-list:
 tarball: build-linux
 	tar -czf ebpf-poc-$(LINUX_ARCH).tar.gz \
 		-C $(ROOT) \
-		Makefile scripts policies attacks README.md docs/build.md \
+		Makefile scripts policies attacks README.md docs/development/build-plan.md \
 		engine/engine-linux-$(LINUX_ARCH)
 	@echo "→ ebpf-poc-$(LINUX_ARCH).tar.gz"
 
@@ -69,6 +69,11 @@ clean:
 VM         ?= ebpf
 REMOTE_DIR ?= /home/ubuntu/ebpf-poc
 REMOTE_USER ?= ubuntu
+# Capture how REMOTE_DIR was set so SSH-based targets can auto-detect a
+# provider-appropriate path ($HOME/ebpf-poc) when the user didn't override
+# it — works across Multipass (ubuntu), Azure (azureuser), AWS (ec2-user),
+# Scaleway, GCP, root, etc.
+REMOTE_DIR_ORIGIN := $(origin REMOTE_DIR)
 
 # Choke thresholds baked into the systemd unit. Tuned so Ubuntu's sshd
 # MOTD churn (which scores ~84 from repeated /etc/passwd reads on each
@@ -114,14 +119,17 @@ deploy: build-linux
 	@echo "──────────────────────────────────────────────────────────────"
 
 # `redeploy` is `deploy` minus the setup.sh step — fast iteration once the
-# VM has been bootstrapped once.
+# VM has been bootstrapped once. Linux refuses to overwrite a running
+# executable (ETXTBSY), so we stage the new binary as `.new`, then `mv`
+# it over the live one — rename(2) is atomic and unaffected by the old
+# inode still being held open. systemctl restart picks it up.
 redeploy: build-linux
-	multipass transfer $(LINUX_BIN) $(VM):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
+	multipass transfer $(LINUX_BIN) $(VM):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new
+	multipass exec $(VM) -- bash -lc "chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new && mv -f $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)"
 	tar -cz -C $(ROOT) policies attacks | multipass exec $(VM) -- tar -xz -C $(REMOTE_DIR)
-	multipass exec $(VM) -- chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
-	multipass exec $(VM) -- bash -lc "sudo systemctl restart ebpf-engine || true"
-	@sleep 1
-	@multipass exec $(VM) -- bash -lc "sudo systemctl is-active ebpf-engine; sudo journalctl -u ebpf-engine -n 5 --no-pager || true"
+	multipass exec $(VM) -- bash -lc "sudo systemctl restart ebpf-engine 2>/dev/null || sudo pkill -TERM -f engine-linux-amd64 || true"
+	@sleep 2
+	@multipass exec $(VM) -- bash -lc "sudo systemctl is-active ebpf-engine 2>/dev/null; sudo journalctl -u ebpf-engine -n 5 --no-pager 2>/dev/null || true"
 
 # ─────────────────────────────────────────────────────────────────────────
 # Generic SSH-based deploy — for Azure, EC2, GCP, bare metal — anywhere
@@ -148,38 +156,60 @@ deploy-remote: build-linux
 	@if [ -z "$(HOST)" ]; then echo "HOST=user@ip required, e.g. make deploy-remote HOST=azureuser@52.x.y.z"; exit 1; fi
 	@command -v ssh >/dev/null || { echo "ssh not found"; exit 1; }
 	@$(SSH) -o BatchMode=yes true 2>/dev/null || { echo "cannot reach $(HOST) over ssh — check key, firewall, host"; exit 1; }
-	@echo "→ stopping any running engine so the binary is writable"
-	-$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64 2>/dev/null; exit 0"
-	@echo "→ syncing bundle into $(HOST):$(REMOTE_DIR)"
-	$(SSH) "mkdir -p $(REMOTE_DIR)"
-	$(SCP) $(LINUX_BIN) $(HOST):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
-	tar -cz -C $(ROOT) policies attacks scripts | $(SSH) "tar -xz -C $(REMOTE_DIR)"
-	$(SSH) "chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) $(REMOTE_DIR)/scripts/setup.sh"
-	@echo "→ ensuring tetragon + cgroup v2 are ready"
-	$(SSH) "cd $(REMOTE_DIR) && TETRAGON_IMAGE=quay.io/cilium/tetragon:v1.6.1 bash scripts/setup.sh"
-	@echo "→ applying TracingPolicies (detection + enforcement)"
-	$(SSH) 'for p in $(REMOTE_DIR)/policies/*.yaml $(REMOTE_DIR)/policies/enforce/*.yaml; do [ -f "$$p" ] || continue; sudo docker cp "$$p" tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/$$(basename "$$p") || true; done'
-	@echo "→ (re)starting engine with choke gateway + enforcement"
-	-$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo systemctl reset-failed ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64; exit 0"
-	$(SSH) "sudo mkdir -p /var/lib/ebpf-engine"
-	$(SSH) "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT)"
-	@sleep 2
-	@echo
-	@echo "──────────────────────────────────────────────────────────────"
-	@echo " Engine status:"
-	@$(SSH) "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || true"
-	@echo
-	@HOST_IP=$$(echo "$(HOST)" | sed 's/.*@//'); echo " UI:           http://$$HOST_IP:8080/"; echo " Choke console: http://$$HOST_IP:8080/choke"; echo " login:        admin / ebpf-soc-demo"
-	@echo "──────────────────────────────────────────────────────────────"
+	@set -e; \
+	if [ "$(REMOTE_DIR_ORIGIN)" = "command line" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment override" ]; then \
+	  REMOTE_DIR='$(REMOTE_DIR)'; \
+	else \
+	  REMOTE_DIR="$$($(SSH) 'echo $$HOME')/ebpf-poc"; \
+	fi; \
+	echo "→ remote dir: $$REMOTE_DIR"; \
+	echo "→ stopping any running engine so the binary is writable"; \
+	$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64 2>/dev/null; exit 0" || true; \
+	echo "→ syncing bundle into $(HOST):$$REMOTE_DIR"; \
+	$(SSH) "mkdir -p $$REMOTE_DIR"; \
+	$(SCP) $(LINUX_BIN) $(HOST):$$REMOTE_DIR/engine-linux-$(LINUX_ARCH); \
+	tar -cz -C $(ROOT) policies attacks scripts | $(SSH) "tar -xz -C $$REMOTE_DIR"; \
+	$(SSH) "chmod +x $$REMOTE_DIR/engine-linux-$(LINUX_ARCH) $$REMOTE_DIR/scripts/setup.sh"; \
+	echo "→ ensuring tetragon + cgroup v2 are ready"; \
+	$(SSH) "cd $$REMOTE_DIR && TETRAGON_IMAGE=quay.io/cilium/tetragon:v1.6.1 bash scripts/setup.sh"; \
+	echo "→ applying TracingPolicies (detection + enforcement)"; \
+	$(SSH) "for p in $$REMOTE_DIR/policies/*.yaml $$REMOTE_DIR/policies/enforce/*.yaml; do [ -f \"\$$p\" ] || continue; sudo docker cp \"\$$p\" tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/\$$(basename \"\$$p\") || true; done"; \
+	echo "→ (re)starting engine with choke gateway + enforcement"; \
+	$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo systemctl reset-failed ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64 2>/dev/null; exit 0" || true; \
+	$(SSH) "sudo mkdir -p /var/lib/ebpf-engine"; \
+	$(SSH) "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$$REMOTE_DIR $$REMOTE_DIR/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $$REMOTE_DIR/policies -attacks $$REMOTE_DIR/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $$REMOTE_DIR/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT)"; \
+	sleep 2; \
+	echo; \
+	echo "──────────────────────────────────────────────────────────────"; \
+	echo " Engine status:"; \
+	$(SSH) "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || true"; \
+	echo; \
+	HOST_IP=$$(echo "$(HOST)" | sed 's/.*@//'); echo " UI:           http://$$HOST_IP:8080/"; echo " Choke console: http://$$HOST_IP:8080/choke"; echo " login:        admin / ebpf-soc-demo"; \
+	echo "──────────────────────────────────────────────────────────────"
 
 # Fast iteration variant — binary + policies only, no setup.sh.
+# Stages the binary as `.new` then atomically renames it over the
+# running executable. Linux refuses direct overwrite (ETXTBSY) but
+# rename(2) is fine: the old inode stays alive for the running process,
+# the new path points at the new inode, and systemctl restart picks
+# it up cleanly. Falls back to pkill (Restart=always respawns).
 redeploy-remote: build-linux
 	@if [ -z "$(HOST)" ]; then echo "HOST=user@ip required"; exit 1; fi
-	$(SCP) $(LINUX_BIN) $(HOST):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
-	tar -cz -C $(ROOT) policies attacks | $(SSH) "tar -xz -C $(REMOTE_DIR)"
-	$(SSH) "chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH); sudo systemctl restart ebpf-engine || true"
-	@sleep 1
-	@$(SSH) "sudo systemctl is-active ebpf-engine; sudo journalctl -u ebpf-engine -n 5 --no-pager || true"
+	@set -e; \
+	if [ "$(REMOTE_DIR_ORIGIN)" = "command line" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment override" ]; then \
+	  REMOTE_DIR='$(REMOTE_DIR)'; \
+	else \
+	  REMOTE_DIR="$$($(SSH) 'echo $$HOME')/ebpf-poc"; \
+	fi; \
+	echo "→ remote dir: $$REMOTE_DIR"; \
+	echo "→ staging new binary as .new (no need to stop the engine first)"; \
+	$(SCP) $(LINUX_BIN) $(HOST):$$REMOTE_DIR/engine-linux-$(LINUX_ARCH).new; \
+	$(SSH) "chmod +x $$REMOTE_DIR/engine-linux-$(LINUX_ARCH).new && mv -f $$REMOTE_DIR/engine-linux-$(LINUX_ARCH).new $$REMOTE_DIR/engine-linux-$(LINUX_ARCH)"; \
+	tar -cz -C $(ROOT) policies attacks | $(SSH) "tar -xz -C $$REMOTE_DIR"; \
+	echo "→ restarting engine to load the new binary"; \
+	$(SSH) "sudo systemctl restart ebpf-engine 2>/dev/null || sudo pkill -TERM -f engine-linux-amd64 || true"; \
+	sleep 2; \
+	$(SSH) "sudo systemctl is-active ebpf-engine 2>/dev/null; sudo journalctl -u ebpf-engine -n 5 --no-pager 2>/dev/null || true"
 
 vm-logs:
 	multipass exec $(VM) -- sudo journalctl -u ebpf-engine -f --no-pager
