@@ -1,16 +1,20 @@
 package api
 
 import (
+	"bufio"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
+	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
@@ -52,6 +56,10 @@ type Server struct {
 	// engine was started without --fleet-hosts; the /api/fleet/* handlers
 	// 503 in that case.
 	fleet *Fleet
+	// originSnapshotFn returns a copy of the origin tracker's pid→Origin
+	// map for the /api/origin debug endpoint. Wired by main.go; nil
+	// means the endpoint reports "{}" (still 200) so it's safe to probe.
+	originSnapshotFn func() map[uint32]map[string]interface{}
 
 	subsMu sync.Mutex
 	subs   map[chan Broadcast]struct{}
@@ -93,8 +101,10 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/honeypots", s.handleHoneypots)
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
 	mux.HandleFunc("/api/version", s.handleVersion)
+	mux.HandleFunc("/api/system-health", s.handleSystemHealth)
 	mux.HandleFunc("/api/decisions", s.handleDecisions)
 	mux.HandleFunc("/api/verify-chain", s.handleVerifyChain)
+	mux.HandleFunc("/api/origin", s.handleOrigin)
 
 	// Choke Gateway Console — separate page, separate API namespace.
 	mux.HandleFunc("/choke", s.handleChokeConsole)
@@ -108,6 +118,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/choke/policy/preview", s.handleChokePolicyPreview)
 	// Enterprise actions: presets, bulk, forget, thaw, annotate, snapshot, drill-in.
 	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)
+	mux.HandleFunc("/api/choke/mode", s.handleChokeMode)
 	mux.HandleFunc("/api/choke/bulk-manual", s.handleChokeBulkManual)
 	mux.HandleFunc("/api/choke/forget", s.handleChokeForget)
 	mux.HandleFunc("/api/choke/thaw", s.handleChokeThaw)
@@ -134,7 +145,88 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/fleet/thaw", s.handleFleetThaw)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
-	return http.ListenAndServe(addr, s.auth.Middleware(mux))
+	return http.ListenAndServe(addr, metricsMiddleware(s.auth.Middleware(mux)))
+}
+
+// metricsMiddleware times every request and records the duration into
+// the OTel histogram. Path is bucketed at the first segment to keep
+// label cardinality bounded — without this, /api/process/<exec_id>
+// would explode the cardinality with one series per process.
+func metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		start := time.Now()
+		rec := &statusRecorder{ResponseWriter: w, status: 200}
+		next.ServeHTTP(rec, r)
+		metrics.ObserveHTTPRequest(
+			time.Since(start).Seconds(),
+			bucketPath(r.URL.Path),
+			httpStatusBucket(rec.status),
+		)
+	})
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
+}
+
+func (s *statusRecorder) WriteHeader(code int) {
+	s.status = code
+	s.ResponseWriter.WriteHeader(code)
+}
+
+// Flush forwards to the wrapped writer if it supports http.Flusher.
+// Without this, the SSE handler's `w.(http.Flusher)` assertion fails
+// when the metrics middleware is in the chain — it returns 500
+// "streaming unsupported" and the dashboard shows STREAM offline.
+// Same reason ResponseController exists in net/http now.
+func (s *statusRecorder) Flush() {
+	if f, ok := s.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack proxies the connection takeover used by SSE/websockets when
+// the upstream supports it. Same rationale as Flush — preserve the
+// ResponseWriter's optional interfaces through the wrapper.
+func (s *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if h, ok := s.ResponseWriter.(http.Hijacker); ok {
+		return h.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Unwrap lets net/http's ResponseController find optional interfaces
+// (Flusher, Hijacker, Pusher, …) on the underlying writer when the
+// wrapper itself doesn't implement them. The Go 1.20+ way.
+func (s *statusRecorder) Unwrap() http.ResponseWriter {
+	return s.ResponseWriter
+}
+
+// bucketPath collapses high-cardinality paths to a fixed prefix so the
+// metric stays usable. /api/process/<exec_id> -> /api/process/_, etc.
+func bucketPath(p string) string {
+	switch {
+	case strings.HasPrefix(p, "/api/process/"):
+		return "/api/process/_"
+	case strings.HasPrefix(p, "/api/choke/decisions/"):
+		return "/api/choke/decisions/_"
+	}
+	return p
+}
+
+func httpStatusBucket(code int) string {
+	switch {
+	case code >= 500:
+		return "5xx"
+	case code >= 400:
+		return "4xx"
+	case code >= 300:
+		return "3xx"
+	case code >= 200:
+		return "2xx"
+	}
+	return "1xx"
 }
 
 func (s *Server) fanout() {
@@ -211,9 +303,25 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 	chain := s.tree.Ancestors(execID, 10)
 	events, _ := s.store.EventsByExecID(execID)
+	// Origin attribution: look up the matching circuit entry. The
+	// gateway computes origin via the live tracker on every Snapshot()
+	// call, so the value reflects current attribution rather than
+	// whatever was written to the audit row when the decision fired.
+	var origin interface{}
+	if s.gateway != nil {
+		for _, e := range s.gateway.Snapshot() {
+			if e.ExecID == execID {
+				if e.Origin != nil {
+					origin = e.Origin
+				}
+				break
+			}
+		}
+	}
 	writeJSON(w, map[string]interface{}{
 		"chain":  chain,
 		"events": events,
+		"origin": origin,
 	})
 }
 
@@ -221,6 +329,13 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	// Disable nginx buffering for this response. Without this, nginx
+	// holds events in a buffer until it's full or the connection closes,
+	// regardless of `proxy_buffering off` in the location block — gzip
+	// and HTTP/2 both reintroduce buffering at higher layers. nginx
+	// respects this header and disables buffering for *this response*
+	// only. Has no effect when nginx isn't in front.
+	w.Header().Set("X-Accel-Buffering", "no")
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {

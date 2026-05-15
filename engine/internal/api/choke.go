@@ -320,6 +320,35 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"thawed": "ok"})
 }
 
+// POST /api/choke/mode — runtime swap between detect-only and enforcing.
+// Body: {enforcing: bool, reason: string}. Returns the mode that was in
+// effect before the swap so the caller can detect no-ops. The change
+// applies immediately to all subsequent decisions; in-flight Apply() calls
+// are unaffected (they hold their own enforcer reference).
+func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
+	g := s.gatewayOrErr(w)
+	if g == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Enforcing bool   `json:"enforcing"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	prev := g.SetEnforcing(body.Enforcing, s.auth.Username(), body.Reason)
+	writeJSON(w, map[string]interface{}{
+		"mode":     string(g.Mode()),
+		"previous": string(prev),
+	})
+}
+
 // POST /api/choke/preset — atomically apply a named operational mode.
 // Body: {name: "containment"|"forensic"|"maintenance"|"default", reason: "..."}
 func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {

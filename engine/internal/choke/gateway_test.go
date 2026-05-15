@@ -166,6 +166,101 @@ func TestGatewaySetThresholdsLogs(t *testing.T) {
 	}
 }
 
+// In detect-only mode, manual operator overrides must still reach the
+// real enforcer chain — a human "kill this" should not be downgraded to
+// "would have killed". Score-driven decisions continue to log only.
+func TestGatewayManualBypassesDetectOnly(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "g.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	pt := tree.New(time.Hour)
+	be := bpfmap.NewNoopBackend()
+	_ = be.Open()
+	real := &enforce.Multi{Backends: []enforce.Enforcer{
+		&enforce.Throttler{Backend: be},
+	}}
+	logger := &enforce.Logger{Prefix: "[enforce-disabled]"}
+	g := NewGateway(Config{
+		Store: st, Enforcer: logger, Broadcast: &recordingBcast{},
+		Tokens: tokens.NewManager(), Tree: pt, BPFMap: be,
+		Policies:       policy.NewSet(),
+		Enforcing:      false, // detect-only at boot
+		RealEnforcer:   real,
+		LoggerEnforcer: logger,
+	})
+	pt.Add(&tree.Node{ExecID: "M", PID: 4242, Binary: "/bin/yes", StartTime: time.Now()})
+
+	// Score-driven: stays logger-only.
+	g.OnEvent(context.Background(), Observation{ExecID: "M", PID: 4242, Binary: "/bin/yes", Score: 30, Reason: "auto"})
+	rows, _ := st.RecentDecisions(10)
+	if len(rows) == 0 || rows[0].Backend != "logger" {
+		t.Fatalf("score-driven in detect-only must use logger backend; got %+v", rows)
+	}
+
+	// Manual: reaches the real Multi chain.
+	if _, err := g.Manual(context.Background(), ManualRequest{
+		ExecID: "M", PID: 4242, Binary: "/bin/yes",
+		Action: circuit.ActQuarantine, Reason: "operator override",
+		Actor:  "alice",
+	}); err != nil {
+		t.Fatalf("manual: %v", err)
+	}
+	rows, _ = st.RecentDecisions(10)
+	if rows[0].Backend != "multi" {
+		t.Errorf("manual in detect-only must use real enforcer; backend=%q", rows[0].Backend)
+	}
+	snap, _ := be.Snapshot()
+	if _, ok := snap[4242]; !ok {
+		t.Errorf("manual override must drive the real throttler; bpfmap missing pid 4242")
+	}
+}
+
+// Dry-run is a deliberate global stop. Manual overrides still record audit
+// rows but must not reach the kernel — dry-run wraps the active enforcer
+// and the manual-bypass logic leaves that wrapper in place.
+func TestGatewayManualRespectsDryRunInDetectOnly(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "g.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	pt := tree.New(time.Hour)
+	be := bpfmap.NewNoopBackend()
+	_ = be.Open()
+	real := &enforce.Multi{Backends: []enforce.Enforcer{&enforce.Throttler{Backend: be}}}
+	logger := &enforce.Logger{Prefix: "[enforce-disabled]"}
+	g := NewGateway(Config{
+		Store: st, Enforcer: logger, Broadcast: &recordingBcast{},
+		Tokens: tokens.NewManager(), Tree: pt, BPFMap: be,
+		Policies:       policy.NewSet(),
+		DryRun:         true,
+		Enforcing:      false,
+		RealEnforcer:   real,
+		LoggerEnforcer: logger,
+	})
+	pt.Add(&tree.Node{ExecID: "D", PID: 7777, Binary: "/bin/yes", StartTime: time.Now()})
+
+	if _, err := g.Manual(context.Background(), ManualRequest{
+		ExecID: "D", PID: 7777, Binary: "/bin/yes",
+		Action: circuit.ActQuarantine, Reason: "shadow probe",
+		Actor:  "alice",
+	}); err != nil {
+		t.Fatalf("manual: %v", err)
+	}
+	rows, _ := st.RecentDecisions(10)
+	if !rows[0].DryRun {
+		t.Errorf("dry-run flag must propagate to manual: %+v", rows[0])
+	}
+	snap, _ := be.Snapshot()
+	if len(snap) != 0 {
+		t.Errorf("dry-run must suppress real enforcer on manual; bpfmap entries=%d", len(snap))
+	}
+}
+
 func TestGatewayDryRunRecordsButDoesNotApply(t *testing.T) {
 	g, st, pt, _, be := newTestGateway(t, true) // dry-run on
 	pt.Add(&tree.Node{ExecID: "D", PID: 55, Binary: "/bin/yes", StartTime: time.Now()})

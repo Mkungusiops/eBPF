@@ -24,12 +24,16 @@ import (
 
 // PIDBucket is the kernel-side struct laid out exactly as the BPF program
 // reads it. Field order and types must not change without also bumping
-// the BPF program's matching struct.
+// the BPF program's matching struct in bpf/choke.c.
+//
+// LastNs comes first so the natural alignment of u64 doesn't insert
+// padding between it and the surrounding u32 fields — this keeps
+// encoding/binary.Size() in lockstep with C sizeof(): 24 bytes flat.
 type PIDBucket struct {
+	LastNs     uint64 // last refill timestamp (ns since boot)
 	RatePerSec uint32 // tokens added per second
 	Burst      uint32 // max accumulated tokens
 	Tokens     uint32 // current token count (kernel-side, written by BPF)
-	LastNs     uint64 // last refill timestamp (ns since boot)
 	Flags      uint32 // bit 0: throttle, 1: tarpit, 2: quarantine, 3: sever
 }
 

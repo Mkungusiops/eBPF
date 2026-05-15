@@ -41,6 +41,34 @@ type Detail struct {
 	ConnPeers   []string `json:"conn_peers,omitempty"`    // up to 5 sample peer "ip:port"
 }
 
+// Ancestors walks the PPID chain upward from pid, returning at most max
+// ancestors with the immediate parent first. The `all` slice is a recent
+// sysproc.List() snapshot — passing one in keeps this allocation-free
+// per call when a caller (e.g. the origin tracker) needs to do many
+// lookups against the same snapshot. Cycle-safe.
+func Ancestors(all []Entry, pid uint32, max int) []uint32 {
+	if len(all) == 0 || pid == 0 || max <= 0 {
+		return nil
+	}
+	byPID := make(map[uint32]uint32, len(all))
+	for _, e := range all {
+		byPID[e.PID] = e.PPID
+	}
+	out := make([]uint32, 0, max)
+	visited := map[uint32]bool{pid: true}
+	cur := pid
+	for i := 0; i < max; i++ {
+		p, ok := byPID[cur]
+		if !ok || p == 0 || visited[p] {
+			break
+		}
+		visited[p] = true
+		out = append(out, p)
+		cur = p
+	}
+	return out
+}
+
 // Descendants walks the PPID tree to collect every PID transitively
 // descended from root. Excludes root itself unless includeRoot=true.
 // Cycle-safe (a malicious or buggy parent loop is detected via the

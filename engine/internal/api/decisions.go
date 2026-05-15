@@ -39,6 +39,34 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, decisions)
 }
 
+// SetOriginSnapshotFn wires the origin tracker's snapshot accessor for
+// the /api/origin debug endpoint. main.go installs a closure that
+// adapts the tracker's pid→origin.Origin map into a JSON-shaped
+// pid→map view so the api package stays free of an origin import.
+func (s *Server) SetOriginSnapshotFn(fn func() map[uint32]map[string]interface{}) {
+	s.originSnapshotFn = fn
+}
+
+// handleOrigin returns the live tracker contents — every PID currently
+// attributed to a remote client, plus the per-PID origin metadata. Used
+// to verify that the journald tailer is feeding entries and to diagnose
+// rows that show "—" in the choke console's ORIGIN column.
+func (s *Server) handleOrigin(w http.ResponseWriter, _ *http.Request) {
+	if s.originSnapshotFn == nil {
+		writeJSON(w, map[string]interface{}{
+			"available": false,
+			"entries":   map[string]interface{}{},
+		})
+		return
+	}
+	snap := s.originSnapshotFn()
+	writeJSON(w, map[string]interface{}{
+		"available": true,
+		"count":     len(snap),
+		"entries":   snap,
+	})
+}
+
 // handleVerifyChain re-walks the audit chain and reports whether it is
 // intact. Useful for the dashboard's "audit OK" badge and for offline
 // verification.

@@ -1,0 +1,56 @@
+[Unit]
+Description=eBPF Threat Choke Gateway
+Documentation=https://github.com/jeffmk/ebpf-poc-engine
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStart=/opt/ebpf-engine/engine -config /etc/ebpf-engine/engine.yaml
+Restart=always
+RestartSec=2
+TimeoutStopSec=10
+
+# Logs go to journald. Use journalctl -u ebpf-engine -f to tail.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ebpf-engine
+
+# State directory: /var/lib/ebpf-engine. systemd creates it on first
+# start and chowns to the service user. Holds the SQLite DB + honeypot
+# files + audit chain.
+StateDirectory=ebpf-engine
+StateDirectoryMode=0750
+WorkingDirectory=/var/lib/ebpf-engine
+
+# Capabilities — Tetragon does the kernel work, but the engine itself
+# needs CAP_BPF + CAP_NET_ADMIN to load and attach the cgroup/connect{4,6}
+# programs from cilium/ebpf, plus CAP_SYS_ADMIN for cgroup v2 freeze and
+# write to cgroup.procs from outside the controlled cgroup tree, plus
+# CAP_KILL to send SIGKILL on sever decisions.
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
+
+# Hardening — all the standard knobs that don't conflict with the
+# capabilities above.
+NoNewPrivileges=false
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=false
+ProtectKernelTunables=false
+ProtectKernelModules=true
+ProtectControlGroups=false
+ReadWritePaths=/var/lib/ebpf-engine /sys/fs/cgroup /sys/fs/bpf
+ReadOnlyPaths=/etc/ebpf-engine
+
+# Service must run as root because it writes to /sys/fs/cgroup/*/cgroup.procs
+# and sends SIGKILL across PIDs. Dropping to a dedicated user requires a
+# CAP_SYS_RESOURCE/cgroup-delegation setup that's worth doing later but
+# not in the PoC.
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target

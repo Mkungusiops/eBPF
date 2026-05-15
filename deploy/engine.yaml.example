@@ -1,0 +1,65 @@
+# engine.yaml — config for the eBPF Choke Gateway engine.
+#
+# Every field maps 1:1 to a CLI flag. Run `./engine -h` to see them.
+# CLI flags always override values set here, so this file supplies
+# defaults for the systemd ExecStart line in /etc/ebpf-engine.yaml.
+
+# ── Tetragon + storage ────────────────────────────────────────────────
+tetragon: "unix:///var/run/tetragon/tetragon.sock"
+http:     ":8080"
+
+# Storage backend: "sqlite" (default, single-host PoC path) or "postgres"
+# (foundation for multi-host fan-in — single engine talking to a shared
+# Postgres is the first step; the fan-in collector + multiple engine
+# instances come on top of this).
+store: "sqlite"
+db:    "/var/lib/ebpf-engine/events.db"
+# Required when store=postgres. Use a managed-Postgres URL or run
+# `make pg-vm` to bring up a local container.
+# pg_dsn: "postgres://engine:engine@127.0.0.1:5432/ebpf?sslmode=disable"
+
+# ── Auth (CHANGE BEFORE PRODUCTION USE) ───────────────────────────────
+user: "admin"
+# Plaintext password is bcrypted at startup. For production, prefer
+# pass_hash (a pre-computed bcrypt hash) so plaintext never sits on disk.
+# Generate with: htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n'
+pass: "ebpf-soc-demo"
+# pass_hash: "$2a$10$abc...xyz"   # takes precedence over pass when set
+
+# Path to the HMAC signing secret used for stateless session cookies.
+# Auto-created 0600 on first start with 32 random bytes. Sessions
+# survive engine restart because they're cryptographically signed,
+# not stored server-side.
+secret_path: "/etc/ebpf-engine/secret"
+
+# ── Policy + asset paths ──────────────────────────────────────────────
+policies:        "/opt/ebpf-engine/policies"
+attacks:         "/opt/ebpf-engine/attacks"
+honeypots:       "/var/lib/ebpf-engine/honey"
+choke_policies:  "/opt/ebpf-engine/policies/choke"
+
+# ── Choke gateway ─────────────────────────────────────────────────────
+enforce: true
+dry_run: false
+# Score thresholds. Defaults are tuned for the deploy-target use case
+# where sshd MOTD churn produces ~85 — quarantine at 120 keeps sshd
+# out of the freeze tier.
+throttle_at:   20
+tarpit_at:     50
+quarantine_at: 120
+sever_at:      200
+cgroup_root:   "/sys/fs/cgroup"
+
+# Comma-separated binaries exempt from score-driven auto-enforce.
+# Empty string uses the package default (sshd, systemd, dockerd, …).
+system_critical: ""
+
+# ── BPF data plane (cilium/ebpf) ──────────────────────────────────────
+# Path to the compiled choke.o. Empty disables the kernel data plane
+# and falls back to the in-memory noop backend (userspace mirror only).
+bpf_obj:    "/opt/ebpf-engine/bpf/choke.o"
+bpf_cgroup: "/sys/fs/cgroup"
+
+# ── Fleet (optional) ──────────────────────────────────────────────────
+# Path to a chokectl.hosts file enables the /fleet console.
+fleet_hosts: ""

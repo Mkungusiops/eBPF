@@ -31,7 +31,13 @@ log "kernel $KREL with BTF — ok"
 # ───── apt deps ─────────────────────────────────────────────────────────────
 log "installing apt packages"
 sudo apt-get update -y
-sudo apt-get install -y git curl make jq build-essential ca-certificates
+# clang + libbpf-dev + linux-headers are needed to compile the cilium/ebpf
+# data plane (engine/internal/enforce/bpfmap/bpf/choke.c). They're tiny on
+# top of the existing build-essential install (~80MB total).
+sudo apt-get install -y git curl make jq build-essential ca-certificates \
+                        clang llvm libbpf-dev "linux-headers-$(uname -r)" || \
+sudo apt-get install -y git curl make jq build-essential ca-certificates \
+                        clang llvm libbpf-dev linux-headers-generic
 
 # ───── Docker ───────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
@@ -141,6 +147,31 @@ if [[ -f "$CGROOT/cgroup.controllers" ]]; then
 else
   log "WARNING: cgroup v2 not found at $CGROOT — graduated enforcement (throttle/tarpit/quarantine) will be disabled."
   log "         The engine will still sever (SIGKILL) and will still record decisions."
+fi
+
+# ───── BPF data plane compile ───────────────────────────────────────────────
+# Compile the cilium/ebpf data plane (choke.c) to choke.o. The deploy
+# bundle ships the .c source; we build the .o here so it's matched to the
+# VM's kernel headers. Output goes next to the source so the engine can
+# load it via -bpf-obj.
+BPF_SRC_DIR="$(pwd)/engine/internal/enforce/bpfmap/bpf"
+if [[ ! -d "$BPF_SRC_DIR" ]]; then
+  # When run from the deploy bundle layout, the source sits under the
+  # bundle root rather than alongside the engine package tree.
+  BPF_SRC_DIR="$(pwd)/bpf"
+fi
+if [[ -f "$BPF_SRC_DIR/choke.c" ]]; then
+  log "compiling BPF data plane: $BPF_SRC_DIR/choke.c -> choke.o"
+  declare -a CLANG_ARGS=(-O2 -g -target bpf)
+  case "$(uname -m)" in
+    x86_64)  CLANG_ARGS+=(-D__TARGET_ARCH_x86) ;;
+    aarch64) CLANG_ARGS+=(-D__TARGET_ARCH_arm64) ;;
+  esac
+  CLANG_ARGS+=(-I"/usr/include/$(uname -m)-linux-gnu")
+  clang "${CLANG_ARGS[@]}" -c "$BPF_SRC_DIR/choke.c" -o "$BPF_SRC_DIR/choke.o"
+  log "→ $BPF_SRC_DIR/choke.o"
+else
+  log "WARNING: $BPF_SRC_DIR/choke.c not found — skipping BPF compile (engine will run with the noop backend)"
 fi
 
 log "──────────────────────────────────────────────────────────────"

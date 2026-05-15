@@ -4,6 +4,29 @@
 <meta charset="utf-8">
 <title>eBPF SOC — Threat Intelligence</title>
 <link id="appFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
+<!-- CSRF fetch wrapper. See choke.html for the full rationale. -->
+<script>
+  (function() {
+    function readCookie(name) {
+      var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+      return m ? decodeURIComponent(m[2]) : '';
+    }
+    var origFetch = window.fetch.bind(window);
+    window.fetch = function(input, init) {
+      init = init || {};
+      var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        var tok = readCookie('csrf_token');
+        if (tok) {
+          var headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined) || {});
+          if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', tok);
+          init.headers = headers;
+        }
+      }
+      return origFetch(input, init);
+    };
+  })();
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js" defer></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
@@ -588,6 +611,116 @@ tailwind.config = {
   }
   body.theme-light .graph-node-stroke { stroke: #ffffff; }
 
+  /* Real-time live indicator — sits on the right side of the graph toolbar.
+     Mirrors the .live-pill styling used by the global stream status, but is
+     scoped to this modal and clickable to toggle pause. */
+  .graph-live-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px; border-radius: 12px;
+    background: rgba(34,197,94,0.10); border: 1px solid rgba(34,197,94,0.35);
+    font-size: 11px; line-height: 1; cursor: pointer;
+    color: #86efac; font-weight: 600; letter-spacing: 0.04em;
+    user-select: none;
+    transition: background 200ms ease, border-color 200ms ease, color 200ms ease;
+  }
+  .graph-live-pill:hover { background: rgba(34,197,94,0.18); }
+  .graph-live-pill:focus-visible {
+    outline: none; box-shadow: 0 0 0 3px rgba(34,197,94,0.25);
+  }
+  .graph-live-pill .glp-dot {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: #22c55e; box-shadow: 0 0 0 0 rgba(34,197,94,0.55);
+    animation: livePulse 1.6s ease-in-out infinite;
+  }
+  .graph-live-pill .glp-count {
+    font-variant-numeric: tabular-nums; font-size: 10px;
+    background: rgba(34,197,94,0.20); color: #bbf7d0;
+    border-radius: 8px; padding: 1px 6px; min-width: 14px; text-align: center;
+  }
+  .graph-live-pill.state-paused {
+    background: rgba(148,163,184,0.10); border-color: rgba(148,163,184,0.40);
+    color: #cbd5e1;
+  }
+  .graph-live-pill.state-paused:hover { background: rgba(148,163,184,0.18); }
+  .graph-live-pill.state-paused .glp-dot {
+    background: #94a3b8; animation: none; box-shadow: none;
+  }
+  .graph-live-pill.state-paused .glp-count {
+    background: rgba(148,163,184,0.22); color: #e2e8f0;
+  }
+  body.theme-light .graph-live-pill {
+    background: rgba(34,197,94,0.14); border-color: rgba(22,163,74,0.50); color: #166534;
+  }
+  body.theme-light .graph-live-pill:hover { background: rgba(34,197,94,0.22); }
+  body.theme-light .graph-live-pill:focus-visible {
+    box-shadow: 0 0 0 3px rgba(22,163,74,0.20);
+  }
+  body.theme-light .graph-live-pill .glp-count {
+    background: rgba(22,163,74,0.20); color: #14532d;
+  }
+  body.theme-light .graph-live-pill.state-paused {
+    background: rgba(148,163,184,0.20); border-color: rgba(100,116,139,0.50); color: #334155;
+  }
+  body.theme-light .graph-live-pill.state-paused .glp-count {
+    background: rgba(148,163,184,0.30); color: #1e293b;
+  }
+
+  /* Active/inactive states for layout toggle buttons. The dark-mode accent
+     uses the cyan rail color used elsewhere; light-mode uses the muted teal. */
+  .graph-tool.active {
+    background: rgba(34,211,238,0.16); border-color: rgba(34,211,238,0.55);
+    color: #a5f3fc;
+  }
+  body.theme-light .graph-tool.active {
+    background: rgba(8,145,178,0.12); border-color: rgba(8,145,178,0.55); color: #0e7490;
+  }
+
+  /* Smooth opacity transitions for TTL fade — when the periodic ticker
+     restyles a stale node, this makes the dim slide in over ~400ms instead
+     of snapping. The transition is scoped to opacity only so it doesn't
+     fight D3's per-tick `transform` updates. */
+  #graphSvg g.graph-node,
+  #graphSvg g.graph-links line {
+    transition: opacity 400ms ease;
+  }
+
+  /* Real-time entry + escalation animations.
+     - graphNodeIn: fresh node pops in with a soft overshoot (cubic-bezier
+       creates a brief 1.15× peak for delight without being noisy).
+     - graphScoreFlash: drop-shadow flares when a node's score escalates.
+     - graphLinkIn: new edges fade in along their length using a dash.
+     Animations target only newly-added or escalated nodes — established
+     nodes never re-animate, so the layout stays calm under bursty traffic. */
+  @keyframes graphNodeIn {
+    0%   { transform: scale(0.2); opacity: 0; }
+    60%  { transform: scale(1.18); opacity: 1; }
+    100% { transform: scale(1);    opacity: 1; }
+  }
+  .graph-node-stroke.graph-node-new {
+    transform-box: fill-box; transform-origin: center;
+    animation: graphNodeIn 480ms cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  }
+  @keyframes graphScoreFlash {
+    0%   { filter: drop-shadow(0 0 0 rgba(244,63,94,0)); }
+    35%  { filter: drop-shadow(0 0 9px rgba(244,63,94,0.85)); }
+    100% { filter: drop-shadow(0 0 0 rgba(244,63,94,0)); }
+  }
+  .graph-node-stroke.graph-node-flash {
+    animation: graphScoreFlash 900ms ease-out both;
+  }
+  @keyframes graphLinkIn {
+    from { stroke-opacity: 0; stroke-dasharray: 4 6; stroke-dashoffset: 14; }
+    to   { stroke-opacity: 1; stroke-dasharray: none; stroke-dashoffset: 0; }
+  }
+  .graph-link-new { animation: graphLinkIn 600ms ease-out both; }
+  /* Respect reduced-motion preference — drop animations entirely. */
+  @media (prefers-reduced-motion: reduce) {
+    .graph-node-stroke.graph-node-new,
+    .graph-node-stroke.graph-node-flash,
+    .graph-link-new { animation: none !important; }
+    .graph-live-pill .glp-dot { animation: none !important; }
+  }
+
   /* Modal maximize/restore — toggled by JS for the correlation graph. The
      `!important` flags beat the inline width/max-height set on the modal-card.
      Using viewport units (vw/vh) keeps the chrome consistent at any zoom. */
@@ -965,7 +1098,7 @@ tailwind.config = {
   #sidebar #sbUser:hover { background: var(--soc-sidebar-hover-bg); color: var(--soc-sidebar-item-hov); }
   .pref-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid rgba(148,163,184,0.08); }
   .pref-row:last-child { border-bottom: 0; }
-  .nc-row { display: flex; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: pointer; transition: background 80ms ease; }
+  .nc-row { display: flex; gap: 10px; padding: 9px 10px; border-radius: 6px; cursor: pointer; transition: background 80ms ease; position: relative; }
   .nc-row:hover { background: rgba(34,211,238,0.06); }
   .nc-row.unread { background: rgba(34,211,238,0.05); border-left: 2px solid #22d3ee; padding-left: 8px; }
   .nc-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
@@ -974,6 +1107,205 @@ tailwind.config = {
   .nc-dot.medium   { background: #facc15; }
   .nc-dot.low      { background: #4ade80; }
   .nc-dot.info     { background: #94a3b8; }
+
+  /* ─────────── Notifications Center: enterprise layout ─────────── */
+  /* Bordered section card. Each section groups one concern (delivery,
+     filters, history) so the modal scans top-down without competing
+     with itself for visual weight. */
+  .notif-section {
+    border: 1px solid rgb(var(--soc-line));
+    background: rgba(15,23,42,0.35);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin-bottom: 10px;
+  }
+  body.theme-light .notif-section {
+    background: rgba(255,255,255,0.85);
+    border-color: rgba(203,213,225,0.85);
+  }
+  .notif-section-title {
+    font-size: 10px; font-weight: 600;
+    color: rgb(var(--soc-mute));
+    letter-spacing: 0.08em; text-transform: uppercase;
+    margin-bottom: 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .notif-section-title .pp-meta {
+    font-size: 10px; font-weight: 500; letter-spacing: normal;
+    text-transform: none; margin-left: auto; color: rgb(var(--soc-mute));
+  }
+
+  /* One row per setting: label/desc on the left, control on the right. */
+  .notif-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 0;
+    border-top: 1px solid rgba(148,163,184,0.10);
+  }
+  .notif-row:first-child { border-top: 0; padding-top: 4px; }
+  .notif-row:last-child  { padding-bottom: 4px; }
+  .notif-row .nrow-main { flex: 1 1 auto; min-width: 0; }
+  .notif-row .nrow-label { font-size: 12px; color: rgb(var(--soc-text)); font-weight: 500; }
+  .notif-row .nrow-desc  { font-size: 10.5px; color: rgb(var(--soc-mute)); margin-top: 2px; line-height: 1.45; }
+  .notif-row .nrow-control { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+
+  /* Pill toggle. On = cyan rail, off = muted. Click cycles. */
+  .notif-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    height: 22px; padding: 0 10px; border-radius: 11px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background: rgba(148,163,184,0.12); border: 1px solid rgba(148,163,184,0.30);
+    color: rgb(var(--soc-mute));
+    cursor: pointer; user-select: none;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .notif-toggle::before {
+    content: ''; width: 7px; height: 7px; border-radius: 50%;
+    background: rgb(var(--soc-mute));
+    transition: background 120ms ease, box-shadow 120ms ease;
+  }
+  .notif-toggle:hover { border-color: rgba(34,211,238,0.45); }
+  .notif-toggle.on {
+    background: rgba(34,211,238,0.16); border-color: rgba(34,211,238,0.55);
+    color: #a5f3fc;
+  }
+  .notif-toggle.on::before {
+    background: #22d3ee;
+    box-shadow: 0 0 6px rgba(34,211,238,0.7);
+  }
+  .notif-toggle.disabled,
+  .notif-toggle[disabled] {
+    opacity: 0.45; cursor: not-allowed;
+  }
+  body.theme-light .notif-toggle {
+    background: rgba(148,163,184,0.16); border-color: rgba(148,163,184,0.45);
+    color: #475569;
+  }
+  body.theme-light .notif-toggle.on {
+    background: rgba(8,145,178,0.16); border-color: rgba(8,145,178,0.55);
+    color: #0e7490;
+  }
+  body.theme-light .notif-toggle.on::before { background: #0891b2; }
+
+  /* Permission state pill — derived from Notification.permission. Shape
+     matches sev-tag so it reads as a status, not an action. */
+  .notif-perm {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 9.5px; font-weight: 600; letter-spacing: 0.05em;
+    text-transform: uppercase; padding: 1px 7px; border-radius: 9px;
+    border: 1px solid; line-height: 1.6;
+  }
+  .notif-perm.granted { background: rgba(34,197,94,0.14);  color:#86efac; border-color: rgba(34,197,94,0.45); }
+  .notif-perm.default { background: rgba(250,204,21,0.14); color:#fde68a; border-color: rgba(250,204,21,0.45); }
+  .notif-perm.denied  { background: rgba(244,63,94,0.14);  color:#fda4af; border-color: rgba(244,63,94,0.45); }
+  .notif-perm.unsupported { background: rgba(148,163,184,0.14); color:#cbd5e1; border-color: rgba(148,163,184,0.40); }
+  body.theme-light .notif-perm.granted { color:#166534; }
+  body.theme-light .notif-perm.default { color:#a16207; }
+  body.theme-light .notif-perm.denied  { color:#9f1239; }
+  body.theme-light .notif-perm.unsupported { color:#334155; }
+
+  /* Compact "Test" / "Allow" / inline action buttons. */
+  .notif-act-btn {
+    font-size: 10.5px; padding: 3px 9px;
+    border-radius: 4px; border: 1px solid rgb(var(--soc-line) / 0.7);
+    background: rgba(15,23,42,0.4); color: rgb(var(--soc-text));
+    cursor: pointer;
+    transition: border-color 120ms ease, background 120ms ease;
+  }
+  .notif-act-btn:hover  { border-color: rgba(34,211,238,0.45); background: rgba(34,211,238,0.08); }
+  .notif-act-btn:focus  { outline: none; border-color: rgba(34,211,238,0.6); }
+  .notif-act-btn.primary { background: rgba(34,211,238,0.14); border-color: rgba(34,211,238,0.55); color:#a5f3fc; }
+  .notif-act-btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+  body.theme-light .notif-act-btn { background: rgba(255,255,255,0.95); }
+  body.theme-light .notif-act-btn:hover { background: #f1f5f9; border-color: rgba(8,145,178,0.55); }
+  body.theme-light .notif-act-btn.primary { background: rgba(8,145,178,0.14); border-color: rgba(8,145,178,0.55); color:#0e7490; }
+
+  /* Native-styled select used inside notif-row controls. */
+  .notif-select {
+    background: rgba(15,23,42,0.5); color: rgb(var(--soc-text));
+    border: 1px solid rgb(var(--soc-line));
+    border-radius: 4px; padding: 3px 8px; font-size: 11px;
+    cursor: pointer;
+  }
+  .notif-select:focus { outline: none; border-color: rgba(34,211,238,0.55); }
+  body.theme-light .notif-select { background: rgba(255,255,255,0.95); }
+
+  .notif-time {
+    background: rgba(15,23,42,0.5); color: rgb(var(--soc-text));
+    border: 1px solid rgb(var(--soc-line));
+    border-radius: 4px; padding: 2px 6px; font-size: 11px;
+    width: 78px;
+    font-variant-numeric: tabular-nums;
+  }
+  body.theme-light .notif-time { background: rgba(255,255,255,0.95); }
+
+  /* History tabs — segmented control. Active tab gets the cyan rail. */
+  .notif-tabs {
+    display: inline-flex; gap: 2px;
+    background: rgba(148,163,184,0.10); border: 1px solid rgba(148,163,184,0.20);
+    border-radius: 6px; padding: 2px;
+  }
+  .notif-tab {
+    padding: 3px 10px; border-radius: 4px;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: rgb(var(--soc-mute));
+    cursor: pointer; user-select: none;
+    transition: background 120ms ease, color 120ms ease;
+  }
+  .notif-tab:hover { color: rgb(var(--soc-text)); }
+  .notif-tab.active {
+    background: rgba(34,211,238,0.16); color: #a5f3fc;
+    box-shadow: inset 0 0 0 1px rgba(34,211,238,0.45);
+  }
+  .notif-tab .nt-count {
+    margin-left: 5px; font-size: 9.5px; opacity: 0.75;
+    font-variant-numeric: tabular-nums;
+  }
+  body.theme-light .notif-tab.active {
+    background: rgba(8,145,178,0.14); color: #0e7490;
+    box-shadow: inset 0 0 0 1px rgba(8,145,178,0.50);
+  }
+
+  /* Per-row dismiss button on history items. Hidden until row hover so
+     the list stays clean at rest. */
+  .nc-row .nc-dismiss {
+    position: absolute; top: 4px; right: 6px;
+    width: 18px; height: 18px; border-radius: 4px;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 1px solid transparent; background: transparent;
+    color: rgb(var(--soc-mute));
+    cursor: pointer; opacity: 0;
+    transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+    font-size: 14px; line-height: 1;
+  }
+  .nc-row:hover .nc-dismiss { opacity: 1; }
+  .nc-row .nc-dismiss:hover { color: #fda4af; background: rgba(244,63,94,0.10); }
+
+  .notif-search {
+    background: rgba(15,23,42,0.4);
+    border: 1px solid rgb(var(--soc-line));
+    color: rgb(var(--soc-text));
+    border-radius: 5px; padding: 4px 8px;
+    font-size: 11px; flex: 1 1 auto; min-width: 0;
+  }
+  .notif-search:focus { outline: none; border-color: rgba(34,211,238,0.6); }
+  body.theme-light .notif-search { background: rgba(255,255,255,0.95); }
+
+  /* Header status pill — at-a-glance "what's actually firing right now". */
+  .notif-status {
+    display: inline-flex; align-items: center; gap: 5px;
+    padding: 2px 8px; border-radius: 10px; font-size: 10px;
+    font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase;
+    border: 1px solid; line-height: 1.6;
+  }
+  .notif-status.active { background: rgba(34,197,94,0.14);  color:#86efac; border-color: rgba(34,197,94,0.50); }
+  .notif-status.muted  { background: rgba(148,163,184,0.14); color:#cbd5e1; border-color: rgba(148,163,184,0.40); }
+  .notif-status.quiet  { background: rgba(99,102,241,0.18); color:#c7d2fe; border-color: rgba(99,102,241,0.50); }
+  .notif-status .ns-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  body.theme-light .notif-status.active { color:#166534; }
+  body.theme-light .notif-status.muted  { color:#334155; }
+  body.theme-light .notif-status.quiet  { color:#3730a3; }
   .stat-tile { background: rgba(15,23,42,0.45); border: 1px solid rgba(148,163,184,0.12); border-radius: 8px; padding: 12px; }
   .stat-tile .stat-label { font-size: 10px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
   .stat-tile .stat-value { font-size: 22px; font-weight: 700; color: #e2e8f0; margin-top: 4px; font-variant-numeric: tabular-nums; }
@@ -1934,6 +2266,18 @@ tailwind.config = {
       <p id="drillStory" class="text-sm text-soc-text leading-relaxed bg-soc-panel/40 rounded p-3 border border-soc-line"></p>
     </div>
 
+    <!-- Origin attribution — "who triggered this". Always rendered so
+         the operator gets the same surface area whether the chain is
+         SSH-rooted, cron, or local. Populated by renderDrill from
+         /api/process/<exec_id>.origin. -->
+    <div id="drillOriginWrap" class="mb-5">
+      <div class="flex items-center gap-2 mb-2">
+        <h3 class="text-xs uppercase tracking-widest text-soc-mute">Origin</h3>
+        <span id="drillOriginKind" class="hidden text-[10px] px-1.5 py-0.5 rounded text-purple-300 bg-purple-500/15"></span>
+      </div>
+      <div id="drillOrigin" class="text-[11px] font-mono bg-soc-panel/40 rounded p-3 border border-soc-line"></div>
+    </div>
+
     <div class="mb-5">
       <h3 class="text-xs uppercase tracking-widest text-soc-mute mb-2">Notes (this browser)</h3>
       <textarea id="drillNotes" class="notes-area" placeholder="Investigator notes — saved locally as you type"></textarea>
@@ -2027,7 +2371,7 @@ tailwind.config = {
       </div>
     </div>
     <div class="flex items-center gap-2 mb-3 flex-wrap">
-      <input id="graphSearch" type="text" placeholder="Search binary or exec_id…" class="graph-tool" style="width: 220px;">
+      <input id="graphSearch" type="text" placeholder="Search binary or exec_id…" class="graph-tool" style="width: 200px;">
       <span class="text-[10px] text-soc-mute uppercase tracking-widest">Show:</span>
       <button data-graph-cls="attack"   class="graph-chip attack">attack</button>
       <button data-graph-cls="threat"   class="graph-chip threat">threat</button>
@@ -2035,7 +2379,23 @@ tailwind.config = {
       <span class="text-[10px] text-soc-mute ml-2">Layout:</span>
       <button id="graphLayoutForce"  class="graph-tool" title="Force-directed (default)">⚛ Force</button>
       <button id="graphLayoutRadial" class="graph-tool" title="Radial — root processes at center">◎ Radial</button>
-      <span class="text-[10px] text-soc-mute ml-auto">Drag · scroll-zoom · click node to drill · F to toggle full screen</span>
+      <button id="graphTtlBtn" class="graph-tool" title="Live mode — quiet processes fade after 90s and drop at 5m. Click to switch to forensic mode (keep everything).">⏳ Decay</button>
+      <div class="ml-auto flex items-center gap-2">
+        <div id="graphLivePill" class="graph-live-pill" role="button" tabindex="0"
+             title="Click to pause real-time updates" aria-label="Toggle real-time updates">
+          <span class="glp-dot" aria-hidden="true"></span>
+          <span class="glp-text">LIVE</span>
+          <span class="glp-count" style="display:none">+0</span>
+        </div>
+        <button id="graphRefreshBtn" class="graph-icon-btn"
+                title="Refresh graph (re-fetch all parent chains)" aria-label="Refresh graph">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15A9 9 0 1 1 18.36 5.64L23 10"/>
+          </svg>
+        </button>
+      </div>
     </div>
     <div class="graph-body grid grid-cols-[1fr_240px] gap-3">
       <svg id="graphSvg" class="graph-canvas" width="100%" height="600"></svg>
@@ -2470,24 +2830,26 @@ tailwind.config = {
 
 <!-- ─────────── NOTIFICATIONS CENTER MODAL ─────────── -->
 <div id="notificationsModal" class="modal-back" onclick="if(event.target===this) closeNotificationsCenter()">
-  <div class="modal-card glass rounded-lg p-5" style="width: min(540px, 92vw); max-height: 86vh;">
-    <div class="flex items-start justify-between mb-4">
+  <div class="modal-card glass rounded-lg p-5" style="width: min(640px, 94vw); max-height: 92vh; display: flex; flex-direction: column;">
+    <div class="flex items-start justify-between mb-3 flex-shrink-0">
       <div>
-        <h2 class="text-base font-semibold text-soc-text">Notifications</h2>
-        <p class="text-[11px] text-soc-mute">Live alerts surfaced when the tab is unfocused. History kept locally.</p>
+        <div class="flex items-center gap-2">
+          <h2 class="text-base font-semibold text-soc-text">Notifications &amp; alerts</h2>
+          <span id="ncStatus" class="notif-status muted"><span class="ns-dot"></span><span id="ncStatusText">off</span></span>
+        </div>
+        <p class="text-[11px] text-soc-mute mt-0.5">Live SOC alerts. History is kept per browser; settings sync via localStorage. Press <kbd>n</kbd> to toggle.</p>
       </div>
-      <button onclick="closeNotificationsCenter()" class="text-soc-mute hover:text-soc-text text-xl leading-none">×</button>
+      <button onclick="closeNotificationsCenter()" class="text-soc-mute hover:text-soc-text text-xl leading-none" aria-label="Close">×</button>
     </div>
-    <div id="ncSettings" class="bg-soc-panel/40 border border-soc-line rounded-lg p-3 mb-3 space-y-1"></div>
-    <div class="flex items-center justify-between mb-2">
-      <div class="text-[11px] text-soc-mute"><span id="ncCount">0</span> in history · <span id="ncUnread">0</span> unread</div>
-      <div class="flex gap-2">
-        <button id="ncMarkAll" class="text-[11px] text-soc-mute hover:text-soc-text">Mark all read</button>
+    <div id="ncSettings" class="overflow-y-auto scrollbar-thin" style="overflow-x: hidden;"></div>
+    <div class="flex-shrink-0 border-t border-soc-line/60 mt-2 pt-2 flex items-center justify-between text-[11px] text-soc-mute">
+      <div><span id="ncCount">0</span> in history · <span id="ncUnread">0</span> unread<span id="ncFilteredHint"></span></div>
+      <div class="flex gap-3">
+        <button id="ncMarkAll" class="text-soc-mute hover:text-soc-text">Mark all read</button>
         <span class="text-soc-line">·</span>
-        <button id="ncClear" class="text-[11px] text-soc-mute hover:text-rose-400">Clear all</button>
+        <button id="ncClear" class="text-soc-mute hover:text-rose-400">Clear all</button>
       </div>
     </div>
-    <div id="ncList" class="space-y-1 overflow-y-auto scrollbar-thin" style="max-height: 50vh;"></div>
   </div>
 </div>
 
@@ -2564,10 +2926,30 @@ const state = {
   hideBaseline: lsGet('soc.hideBaseline', true),
   timelineSevHidden: new Set(lsGet('soc.timelineSevHidden', [])),
   timelineFilterMin: null,        // index into the timeline bucket array (0 = oldest)
+  // Legacy "master switch" — still the kill-switch. When false, no
+  // channel fires (matches existing 'n' shortcut + sidebar bell-on UX).
   notificationsEnabled: lsGet('soc.notifications', false),
   notifyMinSeverity: lsGet('soc.notifyMinSeverity', 'critical'),
-  notifySoundEnabled: lsGet('soc.notifySoundEnabled', true),
+  // Per-channel delivery toggles. History always tracks unread count when
+  // master is on; turning history off makes alerts ephemeral (no badge,
+  // no list). audio replaces the legacy notifySoundEnabled key. browser
+  // controls the desktop popup (still gated by tab-unfocused).
+  notifyChannels: lsGet('soc.notifyChannels', {
+    history: true,
+    browser: true,
+    audio:   lsGet('soc.notifySoundEnabled', true),
+  }),
+  // Throttle: when >0, a duplicate alert with the same title within N
+  // minutes is silenced (history still updated, but channels skip).
+  notifyThrottleMin: lsGet('soc.notifyThrottleMin', 0),
+  // Quiet hours: HH:MM strings, both empty = off. When inside the window,
+  // browser+audio mute; history+badge still update so nothing's lost.
+  notifyQuietStart: lsGet('soc.notifyQuietStart', ''),
+  notifyQuietEnd:   lsGet('soc.notifyQuietEnd', ''),
   notifyHistory: lsGet('soc.notifyHistory', []),
+  // Ephemeral UI state — not persisted.
+  notifyHistoryFilter: 'all',
+  notifySearch: '',
 
   // Session/activity (in-memory only — resets on reload, by design)
   sessionStart: Date.now(),
@@ -2778,8 +3160,38 @@ function isSelfNoise(ev) {
 }
 
 // ─────────── Initial load ───────────
+// state.chokeByExec mirrors the gateway's currently-tracked circuits,
+// keyed by exec_id, so alert triage rows can flag "this process is
+// being choked right now" without a per-row fetch. Refreshed alongside
+// alerts/events on snapshot reloads + every 10s while the page is open.
+state.chokeByExec = state.chokeByExec || new Map();
+
+async function refreshChokeMap() {
+  try {
+    const r = await fetch('/api/choke/circuits', { cache: 'no-store' });
+    if (!r.ok) return;
+    const arr = await r.json();
+    const m = new Map();
+    for (const c of (arr || [])) {
+      if (c && c.exec_id) m.set(c.exec_id, { state: c.state, score: c.score });
+    }
+    state.chokeByExec = m;
+    scheduleRender('alertList');
+  } catch (e) {}
+}
+
 async function loadInitial() {
   await refreshSnapshot({ initial: true });
+  refreshChokeMap();
+  setInterval(refreshChokeMap, 10000);
+  // Deep-link support: ?exec=<id> applies the alert/process filter on
+  // load so cross-links from /choke land on the right view.
+  const u = new URLSearchParams(window.location.search);
+  const xq = u.get('exec');
+  if (xq) {
+    state.alertExecFilter = xq;
+    scheduleRender('alertList');
+  }
   $('hostLabel').textContent = location.hostname;
   // Fetch honeypot prefix so badges can display before the panel is opened.
   try {
@@ -2825,6 +3237,10 @@ async function refreshSnapshot(opts = {}) {
       state.alerts = newAlerts;
       state.events = newEvents;
       state.liveEvents = newEvents.slice(0, 200);
+      // Seed the persistent binary cache from the initial backlog so a
+      // freshly-loaded page can resolve binaries for high-score processes
+      // even before any new SSE events arrive.
+      for (const e of newEvents) _rememberBinary(pick(e, 'exec_id', 'ExecID'), pick(e, 'binary', 'Binary'));
     } else {
       // Alerts: skip cleared ids on user-initiated clears.
       const knownAlertIds = new Set(state.alerts.map(a => pick(a, 'id', 'ID')));
@@ -3183,9 +3599,12 @@ function connectStream() {
       stream.lastEventAt = Date.now();
       if (b.type === 'event') onEvent(b.payload);
       else if (b.type === 'alert') onAlert(b.payload);
-      // Decisions are rendered on /choke (the gateway's own page);
-      // here we only count them as live activity so the pill ticker
-      // reflects real traffic instead of the 15s keepalive.
+      else if (b.type === 'process_exit') onProcessExit(b.payload);
+      else if (b.type === 'decision') onDecision(b.payload);
+      // Decisions are rendered on /choke (the gateway's own page); here we
+      // also use them to drop the corresponding node from the correlation
+      // graph in Live mode (the analyst already handled the process), and
+      // to count live activity so the pill ticker reflects real traffic.
     } catch (e) { console.error(e); }
   };
 }
@@ -3266,9 +3685,190 @@ function scheduleRender(name) {
   });
 }
 
+// Persistent exec_id → binary cache. state.events is a 500-entry ring
+// buffer, so a long-lived high-score process whose initial process_exec
+// scrolled off the buffer would render as "?" in panels that resolve
+// the binary lazily (Top processes, correlation graph). This cache
+// captures the (id, binary) pair on every event we see and survives
+// buffer eviction. Soft cap at 5000 entries with FIFO eviction — even
+// at 100 unique binaries/sec that's ~50s of churn, plenty of headroom.
+const _BIN_CACHE_CAP = 5000;
+function _rememberBinary(id, bin) {
+  if (!id || !bin) return;
+  if (!state.binByExec) state.binByExec = new Map();
+  // Map preserves insertion order; re-set on hit refreshes recency.
+  if (state.binByExec.has(id)) state.binByExec.delete(id);
+  state.binByExec.set(id, bin);
+  if (state.binByExec.size > _BIN_CACHE_CAP) {
+    // Drop oldest ~10% in one pass so we're not evicting on every set.
+    const drop = Math.floor(_BIN_CACHE_CAP / 10);
+    let i = 0;
+    for (const k of state.binByExec.keys()) {
+      if (i++ >= drop) break;
+      state.binByExec.delete(k);
+    }
+  }
+}
+
+// Origin attribution cache. /api/process/<exec_id> is the source of
+// truth; caching the resolved origin per exec_id keeps the Top
+// Processes list, correlation-graph sidebar, and anywhere else that
+// shows a compact origin chip from re-fetching on every render tick.
+// Three states per id: undefined (never fetched), null (fetched, no
+// attribution), or an Origin object. _originFetchInFlight prevents
+// duplicate concurrent requests for the same id.
+state.originByExec      = state.originByExec      || new Map();
+state._originFetchQueue = state._originFetchQueue || new Set();
+
+// originForExec returns the cached Origin (or null) and triggers an
+// async fetch + re-render when the id hasn't been seen yet. Callers
+// render with whatever's available; the panel re-renders when the
+// fetch completes.
+function originForExec(id, onLoaded) {
+  if (!id) return undefined;
+  if (state.originByExec.has(id)) return state.originByExec.get(id);
+  if (state._originFetchQueue.has(id)) return undefined;
+  state._originFetchQueue.add(id);
+  fetch('/api/process/' + encodeURIComponent(id))
+    .then(r => r.ok ? r.json() : null)
+    .then(j => {
+      state.originByExec.set(id, (j && j.origin) || null);
+      state._originFetchQueue.delete(id);
+      if (typeof onLoaded === 'function') onLoaded();
+    })
+    .catch(() => {
+      state.originByExec.set(id, null);
+      state._originFetchQueue.delete(id);
+    });
+  return undefined;
+}
+
+// originChipHTML renders a compact one-line chip suitable for list
+// rows where the bordered card from originBlockHTML() would be too
+// heavy. Three visual states:
+//   - undefined (loading)        → grey "…"
+//   - null      (no attribution) → grey "—"
+//   - Origin    (attributed)     → kind-tinted pill with "ip user"
+// Hover tooltip surfaces the full key fingerprint so the operator
+// can verify without opening the drill panel.
+function originChipHTML(o) {
+  if (o === undefined) return '<span class="text-soc-mute font-mono text-[10px]">…</span>';
+  if (o === null || (!o.remote_ip && !o.user && !o.fingerprint)) {
+    return '<span class="text-soc-mute font-mono text-[10px]" title="no remote attribution">—</span>';
+  }
+  const ip = o.remote_ip || '';
+  const user = o.user ? ' ' + o.user : '';
+  const tip = [];
+  if (o.kind)        tip.push('kind: ' + o.kind);
+  if (o.remote_ip)   tip.push('ip: '   + o.remote_ip + (o.remote_port ? ':' + o.remote_port : ''));
+  if (o.user)        tip.push('user: ' + o.user);
+  if (o.fingerprint) tip.push('fp: '   + o.fingerprint);
+  const tipAttr = tip.join('\n');
+  const cls = o.kind === 'ssh' ? 'bg-purple-500/15 text-purple-300' : 'bg-cyan-500/15 text-cyan-300';
+  return '<span class="font-mono text-[10px] px-1.5 py-0.5 rounded ' + cls + '" title="' + escHTML(tipAttr) + '">' +
+    escHTML((ip || o.user || o.kind || '?') + user) +
+  '</span>';
+}
+
+// Resolve the binary path for an exec_id with progressive fallback:
+//   1. event-driven cache (covers anything we've seen this session)
+//   2. parse the alert title — format is reliable:
+//      "Suspicious chain: <leaf> → <parent> → … (score N)"
+//      The leaf comes first (chain is leaf-first from pt.Ancestors).
+//      We require the leaf to start with '/' so we don't accidentally
+//      capture "(score N)" when the chain has been pruned and the
+//      title becomes "Suspicious chain:  (score N)".
+//   3. async fetch from /api/process/{id} — that endpoint returns the
+//      tree chain AND the SQLite event history, so it resolves even
+//      after the in-memory tree has aged the node out. Fire-and-forget;
+//      cache populates and triggers a re-render when it lands.
+//   4. fallback to '?'
+function resolveBinaryByExec(id) {
+  if (!id) return '?';
+  const cached = state.binByExec && state.binByExec.get(id);
+  if (cached) return cached;
+  for (const a of state.alerts) {
+    if (pick(a, 'exec_id', 'ExecID') !== id) continue;
+    const t = String(pick(a, 'title', 'Title') || '');
+    const m = t.match(/^Suspicious chain:\s+(\/\S+?)(?=\s+→|\s+\(score|\s*$)/);
+    if (m) {
+      _rememberBinary(id, m[1]);
+      return m[1];
+    }
+    break;
+  }
+  _kickAsyncBinaryFetch(id);
+  return '?';
+}
+
+// Async, idempotent backfill for binaries we couldn't resolve from in-
+// memory state. /api/process/{id} returns the ancestor chain (from the
+// tree) and the persisted event list (from SQLite). The leaf of the
+// chain is preferred; events[0].binary is the fallback when the tree
+// has pruned but events still exist. _binFetchInFlight prevents the
+// same exec_id from being fetched repeatedly while a request is open.
+const _binFetchInFlight = new Set();
+const _binFetchFailed   = new Set();
+function _kickAsyncBinaryFetch(id) {
+  if (!id) return;
+  if (_binFetchInFlight.has(id) || _binFetchFailed.has(id)) return;
+  if (state.binByExec && state.binByExec.has(id)) return;
+  _binFetchInFlight.add(id);
+  fetch('/api/process/' + encodeURIComponent(id), { credentials: 'include' })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => {
+      _binFetchInFlight.delete(id);
+      const chain  = (data && data.chain)  || [];
+      const events = (data && data.events) || [];
+      const leaf   = chain[0]  || events[0] || null;
+      const bin    = leaf ? pick(leaf, 'binary', 'Binary') : '';
+      if (bin) {
+        _rememberBinary(id, bin);
+        scheduleRender('topProcs');
+      } else {
+        // Mark as failed so we don't loop. A subsequent process_exec
+        // event for this id will re-populate the cache directly.
+        _binFetchFailed.add(id);
+      }
+    })
+    .catch(() => {
+      _binFetchInFlight.delete(id);
+      _binFetchFailed.add(id);
+    });
+}
+
+// Liveness tracking. Top processes panel filters out anything that has
+// emitted a process_exit, so a 200-score process that died an hour ago
+// doesn't permanently squat the leaderboard. lastSeenByExec is the
+// freshness-window companion — a process whose last event/alert is
+// older than LIVE_WINDOW_MS is considered dormant and demoted.
+const _PROC_EXITED_CAP   = 5000;
+const LIVE_WINDOW_MS     = 10 * 60_000;   // 10 min — matches "recent" feeling
+function _markExited(id) {
+  if (!id) return;
+  if (!state.exitedExecs) state.exitedExecs = new Set();
+  state.exitedExecs.add(id);
+  // Keep the set bounded — exec_ids are unique forever, so a long session
+  // in a noisy environment would otherwise leak memory.
+  if (state.exitedExecs.size > _PROC_EXITED_CAP) {
+    const it = state.exitedExecs.values();
+    for (let i = 0; i < _PROC_EXITED_CAP / 10; i++) state.exitedExecs.delete(it.next().value);
+  }
+}
+function _touchSeen(id, tsMs) {
+  if (!id) return;
+  if (!state.lastSeenByExec) state.lastSeenByExec = new Map();
+  const now = tsMs || Date.now();
+  const prev = state.lastSeenByExec.get(id) || 0;
+  if (now > prev) state.lastSeenByExec.set(id, now);
+}
+
 function onEvent(ev) {
   state.events.unshift(ev);
   if (state.events.length > 500) state.events.length = 500;
+  const id = pick(ev, 'exec_id', 'ExecID');
+  _rememberBinary(id, pick(ev, 'binary', 'Binary'));
+  _touchSeen(id, _eventTimeMs(ev));
   if (!state.streamPaused) {
     state.liveEvents.unshift(ev);
     if (state.liveEvents.length > 200) state.liveEvents.length = 200;
@@ -3279,17 +3879,81 @@ function onEvent(ev) {
   scheduleRender('topProcs');
   scheduleRender('iocs');
   if (pick(ev, 'policy_name', 'PolicyName') === 'outbound-connections') scheduleRender('network');
+  // Keep the correlation graph live when its modal is open. The function
+  // is a no-op when the modal is closed and self-debounces under burst.
+  if (typeof _scheduleLiveGraphUpdate === 'function') _scheduleLiveGraphUpdate();
 }
 
 function onAlert(al) {
   state.alerts.unshift(al);
   if (state.alerts.length > 200) state.alerts.length = 200;
+  _touchSeen(pick(al, 'exec_id', 'ExecID'), _eventTimeMs(al));
   scheduleRender('alertList');
   scheduleRender('kpis');
   scheduleRender('timeline');
   scheduleRender('mitre');
   scheduleRender('network');
   maybeNotify(al);
+  if (typeof _scheduleLiveGraphUpdate === 'function') _scheduleLiveGraphUpdate();
+}
+
+// Shared "drop this exec_id from the live graph" path. Used by both real
+// process exits (kernel ProcessExit) and analyst-driven enforcement
+// decisions (throttle/tarpit/quarantine/sever) — both are lifecycle
+// endpoints from the analyst's POV: this process is no longer interesting.
+// Forensic mode is the explicit opt-out so we honor it here. The fade-out
+// animation comes from D3's exit-selection transition in drawGraph.
+function _removeGraphNodeByExecId(id) {
+  if (!id) return false;
+  if (!state.graphTTL) return false;           // Forensic mode: keep node
+  if (!_graphRaw.nodes.length) return false;   // graph never opened
+  const idx = _graphRaw.nodes.findIndex(n => n.id === id);
+  if (idx < 0) return false;
+  _graphRaw.nodes.splice(idx, 1);
+  _graphRaw.links = _graphRaw.links.filter(l => {
+    const sId = typeof l.source === 'object' ? l.source.id : l.source;
+    const tId = typeof l.target === 'object' ? l.target.id : l.target;
+    return sId !== id && tId !== id;
+  });
+  _graphFetched.delete(id);
+  if (document.getElementById('graphModal').classList.contains('open')) {
+    drawGraph({ alpha: 0.06 });
+  }
+  return true;
+}
+
+// Live process-exit notification from the engine — kernel told us the
+// process is gone (kill, exec replacement, normal exit, etc.).
+function onProcessExit(payload) {
+  if (!payload) return;
+  const id = pick(payload, 'exec_id', 'ExecID');
+  _markExited(id);
+  _removeGraphNodeByExecId(id);
+  // Top-processes panel is the most visible consumer of liveness data —
+  // schedule it on every exit so dead processes leave the leaderboard
+  // immediately, not on the next event.
+  scheduleRender('topProcs');
+}
+
+// Choke gateway decision. When the analyst takes any action stronger than
+// passive observation — throttle, tarpit, quarantine, or sever — we treat
+// the process as "handled" and remove it from the live graph. `none` is the
+// passive baseline transition and stays on the graph (no enforcement was
+// applied). `sever` would also fire ProcessExit eventually, but reacting
+// here makes the UI respond on the click instead of waiting for the kill
+// signal to round-trip back through the kernel.
+function onDecision(payload) {
+  if (!payload) return;
+  const action = String(pick(payload, 'action', 'Action') || '').toLowerCase();
+  if (!action || action === 'none') return;
+  const id = pick(payload, 'exec_id', 'ExecID');
+  // sever actually kills; quarantine/throttle/tarpit don't, but from the
+  // analyst's POV the process is "handled" — drop it from the live
+  // leaderboard the same way. ProcessExit will follow for sever and
+  // double-confirm via _markExited; that's idempotent.
+  _markExited(id);
+  scheduleRender('topProcs');
+  _removeGraphNodeByExecId(id);
 }
 
 // ─────────── KPI helpers ───────────
@@ -3361,6 +4025,47 @@ const SEV_THRESHOLD = { critical: 4, high: 3, medium: 2, low: 1, info: 0 };
 function passesNotifyThreshold(sev) {
   return (SEV_THRESHOLD[sev] || 0) >= (SEV_THRESHOLD[state.notifyMinSeverity] || 4);
 }
+
+// In-memory dedupe map. Keyed on title + sev so the same chain firing
+// repeatedly within the throttle window only delivers once. Cleared on
+// page reload because users moving on usually want a fresh slate.
+const _notifyRecent = new Map();
+function _shouldThrottle(sev, title) {
+  const min = parseInt(state.notifyThrottleMin, 10) || 0;
+  if (min <= 0) return false;
+  const key = sev + '|' + title;
+  const last = _notifyRecent.get(key) || 0;
+  if (Date.now() - last < min * 60_000) return true;
+  _notifyRecent.set(key, Date.now());
+  // Tiny GC: trim stale entries opportunistically so the map doesn't
+  // grow unbounded over a long session.
+  if (_notifyRecent.size > 500) {
+    const cutoff = Date.now() - min * 60_000 * 4;
+    for (const [k, t] of _notifyRecent) if (t < cutoff) _notifyRecent.delete(k);
+  }
+  return false;
+}
+
+// Quiet hours: returns true when the current local time falls inside the
+// configured [start, end) window. Handles wrap-around (e.g. 22:00 → 08:00
+// straddles midnight).
+function _inQuietHours() {
+  const s = state.notifyQuietStart, e = state.notifyQuietEnd;
+  if (!s || !e || s === e) return false;
+  const toMin = (hhmm) => {
+    const [h, m] = String(hhmm).split(':').map(Number);
+    if (Number.isNaN(h) || Number.isNaN(m)) return null;
+    return h * 60 + m;
+  };
+  const sMin = toMin(s), eMin = toMin(e);
+  if (sMin == null || eMin == null) return false;
+  const now = new Date();
+  const cur = now.getHours() * 60 + now.getMinutes();
+  return sMin < eMin
+    ? (cur >= sMin && cur < eMin)        // same-day window (e.g. 09:00–17:00)
+    : (cur >= sMin || cur < eMin);       // overnight window (e.g. 22:00–08:00)
+}
+
 function pushNotification(alert) {
   const entry = {
     id:       'n-' + Date.now() + '-' + Math.floor(Math.random() * 1e4),
@@ -3369,6 +4074,7 @@ function pushNotification(alert) {
     sev:      sevOf(alert),
     score:    pick(alert, 'score', 'Score') || 0,
     title:    String(pick(alert, 'title', 'Title') || ''),
+    execId:   String(pick(alert, 'exec_id', 'ExecID') || ''),
     read:     false,
   };
   state.notifyHistory.unshift(entry);
@@ -3377,18 +4083,34 @@ function pushNotification(alert) {
   updateBellBadge();
   if ($('notificationsModal').classList.contains('open')) renderNotificationsCenter();
 }
+
+// Master fan-out for an inbound alert. Channel toggles each guard their
+// own output independently — a quiet-hours window mutes the popup +
+// chime but keeps history+badge accurate so the analyst sees the backlog
+// when they come back.
 function maybeNotify(alert) {
   if (!state.notificationsEnabled) return;
   const sev = sevOf(alert);
   if (!passesNotifyThreshold(sev)) return;
-  pushNotification(alert);
-  if (!document.hidden) return;  // only fire chime+browser when tab unfocused
-  bumpHiddenBadge();
-  if (state.notifySoundEnabled) playChime();
-  if ('Notification' in window && Notification.permission === 'granted') {
+  const title    = String(pick(alert, 'title', 'Title') || '');
+  const throttled = _shouldThrottle(sev, title);
+  const channels = state.notifyChannels || { history: true, browser: true, audio: true };
+
+  // History is the source-of-truth feed. Push first so the bell badge
+  // ticks even when other channels are muted.
+  if (channels.history && !throttled) pushNotification(alert);
+
+  // Browser popup + audio chime gate on tab visibility (no point pinging
+  // when the tab is already in front) AND on quiet hours.
+  if (document.hidden) bumpHiddenBadge();
+  if (throttled || _inQuietHours()) return;
+  if (!document.hidden) return;
+
+  if (channels.audio) playChime();
+  if (channels.browser && 'Notification' in window && Notification.permission === 'granted') {
     try {
       new Notification('eBPF SOC — ' + sev + ' alert', {
-        body: pick(alert, 'title', 'Title'),
+        body: title,
         tag:  'alert-' + (pick(alert, 'id', 'ID') || ''),
       });
     } catch (e) {}
@@ -3717,81 +4439,365 @@ function showNotificationsCenter() {
 function closeNotificationsCenter() {
   $('notificationsModal').classList.remove('open');
 }
+// Rebuild the entire notifications panel — header status pill, three
+// settings sections (delivery / filters / history), and the list. Called
+// from showNotificationsCenter and from any setter that mutates state
+// the modal is showing. Cheap to call (no DOM diff; full rewrite).
 function renderNotificationsCenter() {
   const browserPerm = ('Notification' in window) ? Notification.permission : 'unsupported';
+  const channels    = state.notifyChannels || { history: true, browser: true, audio: true };
+  const master      = !!state.notificationsEnabled;
+  const inQuiet     = _inQuietHours();
+  const activeChannels =
+    (channels.history ? 1 : 0) + (channels.browser ? 1 : 0) + (channels.audio ? 1 : 0);
+
+  // ── Header status pill ─────────────────────────────────────────────
+  const statusEl = $('ncStatus');
+  const statusText = $('ncStatusText');
+  if (statusEl && statusText) {
+    if (!master) {
+      statusEl.className = 'notif-status muted';
+      statusText.textContent = 'off · alerts ignored';
+    } else if (inQuiet) {
+      statusEl.className = 'notif-status quiet';
+      statusText.textContent = 'quiet hours · history only';
+    } else {
+      statusEl.className = 'notif-status active';
+      statusText.textContent = 'active · ' + activeChannels + ' channel' + (activeChannels === 1 ? '' : 's');
+    }
+  }
+
+  // ── Settings sections ──────────────────────────────────────────────
   const settings = $('ncSettings');
+  const tg = (on, attrs) => '<button class="notif-toggle' + (on ? ' on' : '') + '" ' + (attrs || '') +
+    '>' + (on ? 'on' : 'off') + '</button>';
+  const permPill = (() => {
+    if (browserPerm === 'unsupported') return '<span class="notif-perm unsupported">not supported</span>';
+    return '<span class="notif-perm ' + browserPerm + '">' + browserPerm + '</span>';
+  })();
+  const browserBtns =
+    (browserPerm === 'default' ? '<button class="notif-act-btn primary" id="ncBrowserAllow">Allow</button>' : '') +
+    (browserPerm === 'denied'
+      ? '<span class="text-[10px] text-soc-mute">Re-enable in browser site settings</span>'
+      : '<button class="notif-act-btn" id="ncBrowserTest"' + (browserPerm === 'granted' ? '' : ' disabled') + '>Test</button>');
+
+  const channelDisabled = master ? '' : ' disabled';
+
   settings.innerHTML =
-    '<div class="pref-row">' +
-      '<div><div class="text-[12px] text-soc-text">Master switch</div>' +
-      '<div class="text-[10px] text-soc-mute">Browser permission: <span class="font-mono">' + browserPerm + '</span></div></div>' +
-      '<button id="ncToggle" class="text-[11px] px-3 py-1 rounded ' +
-        (state.notificationsEnabled ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40' : 'bg-soc-panel text-soc-mute border border-soc-line') +
-      '">' + (state.notificationsEnabled ? 'ENABLED' : 'DISABLED') + '</button>' +
+    // ── Section 1: alerts on/off ─────────────────────────────────────
+    '<div class="notif-section">' +
+      '<div class="notif-section-title">Alerts<span class="pp-meta">Press <kbd>n</kbd></span></div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Active</div>' +
+          '<div class="nrow-desc">When off, alerts above the threshold are still in the live feed but no badge ticks and no channel fires.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' + tg(master, 'id="ncToggleMaster"') + '</div>' +
+      '</div>' +
     '</div>' +
-    '<div class="pref-row">' +
-      '<div class="text-[12px] text-soc-text">Minimum severity</div>' +
-      '<select id="ncMinSev" class="bg-soc-panel border border-soc-line rounded px-2 py-1 text-[11px] text-soc-text">' +
-        ['critical','high','medium','low'].map(s =>
-          '<option value="' + s + '"' + (state.notifyMinSeverity === s ? ' selected' : '') + '>' + s + '</option>'
-        ).join('') +
-      '</select>' +
+
+    // ── Section 2: delivery channels ─────────────────────────────────
+    '<div class="notif-section">' +
+      '<div class="notif-section-title">Delivery channels' +
+        (master ? '' : '<span class="pp-meta">disabled while alerts are off</span>') +
+      '</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">In-app history &amp; badge</div>' +
+          '<div class="nrow-desc">Drives the rail bell badge and the list below. Survives reload (per-browser).</div>' +
+        '</div>' +
+        '<div class="nrow-control">' + tg(channels.history, 'id="ncCh_history"' + channelDisabled) + '</div>' +
+      '</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Browser desktop popup</div>' +
+          '<div class="nrow-desc">Native OS notification when this tab is unfocused. Permission ' + permPill + '.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' + browserBtns + tg(channels.browser, 'id="ncCh_browser"' + channelDisabled) + '</div>' +
+      '</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Audio chime</div>' +
+          '<div class="nrow-desc">Plays only when this tab is unfocused. Skipped during quiet hours.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' +
+          '<button class="notif-act-btn" id="ncAudioTest"' + (master && channels.audio ? '' : ' disabled') + '>Test</button>' +
+          tg(channels.audio, 'id="ncCh_audio"' + channelDisabled) +
+        '</div>' +
+      '</div>' +
     '</div>' +
-    '<div class="pref-row">' +
-      '<div class="text-[12px] text-soc-text">Audio chime</div>' +
-      '<label class="inline-flex items-center gap-2 text-[11px] text-soc-mute cursor-pointer">' +
-        '<input type="checkbox" id="ncSound"' + (state.notifySoundEnabled ? ' checked' : '') + '>' +
-        '<span>play on alert</span>' +
-      '</label>' +
-    '</div>';
-  $('ncToggle').addEventListener('click', toggleNotifications);
+
+    // ── Section 3: filters ───────────────────────────────────────────
+    '<div class="notif-section">' +
+      '<div class="notif-section-title">Filters &amp; quiet hours</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Minimum severity</div>' +
+          '<div class="nrow-desc">Only alerts at this level or above pass the filter.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' +
+          '<select id="ncMinSev" class="notif-select">' +
+            ['critical','high','medium','low'].map(s =>
+              '<option value="' + s + '"' + (state.notifyMinSeverity === s ? ' selected' : '') + '>' + s + '</option>'
+            ).join('') +
+          '</select>' +
+        '</div>' +
+      '</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Throttle duplicates</div>' +
+          '<div class="nrow-desc">Suppress repeats of the same alert title within this window. Useful when an attack chain spams the feed.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' +
+          '<select id="ncThrottle" class="notif-select">' +
+            [['0','off'],['1','1 min'],['5','5 min'],['15','15 min'],['60','1 hr']].map(([v,l]) =>
+              '<option value="' + v + '"' + (String(state.notifyThrottleMin) === v ? ' selected' : '') + '>' + l + '</option>'
+            ).join('') +
+          '</select>' +
+        '</div>' +
+      '</div>' +
+      '<div class="notif-row">' +
+        '<div class="nrow-main">' +
+          '<div class="nrow-label">Quiet hours</div>' +
+          '<div class="nrow-desc">Mute browser popup &amp; audio between these times. History keeps recording so nothing\'s lost.</div>' +
+        '</div>' +
+        '<div class="nrow-control">' +
+          '<input type="time" id="ncQuietStart" class="notif-time" value="' + escHTML(state.notifyQuietStart || '') + '">' +
+          '<span class="text-[10px] text-soc-mute">→</span>' +
+          '<input type="time" id="ncQuietEnd" class="notif-time" value="' + escHTML(state.notifyQuietEnd || '') + '">' +
+          (state.notifyQuietStart || state.notifyQuietEnd ?
+            '<button class="notif-act-btn" id="ncQuietClear" title="Disable quiet hours">×</button>' : '') +
+        '</div>' +
+      '</div>' +
+    '</div>' +
+
+    // ── Section 4: history ───────────────────────────────────────────
+    _renderNcHistory();
+
+  // Wire all controls (idempotent — re-bound each render).
+  $('ncToggleMaster').addEventListener('click', toggleNotifications);
+  ['history','browser','audio'].forEach(ch => {
+    const btn = $('ncCh_' + ch);
+    if (!btn || btn.hasAttribute('disabled')) return;
+    btn.addEventListener('click', () => {
+      state.notifyChannels = Object.assign({}, state.notifyChannels, { [ch]: !state.notifyChannels[ch] });
+      lsSet('soc.notifyChannels', state.notifyChannels);
+      // Keep the legacy key in sync so older code paths still see the
+      // audio preference (we'll drop the key on a future cleanup).
+      if (ch === 'audio') lsSet('soc.notifySoundEnabled', state.notifyChannels.audio);
+      renderNotificationsCenter();
+      if (ch === 'audio' && state.notifyChannels.audio) playChime();
+    });
+  });
+  const ba = $('ncBrowserAllow');
+  if (ba) ba.addEventListener('click', async () => {
+    if (!('Notification' in window)) return;
+    try { await Notification.requestPermission(); } catch (e) {}
+    renderNotificationsCenter();
+  });
+  const bt = $('ncBrowserTest');
+  if (bt && !bt.hasAttribute('disabled')) bt.addEventListener('click', () => {
+    try {
+      new Notification('eBPF SOC — test notification', {
+        body: 'If you can read this, browser delivery is working.',
+        tag:  'soc-test-' + Date.now(),
+      });
+    } catch (e) { /* user denied or unsupported */ }
+  });
+  const at = $('ncAudioTest');
+  if (at && !at.hasAttribute('disabled')) at.addEventListener('click', playChime);
   $('ncMinSev').addEventListener('change', (e) => {
     state.notifyMinSeverity = e.target.value;
     lsSet('soc.notifyMinSeverity', state.notifyMinSeverity);
   });
-  $('ncSound').addEventListener('change', (e) => {
-    state.notifySoundEnabled = e.target.checked;
-    lsSet('soc.notifySoundEnabled', state.notifySoundEnabled);
-    if (state.notifySoundEnabled) playChime();
+  $('ncThrottle').addEventListener('change', (e) => {
+    state.notifyThrottleMin = parseInt(e.target.value, 10) || 0;
+    lsSet('soc.notifyThrottleMin', state.notifyThrottleMin);
+    _notifyRecent.clear();
+  });
+  $('ncQuietStart').addEventListener('change', (e) => {
+    state.notifyQuietStart = e.target.value || '';
+    lsSet('soc.notifyQuietStart', state.notifyQuietStart);
+    renderNotificationsCenter();
+  });
+  $('ncQuietEnd').addEventListener('change', (e) => {
+    state.notifyQuietEnd = e.target.value || '';
+    lsSet('soc.notifyQuietEnd', state.notifyQuietEnd);
+    renderNotificationsCenter();
+  });
+  const qc = $('ncQuietClear');
+  if (qc) qc.addEventListener('click', () => {
+    state.notifyQuietStart = '';
+    state.notifyQuietEnd = '';
+    lsSet('soc.notifyQuietStart', '');
+    lsSet('soc.notifyQuietEnd', '');
+    renderNotificationsCenter();
   });
 
-  $('ncCount').textContent = state.notifyHistory.length;
-  $('ncUnread').textContent = state.notifyHistory.filter(n => !n.read).length;
-
-  const list = $('ncList');
-  if (!state.notifyHistory.length) {
-    list.innerHTML = '<div class="text-soc-mute text-[12px] text-center py-8">No notifications yet — they\'ll appear here when alerts fire.</div>';
-  } else {
-    list.innerHTML = state.notifyHistory.map(n =>
-      '<div class="nc-row' + (n.read ? '' : ' unread') + '" data-nc="' + n.id + '" data-alert="' + (n.alertId || '') + '">' +
-        '<div class="nc-dot ' + n.sev + '"></div>' +
-        '<div class="flex-1 min-w-0">' +
-          '<div class="flex items-center gap-2 text-[11px]">' +
-            '<span class="text-soc-mute font-mono">' + new Date(n.time).toLocaleTimeString() + '</span>' +
-            '<span class="text-soc-text uppercase font-semibold" style="color:' +
-              ({critical:'#f43f5e',high:'#fb923c',medium:'#facc15',low:'#4ade80',info:'#94a3b8'}[n.sev] || '#94a3b8') +
-              '">' + n.sev + '</span>' +
-            '<span class="text-soc-mute">score ' + n.score + '</span>' +
-          '</div>' +
-          '<div class="text-[12px] text-soc-text truncate mt-0.5">' + escHTML(n.title) + '</div>' +
-        '</div>' +
-      '</div>'
-    ).join('');
-    list.querySelectorAll('.nc-row').forEach(row => {
-      row.addEventListener('click', () => {
-        const ncId    = row.getAttribute('data-nc');
-        const alertId = row.getAttribute('data-alert');
-        const entry   = state.notifyHistory.find(n => n.id === ncId);
-        if (entry) { entry.read = true; lsSet('soc.notifyHistory', state.notifyHistory); }
-        updateBellBadge();
-        if (alertId) {
-          closeNotificationsCenter();
-          const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === alertId);
-          if (a) renderDrill(a, pick(a, 'exec_id', 'ExecID'));
-        } else {
-          renderNotificationsCenter();
-        }
-      });
+  // History: tab + search wiring.
+  document.querySelectorAll('[data-nc-tab]').forEach(b => b.addEventListener('click', () => {
+    state.notifyHistoryFilter = b.dataset.ncTab;
+    renderNotificationsCenter();
+  }));
+  const sb = $('ncSearch');
+  if (sb) {
+    sb.addEventListener('input', (e) => {
+      state.notifySearch = e.target.value.trim().toLowerCase();
+      _renderNcListOnly();
     });
+    // Restore focus + caret to the same position so typing isn't broken
+    // by the modal's full-rebuild renders.
+    if (state.notifySearch) {
+      sb.value = state.notifySearch;
+      sb.focus();
+      try { sb.setSelectionRange(sb.value.length, sb.value.length); } catch (e) {}
+    }
+  }
+  document.querySelectorAll('[data-nc-row]').forEach(row => {
+    row.addEventListener('click', (ev) => {
+      // Dismiss button: stop propagation so the row's drill click doesn't fire.
+      if (ev.target.closest('[data-nc-dismiss]')) return;
+      const ncId    = row.getAttribute('data-nc-row');
+      const alertId = row.getAttribute('data-nc-alert');
+      const entry   = state.notifyHistory.find(n => n.id === ncId);
+      if (entry) { entry.read = true; lsSet('soc.notifyHistory', state.notifyHistory); }
+      updateBellBadge();
+      if (alertId) {
+        closeNotificationsCenter();
+        const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === alertId);
+        if (a) renderDrill(a, pick(a, 'exec_id', 'ExecID'));
+      } else {
+        renderNotificationsCenter();
+      }
+    });
+  });
+  document.querySelectorAll('[data-nc-dismiss]').forEach(btn => btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const ncId = btn.dataset.ncDismiss;
+    state.notifyHistory = state.notifyHistory.filter(n => n.id !== ncId);
+    lsSet('soc.notifyHistory', state.notifyHistory);
+    updateBellBadge();
+    renderNotificationsCenter();
+  }));
+
+  // Footer counts.
+  $('ncCount').textContent  = state.notifyHistory.length;
+  $('ncUnread').textContent = state.notifyHistory.filter(n => !n.read).length;
+  const filteredHint = $('ncFilteredHint');
+  const visibleCount = _filteredNotifications().length;
+  if (filteredHint) {
+    filteredHint.textContent = (visibleCount !== state.notifyHistory.length)
+      ? ' · ' + visibleCount + ' shown'
+      : '';
+  }
+}
+
+// History sub-panel — extracted so search-input updates can re-render
+// just the list without ripping the cursor out of the search box.
+function _filteredNotifications() {
+  const q = (state.notifySearch || '').toLowerCase();
+  const f = state.notifyHistoryFilter || 'all';
+  return state.notifyHistory.filter(n => {
+    if (f === 'unread' && n.read) return false;
+    if (f === 'critical' && n.sev !== 'critical') return false;
+    if (f === 'high' && n.sev !== 'high') return false;
+    if (q) {
+      const hay = (n.title + ' ' + (n.execId || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+function _renderNcHistory() {
+  const counts = { all: 0, unread: 0, critical: 0, high: 0 };
+  for (const n of state.notifyHistory) {
+    counts.all++;
+    if (!n.read) counts.unread++;
+    if (n.sev === 'critical') counts.critical++;
+    if (n.sev === 'high') counts.high++;
+  }
+  const tab = (key, label) =>
+    '<span class="notif-tab' + (state.notifyHistoryFilter === key ? ' active' : '') + '" data-nc-tab="' + key + '">' +
+      label + '<span class="nt-count">' + counts[key] + '</span>' +
+    '</span>';
+  return '<div class="notif-section" id="ncHistorySection">' +
+    '<div class="notif-section-title">History</div>' +
+    '<div class="flex items-center gap-2 mb-2 flex-wrap">' +
+      '<div class="notif-tabs">' +
+        tab('all', 'all') + tab('unread', 'unread') +
+        tab('critical', 'critical') + tab('high', 'high') +
+      '</div>' +
+      '<input id="ncSearch" class="notif-search" type="text" placeholder="Search title or exec_id…" value="' + escHTML(state.notifySearch || '') + '">' +
+    '</div>' +
+    '<div id="ncList" class="space-y-1 overflow-y-auto scrollbar-thin" style="max-height: 38vh;">' +
+      _renderNcListHTML() +
+    '</div>' +
+  '</div>';
+}
+function _renderNcListHTML() {
+  const visible = _filteredNotifications();
+  if (!visible.length) {
+    if (!state.notifyHistory.length) {
+      return '<div class="text-soc-mute text-[12px] text-center py-8">No notifications yet — they\'ll appear here when alerts fire.</div>';
+    }
+    return '<div class="text-soc-mute text-[12px] text-center py-8">No notifications match the current filter.</div>';
+  }
+  return visible.map(n =>
+    '<div class="nc-row' + (n.read ? '' : ' unread') + '" data-nc-row="' + n.id + '" data-nc-alert="' + (n.alertId || '') + '">' +
+      '<div class="nc-dot ' + n.sev + '"></div>' +
+      '<div class="flex-1 min-w-0">' +
+        '<div class="flex items-center gap-2 text-[11px]">' +
+          '<span class="text-soc-mute font-mono">' + new Date(n.time).toLocaleTimeString() + '</span>' +
+          '<span class="uppercase font-semibold" style="color:' +
+            ({critical:'#f43f5e',high:'#fb923c',medium:'#facc15',low:'#4ade80',info:'#94a3b8'}[n.sev] || '#94a3b8') +
+            '">' + n.sev + '</span>' +
+          '<span class="text-soc-mute">score ' + n.score + '</span>' +
+          (n.execId ? '<span class="text-soc-mute font-mono truncate" title="' + escHTML(n.execId) + '" style="max-width:120px">' +
+            escHTML(n.execId).slice(0,12) + '…</span>' : '') +
+        '</div>' +
+        '<div class="text-[12px] text-soc-text truncate mt-0.5">' + escHTML(n.title) + '</div>' +
+      '</div>' +
+      '<button class="nc-dismiss" data-nc-dismiss="' + n.id + '" title="Dismiss">×</button>' +
+    '</div>'
+  ).join('');
+}
+// Update only the list contents — used by search-input handler so the
+// caret/focus state of the search box isn't disrupted by a full rebuild.
+function _renderNcListOnly() {
+  const list = document.getElementById('ncList');
+  if (!list) return;
+  list.innerHTML = _renderNcListHTML();
+  list.querySelectorAll('[data-nc-row]').forEach(row => {
+    row.addEventListener('click', (ev) => {
+      if (ev.target.closest('[data-nc-dismiss]')) return;
+      const ncId    = row.getAttribute('data-nc-row');
+      const alertId = row.getAttribute('data-nc-alert');
+      const entry   = state.notifyHistory.find(n => n.id === ncId);
+      if (entry) { entry.read = true; lsSet('soc.notifyHistory', state.notifyHistory); }
+      updateBellBadge();
+      if (alertId) {
+        closeNotificationsCenter();
+        const a = state.alerts.find(x => String(pick(x, 'id', 'ID')) === alertId);
+        if (a) renderDrill(a, pick(a, 'exec_id', 'ExecID'));
+      } else {
+        renderNotificationsCenter();
+      }
+    });
+  });
+  list.querySelectorAll('[data-nc-dismiss]').forEach(btn => btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    const ncId = btn.dataset.ncDismiss;
+    state.notifyHistory = state.notifyHistory.filter(n => n.id !== ncId);
+    lsSet('soc.notifyHistory', state.notifyHistory);
+    updateBellBadge();
+    renderNotificationsCenter();
+  }));
+  // Also refresh the footer "X shown" hint.
+  const filteredHint = document.getElementById('ncFilteredHint');
+  if (filteredHint) {
+    const visibleCount = _filteredNotifications().length;
+    filteredHint.textContent = (visibleCount !== state.notifyHistory.length)
+      ? ' · ' + visibleCount + ' shown' : '';
   }
 }
 function markAllNotificationsRead() {
@@ -6775,6 +7781,148 @@ function exitTimeMachine() {
 }
 
 // ─────────── Process correlation graph (D3) ───────────
+//
+// The graph stays in lock-step with the live SOC stream:
+//   1. showGraphModal()    — initial open: build the dataset from current state,
+//                            paint the SVG, and arm the live tick.
+//   2. _scheduleLiveGraphUpdate() — onAlert/onEvent calls this; debounces SSE
+//                                   bursts so the layout never thrashes.
+//   3. liveUpdateGraph()   — diffs the current `_graphRaw` against a freshly
+//                            built candidate, mutates the canonical store in
+//                            place to preserve D3's x/y, marks new nodes with
+//                            `_isNew` and escalated ones with `_flash`, then
+//                            calls drawGraph({alpha:…}).
+//   4. drawGraph()         — single render path. Uses D3 join (no SVG wipe),
+//                            so existing nodes never blink.
+//
+// Animations and pause/resume are styled in CSS; this code only flips classes.
+
+// Persisted graph view state
+state.graphFilters    = lsGet('soc.graphFilters', { attack: true, threat: true, baseline: false });
+state.graphLayout     = lsGet('soc.graphLayout', 'force');
+state.graphSearch     = '';
+state.graphMaximized  = false;
+// graphTTL true → "Live" mode: nodes fade after FADE_START_MS of silence and
+// drop at DROP_MS. false → "Forensic" mode: every node we've ever seen stays
+// at full opacity. The default is Live because that matches the analyst's
+// expectation when they kill a process — it should leave the graph soon.
+state.graphTTL        = lsGet('soc.graphTTL', true);
+const GRAPH_FADE_START_MS = 90_000;     // start dimming after 90s of silence
+const GRAPH_DROP_MS       = 300_000;    // remove from graph after 5 min
+
+// Canonical store. We mutate in place so D3 keeps each node's (x, y, vx, vy)
+// across redraws — that's what makes the live updates feel calm.
+let _graphRaw = { nodes: [], links: [] };
+
+// Tracks which exec_ids we've already paid the /api/process round-trip for.
+// Without this, every live tick would re-fetch the whole top-40, hammering
+// the backend and adding latency. Cleared on modal close + manual refresh.
+const _graphFetched = new Set();
+
+// Live-update bookkeeping. paused: user clicked the LIVE pill. pending: count
+// of skipped ticks while paused (shown as a "+N" badge on the pill).
+const _graphLive = {
+  paused: false,
+  pending: 0,
+  totalAdded: 0,
+  totalEscalated: 0,
+  debounceTimer: null,
+  inFlight: false,
+};
+
+// SVG icons for maximize and restore — matched to the icon-button slot so
+// both states render at identical optical weight.
+const _GRAPH_ICON_MAX = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<polyline points="15 4 20 4 20 9"/><polyline points="9 20 4 20 4 15"/>' +
+  '<line x1="20" y1="4" x2="14" y2="10"/><line x1="4" y1="20" x2="10" y2="14"/></svg>';
+const _GRAPH_ICON_MIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
+  '<polyline points="20 9 15 9 15 4"/><polyline points="4 15 9 15 9 20"/>' +
+  '<line x1="15" y1="9" x2="21" y2="3"/><line x1="9" y1="15" x2="3" y2="21"/></svg>';
+
+function _keyOfLink(l) {
+  const s = typeof l.source === 'object' ? l.source.id : l.source;
+  const t = typeof l.target === 'object' ? l.target.id : l.target;
+  return s + '→' + t;
+}
+
+// Pull a millisecond timestamp off an event/alert. Servers serialize times
+// as either ISO strings or epoch numbers — Date handles both. 0 means we
+// could not parse, in which case the caller should fall back to Date.now().
+function _eventTimeMs(o) {
+  const ts = pick(o, 'timestamp', 'Timestamp', 'time', 'Time');
+  if (!ts) return 0;
+  const ms = (typeof ts === 'number') ? ts : new Date(ts).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+}
+
+// Compute display opacity for a node based on age. In Live mode the curve is:
+//   age ≤ 90s         → 1.0   (fully visible — recent activity)
+//   90s < age < 5m    → linear fade 1.0 → 0.25
+//   age ≥ 5m          → 0     (caller drops the node)
+// In Forensic mode (state.graphTTL = false) every node is full-opacity.
+function _ttlOpacity(node, now) {
+  if (!state.graphTTL) return 1;
+  const age = now - (node.lastSeenAt || now);
+  if (age <= GRAPH_FADE_START_MS) return 1;
+  if (age >= GRAPH_DROP_MS)       return 0;
+  const t = (age - GRAPH_FADE_START_MS) / (GRAPH_DROP_MS - GRAPH_FADE_START_MS);
+  return 1 - 0.75 * t;
+}
+
+// Periodic ticker that fades stale nodes and drops aged-out ones. Runs only
+// while the modal is open. Pure visual updates (no sim restart) are applied
+// directly to the DOM; topology changes go through drawGraph so D3's join
+// handles enter/exit.
+let _ttlTickerTimer = null;
+function _startTtlTicker() {
+  if (_ttlTickerTimer) return;
+  _ttlTickerTimer = setInterval(_ttlTick, 1500);
+}
+function _stopTtlTicker() {
+  if (_ttlTickerTimer) { clearInterval(_ttlTickerTimer); _ttlTickerTimer = null; }
+}
+function _ttlTick() {
+  if (!document.getElementById('graphModal').classList.contains('open')) {
+    _stopTtlTicker();
+    return;
+  }
+  const svg = d3.select('#graphSvg');
+  if (!state.graphTTL) {
+    // Forensic mode — restore everything to full opacity in case the user
+    // just toggled out of Live mode mid-fade.
+    svg.selectAll('g.graph-node').style('opacity', 1);
+    svg.selectAll('g.graph-links line').style('opacity', 1);
+    return;
+  }
+  const now = Date.now();
+  const dropIds = new Set();
+  for (const n of _graphRaw.nodes) {
+    if (now - (n.lastSeenAt || now) >= GRAPH_DROP_MS) dropIds.add(n.id);
+  }
+  if (dropIds.size > 0) {
+    _graphRaw.nodes = _graphRaw.nodes.filter(n => !dropIds.has(n.id));
+    _graphRaw.links = _graphRaw.links.filter(l => {
+      const sId = typeof l.source === 'object' ? l.source.id : l.source;
+      const tId = typeof l.target === 'object' ? l.target.id : l.target;
+      return !dropIds.has(sId) && !dropIds.has(tId);
+    });
+    // Allow the dropped exec_ids to be re-fetched if events arrive again.
+    for (const id of dropIds) _graphFetched.delete(id);
+    drawGraph({ alpha: 0.06 });
+    return;
+  }
+  // No structural change — just restyle in place. Cheap (single attribute
+  // update per element, no force restart).
+  const idToNode = new Map(_graphRaw.nodes.map(n => [n.id, n]));
+  svg.selectAll('g.graph-node').style('opacity', d => _ttlOpacity(d, now));
+  svg.selectAll('g.graph-links line').style('opacity', d => {
+    const s = typeof d.source === 'object' ? d.source : idToNode.get(d.source);
+    const t = typeof d.target === 'object' ? d.target : idToNode.get(d.target);
+    return Math.min(_ttlOpacity(s || { lastSeenAt: now }, now),
+                    _ttlOpacity(t || { lastSeenAt: now }, now));
+  });
+}
+
 async function showGraphModal() {
   $('graphModal').classList.add('open');
   if (typeof d3 === 'undefined') {
@@ -6783,76 +7931,7 @@ async function showGraphModal() {
     return;
   }
 
-  // Build nodes (one per unique exec_id seen in events) and edges (parent→child).
-  const nodes = new Map(); // execId → { id, bin, score, alerts }
-  const edges = [];
-  const seenEdge = new Set();
-
-  // Score per exec_id from alerts
-  const scoreByExec = new Map();
-  const alertsByExec = new Map();
-  for (const a of state.alerts) {
-    const id = pick(a, 'exec_id', 'ExecID');
-    if (!id) continue;
-    scoreByExec.set(id, Math.max(scoreByExec.get(id) || 0, pick(a, 'score', 'Score') || 0));
-    if (!alertsByExec.has(id)) alertsByExec.set(id, []);
-    alertsByExec.get(id).push(a);
-  }
-  // Walk events to harvest exec/parent relationships
-  for (const e of state.events) {
-    if (state.filterNoise && isSelfNoise(e)) continue;
-    const id = pick(e, 'exec_id', 'ExecID');
-    if (!id) continue;
-    if (!nodes.has(id)) {
-      nodes.set(id, {
-        id,
-        bin: pick(e, 'binary', 'Binary') || '?',
-        score: scoreByExec.get(id) || 0,
-        alerts: (alertsByExec.get(id) || []).length,
-      });
-    }
-    // Parent edges via per-exec_id chain fetch are too expensive; instead
-    // use the parent_pid from process_exec when both PIDs are present.
-    const ppid = pick(e, 'parent_pid', 'ParentPID') || 0;
-    const pid  = pick(e, 'pid', 'PID') || 0;
-    if (!ppid || !pid) continue;
-    // Find a parent exec_id whose pid === ppid (heuristic)
-    for (const [parentId, info] of nodes) {
-      if (parentId === id) continue;
-      // We don't track pid on the node; this is best-effort. Instead, group edges by binary.
-      void info;
-    }
-  }
-  // Better: derive edges by walking the alert chain endpoint for the top N exec_ids
-  // (limited to keep things snappy).
-  const topIds = [...nodes.keys()].slice(0, 40);
-  for (const id of topIds) {
-    try {
-      const r = await fetch('/api/process/' + encodeURIComponent(id));
-      if (!r.ok) continue;
-      const data = await r.json();
-      const chain = data.chain || [];
-      // chain is leaf-first per server; build edges
-      for (let i = 1; i < chain.length; i++) {
-        const child  = chain[i - 1];
-        const parent = chain[i];
-        const cId = pick(child, 'exec_id', 'ExecID');
-        const pId = pick(parent, 'exec_id', 'ExecID');
-        if (!cId || !pId) continue;
-        // Ensure both nodes exist
-        if (!nodes.has(cId)) nodes.set(cId, { id: cId, bin: pick(child, 'binary', 'Binary') || '?', score: scoreByExec.get(cId) || 0, alerts: 0 });
-        if (!nodes.has(pId)) nodes.set(pId, { id: pId, bin: pick(parent, 'binary', 'Binary') || '?', score: scoreByExec.get(pId) || 0, alerts: 0 });
-        const k = pId + '→' + cId;
-        if (seenEdge.has(k)) continue;
-        seenEdge.add(k);
-        edges.push({ source: pId, target: cId });
-      }
-    } catch (e) { /* ignore */ }
-  }
-
-  $('graphStats').textContent = nodes.size + ' processes · ' + edges.length + ' edges';
-  // Bind maximize + resize + key handlers once. drawGraph() rebinds the
-  // toolbar each render, but these belong to the modal lifecycle.
+  // Bind modal-lifetime chrome handlers once (maximize + resize + Esc/F).
   if (!window._graphChromeBound) {
     window._graphChromeBound = true;
     const maxBtn = document.getElementById('graphMaxBtn');
@@ -6860,7 +7939,7 @@ async function showGraphModal() {
     window.addEventListener('resize', () => {
       if (!document.getElementById('graphModal').classList.contains('open')) return;
       _resizeGraphCanvas();
-      if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph();
+      if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph({ alpha: 0.2 });
     });
     document.addEventListener('keydown', (ev) => {
       if (!document.getElementById('graphModal').classList.contains('open')) return;
@@ -6874,32 +7953,50 @@ async function showGraphModal() {
         ev.preventDefault();
       }
     });
+    // Live-pill toggle and refresh button — wired once for the modal lifetime.
+    const pill = document.getElementById('graphLivePill');
+    if (pill) {
+      pill.addEventListener('click', _toggleGraphPause);
+      pill.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); _toggleGraphPause(); }
+      });
+    }
+    const refresh = document.getElementById('graphRefreshBtn');
+    if (refresh) refresh.addEventListener('click', _refreshGraph);
   }
+
+  // Reset live state for this open. _graphRaw stays intact across re-opens
+  // when the user re-opens quickly, but a manual refresh wipes it.
+  _graphLive.paused = false;
+  _graphLive.pending = 0;
+  _graphLive.totalAdded = 0;
+  _graphLive.totalEscalated = 0;
+  _updateGraphLivePill();
+
   _resizeGraphCanvas();
-  renderGraph([...nodes.values()], edges);
+  $('graphStats').textContent = 'Loading…';
+
+  // Initial build from current state. Subsequent updates patch incrementally.
+  const fresh = await buildGraphData();
+  _graphRaw = fresh;
+  drawGraph({ fullRebuild: true });
+  _startTtlTicker();
 }
+
 function closeGraphModal() {
   $('graphModal').classList.remove('open');
   // Reset to the unmaximized state so a fresh open is predictable.
   if (state.graphMaximized) setGraphMaximized(false);
   if (window._graphSim) { window._graphSim.stop(); window._graphSim = null; }
+  if (_graphLive.debounceTimer) { clearTimeout(_graphLive.debounceTimer); _graphLive.debounceTimer = null; }
+  _stopTtlTicker();
+  // Wipe SVG so the next open re-initializes the structure cleanly. The
+  // _graphRaw store is also cleared so we don't carry stale x/y from a
+  // previous session into a fresh build.
+  d3.select('#graphSvg').selectAll('*').remove();
+  _graphRaw = { nodes: [], links: [] };
+  _graphFetched.clear();
 }
-
-// Persisted graph view state
-state.graphFilters    = lsGet('soc.graphFilters', { attack: true, threat: true, baseline: false });
-state.graphLayout     = lsGet('soc.graphLayout', 'force');
-state.graphSearch     = '';
-state.graphMaximized  = false;
-let _graphRaw = { nodes: [], links: [] };
-
-// SVG icons for maximize and restore — matched to the icon-button slot so
-// both states render at identical optical weight.
-const _GRAPH_ICON_MAX = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
-  '<polyline points="15 4 20 4 20 9"/><polyline points="9 20 4 20 4 15"/>' +
-  '<line x1="20" y1="4" x2="14" y2="10"/><line x1="4" y1="20" x2="10" y2="14"/></svg>';
-const _GRAPH_ICON_MIN = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">' +
-  '<polyline points="20 9 15 9 15 4"/><polyline points="4 15 9 15 9 20"/>' +
-  '<line x1="15" y1="9" x2="21" y2="3"/><line x1="9" y1="15" x2="3" y2="21"/></svg>';
 
 // Resize the graph SVG + sidebar to fit the current modal size. The D3 layout
 // reads height/width from the SVG element on each redraw, so callers should
@@ -6929,26 +8026,276 @@ function setGraphMaximized(on) {
   if (icon) icon.outerHTML = (state.graphMaximized ? _GRAPH_ICON_MIN : _GRAPH_ICON_MAX)
     .replace('<svg', '<svg id="graphMaxIcon"');
   _resizeGraphCanvas();
-  if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph();
+  if (typeof drawGraph === 'function' && _graphRaw.nodes.length) drawGraph({ alpha: 0.2 });
 }
 
-function renderGraph(nodes, links) {
-  // Annotate each node with its classification
-  for (const n of nodes) n.cls = classifyBinary(n.bin);
-  _graphRaw = { nodes, links };
-  drawGraph();
+// Build the candidate dataset from current state.events + state.alerts.
+// Fetches parent chains for any exec_ids we haven't seen yet (capped at the
+// top 40 by score). Returns plain {nodes, links} — caller is responsible for
+// merging into _graphRaw.
+async function buildGraphData() {
+  const nodes = new Map();
+  const seenEdge = new Set();
+  const edges = [];
+
+  const scoreByExec = new Map();
+  const alertsByExec = new Map();
+  // Track the newest timestamp we've seen per exec_id. The TTL fade reads
+  // this to decide which nodes are "quiet" — without it, a node would only
+  // age out when its events rolled off the 500-event ring buffer, which can
+  // take many minutes on a quiet host.
+  const lastSeenByExec = new Map();
+  const _bumpSeen = (id, ts) => {
+    if (!ts) return;
+    if (ts > (lastSeenByExec.get(id) || 0)) lastSeenByExec.set(id, ts);
+  };
+  for (const a of state.alerts) {
+    const id = pick(a, 'exec_id', 'ExecID');
+    if (!id) continue;
+    scoreByExec.set(id, Math.max(scoreByExec.get(id) || 0, pick(a, 'score', 'Score') || 0));
+    if (!alertsByExec.has(id)) alertsByExec.set(id, []);
+    alertsByExec.get(id).push(a);
+    _bumpSeen(id, _eventTimeMs(a));
+  }
+  for (const e of state.events) {
+    if (state.filterNoise && isSelfNoise(e)) continue;
+    const id = pick(e, 'exec_id', 'ExecID');
+    if (!id) continue;
+    if (!nodes.has(id)) {
+      nodes.set(id, {
+        id,
+        bin: pick(e, 'binary', 'Binary') || '?',
+        score: scoreByExec.get(id) || 0,
+        alerts: (alertsByExec.get(id) || []).length,
+      });
+    } else {
+      // Newer events may carry a higher score / alert count.
+      const n = nodes.get(id);
+      n.score  = Math.max(n.score,  scoreByExec.get(id) || 0);
+      n.alerts = Math.max(n.alerts, (alertsByExec.get(id) || []).length);
+    }
+    _bumpSeen(id, _eventTimeMs(e));
+  }
+
+  // Prioritize fetching parent chains for the highest-score exec_ids — those
+  // are the threats the analyst actually cares about seeing in the graph.
+  const ranked = [...nodes.keys()].sort((a, b) =>
+    (nodes.get(b).score || 0) - (nodes.get(a).score || 0));
+  const topIds = ranked.slice(0, 40);
+  for (const id of topIds) {
+    if (_graphFetched.has(id)) continue;
+    _graphFetched.add(id);
+    try {
+      const r = await fetch('/api/process/' + encodeURIComponent(id));
+      if (!r.ok) continue;
+      const data = await r.json();
+      const chain = data.chain || [];
+      for (let i = 1; i < chain.length; i++) {
+        const child  = chain[i - 1];
+        const parent = chain[i];
+        const cId = pick(child, 'exec_id', 'ExecID');
+        const pId = pick(parent, 'exec_id', 'ExecID');
+        if (!cId || !pId) continue;
+        if (!nodes.has(cId)) nodes.set(cId, { id: cId, bin: pick(child, 'binary', 'Binary') || '?', score: scoreByExec.get(cId) || 0, alerts: 0 });
+        if (!nodes.has(pId)) nodes.set(pId, { id: pId, bin: pick(parent, 'binary', 'Binary') || '?', score: scoreByExec.get(pId) || 0, alerts: 0 });
+        const k = pId + '→' + cId;
+        if (seenEdge.has(k)) continue;
+        seenEdge.add(k);
+        edges.push({ source: pId, target: cId });
+      }
+    } catch (e) { /* network blip — try again next tick */ }
+  }
+
+  // Carry forward any previously-known edges whose endpoints are still
+  // present. Without this, a tick that doesn't re-fetch a chain would
+  // silently drop the edges we already have on screen.
+  for (const l of _graphRaw.links) {
+    const sId = typeof l.source === 'object' ? l.source.id : l.source;
+    const tId = typeof l.target === 'object' ? l.target.id : l.target;
+    if (!nodes.has(sId) || !nodes.has(tId)) continue;
+    const k = sId + '→' + tId;
+    if (seenEdge.has(k)) continue;
+    seenEdge.add(k);
+    edges.push({ source: sId, target: tId });
+  }
+
+  // Assign TTL freshness. Fall back to "now" only if no event/alert in our
+  // current buffers carried a timestamp for this exec_id — that ensures a
+  // node we just discovered doesn't immediately appear stale.
+  const nowMs = Date.now();
+  for (const n of nodes.values()) {
+    n.cls = classifyBinary(n.bin);
+    n.lastSeenAt = lastSeenByExec.get(n.id) || nowMs;
+  }
+  return { nodes: [...nodes.values()], links: edges };
 }
 
-function drawGraph() {
+// Public hook called from onAlert/onEvent. Debounces by 600ms so a burst of
+// SSE events resolves into one patch instead of dozens of restarts.
+function _scheduleLiveGraphUpdate() {
+  if (!document.getElementById('graphModal').classList.contains('open')) return;
+  if (_graphLive.paused) {
+    _graphLive.pending++;
+    _updateGraphLivePill();
+    return;
+  }
+  if (_graphLive.debounceTimer) return;
+  _graphLive.debounceTimer = setTimeout(() => {
+    _graphLive.debounceTimer = null;
+    liveUpdateGraph();
+  }, 600);
+}
+
+async function liveUpdateGraph() {
+  if (!document.getElementById('graphModal').classList.contains('open')) return;
+  if (_graphLive.inFlight) return;
+  _graphLive.inFlight = true;
+  try {
+    const fresh = await buildGraphData();
+
+    // Merge into _graphRaw in place. We keep the same node *objects* so D3's
+    // tick still sees their last (x,y) — that's what stops the layout from
+    // jolting on every patch.
+    const oldById = new Map(_graphRaw.nodes.map(n => [n.id, n]));
+    const oldLinkKeys = new Set(_graphRaw.links.map(_keyOfLink));
+    let added = 0, escalated = 0;
+    const merged = [];
+    for (const n of fresh.nodes) {
+      const existing = oldById.get(n.id);
+      if (existing) {
+        const scoreDelta  = (n.score  || 0) - (existing.score  || 0);
+        const alertsDelta = (n.alerts || 0) - (existing.alerts || 0);
+        existing.bin    = n.bin;
+        existing.score  = n.score;
+        existing.alerts = n.alerts;
+        existing.cls    = n.cls;
+        // Only advance lastSeenAt if the new candidate is genuinely fresher.
+        // Without max(), a tick that sees a stale buffered event for this id
+        // could rewind freshness and unfade a node that should be aging out.
+        if (n.lastSeenAt && n.lastSeenAt > (existing.lastSeenAt || 0)) {
+          existing.lastSeenAt = n.lastSeenAt;
+        }
+        // Flash on score escalation OR new alert hitting an existing process.
+        if ((scoreDelta > 0 && n.score >= 5) || alertsDelta > 0) {
+          existing._flash = true;
+          escalated++;
+        }
+        merged.push(existing);
+      } else {
+        n._isNew = true;
+        merged.push(n);
+        added++;
+      }
+    }
+    _graphRaw.nodes = merged;
+
+    // Drop links whose endpoints were evicted (rare — only happens when the
+    // 500-event ring buffer rolls a node off). Add new links.
+    const validIds = new Set(merged.map(n => n.id));
+    _graphRaw.links = _graphRaw.links.filter(l => {
+      const sId = typeof l.source === 'object' ? l.source.id : l.source;
+      const tId = typeof l.target === 'object' ? l.target.id : l.target;
+      return validIds.has(sId) && validIds.has(tId);
+    });
+    for (const l of fresh.links) {
+      if (!oldLinkKeys.has(_keyOfLink(l))) _graphRaw.links.push(l);
+    }
+
+    if (added > 0)      _graphLive.totalAdded += added;
+    if (escalated > 0)  _graphLive.totalEscalated += escalated;
+    _updateGraphLivePill();
+
+    if (added === 0 && escalated === 0) {
+      // No visible change — skip the redraw entirely. Stats line is still
+      // accurate from the previous render.
+      return;
+    }
+
+    // alpha=0.3 when topology grows (new nodes need to find a slot);
+    // alpha=0.06 for color/size-only updates (barely heat the simulation).
+    drawGraph({ alpha: added > 0 ? 0.3 : 0.06 });
+  } finally {
+    _graphLive.inFlight = false;
+  }
+}
+
+function _toggleGraphPause() {
+  _graphLive.paused = !_graphLive.paused;
+  if (!_graphLive.paused && _graphLive.pending > 0) {
+    _graphLive.pending = 0;
+    liveUpdateGraph();
+  }
+  _updateGraphLivePill();
+}
+
+function _updateGraphLivePill() {
+  const pill = document.getElementById('graphLivePill');
+  if (!pill) return;
+  pill.classList.toggle('state-paused', _graphLive.paused);
+  const txtEl = pill.querySelector('.glp-text');
+  const cntEl = pill.querySelector('.glp-count');
+  if (txtEl) txtEl.textContent = _graphLive.paused ? 'PAUSED' : 'LIVE';
+  if (cntEl) {
+    let show = '';
+    if (_graphLive.paused && _graphLive.pending > 0) {
+      show = '+' + _graphLive.pending;
+    } else if (!_graphLive.paused && _graphLive.totalAdded > 0) {
+      show = '+' + _graphLive.totalAdded;
+    }
+    if (show) { cntEl.textContent = show; cntEl.style.display = ''; }
+    else      { cntEl.style.display = 'none'; }
+  }
+  pill.title = _graphLive.paused
+    ? 'Paused — click to resume real-time updates'
+    : 'Click to pause real-time updates';
+}
+
+// Manual refresh: drop everything and rebuild from scratch. This is the
+// escape hatch when the live patches drift from reality (e.g. backend
+// restarted, a process tree changed in ways live deltas can't capture).
+async function _refreshGraph() {
+  const btn = document.getElementById('graphRefreshBtn');
+  if (btn) btn.classList.add('off');
+  _graphFetched.clear();
+  _graphRaw = { nodes: [], links: [] };
+  d3.select('#graphSvg').selectAll('*').remove();
+  if (window._graphSim) { window._graphSim.stop(); window._graphSim = null; }
+  $('graphStats').textContent = 'Refreshing…';
+  try {
+    const fresh = await buildGraphData();
+    _graphRaw = fresh;
+    drawGraph({ fullRebuild: true });
+    _graphLive.totalAdded = 0;
+    _graphLive.totalEscalated = 0;
+    _updateGraphLivePill();
+  } finally {
+    if (btn) btn.classList.remove('off');
+  }
+}
+
+// Single render path. Uses D3 join — never wipes the SVG except on
+// fullRebuild. opts.alpha controls how hot to restart the simulation:
+//   0.06 ≈ "barely move",   0.3 ≈ "let new nodes settle in",
+//   0.7+ ≈ "user changed topology, allow a real reflow".
+function drawGraph(opts) {
+  opts = opts || {};
   const svg = d3.select('#graphSvg');
-  svg.selectAll('*').remove();
   const w = svg.node().clientWidth, h = +svg.attr('height');
 
-  // Apply classification + search filter
-  // classifyBinary returns 'attack' | 'baseline' | 'unknown' but the chip is
-  // labeled "threat" for the unknown bucket (matches alert UI), so we map
-  // 'unknown' → 'threat' for the lookup. Without this, unchecking all chips
-  // still leaves "unknown" nodes visible.
+  // Initialize SVG structure once. fullRebuild forces a teardown so layout
+  // changes (force↔radial) and manual refresh start from a clean slate.
+  let outer = svg.select('g.graph-outer');
+  if (outer.empty() || opts.fullRebuild) {
+    svg.selectAll('*').remove();
+    outer = svg.append('g').attr('class', 'graph-outer');
+    outer.append('g').attr('class', 'graph-links').attr('stroke-width', 1);
+    outer.append('g').attr('class', 'graph-nodes');
+    svg.call(d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => outer.attr('transform', e.transform)));
+  }
+  const linkG = outer.select('g.graph-links');
+  const nodeG = outer.select('g.graph-nodes');
+
+  // Apply classification + search filter.
   const filterKey = (cls) => cls === 'unknown' ? 'threat' : cls;
   const visibleSet = new Set(
     _graphRaw.nodes
@@ -6966,109 +8313,238 @@ function drawGraph() {
   $('graphStats').textContent = nodes.length + ' processes · ' + links.length + ' edges' +
     (state.graphSearch ? ' (filtered)' : '');
 
-  const g = svg.append('g');
-  svg.call(d3.zoom().scaleExtent([0.2, 4]).on('zoom', (e) => g.attr('transform', e.transform)));
-
-  // Classification-aware color: attack/threat/baseline overrides score gradient
   const color = (n) => {
     if (n.cls === 'attack')   return '#f43f5e';
     if (n.cls === 'baseline') return '#64748b';
-    // unknown → gradient by score
     const s = n.score || 0;
     return s >= 40 ? '#fb7185' : s >= 20 ? '#fb923c' : s >= 5 ? '#facc15' : '#3b82f6';
   };
   const radius = (n) => 6 + Math.min(22, Math.sqrt(Math.max(n.score || 0, n.alerts || 0)));
+  const idToNode = new Map(nodes.map(n => [n.id, n]));
 
-  const link = g.append('g')
-    .attr('class', 'graph-links').attr('stroke-width', 1)
-    .selectAll('line').data(links).join('line')
+  // Lazily create the simulation. We reuse it across patches so node
+  // positions persist; only fullRebuild + layout change tear it down.
+  let sim = window._graphSim;
+  const layoutChanged = sim && sim.__layout !== state.graphLayout;
+  if (!sim || layoutChanged || opts.fullRebuild) {
+    if (sim) sim.stop();
+    sim = d3.forceSimulation();
+    sim.__layout = state.graphLayout;
+    window._graphSim = sim;
+  }
+
+  // ───────── Link join ─────────
+  const linkSel = linkG.selectAll('line').data(links, _keyOfLink);
+  // Smooth fade-out on removal (process exit, TTL drop, filter changes) so
+  // edges don't pop. The 350ms duration lines up with .graph-node-stroke's
+  // exit transition below.
+  linkSel.exit().interrupt().transition().duration(350).style('opacity', 0).remove();
+  const linkEnter = linkSel.enter().append('line').attr('class', 'graph-link-new');
+  const linkAll = linkSel.merge(linkEnter)
     .attr('stroke-width', d => {
-      const ts = typeof d.target === 'object' ? d.target : nodes.find(n => n.id === d.target);
+      const ts = typeof d.target === 'object' ? d.target : idToNode.get(d.target);
       return ts && ts.score >= 40 ? 2.5 : 1;
     })
     .classed('graph-link-strong', d => {
-      const ts = typeof d.target === 'object' ? d.target : nodes.find(n => n.id === d.target);
+      const ts = typeof d.target === 'object' ? d.target : idToNode.get(d.target);
       return !!(ts && ts.score >= 40);
     });
 
-  const node = g.append('g')
-    .selectAll('g').data(nodes, d => d.id).join('g')
+  // ───────── Node join ─────────
+  const nodeSel = nodeG.selectAll('g.graph-node').data(nodes, d => d.id);
+  // Fade out exiting nodes (process_exit, TTL drop, filter change) over the
+  // same 350ms window the links use, so the whole subgraph dissolves
+  // together rather than the edges flicking off first.
+  nodeSel.exit().interrupt().transition().duration(350).style('opacity', 0).remove();
+
+  // Seed positions for newly entering nodes near a connected neighbor (or
+  // the canvas center) so they don't pop in from (0,0) and shoot across.
+  const enterIds = new Set();
+  nodeSel.enter().each(function(d) { enterIds.add(d.id); });
+  for (const d of nodes) {
+    if (!enterIds.has(d.id) || d.x !== undefined) continue;
+    let anchor = null;
+    for (const l of links) {
+      const sId = typeof l.source === 'object' ? l.source.id : l.source;
+      const tId = typeof l.target === 'object' ? l.target.id : l.target;
+      if (tId === d.id) {
+        const sN = typeof l.source === 'object' ? l.source : idToNode.get(sId);
+        if (sN && sN.x !== undefined) { anchor = sN; break; }
+      } else if (sId === d.id) {
+        const tN = typeof l.target === 'object' ? l.target : idToNode.get(tId);
+        if (tN && tN.x !== undefined) { anchor = tN; break; }
+      }
+    }
+    if (anchor) {
+      d.x = anchor.x + (Math.random() - 0.5) * 30;
+      d.y = anchor.y + (Math.random() - 0.5) * 30;
+    } else {
+      d.x = w / 2 + (Math.random() - 0.5) * 60;
+      d.y = h / 2 + (Math.random() - 0.5) * 60;
+    }
+  }
+
+  const nodeEnter = nodeSel.enter().append('g')
+    .attr('class', 'graph-node')
     .style('cursor', 'pointer')
     .call(d3.drag()
       .on('start', (e, d) => { if (!e.active) sim.alphaTarget(0.3).restart(); d.fx = d.x; d.fy = d.y; })
       .on('drag',  (e, d) => { d.fx = e.x; d.fy = e.y; })
       .on('end',   (e, d) => { if (!e.active) sim.alphaTarget(0); d.fx = null; d.fy = null; }))
-    .on('click', (e, d) => { renderGraphSidebar(d, links); });
-  // Double-click to drill (preserves single-click for sidebar selection)
-  node.on('dblclick', (e, d) => { closeGraphModal(); openDrillByExec(d.id); });
-
-  // Halo for attack nodes (visual emphasis)
-  node.filter(d => d.cls === 'attack')
+    .on('click',    (e, d) => { renderGraphSidebar(d, _graphRaw.links); })
+    .on('dblclick', (e, d) => { closeGraphModal(); openDrillByExec(d.id); });
+  // Halo is added on enter for attack nodes; the merge step below handles
+  // late re-classification (attack ⇆ non-attack) after re-fetches.
+  nodeEnter.filter(d => d.cls === 'attack')
     .append('circle')
-    .attr('r', d => radius(d) + 6)
+    .attr('class', 'graph-node-halo')
     .attr('fill', 'none').attr('stroke', '#f43f5e').attr('stroke-opacity', 0.45)
-    .attr('stroke-width', 2)
-    .attr('stroke-dasharray', '2,2');
-
-  node.append('circle')
+    .attr('stroke-width', 2).attr('stroke-dasharray', '2,2');
+  nodeEnter.append('circle')
     .attr('class', 'graph-node-stroke')
+    .attr('stroke-width', 1.5);
+  nodeEnter.append('title');
+  nodeEnter.append('text').attr('class', 'graph-node-label');
+
+  const nodeAll = nodeSel.merge(nodeEnter);
+  // Halo: keep in sync with classification + radius (insert at index 0 so
+  // it renders behind the main circle).
+  nodeAll.each(function(d) {
+    const sel = d3.select(this);
+    const halo = sel.select('circle.graph-node-halo');
+    if (d.cls === 'attack') {
+      if (halo.empty()) {
+        sel.insert('circle', ':first-child')
+          .attr('class', 'graph-node-halo')
+          .attr('fill', 'none').attr('stroke', '#f43f5e').attr('stroke-opacity', 0.45)
+          .attr('stroke-width', 2).attr('stroke-dasharray', '2,2')
+          .attr('r', radius(d) + 6);
+      } else {
+        halo.attr('r', radius(d) + 6);
+      }
+    } else if (!halo.empty()) {
+      halo.remove();
+    }
+  });
+  // Main circle: animations are toggled via class flips. classed(..., false)
+  // first removes any leftover class so the keyframe can re-trigger when the
+  // same node escalates a second time.
+  nodeAll.select('circle.graph-node-stroke')
+    .classed('graph-node-new',   false)
+    .classed('graph-node-flash', false);
+  // Forcing a reflow makes browsers pick up the class removal before we add
+  // it back — without this the animation wouldn't replay on repeat flashes.
+  void nodeG.node().getBoundingClientRect();
+  nodeAll.select('circle.graph-node-stroke')
     .attr('r', d => radius(d))
     .attr('fill', d => color(d))
-    .attr('stroke-width', 1.5);
-
-  node.append('title').text(d => d.bin + '  (' + d.cls + ', score=' + d.score + ', alerts=' + d.alerts + ')');
-
-  // Show labels only for high-signal nodes to reduce clutter
-  node.filter(d => d.score >= 5 || d.cls === 'attack').append('text')
-    .attr('class', 'graph-node-label')
+    .classed('graph-node-new',   d => !!d._isNew)
+    .classed('graph-node-flash', d => !!d._flash);
+  nodeAll.select('title').text(d => d.bin + '  (' + d.cls + ', score=' + d.score + ', alerts=' + d.alerts + ')');
+  nodeAll.select('text.graph-node-label')
+    .style('display', d => (d.score >= 5 || d.cls === 'attack') ? null : 'none')
     .attr('x', d => radius(d) + 4).attr('y', 3)
     .text(d => (d.bin || '').split('/').pop());
 
-  let sim;
+  // Apply TTL opacity. The periodic _ttlTick keeps these in sync between
+  // renders; doing it here too avoids a flash of full-opacity on entry for
+  // nodes that are already old (e.g. on initial showGraphModal).
+  const _ttlNow = Date.now();
+  nodeAll.style('opacity', d => _ttlOpacity(d, _ttlNow));
+  linkAll.style('opacity', d => {
+    const s = typeof d.source === 'object' ? d.source : idToNode.get(d.source);
+    const t = typeof d.target === 'object' ? d.target : idToNode.get(d.target);
+    return Math.min(_ttlOpacity(s || { lastSeenAt: _ttlNow }, _ttlNow),
+                    _ttlOpacity(t || { lastSeenAt: _ttlNow }, _ttlNow));
+  });
+
+  // Clear one-shot flags on the next frame so they don't re-trigger animations
+  // on the next render. The CSS animation is already running by then.
+  requestAnimationFrame(() => {
+    for (const n of _graphRaw.nodes) { n._isNew = false; n._flash = false; }
+    linkG.selectAll('line.graph-link-new').classed('graph-link-new', false);
+  });
+
+  // ───────── Forces (re-applied each call so distances/centers track size) ─────────
   if (state.graphLayout === 'radial') {
-    // Radial layout: roots (no incoming edges) at center, fan out by depth
     const incoming = new Map();
     for (const l of links) {
       const t = typeof l.target === 'object' ? l.target.id : l.target;
       incoming.set(t, (incoming.get(t) || 0) + 1);
     }
-    const roots = nodes.filter(n => !incoming.has(n.id));
-    sim = d3.forceSimulation(nodes)
-      .force('link',   d3.forceLink(links).id(d => d.id).distance(70))
-      .force('charge', d3.forceManyBody().strength(-200))
-      .force('center', d3.forceCenter(w / 2, h / 2))
-      .force('radial', d3.forceRadial(d => roots.includes(d) ? 0 : 220, w / 2, h / 2).strength(0.4))
+    const rootIds = new Set(nodes.filter(n => !incoming.has(n.id)).map(n => n.id));
+    sim.nodes(nodes)
+      .force('link',    d3.forceLink(links).id(d => d.id).distance(70))
+      .force('charge',  d3.forceManyBody().strength(-200))
+      .force('center',  d3.forceCenter(w / 2, h / 2))
+      .force('radial',  d3.forceRadial(d => rootIds.has(d.id) ? 0 : 220, w / 2, h / 2).strength(0.4))
       .force('collide', d3.forceCollide().radius(d => radius(d) + 4));
   } else {
-    sim = d3.forceSimulation(nodes)
-      .force('link',   d3.forceLink(links).id(d => d.id).distance(60))
-      .force('charge', d3.forceManyBody().strength(-160))
-      .force('center', d3.forceCenter(w / 2, h / 2))
+    sim.nodes(nodes)
+      .force('link',    d3.forceLink(links).id(d => d.id).distance(60))
+      .force('charge',  d3.forceManyBody().strength(-160))
+      .force('center',  d3.forceCenter(w / 2, h / 2))
+      .force('radial',  null)
       .force('collide', d3.forceCollide().radius(d => radius(d) + 4));
   }
   sim.on('tick', () => {
-    link.attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-        .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
-    node.attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
+    linkG.selectAll('line')
+      .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+      .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    nodeG.selectAll('g.graph-node')
+      .attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
   });
-  window._graphSim = sim;
+  // Reheat. opts.alpha lets the caller pick (incremental: low; fullRebuild: 1).
+  let alpha;
+  if (opts.alpha != null)        alpha = opts.alpha;
+  else if (opts.fullRebuild)     alpha = 1;
+  else                            alpha = 0.5;
+  sim.alpha(alpha).restart();
 
-  // Wire toolbar (idempotent — re-bind each render so handlers see fresh state)
+  // Toolbar wiring (idempotent — fresh state each render).
   document.querySelectorAll('[data-graph-cls]').forEach(btn => {
     const k = btn.dataset.graphCls;
     btn.classList.toggle('off', !state.graphFilters[k]);
     btn.onclick = () => {
       state.graphFilters[k] = !state.graphFilters[k];
       lsSet('soc.graphFilters', state.graphFilters);
-      drawGraph();
+      drawGraph({ alpha: 0.4 });
     };
   });
   $('graphSearch').oninput = (e) => {
     state.graphSearch = e.target.value.trim().toLowerCase();
-    drawGraph();
+    drawGraph({ alpha: 0.2 });
   };
-  $('graphLayoutForce').onclick  = () => { state.graphLayout = 'force';  lsSet('soc.graphLayout', 'force');  drawGraph(); };
-  $('graphLayoutRadial').onclick = () => { state.graphLayout = 'radial'; lsSet('soc.graphLayout', 'radial'); drawGraph(); };
+  $('graphLayoutForce').onclick  = () => {
+    state.graphLayout = 'force';  lsSet('soc.graphLayout', 'force');
+    drawGraph({ alpha: 0.7 });
+  };
+  $('graphLayoutRadial').onclick = () => {
+    state.graphLayout = 'radial'; lsSet('soc.graphLayout', 'radial');
+    drawGraph({ alpha: 0.7 });
+  };
+  document.getElementById('graphLayoutForce').classList.toggle('active',  state.graphLayout === 'force');
+  document.getElementById('graphLayoutRadial').classList.toggle('active', state.graphLayout === 'radial');
+
+  // Decay (TTL) toggle — when on, the ticker fades quiet nodes after 90s
+  // and drops them at 5m. The label flips between modes so a glance tells
+  // the analyst what they're looking at.
+  const ttlBtn = document.getElementById('graphTtlBtn');
+  if (ttlBtn) {
+    ttlBtn.classList.toggle('active', state.graphTTL);
+    ttlBtn.textContent = state.graphTTL ? '⏳ Decay' : '🗄 Forensic';
+    ttlBtn.title = state.graphTTL
+      ? 'Live mode — quiet processes fade after 90s, drop at 5m. Click for forensic mode.'
+      : 'Forensic mode — every process we have ever seen stays on the graph. Click to enable decay.';
+    ttlBtn.onclick = () => {
+      state.graphTTL = !state.graphTTL;
+      lsSet('soc.graphTTL', state.graphTTL);
+      // Tick once now so the toggle takes effect without waiting for the
+      // 1.5s interval (snappier feel when the user clicks).
+      _ttlTick();
+      drawGraph({ alpha: 0.05 });
+    };
+  }
 }
 
 // Populate the right-hand panel with selected-node details + neighbors.
@@ -7096,6 +8572,17 @@ function renderGraphSidebar(node, links) {
     '</div>' +
     '<div class="text-[10px] text-soc-mute mb-1">EXEC ID</div>' +
     '<div class="font-mono text-[10px] text-soc-text break-all mb-3">' + escHTML(node.id) + '</div>' +
+    // Origin attribution slot — populated by a lazy /api/process fetch
+    // (graph nodes only carry binary + score; origin comes from the
+    // gateway tracker). The slot renders immediately as "loading…" so
+    // the layout doesn't jump when the fetch resolves.
+    '<div class="flex items-center gap-2 mb-1">' +
+      '<div class="text-[10px] uppercase tracking-widest text-soc-mute">ORIGIN</div>' +
+      '<span class="hidden text-[10px] px-1.5 py-0.5 rounded text-purple-300 bg-purple-500/15" data-gs-origin-kind></span>' +
+    '</div>' +
+    '<div class="text-[11px] font-mono bg-soc-panel/40 rounded p-2 border border-soc-line mb-3" data-gs-origin>' +
+      '<span class="text-soc-mute">loading…</span>' +
+    '</div>' +
     (parents.length ?
       '<div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Parents (' + parents.length + ')</div>' +
       '<div class="space-y-0.5 mb-3">' +
@@ -7135,6 +8622,29 @@ function renderGraphSidebar(node, links) {
       setTimeout(() => b.textContent = 'Copy PID', 800);
     });
   }));
+
+  // Origin for the selected node — uses the shared originByExec cache.
+  // If it's already in cache (because Top Processes / a recent drill
+  // touched it) we render synchronously; otherwise originForExec
+  // fires the fetch and re-renders this sidebar once it lands. Race
+  // guard: drop the late re-render if the user has clicked another
+  // node in the meantime.
+  const slot = body.querySelector('[data-gs-origin]');
+  const kindEl = body.querySelector('[data-gs-origin-kind]');
+  const paintOrigin = () => {
+    if (state._gsOriginFor !== node.id) return;
+    const o = state.originByExec.get(node.id);
+    slot.innerHTML = originBlockHTML(o);
+    if (kindEl) {
+      if (o && o.kind) { kindEl.textContent = o.kind; kindEl.classList.remove('hidden'); }
+      else { kindEl.classList.add('hidden'); kindEl.textContent = ''; }
+    }
+  };
+  if (slot) {
+    state._gsOriginFor = node.id;
+    const cached = originForExec(node.id, paintOrigin);
+    if (cached !== undefined) paintOrigin(); // cache hit — render now
+  }
 }
 
 // ─────────── Detection rule simulator ───────────
@@ -7709,6 +9219,11 @@ function passesFilter(a) {
   // Pinned alerts always show, regardless of any filter.
   if (state.pinnedAlertIds.has(String(pick(a, 'id', 'ID')))) return true;
 
+  // exec_id deep-link filter: ?exec=<id> from a /choke cross-link.
+  // Honored before any other filter so the operator lands on exactly
+  // the row(s) they were chasing, regardless of severity/baseline toggles.
+  if (state.alertExecFilter && pick(a, 'exec_id', 'ExecID') !== state.alertExecFilter) return false;
+
   if (!state.selectedSeverities.has(sevOf(a))) return false;
   if (state.filterUnack && ackStateOf(a) !== 'new') return false;
   if (state.hideBaseline && classifyAlert(a) === 'baseline') return false;
@@ -8169,6 +9684,18 @@ function alertRowHTML(a, flash, groupCount, displayIdx) {
   const honeyBadge = (state.honeypotPrefix && JSON.stringify(a).includes(state.honeypotPrefix))
     ? '<span class="watch-tag" style="background:rgba(250,204,21,0.15);color:#fde68a;border-color:rgba(250,204,21,0.4);" title="honeypot file accessed">🍯 honey</span>'
     : '';
+  // Choke cross-link: if this exec_id is currently in a gateway
+  // circuit, surface the state and let the operator jump to /choke
+  // filtered to this process. State-coloured to match the gateway's
+  // own state-badge palette so the visual stays consistent.
+  const choke = execId ? state.chokeByExec.get(execId) : null;
+  const chokeBadge = choke
+    ? '<a class="watch-tag" href="/choke?exec=' + encodeURIComponent(execId) + '" target="_blank" ' +
+        'style="background:rgba(251,146,60,0.15);color:#fdba74;border-color:rgba(251,146,60,0.4);" ' +
+        'title="currently ' + escHTML(choke.state) + ' by the choke gateway · click to open">' +
+        '🔒 ' + escHTML(choke.state) +
+      '</a>'
+    : '';
 
   // Action buttons: shown contextually based on current state.
   const actions = [];
@@ -8186,7 +9713,7 @@ function alertRowHTML(a, flash, groupCount, displayIdx) {
         '<input type="checkbox" class="alert-check" data-alert-id="' + id + '"' + (isChecked ? ' checked' : '') + '>' +
         '<span class="sev-tag ' + sev + '">' + sev + '</span>' +
         clsBadge +
-        ackBadge + watchBadge + honeyBadge +
+        ackBadge + watchBadge + honeyBadge + chokeBadge +
         '<div class="flex-1 min-w-0">' +
           '<div class="text-sm text-soc-text font-medium truncate">' + escHTML(title) + '</div>' +
           (desc ? '<div class="text-[11px] text-soc-dim truncate mt-0.5">' + escHTML(desc) + '</div>' : '') +
@@ -8261,14 +9788,11 @@ function renderTopProcs() {
     if (!id) continue;
     scores.set(id, Math.max(scores.get(id) || 0, s));
   }
-  const procByExec = new Map();
-  for (const e of state.events) {
-    const id = pick(e, 'exec_id', 'ExecID');
-    if (!id || procByExec.has(id)) continue;
-    procByExec.set(id, pick(e, 'binary', 'Binary'));
-  }
+  // Resolve via the persistent cache (events buffer + cached + alert title
+  // fallback) so high-score processes don't render as "?" once their
+  // process_exec event scrolls off the 500-entry ring.
   const rows = [...scores.entries()]
-    .map(([id, score]) => ({ id, score, bin: procByExec.get(id) || '?' }))
+    .map(([id, score]) => ({ id, score, bin: resolveBinaryByExec(id) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 6);
   if (rows.length === 0) {
@@ -8276,14 +9800,22 @@ function renderTopProcs() {
     return;
   }
   const max = rows[0].score || 1;
+  // Trigger origin fetches for any rows we haven't seen yet. The
+  // onLoaded callback schedules a re-render so the chip pops in
+  // without the operator having to refresh.
+  rows.forEach(r => originForExec(r.id, () => scheduleRender('topProcs')));
   $('topProcs').innerHTML = rows.map((r, i) => {
     const w = Math.round((r.score / max) * 100);
     const sel = state.procFilter === r.bin ? ' selected' : '';
+    const oChip = originChipHTML(state.originByExec.get(r.id));
     return '' +
       '<div class="clickable-row rounded p-1 -m-1' + sel + '" data-proc-row="' + i + '" data-bin="' + escHTML(r.bin) + '" data-exec="' + escHTML(r.id) + '">' +
-        '<div class="flex items-center justify-between text-[11px]">' +
+        '<div class="flex items-center justify-between gap-2 text-[11px]">' +
           '<span class="font-mono text-soc-text truncate" style="max-width: 14rem">' + escHTML(r.bin) + '</span>' +
-          '<span class="font-mono text-soc-text">' + r.score + '</span>' +
+          '<span class="flex items-center gap-2 shrink-0">' +
+            oChip +
+            '<span class="font-mono text-soc-text">' + r.score + '</span>' +
+          '</span>' +
         '</div>' +
         '<div class="h-1 bg-soc-panel/60 rounded mt-1 overflow-hidden">' +
           '<div class="h-full" style="width:' + w + '%; background: linear-gradient(90deg, var(--low), var(--high), var(--crit))"></div>' +
@@ -8697,9 +10229,68 @@ async function renderDrill(a, execId) {
     $('drillIOC').innerHTML = iocs.length
       ? iocs.map(i => '<div><span class="text-soc-mute">' + i.kind + '</span> <span class="text-soc-text">' + escHTML(i.val) + '</span></div>').join('')
       : '<div class="text-soc-mute">no indicators detected</div>';
+
+    // Origin attribution — populated by the gateway's live tracker.
+    // Always rendered: when no attribution is available, show a muted
+    // "no remote attribution" placeholder so the panel layout stays
+    // stable and the operator knows the lookup happened. Clicking the
+    // "filter ↗" link pivots to the choke console with the IP applied.
+    renderDrillOrigin(data.origin);
   } catch (err) {
     $('drillTree').innerHTML = '<div class="text-rose-400">failed to load: ' + escHTML(String(err)) + '</div>';
   }
+}
+
+// originBlockHTML is the single source of truth for the Origin display
+// across every panel in this page (slide-over drill, correlation-graph
+// sidebar, future per-process popovers). Returns the bordered card's
+// inner HTML — the kind badge is intentionally NOT included here so
+// each surface can place it next to its own heading. Mirrors the choke
+// gateway's renderOriginPanel() exactly.
+function originBlockHTML(o) {
+  if (!o || (!o.remote_ip && !o.fingerprint && !o.user)) {
+    return '<span class="text-soc-mute">— no remote attribution (local / cron / pre-engine session)</span>';
+  }
+  const rows = [];
+  if (o.remote_ip) {
+    const remote = o.remote_ip + (o.remote_port ? ':' + o.remote_port : '');
+    rows.push(['REMOTE', '<span class="text-soc-text">' + escHTML(remote) + '</span>']);
+  }
+  if (o.user)        rows.push(['USER',   '<span class="text-soc-text">' + escHTML(o.user) + '</span>']);
+  if (o.fingerprint) rows.push(['KEY FP', '<span class="text-soc-text break-all">' + escHTML(o.fingerprint) + '</span>']);
+  if (o.first_seen)  rows.push(['SEEN',   '<span class="text-soc-mute">' + escHTML(fmtTime(o.first_seen)) + '</span>']);
+  const grid = rows.map(r => '' +
+    '<div class="grid" style="grid-template-columns: 70px 1fr; gap: 6px; padding: 2px 0;">' +
+      '<div class="text-soc-mute uppercase tracking-wider text-[10px]">' + r[0] + '</div>' +
+      '<div class="min-w-0">' + r[1] + '</div>' +
+    '</div>').join('');
+  return grid +
+    (o.remote_ip
+      ? '<div class="mt-2"><a href="/choke?origin=' + encodeURIComponent(o.remote_ip) + '" target="_blank" class="text-[10px] text-soc-accent hover:underline">filter ↗ choke console by this origin</a></div>'
+      : '');
+}
+
+// renderDrillOrigin writes the Origin section into the slide-over drill
+// panel. Always renders the bordered card so the panel layout stays
+// stable; the kind badge appears next to the heading when attribution
+// exists. Uses the shared originBlockHTML() helper so styling stays
+// in lockstep with every other surface that shows origin.
+function renderDrillOrigin(o) {
+  const wrap = $('drillOriginWrap');
+  const box  = $('drillOrigin');
+  const kindEl = $('drillOriginKind');
+  if (!wrap || !box) return;
+  wrap.classList.remove('hidden');
+  if (kindEl) {
+    if (o && o.kind) {
+      kindEl.textContent = o.kind;
+      kindEl.classList.remove('hidden');
+    } else {
+      kindEl.classList.add('hidden');
+      kindEl.textContent = '';
+    }
+  }
+  box.innerHTML = originBlockHTML(o);
 }
 
 function treeNodeHTML(n, i) {

@@ -23,6 +23,33 @@
     if (t === 'light') document.documentElement.classList.add('theme-light');
   })();
 </script>
+<!-- CSRF fetch wrapper. The server sets a non-HttpOnly csrf_token cookie
+     on login; every state-changing fetch must echo it back as
+     X-CSRF-Token. We wrap window.fetch once, globally, so existing
+     fetch() calls scattered through the app pick up the header without
+     per-call edits. Same-origin only. -->
+<script>
+  (function() {
+    function readCookie(name) {
+      var m = document.cookie.match('(^|;)\\s*' + name + '\\s*=\\s*([^;]+)');
+      return m ? decodeURIComponent(m[2]) : '';
+    }
+    var origFetch = window.fetch.bind(window);
+    window.fetch = function(input, init) {
+      init = init || {};
+      var method = (init.method || (typeof input === 'object' && input.method) || 'GET').toUpperCase();
+      if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+        var tok = readCookie('csrf_token');
+        if (tok) {
+          var headers = new Headers(init.headers || (typeof input === 'object' ? input.headers : undefined) || {});
+          if (!headers.has('X-CSRF-Token')) headers.set('X-CSRF-Token', tok);
+          init.headers = headers;
+        }
+      }
+      return origFetch(input, init);
+    };
+  })();
+</script>
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
 tailwind.config = {
@@ -344,7 +371,7 @@ tailwind.config = {
   /* ─────────── Process row — sticky header included ─── */
   .proc-grid {
     display: grid;
-    grid-template-columns: 28px 110px 56px minmax(140px, 1.2fr) minmax(180px, 1.6fr) 80px 110px;
+    grid-template-columns: 28px 110px 56px minmax(140px, 1.2fr) minmax(140px, 1fr) minmax(180px, 1.6fr) 80px 110px;
     gap: 10px;
   }
   .proc-row { padding:8px 6px; font-size:12px; align-items:center; border-bottom:1px solid var(--soc-glass-bd); cursor:pointer; min-width:0; }
@@ -357,6 +384,35 @@ tailwind.config = {
   .score-cell { display:flex; flex-direction:column; gap:2px; }
   .score-bar { height: 3px; border-radius: 2px; background: var(--soc-track); overflow: hidden; }
   .score-fill { height: 100%; }
+  /* Origin attribution cell — clickable pill that filters to all rows
+     sharing the same remote IP. "ssh" kind gets a distinct hue from
+     unknown so the operator can scan for externally-originated chains
+     at a glance. Local/unknown rows show "—" in muted grey. */
+  .origin-cell { min-width: 0; }
+  .origin-pill {
+    display: inline-block; max-width: 100%;
+    font-family: var(--mono, ui-monospace, monospace); font-size: 11px;
+    padding: 2px 6px; border-radius: 4px; cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    background: rgba(59,130,246,0.12); color: #93c5fd;
+    transition: background 120ms;
+  }
+  .origin-pill:hover { background: rgba(59,130,246,0.22); }
+  .origin-pill.kind-ssh { background: rgba(168,85,247,0.14); color: #c4b5fd; }
+  .origin-pill.kind-ssh:hover { background: rgba(168,85,247,0.26); }
+  /* ALERTS:N cross-link chip — appears in the EXEC_ID·ARGS·NOTES cell
+     when the exec_id has SOC alerts firing against it. Visually
+     distinct from origin pills (amber, not blue/purple) so the
+     operator's eye doesn't confuse "who triggered this" with "what's
+     firing on it". */
+  .alert-chip {
+    display: inline-block; font-family: var(--mono, ui-monospace, monospace);
+    font-size: 10px; padding: 1px 5px; border-radius: 4px;
+    background: rgba(245,158,11,0.14); color: #fcd34d;
+    text-decoration: none; cursor: pointer;
+    transition: background 120ms;
+  }
+  .alert-chip:hover { background: rgba(245,158,11,0.26); }
 
   /* ─────────── Jail picker — redesigned UX ───────────
      The jail modal has its own grid (different columns from the circuits
@@ -2045,6 +2101,19 @@ tailwind.config = {
   <!-- LEFT: ladder + thresholds + cgroups + buckets -->
   <section class="area-left space-y-4">
 
+    <!-- Engine Stack: which subsystems are wired up and whether they're
+         healthy. Polled every 5s. Renders dot badges (green/yellow/red)
+         for BPF data plane, Tetragon stream, store backend, telemetry,
+         and auth posture. Distinct from the top-right "SYSTEM HEALTH"
+         panel which reports gateway-level operational state (audit
+         chain, tracked count, SSE stream). -->
+    <div class="glass rounded-lg p-4 text-[11px]">
+      <h2 class="text-xs font-bold tracking-widest text-soc-dim uppercase mb-2">Engine Stack</h2>
+      <div id="engineStack" class="mono space-y-2">
+        <div class="text-soc-mute">loading…</div>
+      </div>
+    </div>
+
     <div class="glass rounded-lg p-4">
       <div class="flex items-center justify-between mb-3">
         <h2 class="text-xs font-bold tracking-widest text-soc-dim uppercase">State Ladder</h2>
@@ -2120,6 +2189,7 @@ tailwind.config = {
       <div>STATE</div>
       <div>PID</div>
       <div>BINARY</div>
+      <div>ORIGIN</div>
       <div>EXEC_ID · ARGS · NOTES</div>
       <div>SCORE</div>
       <div class="text-right">ACTIONS</div>
@@ -2411,6 +2481,7 @@ buckets:
     </div>
   </div>
   <div class="pp-actions">
+    <button class="pp-btn" id="ppModeEnforceToggle" title="Switch between detect-only and enforcing without restarting the engine">⇄ Switch mode</button>
     <button class="pp-btn danger" id="ppModeKillToggle" title="Engage / disengage emergency kill-switch">◉ Kill-switch</button>
     <span class="pp-flex"></span>
     <span class="text-[10px] text-soc-mute">Each change is audited.</span>
@@ -2749,6 +2820,12 @@ function getInitialTheme() {
 // ─────────── State ────────────
 const S = {
   state: null, circuits: [], buckets: [], decisions: [],
+  // alerts mirrors the SOC dashboard's /api/alerts data so the gateway
+  // can show "ALERTS: N" chips on tracked rows that have firing
+  // alerts. Refreshed on the same cadence as circuits/decisions via
+  // refreshChokeState. alertCountByExec is the derived count map,
+  // rebuilt on each alerts refresh.
+  alerts: [], alertCountByExec: new Map(),
   whoami: '', procFilter: '',
   procStates: new Set(['throttled','tarpit','quarantined','severed']),
   tapeActions: new Set(['throttle','tarpit','quarantine','sever','thaw']),
@@ -2889,14 +2966,80 @@ async function hydrate() {
   const ua = $('userAvatar');
   if (ua) ua.textContent = (who.user || '·').slice(0,1).toUpperCase();
 
-  await Promise.all([refreshState(), refreshCircuits(), refreshBuckets(), refreshDecisions(), refreshCgroups()]);
+  await Promise.all([refreshState(), refreshCircuits(), refreshBuckets(), refreshDecisions(), refreshCgroups(), refreshEngineStack(), refreshAlerts()]);
+  // Deep-link support: ?exec=<id> from a SOC alert cross-link sets the
+  // process filter so the operator lands directly on that row.
+  try {
+    const xq = new URLSearchParams(window.location.search).get('exec');
+    if (xq) {
+      S.procFilter = xq;
+      const input = document.getElementById('procFilter');
+      if (input) input.value = xq;
+    }
+  } catch (e) {}
   render();
   attachSSE();
   setInterval(refreshBuckets, 5000);
   setInterval(refreshState, 10000);
   setInterval(refreshCircuits, 7000);
   setInterval(refreshCgroups, 9000);
+  setInterval(refreshEngineStack, 5000);
+  setInterval(refreshAlerts, 8000);
   setInterval(updateKpis, 1000); // KPIs are derived from local recentDecisions
+}
+
+// ───────── Engine Stack panel ────────────────────────────────────────
+// Polled every 5s. Renders dot badges (green/yellow/red) for each
+// subsystem so an operator can spot misconfiguration at a glance.
+// Distinct from the top-right "SYSTEM HEALTH" panel which reports
+// runtime operational state (audit chain, tracked count, SSE stream).
+async function refreshEngineStack() {
+  try {
+    const r = await fetch('/api/system-health');
+    if (!r.ok) return;
+    const d = await r.json();
+    renderEngineStack(d);
+  } catch (e) {}
+}
+
+function renderEngineStack(d) {
+  const el = document.getElementById('engineStack');
+  if (!el) return;
+  const dot = (color) => '<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+color+';margin-right:6px;vertical-align:middle"></span>';
+  const green = '#10b981', yellow = '#f59e0b', red = '#ef4444', dim = '#6b7280';
+
+  const bpf = d.bpf || {};
+  const bpfColor = bpf.healthy ? green : (bpf.attached_links > 0 ? yellow : red);
+  const bpfText = bpf.backend === 'cilium-ebpf'
+    ? `${bpf.backend} · ${bpf.attached_links}/${bpf.expected_links} links · ${bpf.map_entries < 0 ? '?' : bpf.map_entries} entries`
+    : `${bpf.backend || 'unknown'} (no kernel data plane)`;
+
+  const tg = d.tetragon || {};
+  const tgColor = tg.connected ? green : red;
+  const tgText = tg.connected ? 'connected' : 'disconnected';
+
+  const st = d.store || {};
+  const stText = `${st.backend || 'unknown'} · ${st.target || ''}`;
+
+  const obs = d.observability || {};
+  const obsColor = obs.metrics_enabled ? green : yellow;
+  const obsText = obs.metrics_enabled
+    ? `metrics → ${obs.otlp_endpoint} · log=${obs.log_format}/${obs.log_level}`
+    : `metrics disabled · log=${obs.log_format}/${obs.log_level}`;
+
+  const auth = d.auth || {};
+  const authText = `${auth.hash} · ${auth.sessions} · CSRF on · ${auth.rate_limit}`;
+
+  const row = (color, label, text) =>
+    `<div style="display:flex;align-items:center;gap:8px"><span style="min-width:78px;color:var(--soc-dim);text-transform:uppercase;font-size:10px;letter-spacing:0.06em">${label}</span><span>${dot(color)}<span class="text-soc-text">${text}</span></span></div>`;
+
+  el.innerHTML =
+    row(bpfColor,  'BPF',       bpfText) +
+    row(tgColor,   'Tetragon',  tgText) +
+    row(green,     'Store',     stText) +
+    row(obsColor,  'Telemetry', obsText) +
+    row(green,     'Auth',      authText) +
+    `<div class="text-soc-mute" style="margin-top:6px;font-size:10px">v${d.version || '?'} · uptime ${d.uptime || '—'}</div>`;
 }
 
 // ─────────── Refresh subsystem (mirrors SOC dashboard) ─────────────────
@@ -2953,6 +3096,7 @@ async function softRefreshChoke(opts = {}) {
     { key: 'buckets',   fn: refreshBuckets },
     { key: 'decisions', fn: refreshDecisions },
     { key: 'cgroups',   fn: refreshCgroups },
+    { key: 'alerts',    fn: refreshAlerts },
   ];
 
   let anyError = null;
@@ -3091,6 +3235,25 @@ async function refreshCircuits() {
 async function refreshBuckets()  { const j = await fetch('/api/choke/buckets').then(r => r.ok ? r.json() : []).catch(()=>[]);     S.buckets = j || []; renderBuckets(); }
 async function refreshCgroups()  { const j = await fetch('/api/choke/cgroups').then(r => r.ok ? r.json() : {}).catch(()=>({}));   S.cgroups = j || {}; renderCgroups(); }
 async function refreshDecisions(){ const j = await fetch('/api/decisions?limit=200').then(r => r.ok ? r.json() : []).catch(()=>[]); S.decisions = j || []; renderTape(); updateKpis(); }
+
+// Alerts feed — used to surface "ALERTS: N" chips on tracked rows so
+// the operator can see at a glance which choked processes also have
+// firing detections in the SOC view. Builds a count map keyed by
+// exec_id; the renderProcList loop reads from it. Cheap: 200 alerts
+// × O(1) map ops + a re-render trigger.
+async function refreshAlerts() {
+  const j = await fetch('/api/alerts?limit=200').then(r => r.ok ? r.json() : []).catch(()=>[]);
+  S.alerts = j || [];
+  const m = new Map();
+  for (const a of S.alerts) {
+    const e = a.exec_id || a.ExecID;
+    if (!e) continue;
+    m.set(e, (m.get(e) || 0) + 1);
+  }
+  S.alertCountByExec = m;
+  // Cheap: just re-render the proc list so newly-arrived counts appear.
+  if (typeof renderProcList === 'function') renderProcList();
+}
 
 // ─────────── Header ───────────
 function applyHeader() {
@@ -3290,6 +3453,73 @@ $('thrCommit').onclick = async () => {
 // circuits stay visible.
 const PROC_RENDER_CAP = 300;
 
+// renderOriginPanel builds the drill-panel "Origin" section. Used by
+// both openDrill (tracked exec_id) and openJailProcessDetail (untracked
+// PID picker) so the operator sees identical attribution UX regardless
+// of how they navigated in. Returns an empty string when there's no
+// attribution — keeps the panel uncluttered for local/cron-style chains.
+function renderOriginPanel(o) {
+  if (!o || (!o.remote_ip && !o.fingerprint && !o.user)) {
+    return `
+      <div class="mb-4">
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Origin</div>
+        <div class="text-[11px] text-soc-mute">— no remote attribution (local / cron / pre-engine session)</div>
+      </div>`;
+  }
+  const kind = o.kind || '';
+  const ip = o.remote_ip || '';
+  const port = o.remote_port || 0;
+  const remote = ip ? (port ? ip + ':' + port : ip) : '';
+  const kindBadge = kind
+    ? `<span class="origin-pill kind-${escapeAttr(kind)}" title="attribution source">${escapeHtml(kind)}</span>`
+    : '';
+  const rows = [];
+  if (remote) rows.push(['REMOTE', `<span class="mono text-soc-text">${escapeHtml(remote)}</span>`]);
+  if (o.user) rows.push(['USER', `<span class="mono text-soc-text">${escapeHtml(o.user)}</span>`]);
+  if (o.fingerprint) rows.push(['KEY FP', `<span class="mono text-soc-text break-all">${escapeHtml(o.fingerprint)}</span>`]);
+  if (o.first_seen) rows.push(['SEEN', `<span class="mono text-soc-mute">${escapeHtml(fmtTime(o.first_seen))}</span>`]);
+  return `
+    <div class="mb-4">
+      <div class="flex items-center gap-2 mb-1">
+        <div class="text-[10px] uppercase tracking-widest text-soc-mute">Origin</div>
+        ${kindBadge}
+      </div>
+      <div class="border rounded p-2 text-[11px]" style="border-color: var(--soc-glass-bd);">
+        ${rows.map(([k, v]) => `
+          <div class="grid" style="grid-template-columns: 70px 1fr; gap: 6px; padding: 2px 0;">
+            <div class="text-soc-mute uppercase tracking-wider text-[10px]">${k}</div>
+            <div class="min-w-0">${v}</div>
+          </div>`).join('')}
+        ${ip ? `<div class="mt-2"><button class="btn btn-tiny" data-origin-filter="${escapeAttr(ip)}" title="filter the table to this origin">filter ↗</button></div>` : ''}
+      </div>
+    </div>`;
+}
+
+// renderOriginCell turns a snapshot Entry's origin into a clickable pill.
+// Missing/empty origin renders as a muted em-dash. The pill's title shows
+// the full attribution (kind, user, key fingerprint) on hover; clicking
+// sets a filter on the procFilter input so the table narrows to matching
+// rows — see the .origin-pill delegated handler below.
+function renderOriginCell(o) {
+  if (!o || (!o.remote_ip && !o.fingerprint && !o.user)) {
+    return '<span class="text-soc-mute">—</span>';
+  }
+  const kind = o.kind || '';
+  const ip = o.remote_ip || '';
+  const port = o.remote_port || 0;
+  const label = ip
+    ? (port ? ip + ':' + port : ip)
+    : (o.user || (kind || 'attributed'));
+  const tipParts = [];
+  if (kind) tipParts.push('kind: ' + kind);
+  if (o.user) tipParts.push('user: ' + o.user);
+  if (o.fingerprint) tipParts.push('fp: ' + o.fingerprint);
+  if (ip) tipParts.push('remote: ' + ip + (port ? ':' + port : ''));
+  const tip = tipParts.join('\n');
+  const cls = 'origin-pill' + (kind ? ' kind-' + kind : '');
+  return `<span class="${cls}" data-origin="${escapeAttr(ip || o.user || '')}" title="${escapeAttr(tip)}">${escapeHtml(label)}</span>`;
+}
+
 function renderProcList() {
   const q = (S.procFilter||'').toLowerCase();
   const gq = S.globalSearchQ;
@@ -3298,7 +3528,12 @@ function renderProcList() {
     .filter(c => !q || (
       (c.binary||'').toLowerCase().includes(q) ||
       String(c.pid||'').includes(q) ||
-      (c.exec_id||'').toLowerCase().includes(q)
+      (c.exec_id||'').toLowerCase().includes(q) ||
+      (c.origin && (
+        (c.origin.remote_ip||'').toLowerCase().includes(q) ||
+        (c.origin.user||'').toLowerCase().includes(q) ||
+        (c.origin.fingerprint||'').toLowerCase().includes(q)
+      ))
     ))
     .filter(c => chokeCircuitMatchesQuery(c, gq));
 
@@ -3329,17 +3564,29 @@ function renderProcList() {
     const score = c.score || 0;
     const scorePct = Math.min(100, (score / sevAt) * 100);
     const stateColor = ({throttled:'#3b82f6',tarpit:'#facc15',quarantined:'#fb923c',severed:'#f43f5e'})[c.state] || '#94a3b8';
+    const originCell = renderOriginCell(c.origin);
+    // ALERTS:N cross-link chip — surfaces the count of SOC alerts that
+    // share this exec_id. Click opens the SOC dashboard filtered to
+    // exactly this process so the operator can see what's firing.
+    // Hidden when zero so the row stays uncluttered for false-positive
+    // chains the gateway is choking purely on score.
+    const alertCount = S.alertCountByExec.get(c.exec_id) || 0;
+    const alertChip = alertCount > 0
+      ? `<a class="alert-chip" href="/?exec=${encodeURIComponent(c.exec_id)}" target="_blank" title="${alertCount} SOC alert${alertCount===1?'':'s'} for this exec_id · click to open">${alertCount} alert${alertCount===1?'':'s'}</a>`
+      : '';
     return `
       <div class="proc-row proc-grid ${sel} ${focus}" data-exec="${escapeAttr(c.exec_id)}" data-pid="${c.pid}" data-bin="${escapeAttr(c.binary||'')}" data-idx="${i}" style="${dense?'padding:4px 6px;font-size:11px;':''}">
         <div><input type="checkbox" class="row-check" ${sel ? 'checked' : ''}></div>
         <div><span class="state-badge state-${c.state}">${c.state}</span></div>
         <div class="mono text-soc-text"><span class="copy-pid" data-copy="${c.pid||''}" title="click to copy PID" style="cursor:copy;">${c.pid||'-'}</span></div>
         <div class="mono truncate" title="${escapeAttr(c.binary||'')}">${escapeHtml(c.binary||'(unknown)')}</div>
+        <div class="origin-cell">${originCell}</div>
         <div class="mono text-[11px] truncate" title="click to copy exec_id\n${escapeAttr(c.exec_id+' '+(c.args||''))}">
           <span class="text-soc-dim copy-exec" data-copy="${escapeAttr(c.exec_id||'')}" style="cursor:copy;">${shortExec(c.exec_id)}</span>
           ${c.args ? '<span class="ml-2 text-soc-mute">'+escapeHtml(truncate(c.args, 60))+'</span>' : ''}
           ${annoPill ? ' '+annoPill : ''}
           ${revertPill ? ' '+revertPill : ''}
+          ${alertChip ? ' '+alertChip : ''}
         </div>
         <div class="score-cell">
           <span class="mono text-soc-text">${score}</span>
@@ -3399,6 +3646,25 @@ function renderProcList() {
       const v = cp.dataset.copy;
       if (!v) return;
       copyToClipboard(v).then(ok => toast(ok ? `pid ${v} copied` : 'copy failed', ok ? 'ok' : 'err'));
+      return;
+    }
+    // Origin pill: filter the table to all rows sharing this origin.
+    // Empty data-origin (local/unknown) is a no-op. Stops propagation
+    // so the click doesn't also open the drill-in panel.
+    const op = e.target.closest('.origin-pill');
+    if (op) {
+      e.stopPropagation();
+      const v = op.dataset.origin || '';
+      if (!v) return;
+      const input = document.getElementById('procFilter');
+      if (input) { input.value = v; input.dispatchEvent(new Event('input', {bubbles:true})); }
+      return;
+    }
+    // ALERTS:N chip — let the anchor handle navigation (it's a real <a>
+    // with target="_blank"). We just stop the row-click propagation so
+    // the drill-in panel doesn't open behind it.
+    if (e.target.closest('.alert-chip')) {
+      e.stopPropagation();
       return;
     }
     // Anywhere else in the row → drill in (unless on a checkbox).
@@ -4186,6 +4452,8 @@ async function openDrill(execID) {
       ${e.args ? '<div class="mt-2 text-[11px] text-soc-dim mono break-all">'+escapeHtml(e.args)+'</div>' : ''}
     </div>
 
+    ${renderOriginPanel(e.origin)}
+
     <div class="mb-4">
       <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Quick actions</div>
       <div class="flex gap-2 flex-wrap">
@@ -4265,6 +4533,16 @@ async function openDrill(execID) {
   $('drillCopyPid')?.addEventListener('click', () => {
     if (!effectivePid) { toast('no pid for this exec_id', 'err'); return; }
     copyToClipboard(String(effectivePid)).then(ok => toast(ok ? `pid ${effectivePid} copied` : 'copy failed', ok ? 'ok' : 'err'));
+  });
+  // Origin "filter ↗" button — sets the table filter to this remote IP
+  // and closes the drill so the operator can scan everything from the
+  // same source. Same effect as clicking the ORIGIN pill in the row.
+  $('drillBody').querySelector('[data-origin-filter]')?.addEventListener('click', (ev) => {
+    const ip = ev.currentTarget.dataset.originFilter;
+    if (!ip) return;
+    const input = document.getElementById('procFilter');
+    if (input) { input.value = ip; input.dispatchEvent(new Event('input', {bubbles:true})); }
+    closeDrill();
   });
 }
 function closeDrill() { S.drillFor = null; $('drill').classList.remove('open'); }
@@ -5037,6 +5315,33 @@ function buildJpdNarrative(p, sig, mit, children) {
   return parts.join(' ');
 }
 
+// lookupJpdOrigin returns the origin attribution for the jail picker
+// detail pane. Two-step resolution: (1) the process itself if it's a
+// tracked circuit (S.circuits is kept current by refreshChokeState),
+// (2) walk the picker's PPID chain in S.allProcs and reuse the first
+// ancestor's origin. Returns null when no attribution is available.
+function lookupJpdOrigin(p) {
+  if (!p) return null;
+  // Direct hit: PID is tracked and the gateway snapshot has its origin.
+  const circuits = (typeof S !== 'undefined' && Array.isArray(S.circuits)) ? S.circuits : [];
+  const direct = circuits.find(c => c.pid === p.pid);
+  if (direct && direct.origin) return direct.origin;
+  // Ancestor walk via the host process list (already loaded for the
+  // jail picker). Bounded to 10 hops so cycles or unusual trees can't
+  // infinite-loop here.
+  const procs = (typeof S !== 'undefined' && Array.isArray(S.allProcs)) ? S.allProcs : [];
+  if (procs.length === 0) return null;
+  const byPID = new Map(procs.map(x => [x.pid, x]));
+  let cur = p;
+  for (let i = 0; i < 10 && cur; i++) {
+    const c = circuits.find(c => c.pid === cur.pid);
+    if (c && c.origin) return c.origin;
+    if (!cur.ppid) break;
+    cur = byPID.get(cur.ppid);
+  }
+  return null;
+}
+
 function renderJailDetailHTML(p) {
   const score    = p.score || 0;
   const sevLevel = score >= 40 ? 'critical' : score >= 20 ? 'high' : score >= 5 ? 'medium' : score === 0 ? 'info' : 'low';
@@ -5107,6 +5412,8 @@ function renderJailDetailHTML(p) {
         ${escapeHtml(buildJpdNarrative(p, sig, mit, children))}
       </div>
     </div>
+
+    ${renderOriginPanel(lookupJpdOrigin(p))}
 
     <div class="mb-4">
       <div class="text-[10px] uppercase tracking-widest text-soc-mute mb-1">Process lineage (${chain.length})</div>
@@ -7084,6 +7391,22 @@ function renderModePopover() {
     kbtn.textContent = kill ? '◉ Disengage kill-switch' : '◉ Engage kill-switch';
     kbtn.className = 'pp-btn ' + (kill ? 'warn' : 'danger');
   }
+  // Mode swap button — surface the *target* mode in the label so it reads
+  // as a verb ("Switch to enforcing"), and disable when the kill-switch is
+  // engaged (kill-switch wins; flipping the active enforcer is meaningless
+  // until it's released).
+  const ebtn = $('ppModeEnforceToggle');
+  if (ebtn) {
+    const isEnforcing = m === 'enforcing' || m === 'dry-run';
+    ebtn.textContent = isEnforcing ? '■ Switch to detect-only' : '▶ Switch to enforcing';
+    ebtn.className   = 'pp-btn ' + (isEnforcing ? 'warn' : 'primary');
+    ebtn.disabled    = !!kill;
+    ebtn.title       = kill
+      ? 'Disengage the kill-switch first.'
+      : (isEnforcing
+          ? 'Stop hitting the kernel — decisions will still be recorded and the correlation graph still drops nodes on choke.'
+          : 'Wire the real enforcer chain — choke buttons will hit the kernel (cgroup + SIGKILL).');
+  }
 }
 // Preset shortcut buttons dispatch to existing applyPreset() flow.
 $('ppMode')?.addEventListener('click', e => {
@@ -7100,6 +7423,47 @@ $('ppMode')?.addEventListener('click', e => {
 $('ppModeKillToggle')?.addEventListener('click', () => {
   closePillPopover();
   $('killSwitchBtn')?.click();
+});
+
+// Detect-only ⇄ Enforcing toggle. The mode popover button just delegates
+// to this so the same flow runs from the popover and any future
+// shortcut. Confirm modal forces an audit reason — every flip is recorded.
+function toggleEnforceMode() {
+  const cur = (S.state && S.state.mode) || 'detect-only';
+  const isEnforcing = cur === 'enforcing' || cur === 'dry-run';
+  const target = !isEnforcing;
+  openModal({
+    title: target ? 'Switch to ENFORCING?' : 'Switch to DETECT-ONLY?',
+    body: target
+      ? `<strong>Real kernel calls will fire.</strong> Choke buttons run the
+         cgroup + SIGKILL chain, and any score-driven transition above the
+         configured thresholds will auto-enforce. System-critical binaries
+         (sshd, systemd, dockerd, …) remain exempt from auto-enforcement;
+         manual operator overrides still apply to them.`
+      : `Decisions will still be recorded and broadcast — the correlation
+         graph still drops nodes on choke — but no kernel call fires. Use
+         this to validate policy changes without risk of self-DoS.`,
+    extraHTML: `<input id="modalReason" type="text" placeholder="e.g. preparing for incident drill" class="w-full">`,
+    confirmLabel: target ? 'switch to enforcing' : 'switch to detect-only',
+    confirmClass: target ? 'btn-err' : 'btn-warn',
+    onConfirm: async () => {
+      const reason = $('modalReason').value.trim() || '(no reason)';
+      const r = await fetch('/api/choke/mode', {
+        method:'POST', headers:{'content-type':'application/json'},
+        body: JSON.stringify({ enforcing: target, reason }),
+      });
+      if (!r.ok) { toast('mode switch failed: ' + await r.text(), 'err'); return false; }
+      const j = await r.json().catch(()=>({}));
+      toast('mode → ' + (j.mode || (target ? 'enforcing' : 'detect-only')), 'ok');
+      await refreshState();
+      return true;
+    },
+  });
+  setTimeout(() => $('modalReason')?.focus(), 50);
+}
+$('ppModeEnforceToggle')?.addEventListener('click', () => {
+  closePillPopover();
+  toggleEnforceMode();
 });
 
 // ─────────── Periodic refresh of host pill UI ───────────

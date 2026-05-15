@@ -18,7 +18,7 @@ LINUX_ARCH ?= amd64
 LINUX_BIN  := $(ENGINE_DIR)/engine-linux-$(LINUX_ARCH)
 TETRA_CT   ?= tetragon
 
-.PHONY: build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status
+.PHONY: build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm
 
 build:
 	cd $(ENGINE_DIR) && go build -o engine ./cmd/engine
@@ -92,13 +92,25 @@ SEVER_AT      ?= 200
 # policies (incl. enforce/), and (re)starts the engine as a systemd unit
 # with the choke gateway enabled and -enforce on. No `make fake` here —
 # this is the real path: real Tetragon, real cgroup v2 enforcement.
-deploy: build-linux
+# vm-up / vm-doctor — self-heal multipass VM state before any deploy.
+# multipassd 1.16.x on macOS occasionally wedges in "Unknown" or "Starting"
+# (daemon SSH probe gets stuck even though the guest is up and reachable).
+# scripts/multipass-doctor.sh detects both and recovers automatically; if
+# a daemon kickstart is needed it'll prompt for sudo (or print the exact
+# command if sudo is not cached).
+vm-doctor:
+	@$(ROOT)/scripts/multipass-doctor.sh $(VM)
+
+vm-up: vm-doctor
+
+deploy: build-linux vm-up
 	@command -v multipass >/dev/null || { echo "multipass not found — install via brew: brew install --cask multipass"; exit 1; }
 	@multipass info $(VM) >/dev/null 2>&1 || { echo "multipass VM '$(VM)' not found — run: multipass launch 22.04 --name $(VM) --cpus 2 --memory 4G --disk 20G"; exit 1; }
 	@echo "→ syncing bundle into $(VM):$(REMOTE_DIR)"
-	multipass exec $(VM) -- mkdir -p $(REMOTE_DIR)
+	multipass exec $(VM) -- mkdir -p $(REMOTE_DIR) $(REMOTE_DIR)/bpf
 	multipass transfer $(LINUX_BIN) $(VM):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
 	tar -cz -C $(ROOT) policies attacks scripts | multipass exec $(VM) -- tar -xz -C $(REMOTE_DIR)
+	multipass transfer $(ROOT)/engine/internal/enforce/bpfmap/bpf/choke.c $(VM):$(REMOTE_DIR)/bpf/choke.c
 	multipass exec $(VM) -- chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
 	multipass exec $(VM) -- chmod +x $(REMOTE_DIR)/scripts/setup.sh
 	@echo "→ ensuring tetragon + cgroup v2 are ready"
@@ -108,7 +120,7 @@ deploy: build-linux
 	@echo "→ (re)starting engine with choke gateway + enforcement"
 	-multipass exec $(VM) -- bash -lc "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64; exit 0"
 	multipass exec $(VM) -- sudo mkdir -p /var/lib/ebpf-engine
-	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT)"
+	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT) -bpf-obj $(REMOTE_DIR)/bpf/choke.o -bpf-cgroup /sys/fs/cgroup"
 	@sleep 2
 	@echo
 	@echo "──────────────────────────────────────────────────────────────"
@@ -184,7 +196,18 @@ deploy-remote: build-linux
 	echo " Engine status:"; \
 	$(SSH) "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || true"; \
 	echo; \
-	HOST_IP=$$(echo "$(HOST)" | sed 's/.*@//'); echo " UI:           http://$$HOST_IP:8080/"; echo " Choke console: http://$$HOST_IP:8080/choke"; echo " login:        admin / ebpf-soc-demo"; \
+	HOST_PART=$$(echo "$(HOST)" | sed 's/.*@//'); \
+	VM_IP=$$($(SSH) "hostname -I 2>/dev/null | awk '{print \$$1}'" 2>/dev/null); \
+	if [ "$$HOST_PART" = "orb" ]; then \
+	  USER_PART=$$(echo "$(HOST)" | sed 's/@.*//'); \
+	  PRIMARY="http://$${USER_PART}.orb.local:8080"; \
+	else \
+	  PRIMARY="http://$${HOST_PART}:8080"; \
+	fi; \
+	echo " UI:           $$PRIMARY/"; \
+	[ -n "$$VM_IP" ] && echo " Direct IP:    http://$$VM_IP:8080/"; \
+	echo " Choke console: $$PRIMARY/choke"; \
+	echo " login:        admin / ebpf-soc-demo"; \
 	echo "──────────────────────────────────────────────────────────────"
 
 # Fast iteration variant — binary + policies only, no setup.sh.
@@ -210,6 +233,54 @@ redeploy-remote: build-linux
 	$(SSH) "sudo systemctl restart ebpf-engine 2>/dev/null || sudo pkill -TERM -f engine-linux-amd64 || true"; \
 	sleep 2; \
 	$(SSH) "sudo systemctl is-active ebpf-engine 2>/dev/null; sudo journalctl -u ebpf-engine -n 5 --no-pager 2>/dev/null || true"
+
+# `install-vm` is the production-grade alternative to `deploy`: it syncs
+# the bundle into /opt/ebpf-engine on the VM, runs the proper installer
+# (deploy/install.sh) which lays down a real systemd unit, a config file
+# under /etc/ebpf-engine/, and the BPF data plane under /opt/.../bpf/.
+# Use `make deploy` for fast iteration, `make install-vm` when you want
+# the persistent layout. They're not interchangeable mid-deploy — pick one.
+install-vm: build-linux vm-up
+	multipass exec $(VM) -- bash -c "rm -rf /tmp/ebpf-poc-install && mkdir -p /tmp/ebpf-poc-install/engine/internal/enforce/bpfmap/bpf"
+	tar -cz -C $(ROOT) deploy policies attacks scripts | multipass exec $(VM) -- tar -xz -C /tmp/ebpf-poc-install
+	multipass transfer $(LINUX_BIN) $(VM):/tmp/ebpf-poc-install/engine/engine-linux-amd64
+	multipass transfer $(ROOT)/engine/internal/enforce/bpfmap/bpf/choke.c $(VM):/tmp/ebpf-poc-install/engine/internal/enforce/bpfmap/bpf/choke.c
+	multipass exec $(VM) -- sudo bash -c "cd /tmp/ebpf-poc-install && SRC_ROOT=/tmp/ebpf-poc-install bash deploy/install.sh"
+
+# `tls-vm` puts nginx in front of the engine on :443 with a self-signed
+# cert. Operators replace the cert with a real one (Let's Encrypt or
+# their internal CA) by dropping fullchain.pem + privkey.pem into
+# /etc/nginx/ebpf/ — the include line picks them up on the next reload.
+tls-vm:
+	multipass exec $(VM) -- sudo bash -c "command -v nginx >/dev/null || apt-get install -y --no-install-recommends nginx-light openssl"
+	multipass exec $(VM) -- sudo mkdir -p /etc/nginx/ebpf
+	multipass transfer $(ROOT)/deploy/nginx/ebpf-engine.conf $(VM):/tmp/ebpf-engine.conf
+	multipass exec $(VM) -- sudo bash -c "cp /tmp/ebpf-engine.conf /etc/nginx/sites-available/ebpf-engine && ln -sf /etc/nginx/sites-available/ebpf-engine /etc/nginx/sites-enabled/ebpf-engine && rm -f /etc/nginx/sites-enabled/default"
+	multipass exec $(VM) -- sudo bash -c "[ -f /etc/nginx/ebpf/fullchain.pem ] || (cd /etc/nginx/ebpf && openssl req -x509 -nodes -days 365 -newkey rsa:2048 -keyout privkey.pem -out fullchain.pem -subj '/CN=ebpf-engine.local' 2>/dev/null)"
+	multipass exec $(VM) -- sudo nginx -t
+	multipass exec $(VM) -- sudo systemctl reload nginx || multipass exec $(VM) -- sudo systemctl restart nginx
+	@VM_IP=$$(multipass info $(VM) | awk '/IPv4/{print $$2; exit}'); echo "→ https://$$VM_IP/ (self-signed; replace /etc/nginx/ebpf/fullchain.pem + privkey.pem with a real cert)"
+
+# `pg-vm` brings up a Postgres 16 container on the VM and seeds the
+# engine database + user. Idempotent: if the container is already running
+# this is a no-op. Default credentials engine/engine — operator changes
+# them via POSTGRES_USER/POSTGRES_PASSWORD env vars.
+PG_USER     ?= engine
+PG_PASSWORD ?= engine
+PG_DB       ?= ebpf
+PG_PORT     ?= 5432
+pg-vm:
+	multipass exec $(VM) -- bash -c "sudo docker ps --format '{{.Names}}' | grep -q '^ebpf-pg$$' || sudo docker run -d --name ebpf-pg --restart unless-stopped -p $(PG_PORT):5432 -e POSTGRES_USER=$(PG_USER) -e POSTGRES_PASSWORD=$(PG_PASSWORD) -e POSTGRES_DB=$(PG_DB) postgres:16-alpine"
+	@echo "→ waiting for Postgres to accept connections"
+	@for i in $$(seq 1 30); do \
+	  if multipass exec $(VM) -- sudo docker exec ebpf-pg pg_isready -U $(PG_USER) -d $(PG_DB) >/dev/null 2>&1; then \
+	    echo "→ ready"; break; \
+	  fi; sleep 1; \
+	done
+	@echo "→ DSN: postgres://$(PG_USER):***@127.0.0.1:$(PG_PORT)/$(PG_DB)?sslmode=disable"
+	@echo "  set in /etc/ebpf-engine/engine.yaml as:"
+	@echo "    store:  postgres"
+	@echo "    pg_dsn: postgres://$(PG_USER):$(PG_PASSWORD)@127.0.0.1:$(PG_PORT)/$(PG_DB)?sslmode=disable"
 
 vm-logs:
 	multipass exec $(VM) -- sudo journalctl -u ebpf-engine -f --no-pager

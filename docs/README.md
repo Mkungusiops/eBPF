@@ -24,6 +24,8 @@ First-run setup for new contributors.
 
 Production deployment paths.
 
+- [tarball-quickstart.md](deployment/tarball-quickstart.md) — fastest
+  path: `make tarball`, scp, run, open in browser.
 - [linux-server.md](deployment/linux-server.md) — fresh Linux server
   (cloud VM, bare metal, hypervisor guest).
 - [azure.md](deployment/azure.md) — Azure-specific deployment.
