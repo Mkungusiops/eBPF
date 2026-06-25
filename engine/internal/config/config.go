@@ -19,16 +19,16 @@ import (
 // short, kebab-case keys consistent with the existing flag names so an
 // operator can translate -throttle-at 20 -> "throttle_at: 20" trivially.
 type File struct {
-	Tetragon       string `yaml:"tetragon"`
-	DB             string `yaml:"db"`
-	HTTP           string `yaml:"http"`
-	User           string `yaml:"user"`
-	Pass           string `yaml:"pass"`
+	Tetragon string `yaml:"tetragon"`
+	DB       string `yaml:"db"`
+	HTTP     string `yaml:"http"`
+	User     string `yaml:"user"`
+	Pass     string `yaml:"pass"`
 	// Pre-hashed bcrypt password. When set, takes precedence over Pass
 	// (plaintext). Lets operators avoid putting plaintext credentials
 	// in /etc/ebpf-engine/engine.yaml. Generate with:
 	//   htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/^[$]2y/$2a/'
-	PassHash       string `yaml:"pass_hash"`
+	PassHash string `yaml:"pass_hash"`
 	// Path to the HMAC signing secret used for session cookies. Auto-
 	// generated 0600 on first start if missing. Empty -> default
 	// /etc/ebpf-engine/secret.
@@ -48,13 +48,21 @@ type File struct {
 	FleetHosts     string `yaml:"fleet_hosts"`
 	BPFObj         string `yaml:"bpf_obj"`
 	BPFCgroup      string `yaml:"bpf_cgroup"`
+	// Network (per-device / MAC) choke data plane. DevchokeObj points at a
+	// compiled devchoke.o; DevchokeIfaces is a comma-separated list of LAN /
+	// bridge-slave interfaces to attach tc ingress+egress to; DevchokeProtect
+	// is a comma-separated MAC allow-list (gateway/uplink/DHCP-DNS/operator)
+	// that the engine refuses to quarantine/sever.
+	DevchokeObj     string `yaml:"devchoke_obj"`
+	DevchokeIfaces  string `yaml:"devchoke_ifaces"`
+	DevchokeProtect string `yaml:"devchoke_protect"`
 	// Storage backend.
-	Store          string `yaml:"store"`   // "sqlite" (default) | "postgres"
-	PgDSN          string `yaml:"pg_dsn"`  // required when store=postgres
+	Store string `yaml:"store"`  // "sqlite" (default) | "postgres"
+	PgDSN string `yaml:"pg_dsn"` // required when store=postgres
 	// Observability.
-	LogFormat      string `yaml:"log_format"`     // "text" (dev) | "json" (production)
-	LogLevel       string `yaml:"log_level"`      // "debug" | "info" | "warn" | "error"
-	OTLPEndpoint   string `yaml:"otlp_endpoint"`  // OTLP/HTTP collector URL, "stdout" for dev, "" disables
+	LogFormat    string `yaml:"log_format"`    // "text" (dev) | "json" (production)
+	LogLevel     string `yaml:"log_level"`     // "debug" | "info" | "warn" | "error"
+	OTLPEndpoint string `yaml:"otlp_endpoint"` // OTLP/HTTP collector URL, "stdout" for dev, "" disables
 }
 
 // Load reads a YAML config from path. Returns (nil, nil) if path is

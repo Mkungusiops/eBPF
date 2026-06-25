@@ -18,7 +18,7 @@ LINUX_ARCH ?= amd64
 LINUX_BIN  := $(ENGINE_DIR)/engine-linux-$(LINUX_ARCH)
 TETRA_CT   ?= tetragon
 
-.PHONY: build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm
+.PHONY: build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
 build:
 	cd $(ENGINE_DIR) && go build -o engine ./cmd/engine
@@ -26,6 +26,21 @@ build:
 build-linux:
 	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o engine-linux-$(LINUX_ARCH) ./cmd/engine
 	@echo "→ $(LINUX_BIN)"
+
+# Compile the network (per-device) choke data plane locally. Linux only —
+# needs clang + the kernel uapi headers. The deploy path builds this on the
+# target box via setup.sh; this target is for the netns lab / local testing.
+DEVBPF_DIR := $(ENGINE_DIR)/internal/enforce/devbpf/bpf
+devchoke:
+	cd $(DEVBPF_DIR) && clang -O2 -g -target bpf -I/usr/include/$$(uname -m)-linux-gnu -c devchoke.c -o devchoke.o
+	@echo "→ $(DEVBPF_DIR)/devchoke.o"
+
+# Stage-0 end-to-end smoke test for the network choke in a 3-netns lab.
+# Linux + root only. Builds the binary + object, then asserts jail-drops and
+# thaw-restores forwarded traffic for one device MAC. Exits non-zero on any
+# failed assertion so it works as a CI/dev gate.
+netns-smoke: build-linux devchoke
+	sudo bash $(ROOT)/scripts/dev/netns-smoke.sh "$(DEVBPF_DIR)/devchoke.o" "$(LINUX_BIN)"
 
 test:
 	cd $(ENGINE_DIR) && go test ./...
@@ -53,6 +68,8 @@ tarball: build-linux
 	tar -czf ebpf-poc-$(LINUX_ARCH).tar.gz \
 		-C $(ROOT) \
 		Makefile scripts policies attacks README.md docs/development/build-plan.md \
+		engine/internal/enforce/bpfmap/bpf/choke.c \
+		engine/internal/enforce/devbpf/bpf/devchoke.c \
 		engine/engine-linux-$(LINUX_ARCH)
 	@echo "→ ebpf-poc-$(LINUX_ARCH).tar.gz"
 
@@ -88,6 +105,14 @@ TARPIT_AT     ?= 50
 QUARANTINE_AT ?= 120
 SEVER_AT      ?= 200
 
+# Network (per-device / MAC) choke. Off by default — a Multipass VM is a
+# single host, not a router, so there's nothing to forward-choke. Enable on
+# a real inline gateway with `make deploy DEVCHOKE_IFACE=eth0,eth1` (the
+# bridge slave ports). DEVCHOKE_FLAGS is appended to the engine ExecStart
+# only when DEVCHOKE_IFACE is set.
+DEVCHOKE_IFACE ?=
+DEVCHOKE_FLAGS := $(if $(DEVCHOKE_IFACE),-devchoke-obj $(REMOTE_DIR)/bpf/devchoke.o -devchoke-iface $(DEVCHOKE_IFACE),)
+
 # `deploy` rebuilds the Linux binary, syncs the bundle into the VM, applies
 # policies (incl. enforce/), and (re)starts the engine as a systemd unit
 # with the choke gateway enabled and -enforce on. No `make fake` here —
@@ -111,6 +136,7 @@ deploy: build-linux vm-up
 	multipass transfer $(LINUX_BIN) $(VM):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
 	tar -cz -C $(ROOT) policies attacks scripts | multipass exec $(VM) -- tar -xz -C $(REMOTE_DIR)
 	multipass transfer $(ROOT)/engine/internal/enforce/bpfmap/bpf/choke.c $(VM):$(REMOTE_DIR)/bpf/choke.c
+	multipass transfer $(ROOT)/engine/internal/enforce/devbpf/bpf/devchoke.c $(VM):$(REMOTE_DIR)/bpf/devchoke.c
 	multipass exec $(VM) -- chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)
 	multipass exec $(VM) -- chmod +x $(REMOTE_DIR)/scripts/setup.sh
 	@echo "→ ensuring tetragon + cgroup v2 are ready"
@@ -120,7 +146,7 @@ deploy: build-linux vm-up
 	@echo "→ (re)starting engine with choke gateway + enforcement"
 	-multipass exec $(VM) -- bash -lc "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64; exit 0"
 	multipass exec $(VM) -- sudo mkdir -p /var/lib/ebpf-engine
-	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT) -bpf-obj $(REMOTE_DIR)/bpf/choke.o -bpf-cgroup /sys/fs/cgroup"
+	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT) -bpf-obj $(REMOTE_DIR)/bpf/choke.o -bpf-cgroup /sys/fs/cgroup $(DEVCHOKE_FLAGS)"
 	@sleep 2
 	@echo
 	@echo "──────────────────────────────────────────────────────────────"
@@ -245,6 +271,8 @@ install-vm: build-linux vm-up
 	tar -cz -C $(ROOT) deploy policies attacks scripts | multipass exec $(VM) -- tar -xz -C /tmp/ebpf-poc-install
 	multipass transfer $(LINUX_BIN) $(VM):/tmp/ebpf-poc-install/engine/engine-linux-amd64
 	multipass transfer $(ROOT)/engine/internal/enforce/bpfmap/bpf/choke.c $(VM):/tmp/ebpf-poc-install/engine/internal/enforce/bpfmap/bpf/choke.c
+	multipass exec $(VM) -- mkdir -p /tmp/ebpf-poc-install/engine/internal/enforce/devbpf/bpf
+	multipass transfer $(ROOT)/engine/internal/enforce/devbpf/bpf/devchoke.c $(VM):/tmp/ebpf-poc-install/engine/internal/enforce/devbpf/bpf/devchoke.c
 	multipass exec $(VM) -- sudo bash -c "cd /tmp/ebpf-poc-install && SRC_ROOT=/tmp/ebpf-poc-install bash deploy/install.sh"
 
 # `tls-vm` puts nginx in front of the engine on :443 with a self-signed

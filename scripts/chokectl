@@ -150,12 +150,16 @@ host_get() {
   [[ "$status" =~ ^2 ]]
 }
 
-# POST/PUT helper.
+# POST/PUT helper. The auth middleware requires an X-CSRF-Token header on
+# unsafe methods under /api/ that matches the csrf_token cookie set at login,
+# so we read it back out of the cookie jar (Netscape format: name in col 6,
+# value in col 7) and echo it. Without this, every POST/PUT 403s.
 host_send() {
-  local name="$1" url="$2" path="$3" method="$4" body="$5" cookies status
+  local name="$1" url="$2" path="$3" method="$4" body="$5" cookies status csrf
   cookies="$(cookie_jar "$name")"
+  csrf=$(awk '$6=="csrf_token"{print $7}' "$cookies" 2>/dev/null | tail -n1)
   status=$(curl -sS --max-time "$TIMEOUT" -b "$cookies" -X "$method" \
-    -H 'content-type: application/json' -d "$body" \
+    -H 'content-type: application/json' -H "X-CSRF-Token: ${csrf:-}" -d "$body" \
     -o /tmp/chokectl-body-$$ -w "%{http_code}" "$url$path" 2>/dev/null) || return 1
   cat /tmp/chokectl-body-$$
   rm -f /tmp/chokectl-body-$$
@@ -400,17 +404,66 @@ cmd_jail() {
   echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
 }
 
+# ─────────── network device choke (per-MAC) ──────────────────────────
+# Resolve a single host from the filter into HOST_URLS[0]; shared by the
+# device subcommands below.
+_one_host() {
+  local h="$1"
+  HOST_FILTER="$h"
+  load_hosts
+  if [[ ${#HOST_NAMES[@]} -ne 1 ]]; then
+    fail chokectl "no host named '$h' in $CHOKECTL_HOSTS"; exit 3
+  fi
+  host_login "$h" "${HOST_URLS[0]}" || { fail "$h" "login failed"; exit 2; }
+}
+
+cmd_device_status() {
+  local h="${ARGS[0]:-}"
+  if [[ -z "$h" ]]; then fail chokectl "usage: chokectl device-status HOST"; exit 3; fi
+  _one_host "$h"
+  resp=$(host_get "$h" "${HOST_URLS[0]}" "/api/choke/device-state")
+  echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+  echo "--- devices ---"
+  resp=$(host_get "$h" "${HOST_URLS[0]}" "/api/choke/devices")
+  echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+}
+
+cmd_device_jail() {
+  local h="${ARGS[0]:-}" mac="${ARGS[1]:-}" action="${ARGS[2]:-}" reason="${ARGS[3]:-}"
+  if [[ -z "$h" || -z "$mac" || -z "$action" || -z "$reason" ]]; then
+    fail chokectl "usage: chokectl device-jail HOST MAC ACTION REASON"
+    fail chokectl "ACTION: throttle|tarpit|quarantine|sever"
+    exit 3
+  fi
+  _one_host "$h"
+  body="{\"macs\":[\"$mac\"],\"action\":\"$action\",\"reason\":$(printf '%s' "$reason" | python3 -c 'import sys,json; print(json.dumps(sys.stdin.read()))')}"
+  resp=$(host_send "$h" "${HOST_URLS[0]}" "/api/choke/device-jail" POST "$body")
+  echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+}
+
+cmd_device_thaw() {
+  local h="${ARGS[0]:-}" mac="${ARGS[1]:-}"
+  if [[ -z "$h" || -z "$mac" ]]; then fail chokectl "usage: chokectl device-thaw HOST MAC"; exit 3; fi
+  _one_host "$h"
+  body="{\"mac\":\"$mac\",\"reason\":\"chokectl thaw\"}"
+  resp=$(host_send "$h" "${HOST_URLS[0]}" "/api/choke/device-thaw" POST "$body")
+  echo "$resp" | python3 -m json.tool 2>/dev/null || echo "$resp"
+}
+
 # ─────────── dispatch ─────────────────────────────────────────────────
 case "$SUBCMD" in
-  status)       cmd_status ;;
-  cgroups)      cmd_cgroups ;;
-  preset)       cmd_preset ;;
-  thresholds)   cmd_thresholds ;;
-  kill-switch)  cmd_kill_switch ;;
-  thaw)         cmd_thaw ;;
-  snapshot)     cmd_snapshot ;;
-  decisions)    cmd_decisions ;;
-  alerts)       cmd_alerts ;;
-  jail)         cmd_jail ;;
+  status)        cmd_status ;;
+  cgroups)       cmd_cgroups ;;
+  preset)        cmd_preset ;;
+  thresholds)    cmd_thresholds ;;
+  kill-switch)   cmd_kill_switch ;;
+  thaw)          cmd_thaw ;;
+  snapshot)      cmd_snapshot ;;
+  decisions)     cmd_decisions ;;
+  alerts)        cmd_alerts ;;
+  jail)          cmd_jail ;;
+  device-status) cmd_device_status ;;
+  device-jail)   cmd_device_jail ;;
+  device-thaw)   cmd_device_thaw ;;
   *) fail chokectl "unknown subcommand: $SUBCMD (try chokectl --help)"; exit 3 ;;
 esac

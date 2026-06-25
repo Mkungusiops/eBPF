@@ -389,3 +389,26 @@ func (s *Server) handleFleetThaw(w http.ResponseWriter, r *http.Request) {
 	}
 	s.fanoutJSON(w, http.MethodPost, "/api/choke/thaw", body)
 }
+
+// handleFleetDevices fans the device snapshot out across every gateway so
+// one operator sees all LAN devices choked anywhere in the fleet.
+func (s *Server) handleFleetDevices(w http.ResponseWriter, r *http.Request) {
+	s.fanoutJSON(w, http.MethodGet, "/api/choke/devices", nil)
+}
+
+// handleFleetDeviceJail chokes a device by MAC across every gateway. A MAC
+// only enforces on the gateway(s) actually in its traffic path; the others
+// record the decision and report no-op, which the per-host envelope makes
+// visible.
+func (s *Server) handleFleetDeviceJail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.fanoutJSON(w, http.MethodPost, "/api/choke/device-jail", body)
+}

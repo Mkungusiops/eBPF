@@ -52,6 +52,10 @@ type Server struct {
 	// gateway is wired in after construction via SetGateway() so the HTTP
 	// listener can start before all the choke wiring has finished.
 	gateway *choke.Gateway
+	// deviceGW is the optional network (per-MAC) choke gateway, wired via
+	// SetDeviceGateway() when the engine runs with -devchoke-iface. nil
+	// otherwise; the /api/choke/device-* handlers 503 in that case.
+	deviceGW *choke.DeviceGateway
 	// fleet is the optional Tier-1 multi-host control plane. nil when the
 	// engine was started without --fleet-hosts; the /api/fleet/* handlers
 	// 503 in that case.
@@ -130,6 +134,18 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/choke/proc/", s.handleChokeProcLive)
 	mux.HandleFunc("/api/choke/jail", s.handleChokeJail)
 
+	// Network choke (per-device / MAC) — separate console + API namespace.
+	// Routes are always registered so they 503 cleanly with a useful
+	// message when the engine runs without -devchoke-iface.
+	mux.HandleFunc("/devices", s.handleDevicesConsole)
+	mux.HandleFunc("/api/choke/devices", s.handleChokeDevices)
+	mux.HandleFunc("/api/choke/device-state", s.handleChokeDeviceState)
+	mux.HandleFunc("/api/choke/device-flows", s.handleChokeDeviceFlows)
+	mux.HandleFunc("/api/choke/device-jail", s.handleChokeDeviceJail)
+	mux.HandleFunc("/api/choke/device-thaw", s.handleChokeDeviceThaw)
+	mux.HandleFunc("/api/choke/device-mode", s.handleChokeDeviceMode)
+	mux.HandleFunc("/api/choke/device-kill-switch", s.handleChokeDeviceKillSwitch)
+
 	// Tier 1 fleet console — only mounted when --fleet-hosts was set.
 	// Routes are always registered so the UI 503s cleanly with a useful
 	// message rather than 404ing when fleet mode is disabled.
@@ -143,6 +159,8 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/fleet/thresholds", s.handleFleetThresholds)
 	mux.HandleFunc("/api/fleet/kill-switch", s.handleFleetKillSwitch)
 	mux.HandleFunc("/api/fleet/thaw", s.handleFleetThaw)
+	mux.HandleFunc("/api/fleet/devices", s.handleFleetDevices)
+	mux.HandleFunc("/api/fleet/device-jail", s.handleFleetDeviceJail)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
 	return http.ListenAndServe(addr, metricsMiddleware(s.auth.Middleware(mux)))

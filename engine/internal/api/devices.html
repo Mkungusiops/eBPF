@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Network Choke — Devices</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<style>
+  body { font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; }
+  .badge { font-size: .65rem; letter-spacing: .04em; }
+  .st-pristine    { background:#1e293b; color:#94a3b8; }
+  .st-throttled   { background:#1e3a8a; color:#bfdbfe; }
+  .st-tarpit      { background:#854d0e; color:#fde68a; }
+  .st-quarantined { background:#9a3412; color:#fed7aa; }
+  .st-severed     { background:#7f1d1d; color:#fecaca; }
+  tr.row:hover { background:#0f1729; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+</style>
+</head>
+<body class="bg-slate-950 text-slate-200 min-h-screen">
+<div class="max-w-6xl mx-auto p-5">
+
+  <header class="flex flex-wrap items-center justify-between gap-3 mb-5">
+    <div class="flex items-center gap-3">
+      <a href="/" class="text-xs text-slate-400 hover:text-slate-200 inline-flex items-center gap-1 rounded border border-slate-700 px-2 py-1 hover:border-cyan-500/50">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="15 18 9 12 15 6"/></svg>
+        SOC
+      </a>
+      <h1 class="text-xl font-bold text-cyan-300">⬡ Network Choke — Devices</h1>
+      <a href="/choke" class="text-xs text-slate-400 hover:text-slate-200 underline">process console →</a>
+    </div>
+    <div id="planeState" class="flex items-center gap-2 text-xs text-slate-400"></div>
+  </header>
+
+  <!-- counts -->
+  <div id="counts" class="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-3"></div>
+
+  <!-- enforcement mode bar -->
+  <div class="bg-slate-900/70 rounded-lg p-3 mb-3 flex flex-wrap items-center gap-3 text-sm">
+    <span class="text-slate-400 uppercase text-xs tracking-wide">Enforcement mode</span>
+    <span id="modeBadge" class="badge px-2 py-0.5 rounded bg-slate-700 text-slate-200">—</span>
+    <button id="modeBtn" onclick="toggleMode()" class="rounded px-3 py-1 font-semibold bg-cyan-700 hover:bg-cyan-600">Switch mode</button>
+    <button id="killBtn" onclick="toggleKill()" class="rounded px-3 py-1 font-semibold bg-rose-800 hover:bg-rose-700">Kill-switch</button>
+    <span class="text-slate-500 text-xs">Detect-only audits would-be chokes without dropping traffic. Kill-switch is a global stop. Both are audited.</span>
+  </div>
+
+  <!-- bulk action bar -->
+  <div class="bg-slate-900/70 rounded-lg p-3 mb-4 flex flex-wrap items-center gap-2 text-sm">
+    <span id="selCount" class="text-slate-400">0 selected</span>
+    <select id="action" class="bg-slate-800 rounded px-2 py-1">
+      <option value="throttle">throttle (50/s)</option>
+      <option value="tarpit">tarpit (5/s)</option>
+      <option value="quarantine">quarantine (1/s, DHCP/DNS allowed)</option>
+      <option value="sever">sever (block)</option>
+    </select>
+    <input id="reason" placeholder="reason (required for audit)" class="bg-slate-800 rounded px-2 py-1 flex-1 min-w-[12rem]">
+    <input id="revert" type="number" min="0" placeholder="revert after (s)" class="bg-slate-800 rounded px-2 py-1 w-36">
+    <button onclick="jail()" class="bg-amber-600 hover:bg-amber-500 rounded px-3 py-1 font-semibold">Choke</button>
+    <button onclick="thaw()" class="bg-emerald-700 hover:bg-emerald-600 rounded px-3 py-1 font-semibold">Thaw</button>
+    <span id="toast" class="text-xs"></span>
+  </div>
+
+  <div class="bg-slate-900/70 rounded-lg overflow-hidden">
+    <table class="w-full text-sm">
+      <thead class="bg-slate-900 text-slate-400 text-xs uppercase">
+        <tr>
+          <th class="p-2 w-8"><input type="checkbox" id="selAll" onclick="toggleAll(this)"></th>
+          <th class="p-2 text-left">Device</th>
+          <th class="p-2 text-left">IP</th>
+          <th class="p-2 text-left">Hostname</th>
+          <th class="p-2 text-left">State</th>
+          <th class="p-2 text-left">Bucket</th>
+          <th class="p-2 text-left">Seen</th>
+          <th class="p-2 text-left">Src</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div id="empty" class="p-6 text-center text-slate-500 text-sm hidden">No devices observed yet — generate some LAN traffic.</div>
+  </div>
+
+  <p class="text-xs text-slate-600 mt-4">
+    Identity is the MAC (stable across DHCP/IP changes). Quarantine still allows DHCP/DNS so a device can recover.
+    Allow-listed MACs (gateway/uplink/DHCP-DNS/operator) refuse quarantine/sever.
+  </p>
+</div>
+
+<!-- Reusable confirmation modal (replaces native prompt/confirm) -->
+<div id="modal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+  <div id="modalCard" class="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 shadow-2xl transition transform">
+    <div class="px-5 pt-4 pb-3 border-b border-slate-800 flex items-start gap-3">
+      <div id="modalIcon" class="shrink-0 mt-0.5 w-8 h-8 rounded-lg grid place-items-center bg-cyan-500/15 text-cyan-300">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
+      </div>
+      <div class="min-w-0">
+        <h3 id="modalTitle" class="text-base font-semibold text-slate-100">Confirm</h3>
+        <p id="modalMsg" class="text-xs text-slate-400 mt-1 leading-relaxed"></p>
+      </div>
+    </div>
+    <div id="modalReasonWrap" class="px-5 py-4">
+      <label class="block">
+        <span class="text-[10px] uppercase tracking-wider text-slate-500">Reason <span class="text-slate-600">(audited)</span></span>
+        <input id="modalReason" class="mt-1 w-full bg-slate-800 rounded px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-cyan-600/60" placeholder="reason">
+        <span id="modalReasonErr" class="text-[11px] text-rose-400 hidden">A reason is required for the audit log.</span>
+      </label>
+    </div>
+    <div class="px-5 pb-4 pt-1 flex justify-end gap-2">
+      <button id="modalCancel" class="rounded px-3 py-1.5 text-sm font-medium bg-slate-800 hover:bg-slate-700 text-slate-200">Cancel</button>
+      <button id="modalConfirm" class="rounded px-3 py-1.5 text-sm font-semibold bg-cyan-600 hover:bg-cyan-500 text-white">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const FLAG = { THROTTLE:1, TARPIT:2, QUARANTINE:4, SEVER:8 };
+let selected = new Set();
+let expanded = new Set();
+
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function ago(t){ if(!t) return '—'; const d=(Date.now()-new Date(t))/1000; if(d<60) return Math.floor(d)+'s'; if(d<3600) return Math.floor(d/60)+'m'; return Math.floor(d/3600)+'h'; }
+function flagName(f){ if(f&FLAG.SEVER)return 'sever'; if(f&FLAG.QUARANTINE)return 'quarantine'; if(f&FLAG.TARPIT)return 'tarpit'; if(f&FLAG.THROTTLE)return 'throttle'; return '—'; }
+
+function toast(msg, ok){ const t=document.getElementById('toast'); t.textContent=msg; t.className='text-xs '+(ok?'text-emerald-400':'text-rose-400'); setTimeout(()=>{t.textContent='';}, 4000); }
+
+async function loadState(){
+  try{
+    const r = await fetch('/api/choke/device-state');
+    if(r.status===503){ document.getElementById('planeState').innerHTML='<span class="text-rose-400">device choke disabled (start with -devchoke-iface)</span>'; return false; }
+    const s = await r.json();
+    window._mode = s.mode; window._kill = !!s.kill_switched;
+    const enf = s.mode==='enforcing';
+    const frames = s.frames_seen||0;
+    // links>0 but frames==0 = attached to the wrong iface (e.g. bridge master) — flag it.
+    const framesCls = (s.links_attached>0 && frames===0) ? 'text-amber-400' : 'text-slate-200';
+    document.getElementById('planeState').innerHTML =
+      `<span class="px-2 py-0.5 rounded badge ${enf?'bg-emerald-800 text-emerald-200':'bg-slate-700 text-slate-300'}">${enf?'ENFORCING':(s.mode||'').toUpperCase()}</span>`+
+      `<span>plane=<b class="text-slate-200">${esc(s.data_plane)}</b></span>`+
+      `<span>links=<b class="text-slate-200">${s.links_attached}</b></span>`+
+      `<span>frames=<b class="${framesCls}">${frames}</b></span>`;
+    // mode control bar
+    const modeCls = {enforcing:'bg-emerald-800 text-emerald-200','detect-only':'bg-sky-800 text-sky-200','dry-run':'bg-amber-800 text-amber-200','kill-switched':'bg-rose-800 text-rose-200'}[s.mode]||'bg-slate-700 text-slate-200';
+    const mb=document.getElementById('modeBadge'); mb.className='badge px-2 py-0.5 rounded '+modeCls; mb.textContent=(s.mode||'?').toUpperCase();
+    const modeBtn=document.getElementById('modeBtn');
+    modeBtn.textContent = enf ? 'Switch to detect-only' : 'Switch to enforcing';
+    modeBtn.disabled = s.dry_run; modeBtn.classList.toggle('opacity-40', !!s.dry_run);
+    const killBtn=document.getElementById('killBtn');
+    killBtn.textContent = s.kill_switched ? 'Disengage kill-switch' : 'Engage kill-switch';
+    killBtn.className = 'rounded px-3 py-1 font-semibold '+(s.kill_switched?'bg-rose-600 hover:bg-rose-500':'bg-rose-800 hover:bg-rose-700');
+    return true;
+  }catch(e){ return false; }
+}
+
+// openConfirm shows the in-app modal and resolves with {reason} on confirm,
+// or null on cancel. Replaces the native prompt()/confirm() dialogs.
+//   opts: {title, message, confirmLabel, danger, requireReason, reasonPlaceholder, defaultReason}
+let _modalCleanup = null;
+function openConfirm(opts){
+  opts = opts || {};
+  return new Promise(resolve=>{
+    const modal   = document.getElementById('modal');
+    const card    = document.getElementById('modalCard');
+    const iconBox = document.getElementById('modalIcon');
+    const confirm = document.getElementById('modalConfirm');
+    const cancel  = document.getElementById('modalCancel');
+    const reasonW = document.getElementById('modalReasonWrap');
+    const reason  = document.getElementById('modalReason');
+    const reasonE = document.getElementById('modalReasonErr');
+
+    document.getElementById('modalTitle').textContent = opts.title || 'Confirm';
+    document.getElementById('modalMsg').textContent   = opts.message || '';
+    confirm.textContent = opts.confirmLabel || 'Confirm';
+
+    // danger vs default accent colouring
+    const danger = !!opts.danger;
+    confirm.className = 'rounded px-3 py-1.5 text-sm font-semibold text-white '+
+      (danger ? 'bg-rose-600 hover:bg-rose-500' : 'bg-cyan-600 hover:bg-cyan-500');
+    iconBox.className = 'shrink-0 mt-0.5 w-8 h-8 rounded-lg grid place-items-center '+
+      (danger ? 'bg-rose-500/15 text-rose-300' : 'bg-cyan-500/15 text-cyan-300');
+
+    // reason field (shown only when requested)
+    const requireReason = !!opts.requireReason;
+    reasonW.classList.toggle('hidden', !requireReason);
+    reasonE.classList.add('hidden');
+    if(requireReason){
+      reason.value = opts.defaultReason || '';
+      reason.placeholder = opts.reasonPlaceholder || 'reason';
+    }
+
+    modal.classList.remove('hidden');
+    modal.classList.add('flex');
+    setTimeout(()=>{ (requireReason ? reason : confirm).focus(); (requireReason && reason.select()); }, 30);
+
+    function close(result){
+      modal.classList.add('hidden');
+      modal.classList.remove('flex');
+      document.removeEventListener('keydown', onKey);
+      confirm.onclick = cancel.onclick = modal.onmousedown = null;
+      _modalCleanup = null;
+      resolve(result);
+    }
+    function doConfirm(){
+      if(requireReason && reason.value.trim()===''){ reasonE.classList.remove('hidden'); reason.focus(); return; }
+      close({reason: requireReason ? reason.value.trim() : ''});
+    }
+    function onKey(e){
+      if(e.key==='Escape') close(null);
+      else if(e.key==='Enter' && (e.target===reason || document.activeElement===confirm)) doConfirm();
+    }
+    confirm.onclick = doConfirm;
+    cancel.onclick  = ()=>close(null);
+    // click on the dim backdrop (but not the card) cancels
+    modal.onmousedown = (e)=>{ if(!card.contains(e.target)) close(null); };
+    document.addEventListener('keydown', onKey);
+    _modalCleanup = ()=>close(null);
+  });
+}
+
+// toggleMode flips ENFORCING <-> DETECT-ONLY (a reason is required for audit).
+async function toggleMode(){
+  if(window._mode==='dry-run'){ toast('dry-run is a boot flag; restart without -dry-run / dry_run:false', false); return; }
+  const enf = window._mode==='enforcing';
+  const r = await openConfirm({
+    title:   enf ? 'Switch to DETECT-ONLY' : 'Switch to ENFORCING',
+    message: enf
+      ? 'Audit would-be chokes without dropping traffic. Existing chokes stay applied; new device decisions are logged only.'
+      : 'Chokes will drop or rate-limit real device traffic. Confirm allow-listed MACs (gateway/uplink/DHCP-DNS/operator) are correct before going live.',
+    confirmLabel:  enf ? 'Switch to detect-only' : 'Go live — enforce',
+    danger:        !enf,
+    requireReason: true,
+    reasonPlaceholder: 'why are you changing mode?',
+    defaultReason: enf ? 'staging policy' : 'go live',
+  });
+  if(!r) return;
+  const res = await post('/api/choke/device-mode', {enforcing: !enf, reason: r.reason});
+  if(res){ toast('mode → '+res.mode, true); load(); }
+}
+
+// toggleKill engages/disengages the global device kill-switch (now confirmed).
+async function toggleKill(){
+  const on = !window._kill;
+  const r = await openConfirm({
+    title:   on ? 'Engage KILL-SWITCH' : 'Disengage kill-switch',
+    message: on
+      ? 'Global emergency stop — immediately bypasses ALL device enforcement so every device passes freely. The action is audited.'
+      : 'Re-enable device enforcement. Chokes resume according to the current enforcement mode.',
+    confirmLabel: on ? 'Engage kill-switch' : 'Disengage',
+    danger:       on,
+    requireReason: false,
+  });
+  if(!r) return;
+  const res = await post('/api/choke/device-kill-switch', {on});
+  if(res){ toast('kill-switch '+(res.engaged?'ENGAGED':'disengaged'), !res.engaged); load(); }
+}
+
+async function loadCounts(s){
+  const c = s.counts||{};
+  const order=[['pristine','st-pristine'],['throttled','st-throttled'],['tarpit','st-tarpit'],['quarantined','st-quarantined'],['severed','st-severed']];
+  document.getElementById('counts').innerHTML = order.map(([k,cls])=>
+    `<div class="rounded-lg p-3 ${cls}"><div class="text-2xl font-bold">${c[k]||0}</div><div class="badge uppercase">${k}</div></div>`).join('');
+}
+
+async function load(){
+  const ok = await loadState();
+  if(!ok){ return; }
+  const sr = await fetch('/api/choke/device-state'); loadCounts(await sr.json());
+  const r = await fetch('/api/choke/devices');
+  if(!r.ok){ return; }
+  const devs = await r.json();
+  const tb = document.getElementById('rows');
+  document.getElementById('empty').classList.toggle('hidden', (devs||[]).length>0);
+  tb.innerHTML = (devs||[]).map(d=>{
+    const checked = selected.has(d.mac)?'checked':'';
+    const bucket = d.bucket ? `${flagName(d.bucket.flags)} ${d.bucket.rate_per_sec}/s` : '—';
+    const prot = d.protected ? '<span class="badge px-1 rounded bg-slate-700 text-slate-300 ml-1">protected</span>' : '';
+    const sid = d.mac.replace(/:/g,'-');
+    const open = expanded.has(d.mac);
+    const chev = `<span class="cursor-pointer select-none text-cyan-400 mr-1" onclick="toggleFlows('${esc(d.mac)}')">${open?'▾':'▸'}</span>`;
+    const flowsLbl = d.flows ? `<span class="badge px-1 rounded bg-slate-800 text-slate-400 ml-1">${d.flows} dst</span>` : '';
+    let html = `<tr class="row border-t border-slate-800">
+      <td class="p-2 text-center"><input type="checkbox" data-mac="${esc(d.mac)}" ${checked} onclick="toggle(this)"></td>
+      <td class="p-2 mono">${chev}${esc(d.mac)}${prot}${flowsLbl}<div class="text-[10px] text-slate-500 ml-4">${esc(d.device_id)}</div></td>
+      <td class="p-2 mono">${esc(d.last_ip||'—')}</td>
+      <td class="p-2">${esc(d.hostname||'—')}</td>
+      <td class="p-2"><span class="badge px-2 py-0.5 rounded st-${esc(d.state)}">${esc(d.state)}</span>${d.revert_pending?'<span class="badge text-cyan-400 ml-1">⟲</span>':''}</td>
+      <td class="p-2 mono text-xs">${esc(bucket)}</td>
+      <td class="p-2 text-slate-400">${ago(d.last_seen)}</td>
+      <td class="p-2 text-slate-500 text-xs">${esc(d.source||'—')}</td>
+    </tr>`;
+    if(open){
+      html += `<tr id="flows-${sid}"><td colspan="8" class="px-6 py-2 bg-slate-900/40 text-xs text-slate-300">loading connections…</td></tr>`;
+    }
+    return html;
+  }).join('');
+  expanded.forEach(mac=>renderFlows(mac));
+  updateSel();
+}
+
+// toggleFlows expands/collapses a device's connection list.
+async function toggleFlows(mac){ if(expanded.has(mac)) expanded.delete(mac); else expanded.add(mac); load(); }
+
+function fmtBytes(b){ if(b<1024)return b+' B'; if(b<1048576)return (b/1024).toFixed(1)+' KB'; return (b/1048576).toFixed(1)+' MB'; }
+
+// renderFlows fetches and renders what a device is talking to — the
+// destinations it's contacting, so you can spot malicious targets/ports.
+async function renderFlows(mac){
+  const cell = document.querySelector('#flows-'+mac.replace(/:/g,'-')+' td');
+  if(!cell) return;
+  try{
+    const r = await fetch('/api/choke/device-flows?mac='+encodeURIComponent(mac));
+    if(!r.ok){ cell.textContent='connections unavailable'; return; }
+    const flows = (await r.json()).flows||[];
+    if(!flows.length){ cell.innerHTML='<span class="text-slate-500">no outbound connections observed yet</span>'; return; }
+    cell.innerHTML = '<div class="font-semibold text-slate-400 mb-1">Connecting to (device → destination)</div>'+
+      flows.map(f=>`<div class="mono">→ ${esc(f.dest_ip)}:${f.dest_port||'·'} <span class="text-cyan-300">${esc(f.proto)}</span> <span class="text-slate-500">· ${f.packets} pkts / ${fmtBytes(f.bytes)}</span></div>`).join('');
+  }catch(e){ cell.textContent='error'; }
+}
+
+function toggle(cb){ if(cb.checked) selected.add(cb.dataset.mac); else selected.delete(cb.dataset.mac); updateSel(); }
+function toggleAll(cb){ document.querySelectorAll('input[data-mac]').forEach(x=>{ x.checked=cb.checked; if(cb.checked) selected.add(x.dataset.mac); else selected.delete(x.dataset.mac); }); updateSel(); }
+function updateSel(){ document.getElementById('selCount').textContent = selected.size+' selected'; }
+
+// csrfToken reads the non-HttpOnly csrf_token cookie set at login. The auth
+// middleware requires it as X-CSRF-Token on every POST under /api/.
+function csrfToken(){
+  const m = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
+  return m ? decodeURIComponent(m[1]) : '';
+}
+
+async function post(url, body){
+  const r = await fetch(url, {
+    method:'POST',
+    headers:{'Content-Type':'application/json', 'X-CSRF-Token': csrfToken()},
+    body:JSON.stringify(body),
+  });
+  if(r.status===401){ toast('session expired — reloading', false); setTimeout(()=>location.href='/login',800); return null; }
+  if(r.status===503){ toast('device choke disabled', false); return null; }
+  if(!r.ok){ toast('error: '+(await r.text()).trim(), false); return null; }
+  return r.json();
+}
+
+async function jail(){
+  const macs=[...selected]; if(!macs.length){ toast('select at least one device', false); return; }
+  const reason=document.getElementById('reason').value.trim(); if(!reason){ toast('reason is required', false); return; }
+  const revert=parseInt(document.getElementById('revert').value||'0',10)||0;
+  const res = await post('/api/choke/device-jail', {macs, action:document.getElementById('action').value, reason, revert_after_seconds:revert});
+  if(res){ const ok=res.results.filter(x=>x.ok).length; toast(`${ok}/${res.results.length} choked`, ok>0); load(); }
+}
+async function thaw(){
+  const macs=[...selected]; if(!macs.length){ toast('select at least one device', false); return; }
+  const res = await post('/api/choke/device-thaw', {macs, reason:document.getElementById('reason').value.trim()||'operator thaw'});
+  if(res){ const ok=res.results.filter(x=>x.ok).length; toast(`${ok}/${res.results.length} thawed`, ok>0); selected.clear(); load(); }
+}
+
+load();
+setInterval(load, 4000);
+</script>
+</body>
+</html>

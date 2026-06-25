@@ -42,6 +42,12 @@ type Decision struct {
 	OriginUser        string `json:"origin_user,omitempty"`
 	OriginFingerprint string `json:"origin_fingerprint,omitempty"`
 
+	// Device attributes a network-choke decision to the LAN device it
+	// acted on (the network-gateway analog of Origin). Empty for the
+	// per-process choke path. ExecID carries "device:<mac>" for these rows.
+	DeviceMAC string `json:"device_mac,omitempty"`
+	DeviceID  string `json:"device_id,omitempty"`
+
 	PrevHash string `json:"prev_hash"`
 	Hash     string `json:"hash"`
 }
@@ -53,6 +59,18 @@ type Decision struct {
 func (d *Decision) hasOrigin() bool {
 	return d.OriginKind != "" || d.OriginIP != "" || d.OriginPort != 0 ||
 		d.OriginUser != "" || d.OriginFingerprint != ""
+}
+
+// hasDevice reports whether the row carries network-device attribution.
+// Like hasOrigin, this keeps pre-device audit rows hash-stable: rows
+// written before the network choke shipped produce their original
+// canonical string and continue to verify on old databases.
+func (d *Decision) hasDevice() bool {
+	return d.DeviceMAC != "" || d.DeviceID != ""
+}
+
+func (d *Decision) deviceTail() string {
+	return "|" + d.DeviceMAC + "|" + d.DeviceID
 }
 
 // canonical builds a stable string representation used for hashing. Field
@@ -78,18 +96,23 @@ func (d *Decision) canonical() string {
 		strconv.FormatBool(d.DryRun) + "|" +
 		d.Backend + "|" +
 		d.Outcome
-	if !d.hasOrigin() {
-		return base
+	// Trailers append to the end so old rows (no origin/device) keep their
+	// original canonical form and hash. New rows with attribution gain the
+	// extra protection without invalidating the existing chain. Order:
+	// origin trailer (if any) then device trailer (if any).
+	s := base
+	if d.hasOrigin() {
+		s += "|" +
+			d.OriginKind + "|" +
+			d.OriginIP + "|" +
+			strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
+			d.OriginUser + "|" +
+			d.OriginFingerprint
 	}
-	// Origin fields append to the end so old rows (no origin) keep their
-	// original canonical form and hash. New rows with attribution gain
-	// the extra protection without invalidating the existing chain.
-	return base + "|" +
-		d.OriginKind + "|" +
-		d.OriginIP + "|" +
-		strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
-		d.OriginUser + "|" +
-		d.OriginFingerprint
+	if d.hasDevice() {
+		s += d.deviceTail()
+	}
+	return s
 }
 
 func computeHash(prev, canonical string) string {
@@ -106,14 +129,14 @@ func computeHash(prev, canonical string) string {
 //
 // This exists because canonical() has changed twice:
 //
-//   1. Original form: timestamp formatted at full nanosecond precision,
-//      12 fields, no origin trailer.
-//   2. Truncate-to-microsecond was added (to keep Postgres TIMESTAMPTZ
-//      verification matching SQLite). Made all pre-truncate rows fail
-//      verification on engines running the new code.
-//   3. Origin fields appended conditionally (this branch). Rows with
-//      attribution get a 5-field trailer; rows without keep the
-//      legacy 12-field form for backward compatibility.
+//  1. Original form: timestamp formatted at full nanosecond precision,
+//     12 fields, no origin trailer.
+//  2. Truncate-to-microsecond was added (to keep Postgres TIMESTAMPTZ
+//     verification matching SQLite). Made all pre-truncate rows fail
+//     verification on engines running the new code.
+//  3. Origin fields appended conditionally (this branch). Rows with
+//     attribution get a 5-field trailer; rows without keep the
+//     legacy 12-field form for backward compatibility.
 //
 // Each historical era is reproduced here. Tamper-evidence is preserved
 // — an attacker can't forge a row that produces a matching hash under
@@ -143,19 +166,28 @@ func (d *Decision) canonicalCandidates() []string {
 		strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
 		d.OriginUser + "|" +
 		d.OriginFingerprint
+	deviceTail := d.deviceTail()
 
-	// Order matters only for performance: the current era is checked
-	// first so the common case short-circuits without computing
-	// legacy hashes. Verify is the only caller; insert always uses
-	// canonical() (the head of this list when origin is set, the
-	// no-origin variant otherwise).
-	out := make([]string, 0, 4)
-	if d.hasOrigin() {
-		out = append(out, body(tsMicro)+originTail)
-		out = append(out, body(tsNano)+originTail)
+	// Reproduce every form a row could have been written under. The write
+	// path emits base[+origin][+device]; we enumerate the matching
+	// combinations for each timestamp precision era so a canonical-format
+	// change never retroactively invalidates the audit log. Tamper-evidence
+	// is preserved — an attacker still can't forge a hash without inverting
+	// sha256.
+	out := make([]string, 0, 8)
+	for _, ts := range []string{tsMicro, tsNano} {
+		b := body(ts)
+		if d.hasOrigin() && d.hasDevice() {
+			out = append(out, b+originTail+deviceTail)
+		}
+		if d.hasOrigin() {
+			out = append(out, b+originTail)
+		}
+		if d.hasDevice() {
+			out = append(out, b+deviceTail)
+		}
+		out = append(out, b)
 	}
-	out = append(out, body(tsMicro))
-	out = append(out, body(tsNano))
 	return out
 }
 
@@ -229,6 +261,8 @@ func (ds *decisionStore) migrate() error {
 		{"origin_port", "INTEGER"},
 		{"origin_user", "TEXT"},
 		{"origin_fp", "TEXT"},
+		{"device_mac", "TEXT"},
+		{"device_id", "TEXT"},
 	} {
 		if err := ds.addColumnIfMissing("decisions", col.name, col.def); err != nil {
 			return fmt.Errorf("add %s: %w", col.name, err)
@@ -310,13 +344,15 @@ func (ds *decisionStore) InsertDecision(d *Decision) (int64, error) {
 		(timestamp, exec_id, pid, "binary", action, from_state, to_state, score,
 		 reason, dry_run, backend, outcome,
 		 origin_kind, origin_ip, origin_port, origin_user, origin_fp,
+		 device_mac, device_id,
 		 prev_hash, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	args := []interface{}{
 		d.Timestamp, d.ExecID, d.PID, d.Binary, d.Action, d.FromState, d.ToState,
 		d.Score, d.Reason, boolToInt(d.DryRun), d.Backend, d.Outcome,
 		nullableString(d.OriginKind), nullableString(d.OriginIP), nullableUint16(d.OriginPort),
 		nullableString(d.OriginUser), nullableString(d.OriginFingerprint),
+		nullableString(d.DeviceMAC), nullableString(d.DeviceID),
 		d.PrevHash, d.Hash,
 	}
 	var id int64
@@ -346,6 +382,7 @@ func (ds *decisionStore) RecentDecisions(limit int) ([]Decision, error) {
 		SELECT id, timestamp, exec_id, pid, "binary", action, from_state, to_state,
 		       score, reason, dry_run, backend, outcome,
 		       origin_kind, origin_ip, origin_port, origin_user, origin_fp,
+		       device_mac, device_id,
 		       prev_hash, hash
 		FROM decisions ORDER BY id DESC LIMIT ?`), limit)
 	if err != nil {
@@ -371,10 +408,12 @@ func scanDecisionRow(rows *sql.Rows) (Decision, error) {
 	var dr int
 	var oKind, oIP, oUser, oFP sql.NullString
 	var oPort sql.NullInt64
+	var devMAC, devID sql.NullString
 	if err := rows.Scan(&d.ID, &d.Timestamp, &d.ExecID, &d.PID, &d.Binary,
 		&d.Action, &d.FromState, &d.ToState, &d.Score, &d.Reason,
 		&dr, &d.Backend, &d.Outcome,
 		&oKind, &oIP, &oPort, &oUser, &oFP,
+		&devMAC, &devID,
 		&d.PrevHash, &d.Hash); err != nil {
 		return Decision{}, err
 	}
@@ -393,6 +432,12 @@ func scanDecisionRow(rows *sql.Rows) (Decision, error) {
 	}
 	if oFP.Valid {
 		d.OriginFingerprint = oFP.String
+	}
+	if devMAC.Valid {
+		d.DeviceMAC = devMAC.String
+	}
+	if devID.Valid {
+		d.DeviceID = devID.String
 	}
 	return d, nil
 }
@@ -414,6 +459,7 @@ func (ds *decisionStore) VerifyDecisionChain() (VerifyChainResult, error) {
 		SELECT id, timestamp, exec_id, pid, "binary", action, from_state, to_state,
 		       score, reason, dry_run, backend, outcome,
 		       origin_kind, origin_ip, origin_port, origin_user, origin_fp,
+		       device_mac, device_id,
 		       prev_hash, hash
 		FROM decisions ORDER BY id ASC`)
 	if err != nil {

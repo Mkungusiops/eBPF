@@ -26,11 +26,14 @@ WorkingDirectory=/var/lib/ebpf-engine
 
 # Capabilities — Tetragon does the kernel work, but the engine itself
 # needs CAP_BPF + CAP_NET_ADMIN to load and attach the cgroup/connect{4,6}
-# programs from cilium/ebpf, plus CAP_SYS_ADMIN for cgroup v2 freeze and
-# write to cgroup.procs from outside the controlled cgroup tree, plus
-# CAP_KILL to send SIGKILL on sever decisions.
-AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
-CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
+# programs from cilium/ebpf (CAP_NET_ADMIN also covers tc/TCX attach for the
+# network device choke), plus CAP_SYS_ADMIN for cgroup v2 freeze and write
+# to cgroup.procs from outside the controlled cgroup tree, plus CAP_KILL to
+# send SIGKILL on sever decisions, plus CAP_NET_RAW for the network choke's
+# passive DHCP hostname sniffer (AF_PACKET). CAP_NET_RAW is harmless when
+# the device choke is disabled.
+AmbientCapabilities=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
+CapabilityBoundingSet=CAP_BPF CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_KILL CAP_DAC_READ_SEARCH
 
 # Hardening — all the standard knobs that don't conflict with the
 # capabilities above.

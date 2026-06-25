@@ -284,3 +284,6 @@ NOTES.md.local
 # Convention: any file ending in `.local` is per-developer override.
 *.local
 !*.local.example
+
+# Compiled BPF objects — built on the target by setup.sh / `make devchoke`
+*.o

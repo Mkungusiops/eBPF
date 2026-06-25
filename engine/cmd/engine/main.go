@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
@@ -22,16 +23,18 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/tokens"
 	"github.com/jeffmk/ebpf-poc-engine/internal/config"
-	"github.com/jeffmk/ebpf-poc-engine/internal/logging"
-	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
+	"github.com/jeffmk/ebpf-poc-engine/internal/device"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/bpfmap"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/cgroupv2"
+	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/devbpf"
+	"github.com/jeffmk/ebpf-poc-engine/internal/logging"
+	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
 	"github.com/jeffmk/ebpf-poc-engine/internal/origin"
 	"github.com/jeffmk/ebpf-poc-engine/internal/policy"
-	"github.com/jeffmk/ebpf-poc-engine/internal/sysproc"
 	"github.com/jeffmk/ebpf-poc-engine/internal/score"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
+	"github.com/jeffmk/ebpf-poc-engine/internal/sysproc"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
 
@@ -59,7 +62,7 @@ func main() {
 		// Phase 1+2: choke gateway
 		chokeDir     = flag.String("choke-policies", "policies/choke", "directory containing ChokePolicy YAMLs (DSL); empty disables policy-driven choking")
 		dryRun       = flag.Bool("dry-run", false, "shadow mode: record decisions but do not execute enforcement actions")
-		enforceFlag   = flag.Bool("enforce", false, "enable real enforcement (kill/throttle); when false, decisions are logged only")
+		enforceFlag  = flag.Bool("enforce", false, "enable real enforcement (kill/throttle); when false, decisions are logged only")
 		throttleAt   = flag.Int("throttle-at", 5, "chain score at which to start throttling")
 		tarpitAt     = flag.Int("tarpit-at", 15, "chain score at which to tarpit")
 		quarantineAt = flag.Int("quarantine-at", 25, "chain score at which to quarantine (sinkhole)")
@@ -69,24 +72,32 @@ func main() {
 		// Tier 1 fleet console (Fleet Console at /fleet). When this points at
 		// a chokectl-format hosts file, /api/fleet/* endpoints fan out to
 		// each peer and the embedded UI lets one operator drive N hosts.
-		fleetHosts   = flag.String("fleet-hosts", "", "path to chokectl.hosts file; enables the /fleet console and /api/fleet/* fanout endpoints")
+		fleetHosts = flag.String("fleet-hosts", "", "path to chokectl.hosts file; enables the /fleet console and /api/fleet/* fanout endpoints")
 		// cilium/ebpf data plane: when -bpf-obj points at a compiled
 		// choke.o the engine loads it and attaches cgroup/connect{4,6}
 		// programs to -bpf-cgroup. Empty -bpf-obj keeps the noop backend
 		// (in-memory mirror only — no kernel enforcement).
-		bpfObj       = flag.String("bpf-obj", "", "path to compiled choke.o; empty disables the cilium/ebpf data plane and falls back to the in-memory noop backend")
-		bpfCgroup    = flag.String("bpf-cgroup", "/sys/fs/cgroup", "cgroup v2 root to attach the BPF program to")
+		bpfObj    = flag.String("bpf-obj", "", "path to compiled choke.o; empty disables the cilium/ebpf data plane and falls back to the in-memory noop backend")
+		bpfCgroup = flag.String("bpf-cgroup", "/sys/fs/cgroup", "cgroup v2 root to attach the BPF program to")
+		// Network (per-device / MAC) choke data plane. When -devchoke-obj
+		// points at a compiled devchoke.o AND -devchoke-iface names one or
+		// more LAN/bridge-slave interfaces, the engine loads it and attaches
+		// tc ingress+egress so it can throttle/block forwarded traffic by
+		// device MAC. Empty -devchoke-iface keeps the in-memory noop backend.
+		devchokeObj     = flag.String("devchoke-obj", "", "path to compiled devchoke.o; empty disables the network device choke data plane")
+		devchokeIface   = flag.String("devchoke-iface", "", "comma-separated LAN/bridge-slave interfaces to attach the device choke to (e.g. eth0,eth1)")
+		devchokeProtect = flag.String("devchoke-protect", "", "comma-separated MAC allow-list (gateway/uplink/DHCP-DNS/operator) the engine refuses to quarantine/sever; interface MACs are auto-added")
 		// Storage backend. -db is reused as the SQLite path; -pg-dsn carries
 		// the Postgres connection string when -store=postgres.
-		storeKind    = flag.String("store", "sqlite", "storage backend: sqlite | postgres")
-		pgDSN        = flag.String("pg-dsn", "", "Postgres DSN (e.g. postgres://user:pass@host:5432/db?sslmode=disable); required when -store=postgres")
+		storeKind = flag.String("store", "sqlite", "storage backend: sqlite | postgres")
+		pgDSN     = flag.String("pg-dsn", "", "Postgres DSN (e.g. postgres://user:pass@host:5432/db?sslmode=disable); required when -store=postgres")
 		// Observability.
 		logFormat    = flag.String("log-format", "text", "log handler: text (dev) | json (production — for journald → Vector → Loki/Elastic)")
 		logLevel     = flag.String("log-level", "info", "log level: debug | info | warn | error")
 		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP/HTTP metrics endpoint (e.g. http://otel-collector:4318); 'stdout' to print metrics every 30s; empty disables metrics")
 		// YAML config file. Any field set in the file is used iff the
 		// matching CLI flag is still at its default — flags always win.
-		configPath   = flag.String("config", "", "path to YAML config file (every field has a CLI-flag equivalent; CLI flags override file values)")
+		configPath = flag.String("config", "", "path to YAML config file (every field has a CLI-flag equivalent; CLI flags override file values)")
 	)
 	flag.Parse()
 
@@ -116,6 +127,9 @@ func main() {
 		config.ApplyString(fleetHosts, cfg.FleetHosts, "")
 		config.ApplyString(bpfObj, cfg.BPFObj, "")
 		config.ApplyString(bpfCgroup, cfg.BPFCgroup, "/sys/fs/cgroup")
+		config.ApplyString(devchokeObj, cfg.DevchokeObj, "")
+		config.ApplyString(devchokeIface, cfg.DevchokeIfaces, "")
+		config.ApplyString(devchokeProtect, cfg.DevchokeProtect, "")
 		config.ApplyString(storeKind, cfg.Store, "sqlite")
 		config.ApplyString(pgDSN, cfg.PgDSN, "")
 		config.ApplyString(logFormat, cfg.LogFormat, "text")
@@ -332,6 +346,71 @@ func main() {
 		SystemCriticalBinaries: critBins,
 	})
 	httpSrv.SetGateway(gw)
+
+	// ---- Network Choke Gateway (per-device / MAC) -------------------------
+	// A parallel data plane: tc clsact programs keyed by MAC on the LAN /
+	// bridge-slave interfaces, independent of the process choke above. Loads
+	// only when -devchoke-obj + -devchoke-iface are set; otherwise an
+	// in-memory noop backend keeps the /api/choke/device-* endpoints alive
+	// (useful for UI iteration). Operator/manual-driven — no score path.
+	devIfaces := splitCSV(*devchokeIface)
+	var devBackend devbpf.Backend
+	if *devchokeObj != "" && len(devIfaces) > 0 {
+		tc := devbpf.NewCiliumTCBackend(*devchokeObj, devIfaces)
+		if err := tc.Open(); err != nil {
+			log.Printf("[devbpf] tc backend failed (%v) — falling back to noop", err)
+			noop := devbpf.NewNoopDeviceBackend()
+			_ = noop.Open()
+			devBackend = noop
+		} else {
+			log.Printf("[devbpf] tc data plane loaded from %s on [%s] (%d link(s), tier=%s)",
+				*devchokeObj, *devchokeIface, tc.AttachedLinks(), tc.DataPlaneTier())
+			devBackend = tc
+		}
+	} else {
+		noop := devbpf.NewNoopDeviceBackend()
+		_ = noop.Open()
+		log.Printf("[devbpf] network device choke inactive (need -devchoke-obj + -devchoke-iface) — noop backend")
+		devBackend = noop
+	}
+	defer devBackend.Close()
+
+	// Protected MAC allow-list: operator-supplied (gateway/uplink/DHCP-DNS/
+	// operator workstation) PLUS the configured interfaces' own hardware
+	// addresses, so the box can never quarantine/sever its own bridge ports.
+	protected := map[devbpf.MAC]bool{}
+	for _, m := range splitCSV(*devchokeProtect) {
+		if mac, err := devbpf.ParseMAC(m); err == nil {
+			protected[mac] = true
+		} else {
+			log.Printf("[devgateway] -devchoke-protect: skipping bad MAC %q: %v", m, err)
+		}
+	}
+	for _, ifn := range devIfaces {
+		if iface, err := net.InterfaceByName(ifn); err == nil && len(iface.HardwareAddr) == 6 {
+			if mac, err := devbpf.ParseMAC(iface.HardwareAddr.String()); err == nil {
+				protected[mac] = true
+			}
+		}
+	}
+	deviceTable := device.NewTable(time.Hour)
+	deviceThrottler := enforce.NewDeviceThrottler(devBackend, protected)
+	deviceGW := choke.NewDeviceGateway(choke.DeviceConfig{
+		Throttler: deviceThrottler,
+		Backend:   devBackend,
+		Table:     deviceTable,
+		Store:     st,
+		Broadcast: httpSrv,
+		DryRun:    *dryRun,
+		// Device choke enforces by default (independent of the process
+		// choke's -enforce). Dry-run forces detect-only; flip at runtime
+		// via /api/choke/device-mode.
+		Enforcing: true,
+	})
+	httpSrv.SetDeviceGateway(deviceGW)
+	log.Printf("[devgateway] network device choke ready (ifaces=%q protected=%d dry_run=%v)",
+		*devchokeIface, len(protected), *dryRun)
+
 	// Wire cgroup pass-throughs so /api/choke/cgroups + /api/choke/thaw
 	// reach the manager without dragging the linux-only package into
 	// the choke package itself.
@@ -493,6 +572,39 @@ func main() {
 				return
 			case <-t.C:
 				originTracker.Sweep()
+			}
+		}
+	}()
+
+	// Device discovery: passively sniff DHCP on the bridge for
+	// MAC<->IP<->hostname, and on a ticker drain the data plane's seen map
+	// (MAC + last source IP, in-kernel) and poll the neigh table. All feed
+	// the one DeviceTable the device gateway reads from.
+	device.StartDHCPSniffer(ctx, devIfaces, deviceTable.Record)
+	go func() {
+		t := time.NewTicker(10 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if seen, err := devBackend.SeenSnapshot(); err == nil {
+					for mac, sv := range seen {
+						deviceTable.Record(device.Device{
+							MAC:     mac.String(),
+							LastIP:  device.IPv4BEToString(sv.LastSrcIPv4),
+							Packets: sv.Packets,
+							Source:  device.SourcePassive,
+						})
+					}
+				}
+				if neigh, err := device.PollNeigh(); err == nil {
+					for _, d := range neigh {
+						deviceTable.Record(d)
+					}
+				}
+				deviceTable.Sweep()
 			}
 		}
 	}()
@@ -867,6 +979,18 @@ func send(ch chan<- api.Broadcast, b api.Broadcast) {
 	default:
 		// drop on overflow rather than block the event loop
 	}
+}
+
+// splitCSV splits a comma-separated flag value into trimmed, non-empty
+// fields. Used for -devchoke-iface and -devchoke-protect.
+func splitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 // redactDSN strips the password from a Postgres DSN before logging it,

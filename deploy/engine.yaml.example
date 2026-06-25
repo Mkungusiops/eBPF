@@ -60,6 +60,18 @@ system_critical: ""
 bpf_obj:    "/opt/ebpf-engine/bpf/choke.o"
 bpf_cgroup: "/sys/fs/cgroup"
 
+# ── Network (per-device / MAC) choke ──────────────────────────────────
+# Only relevant on an INLINE GATEWAY (a transparent bridge in the traffic
+# path). devchoke_ifaces names the LAN / bridge-SLAVE interfaces to attach
+# tc ingress+egress to — never the bridge master. Empty disables it.
+# devchoke_protect is a MAC allow-list (gateway/uplink/DHCP-DNS/operator
+# workstation) the engine refuses to quarantine/sever; the configured
+# interfaces' own MACs are auto-added. Requires CAP_NET_ADMIN (tc/TCX,
+# already granted) + CAP_NET_RAW for the passive DHCP hostname sniffer.
+devchoke_obj:     "/opt/ebpf-engine/bpf/devchoke.o"
+devchoke_ifaces:  ""          # e.g. "eth0,eth1"
+devchoke_protect: ""          # e.g. "aa:bb:cc:00:11:22,aa:bb:cc:00:11:33"
+
 # ── Fleet (optional) ──────────────────────────────────────────────────
 # Path to a chokectl.hosts file enables the /fleet console.
 fleet_hosts: ""
