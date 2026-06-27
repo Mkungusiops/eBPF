@@ -217,6 +217,11 @@ export function SocRoute() {
   const [notifyHistory, setNotifyHistory] = useLocalJsonState<
     Array<{ title?: string; body?: string; ts?: string; read?: boolean; severity?: Severity }>
   >("soc.notifyHistory", []);
+  const [notificationsActive, setNotificationsActive] = useLocalJsonState<boolean>("soc.notifications", true);
+  const [notifyChannels, setNotifyChannels] = useLocalJsonState<{ inApp: boolean; desktop: boolean; audio: boolean }>(
+    "soc.notifyChannels",
+    { inApp: true, desktop: true, audio: false }
+  );
   const searchRef = useRef<HTMLInputElement | null>(null);
   const processedStreamBatchRef = useRef(0);
   const previousStreamStateRef = useRef(sharedStream.state);
@@ -491,7 +496,7 @@ export function SocRoute() {
             icon={Bell}
             label="Notifications"
             onClick={() => openSurfaceByName("notifications")}
-            badge={notifyHistory.filter((item) => !item.read).length}
+            badge={notificationsActive && notifyChannels.inApp ? notifyHistory.filter((item) => !item.read).length : undefined}
           />
           <SidebarButton icon={HelpCircle} label="Help" onClick={() => openSurfaceByName("help")} />
         </SidebarSection>
@@ -842,6 +847,10 @@ export function SocRoute() {
         now={now}
         notifyHistory={notifyHistory}
         setNotifyHistory={setNotifyHistory}
+        notificationsActive={notificationsActive}
+        notifyChannels={notifyChannels}
+        setNotificationsActive={setNotificationsActive}
+        setNotifyChannels={setNotifyChannels}
         kpiDrill={kpiDrill}
         ackStates={ackStates}
         commandQuery={commandQuery}
@@ -1187,7 +1196,12 @@ function EventRow({ event, onOpen }: { event: SocEvent; onOpen: (event: SocEvent
     event.policyName ||
     "—";
   return (
-    <button type="button" className={cx("soc-event-row", `kind-${kind.key}`)} onClick={() => onOpen(event)}>
+    <button
+      type="button"
+      className={cx("soc-event-row", `kind-${kind.key}`)}
+      aria-label={`${event.eventType} ${event.process || "process"} ${detail}`}
+      onClick={() => onOpen(event)}
+    >
       <time title={new Date(event.timestamp).toLocaleString()}>{relTime(event.timestamp)}</time>
       <span className={cx("soc-event-kind", `kind-${kind.key}`)}>{kind.label}</span>
       <code className="soc-event-proc" title={event.process || ""}>
@@ -1447,6 +1461,10 @@ function SocModals({
   now,
   notifyHistory,
   setNotifyHistory,
+  notificationsActive,
+  notifyChannels,
+  setNotificationsActive,
+  setNotifyChannels,
   kpiDrill,
   ackStates,
   commandQuery,
@@ -1475,6 +1493,10 @@ function SocModals({
   setNotifyHistory: React.Dispatch<
     React.SetStateAction<Array<{ title?: string; body?: string; ts?: string; read?: boolean; severity?: Severity }>>
   >;
+  notificationsActive: boolean;
+  notifyChannels: { inApp: boolean; desktop: boolean; audio: boolean };
+  setNotificationsActive: React.Dispatch<React.SetStateAction<boolean>>;
+  setNotifyChannels: React.Dispatch<React.SetStateAction<{ inApp: boolean; desktop: boolean; audio: boolean }>>;
   kpiDrill: KpiDrill | null;
   ackStates: Record<string, AckState>;
   commandQuery: string;
@@ -1560,6 +1582,10 @@ function SocModals({
       <ModalShell panel={PANELS["notifications-center-modal"]} open={openSurface === "notifications"} onClose={closeModal} wide>
         <NotificationsBody
           history={notifyHistory}
+          active={notificationsActive}
+          channels={notifyChannels}
+          onActiveChange={setNotificationsActive}
+          onChannelsChange={setNotifyChannels}
           onMarkAllRead={() => setNotifyHistory((items) => items.map((item) => ({ ...item, read: true })))}
           onClearAll={() => setNotifyHistory([])}
         />
@@ -1677,6 +1703,7 @@ type GraphClass = "attack" | "threat" | "baseline";
 interface GraphNode extends SimulationNodeDatum {
   id: string;
   label: string;
+  fullLabel?: string;
   group: "process" | "policy" | "peer" | "file";
   weight: number;
   // Max alert score touching this process — drives node colour (attack/threat/
@@ -1766,6 +1793,8 @@ function renderForceGraph(
   let layout: GraphLayout = "force";
   let selectedId: string | null = null;
   let searchQuery = "";
+
+  const searchableNodeText = (node: GraphNode) => `${node.label} ${node.fullLabel || ""}`.toLowerCase();
 
   // Adjacency, rebuilt on each structural change, powers neighbourhood highlight
   // when a node is selected and the radial grouping order.
@@ -1891,6 +1920,7 @@ function renderForceGraph(
         const group = enter
           .append("g")
           .attr("class", baseNodeClass)
+          .attr("aria-label", (d) => d.fullLabel || d.label)
           .style("cursor", "pointer")
           .on("click", (event: PointerEvent, d) => {
             event.stopPropagation();
@@ -1909,7 +1939,7 @@ function renderForceGraph(
         return group;
       },
       (existing) => {
-        existing.attr("class", baseNodeClass);
+        existing.attr("class", baseNodeClass).attr("aria-label", (d) => d.fullLabel || d.label);
         existing.select<SVGCircleElement>("circle.soc-graph-disc").attr("r", nodeRadius);
         existing
           .select<SVGTextElement>("text")
@@ -1934,10 +1964,10 @@ function renderForceGraph(
     node
       .classed("is-selected", (d) => d.id === selectedId)
       .classed("is-neighbour", (d) => Boolean(neighbours && neighbours.has(d.id) && d.id !== selectedId))
-      .classed("is-match", (d) => Boolean(q) && d.label.toLowerCase().includes(q))
+      .classed("is-match", (d) => Boolean(q) && searchableNodeText(d).includes(q))
       .classed("is-dim", (d) => {
         if (neighbours && !neighbours.has(d.id)) return true;
-        if (q && !d.label.toLowerCase().includes(q)) return true;
+        if (q && !searchableNodeText(d).includes(q)) return true;
         return false;
       });
     link.classed("is-active", (d) => {
@@ -2030,6 +2060,7 @@ function renderForceGraph(
         if (entry.weight > existing.weight + 0.05) pulseIds.add(entry.id);
         existing.weight = entry.weight;
         existing.label = entry.label;
+        existing.fullLabel = entry.fullLabel;
         existing.group = entry.group;
         existing.score = entry.score;
         existing.cls = entry.cls;
@@ -2280,11 +2311,68 @@ function CorrelationGraph({
   }, [selected]);
   const graphCounts = useMemo(() => countSeverities(alerts), [alerts]);
   const policyCount = useMemo(() => new Set(events.map((event) => event.policyName).filter(Boolean)).size, [events]);
+  const policyEventCount = useMemo(() => events.filter((event) => event.policyName).length, [events]);
   const indicatorCount = useMemo(
     () => new Set(events.map((event) => event.path || event.destIp || event.remoteIp).filter(Boolean)).size,
     [events]
   );
-  const dominantProcess = topProcesses[0]?.process || "No dominant process";
+  const criticalPathCount = graphCounts.critical + graphCounts.high;
+  const criticalShare = alerts.length ? Math.round((criticalPathCount / alerts.length) * 100) : 0;
+  const fabricDensity = meta.processes ? Math.min(100, Math.round((meta.edges / Math.max(1, meta.processes * 1.6)) * 100)) : 0;
+  const policyCoverage = events.length ? Math.round((policyEventCount / events.length) * 100) : 0;
+  const dominant = topProcesses[0];
+  const dominantProcess = dominant?.process || "No dominant process";
+  const dominantDisplay = dominant ? shortGraphLabel(dominant.process, 18) : "No source";
+  const graphBriefCards = [
+    {
+      key: "critical",
+      tone: "tone-critical",
+      icon: ShieldAlert,
+      label: "Critical paths",
+      badge: criticalPathCount ? "Escalated" : "Clear",
+      value: String(criticalPathCount),
+      title: String(criticalPathCount),
+      meta: "high-confidence chains",
+      detail: `${graphCounts.critical} critical · ${graphCounts.high} high`,
+      fill: criticalShare
+    },
+    {
+      key: "fabric",
+      tone: "tone-accent",
+      icon: GitBranch,
+      label: "Signal fabric",
+      badge: live ? "Live" : "Paused",
+      value: `${meta.processes}/${meta.edges}`,
+      title: `${meta.processes} processes / ${meta.edges} edges`,
+      meta: "processes / edges",
+      detail: `${indicatorCount} indicators observed`,
+      fill: fabricDensity
+    },
+    {
+      key: "policies",
+      tone: "tone-medium",
+      icon: FileText,
+      label: "Policies",
+      badge: policyCount ? "Mapped" : "Idle",
+      value: String(policyCount),
+      title: String(policyCount),
+      meta: "mapped controls",
+      detail: `${policyEventCount} policy events`,
+      fill: policyCoverage
+    },
+    {
+      key: "origin",
+      tone: "tone-good",
+      icon: Server,
+      label: "Primary origin",
+      badge: dominant ? "Top source" : "Waiting",
+      value: dominantDisplay,
+      title: dominantProcess,
+      meta: dominant ? `${dominant.count} alert${dominant.count === 1 ? "" : "s"} · score ${Math.round(dominant.score)}` : "no source process yet",
+      detail: `${indicatorCount} observed indicators`,
+      fill: dominant ? Math.max(8, Math.min(100, Math.round(dominant.score))) : 0
+    }
+  ];
 
   if (!active) {
     return <EmptyState title="Graph paused" detail="Open the correlation graph to load the D3 graph engine." />;
@@ -2294,26 +2382,26 @@ function CorrelationGraph({
     <div className={cx("soc-graph-shell", maximized && "is-maximized")}>
       <div className="soc-graph-main">
         <div className="soc-graph-brief">
-          <div className="soc-graph-brief-card tone-critical">
-            <span>Critical paths</span>
-            <strong>{graphCounts.critical + graphCounts.high}</strong>
-            <em>high-confidence chains</em>
-          </div>
-          <div className="soc-graph-brief-card tone-accent">
-            <span>Signal fabric</span>
-            <strong>{meta.processes}/{meta.edges}</strong>
-            <em>processes / edges</em>
-          </div>
-          <div className="soc-graph-brief-card tone-medium">
-            <span>Policies</span>
-            <strong>{policyCount}</strong>
-            <em>mapped controls</em>
-          </div>
-          <div className="soc-graph-brief-card tone-good">
-            <span>Primary origin</span>
-            <strong>{dominantProcess}</strong>
-            <em>{indicatorCount} observed indicators</em>
-          </div>
+          {graphBriefCards.map((card) => {
+            const Icon = card.icon;
+            return (
+              <div key={card.key} className={cx("soc-graph-brief-card", card.tone)}>
+                <div className="soc-graph-card-head">
+                  <span className="soc-graph-card-icon"><Icon size={14} aria-hidden="true" /></span>
+                  <span>{card.label}</span>
+                  <em className="soc-graph-card-badge">{card.badge}</em>
+                </div>
+                <strong title={card.title}>{card.value}</strong>
+                <div className="soc-graph-card-meter" aria-hidden="true">
+                  <span style={{ width: `${card.fill}%` }} />
+                </div>
+                <div className="soc-graph-card-detail">
+                  <span>{card.meta}</span>
+                  <em>{card.detail}</em>
+                </div>
+              </div>
+            );
+          })}
         </div>
         <div className="soc-graph-controlbar">
           <div className="soc-graph-counts">
@@ -2414,7 +2502,7 @@ function CorrelationGraph({
         {selected ? (
           <div className="soc-graph-detail">
             <strong className={selected.group === "process" && selected.cls ? `cls-${selected.cls}` : undefined}>
-              {selected.label}
+              {selected.fullLabel || selected.label}
             </strong>
             <dl>
               <div>
@@ -2447,6 +2535,7 @@ function CorrelationGraph({
                     type="button"
                     className={cx("soc-graph-neighbour", `node-${node.group}`)}
                     onClick={() => handleRef.current?.setSelected(node.id)}
+                    title={node.fullLabel || node.label}
                   >
                     <i />
                     {node.label}
@@ -2714,8 +2803,16 @@ function PillHostContent({
 }) {
   return (
     <div className="soc-popover-body">
-      <MetricTile label="User" value={whoami.user} />
-      <MetricTile label="Host" value={whoami.host} />
+      <div className="soc-popover-kv">
+        <div>
+          <span>User</span>
+          <strong>{whoami.user}</strong>
+        </div>
+        <div>
+          <span>Host</span>
+          <strong>{whoami.host}</strong>
+        </div>
+      </div>
       <div className="soc-endpoint-list">
         {Object.entries(statuses).map(([key, status]) => (
           <span key={key}>
@@ -3165,6 +3262,7 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
     nodes.set(id, {
       id,
       label: shortGraphLabel(label),
+      fullLabel: label,
       group,
       weight,
       score,
@@ -3226,10 +3324,15 @@ function extractFilePath(args: string | undefined): string | undefined {
   return match ? match[0] : undefined;
 }
 
-function shortGraphLabel(value: string) {
-  if (value.length <= 24) return value;
-  const slash = value.split("/").filter(Boolean).at(-1);
-  return slash && slash.length <= 24 ? slash : `${value.slice(0, 10)}...${value.slice(-10)}`;
+function shortGraphLabel(value: string, max = 24) {
+  const clean = value.replace(/\s+/g, " ").trim();
+  if (!clean) return "unknown";
+  if (clean.length <= max) return clean;
+  const leaf = clean.split("/").filter(Boolean).at(-1);
+  const candidate = leaf && leaf.length <= Math.max(10, max) ? leaf : clean;
+  if (candidate.length <= max) return candidate;
+  const side = Math.max(5, Math.floor((max - 3) / 2));
+  return `${candidate.slice(0, side)}...${candidate.slice(-side)}`;
 }
 
 function filterEvents(events: SocEvent[], query: string, hideNoise: boolean) {

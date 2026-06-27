@@ -294,14 +294,17 @@ export function PopoverCard({
   onClose: () => void;
 }) {
   return (
-    <div className={cx("soc-popover", open && "is-open")} data-panel={panel.id} aria-hidden={!open}>
-      <div className="soc-popover-head">
-        <h3>{title}</h3>
-        <button type="button" className="soc-close-button" onClick={onClose} aria-label="Close">
+    <>
+      {open ? <button type="button" className="soc-popover-scrim" aria-label="Close popover" onClick={onClose} /> : null}
+      <div className={cx("soc-popover", open && "is-open")} data-panel={panel.id} aria-hidden={!open} role="dialog" aria-modal="false">
+        <div className="soc-popover-head">
+          <h3>{title}</h3>
+          <button type="button" className="soc-close-button" onClick={onClose} aria-label="Close">
             <X size={16} aria-hidden="true" />
-        </button>
+          </button>
+        </div>
+        {children}
       </div>
-      {children}
-    </div>
+    </>
   );
 }

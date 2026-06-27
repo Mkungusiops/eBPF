@@ -1,29 +1,30 @@
 .soc-route {
-  /* Enterprise professional dark palette: neutral slate surfaces, clean
-     off-white text, and a single refined indigo accent (no neon, no brown). */
-  --soc-bg: #0f1117;
-  --soc-bg-soft: #171a22;
-  --soc-panel: rgba(24, 28, 38, 0.92);
-  --soc-panel-strong: #1f2532;
-  --soc-panel-soft: rgba(255, 255, 255, 0.04);
-  --soc-line: rgba(148, 163, 184, 0.16);
-  --soc-line-strong: rgba(148, 163, 184, 0.3);
-  --soc-text: #e9edf4;
-  --soc-muted: #99a3b4;
-  --soc-dim: #646e80;
-  --soc-accent: #6b8afd;
-  --soc-good: #34d399;
-  --soc-warn: #e1b53e;
-  --soc-danger: #f0556b;
-  --soc-info: #5b9bf0;
-  --soc-violet: #9d8bf5;
-  --soc-shadow: 0 16px 44px rgba(0, 0, 0, 0.34);
+  /* Enterprise-warm dark palette: graphite/charcoal surfaces with ivory text,
+     muted brass borders, and cool security accents for operational clarity. */
+  --soc-bg: #111212;
+  --soc-bg-soft: #191918;
+  --soc-panel: rgba(29, 29, 27, 0.93);
+  --soc-panel-strong: #24231f;
+  --soc-panel-soft: rgba(245, 230, 204, 0.046);
+  --soc-line: rgba(190, 174, 148, 0.18);
+  --soc-line-strong: rgba(204, 185, 153, 0.34);
+  --soc-text: #f1ece3;
+  --soc-muted: #aea496;
+  --soc-dim: #797064;
+  --soc-accent: #849eff;
+  --soc-good: #3dd6b3;
+  --soc-warn: #d8a94a;
+  --soc-danger: #ef667a;
+  --soc-info: #79a8ff;
+  --soc-violet: #b39cf7;
+  --soc-shadow: 0 18px 56px rgba(0, 0, 0, 0.38);
   min-height: 100vh;
   color: var(--soc-text);
   background:
-    radial-gradient(circle at 12% 6%, rgba(107, 138, 253, 0.06), transparent 36rem),
-    radial-gradient(circle at 100% 0%, rgba(240, 85, 107, 0.035), transparent 32rem),
-    linear-gradient(135deg, #0d0f14 0%, #13161d 48%, #0e1015 100%);
+    radial-gradient(circle at 12% -6%, rgba(216, 169, 74, 0.065), transparent 31rem),
+    radial-gradient(circle at 96% 0%, rgba(132, 158, 255, 0.085), transparent 35rem),
+    radial-gradient(circle at 65% 100%, rgba(61, 214, 179, 0.045), transparent 30rem),
+    linear-gradient(135deg, #101111 0%, #171715 46%, #111212 100%);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -83,7 +84,7 @@
   flex-direction: column;
   gap: 14px;
   color: var(--soc-muted);
-  background: rgba(17, 20, 28, 0.92);
+  background: rgba(17, 18, 18, 0.94);
   border-right: 1px solid var(--soc-line);
   backdrop-filter: blur(18px);
   transition: width 180ms ease;
@@ -199,7 +200,7 @@
   gap: 18px;
   align-items: center;
   padding: 14px 22px;
-  background: rgba(17, 20, 28, 0.82);
+  background: rgba(22, 22, 20, 0.86);
   border-bottom: 1px solid var(--soc-line);
   backdrop-filter: blur(18px);
 }
@@ -465,6 +466,7 @@
   display: grid;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 14px;
+  min-width: 0;
 }
 
 .soc-exec-metric {
@@ -474,6 +476,7 @@
   gap: 8px;
   overflow: hidden;
   width: 100%;
+  min-width: 0;
   padding: 14px;
   color: inherit;
   background:
@@ -523,6 +526,7 @@
   justify-content: space-between;
   gap: 10px;
   min-width: 0;
+  overflow: hidden;
 }
 
 .soc-exec-metric-head span,
@@ -673,6 +677,10 @@ button.soc-metric:hover {
   display: flex;
   align-items: end;
   gap: 3px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  contain: layout paint;
 }
 
 .soc-sparkline span {
@@ -1145,6 +1153,8 @@ button.soc-metric:hover {
 .soc-mini-bars {
   display: grid;
   gap: 9px;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .soc-mini-bars div,
@@ -1183,6 +1193,7 @@ button.soc-metric:hover {
   left: 0;
   right: auto;
   bottom: 0;
+  max-width: 100%;
   height: 3px;
   border-radius: 3px;
   background: linear-gradient(90deg, var(--soc-accent), var(--soc-violet), var(--soc-danger));
@@ -1349,7 +1360,10 @@ button.soc-metric:hover {
   align-items: center;
   justify-content: center;
   padding: 22px;
-  background: rgba(0, 0, 0, 0.58);
+  background:
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--soc-accent) 18%, transparent), transparent 30%),
+    rgba(0, 0, 0, 0.62);
+  backdrop-filter: blur(10px) saturate(120%);
 }
 
 .soc-modal-back.is-open {
@@ -1360,13 +1374,23 @@ button.soc-metric:hover {
   width: min(620px, 100%);
   max-height: min(82vh, 900px);
   overflow: auto;
-  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--soc-accent) 18%, var(--soc-line));
+  border-radius: 12px;
   padding: 20px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soc-accent) 7%, transparent), transparent 42%),
+    linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 82%, transparent), var(--soc-panel)),
+    var(--soc-panel);
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.36), inset 0 1px 0 rgba(255, 255, 255, 0.045);
 }
 
 /* Modal/slide-over header: a titled bar with a divider separating it from the
    body — the same clean card structure as the Devices console panels. */
 .soc-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
   padding-bottom: 12px;
   margin-bottom: 14px;
   border-bottom: 1px solid var(--soc-line);
@@ -1599,7 +1623,10 @@ button.soc-metric:hover {
   inset: 0;
   z-index: 45;
   display: none;
-  background: rgba(0, 0, 0, 0.38);
+  background:
+    radial-gradient(circle at 82% 18%, color-mix(in srgb, var(--soc-accent) 14%, transparent), transparent 28%),
+    rgba(0, 0, 0, 0.46);
+  backdrop-filter: blur(5px);
 }
 
 .soc-slide-backdrop.is-open {
@@ -1614,10 +1641,11 @@ button.soc-metric:hover {
   overflow: auto;
   padding: 20px;
   background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soc-accent) 8%, transparent), transparent 44%),
     linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 78%, transparent), var(--soc-bg) 96%),
     var(--soc-panel);
   border-left: 1px solid var(--soc-line-strong);
-  box-shadow: var(--soc-shadow);
+  box-shadow: -28px 0 70px rgba(0, 0, 0, 0.35);
   transform: translateX(102%);
   transition: transform 200ms ease;
 }
@@ -1765,12 +1793,45 @@ button.soc-metric:hover {
   z-index: 55;
   width: min(420px, calc(100vw - 44px));
   display: none;
-  border-radius: 8px;
-  padding: 14px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--soc-accent) 18%, var(--soc-line));
+  border-radius: 12px;
+  padding: 15px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soc-accent) 8%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 80%, transparent), var(--soc-panel)),
+    var(--soc-panel);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.34), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+  backdrop-filter: blur(18px) saturate(125%);
 }
 
 .soc-popover.is-open {
   display: block;
+}
+
+.soc-popover::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 2px;
+  background: linear-gradient(90deg, var(--soc-accent), var(--soc-good), var(--soc-warn), var(--soc-danger));
+  opacity: 0.72;
+  pointer-events: none;
+}
+
+.soc-popover-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 54;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.soc-popover-head {
+  padding-bottom: 10px;
+  margin-bottom: 10px;
+  border-bottom: 1px solid var(--soc-line);
 }
 
 .soc-popover-body {
@@ -1903,10 +1964,13 @@ button.soc-metric:hover {
   display: none;
   width: min(320px, calc(100vw - 24px));
   padding: 12px;
-  background: var(--soc-panel-strong);
-  border: 1px solid var(--soc-line-strong);
-  border-radius: 7px;
-  box-shadow: var(--soc-shadow);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soc-accent) 8%, transparent), transparent 44%),
+    var(--soc-panel-strong);
+  border: 1px solid color-mix(in srgb, var(--soc-accent) 18%, var(--soc-line-strong));
+  border-radius: 10px;
+  box-shadow: 0 18px 56px rgba(0, 0, 0, 0.32);
+  backdrop-filter: blur(16px) saturate(125%);
 }
 
 .soc-alert-preview.is-open,
@@ -2161,10 +2225,6 @@ button.soc-metric:hover {
   }
 
   .soc-kpi-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .soc-graph-brief {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -2930,7 +2990,7 @@ button.soc-metric:hover {
 
 /* --- Correlation graph console --- */
 .soc-graph-shell { display: flex; gap: 14px; height: 100%; min-height: 0; }
-.soc-graph-main { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 12px; flex: 1; min-width: 0; }
+.soc-graph-main { display: grid; grid-template-rows: auto auto minmax(0, 1fr) auto; gap: 10px; flex: 1; min-width: 0; }
 
 .soc-graph-shell.is-maximized {
   gap: 0;
@@ -2952,23 +3012,27 @@ button.soc-metric:hover {
 
 .soc-graph-brief {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(156px, 1fr));
+  gap: 8px;
+  align-items: stretch;
   min-width: 0;
 }
 
 .soc-graph-brief-card {
   display: grid;
-  gap: 6px;
+  grid-template-rows: auto auto 3px auto;
+  gap: 5px;
   min-width: 0;
-  min-height: 86px;
-  padding: 12px;
+  min-height: 82px;
+  padding: 9px 10px 8px;
   background:
-    linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 70%, transparent), var(--soc-panel-soft)),
+    linear-gradient(135deg, color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 10%, transparent), transparent 46%),
+    linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 76%, transparent), var(--soc-panel-soft)),
     var(--soc-panel);
   border: 1px solid var(--soc-line);
   border-top: 2px solid var(--graph-tone, var(--soc-accent));
-  border-radius: 8px;
+  border-radius: 7px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .soc-graph-brief-card.tone-critical { --graph-tone: var(--soc-danger); }
@@ -2976,31 +3040,101 @@ button.soc-metric:hover {
 .soc-graph-brief-card.tone-accent { --graph-tone: var(--soc-accent); }
 .soc-graph-brief-card.tone-good { --graph-tone: var(--soc-good); }
 
-.soc-graph-brief-card span {
+.soc-graph-card-head {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.soc-graph-card-icon {
+  display: inline-grid;
+  width: 18px;
+  height: 18px;
+  place-items: center;
+  border: 1px solid color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 42%, transparent);
+  border-radius: 6px;
+  color: var(--graph-tone, var(--soc-accent));
+  background: color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 12%, transparent);
+}
+
+.soc-graph-card-head > span:not(.soc-graph-card-icon) {
+  overflow: hidden;
   color: var(--soc-muted);
-  font-size: 10px;
+  font-size: 9px;
   font-weight: 800;
-  letter-spacing: 0.08em;
+  letter-spacing: 0.07em;
   text-transform: uppercase;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soc-graph-card-badge {
+  min-width: 0;
+  max-width: 74px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 34%, transparent);
+  border-radius: 999px;
+  color: color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 82%, var(--soc-text));
+  background: color-mix(in srgb, var(--graph-tone, var(--soc-accent)) 10%, transparent);
+  padding: 1px 5px;
+  font-size: 8px;
+  font-style: normal;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  line-height: 1.2;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
 }
 
 .soc-graph-brief-card strong {
   overflow: hidden;
   color: var(--soc-text);
   font-family: "JetBrains Mono", ui-monospace, monospace;
-  font-size: 22px;
+  font-size: clamp(16px, 1.3vw, 20px);
   line-height: 1.05;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.soc-graph-brief-card em {
+.soc-graph-card-meter {
   overflow: hidden;
-  color: var(--soc-dim);
-  font-size: 11px;
-  font-style: normal;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.14);
+}
+
+.soc-graph-card-meter span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--graph-tone, var(--soc-accent));
+}
+
+.soc-graph-card-detail {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.soc-graph-card-detail span,
+.soc-graph-card-detail em {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.soc-graph-card-detail span {
+  color: var(--soc-muted);
+}
+
+.soc-graph-card-detail em {
+  color: var(--soc-dim);
+  font-style: normal;
 }
 
 .soc-graph-controlbar {
@@ -3026,12 +3160,6 @@ button.soc-metric:hover {
 .soc-graph-controlbar .soc-search-field {
   flex: 1 1 240px;
   min-width: min(240px, 100%);
-}
-
-@media (min-width: 1500px) {
-  .soc-graph-brief {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 }
 
 .soc-graph-segment {
@@ -3126,9 +3254,9 @@ button.soc-metric:hover {
   display: grid;
   align-content: start;
   gap: 12px;
-  width: 280px;
+  width: clamp(220px, 22vw, 280px);
   flex-shrink: 0;
-  padding: 14px;
+  padding: 12px;
   background: var(--soc-panel-soft);
   border: 1px solid var(--soc-line);
   border-radius: 9px;
@@ -3389,5 +3517,298 @@ button.soc-metric:hover {
   .soc-event-detail {
     grid-column: 1 / -1;
     white-space: normal;
+  }
+}
+
+/* Popup density pass: popovers and modal bodies use tighter operator-console
+   spacing than dashboard cards, so they feel designed instead of stretched. */
+.soc-popover {
+  width: min(380px, calc(100vw - 32px));
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.soc-popover-head {
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  margin-bottom: 8px;
+}
+
+.soc-popover h3 {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+}
+
+.soc-popover .soc-close-button,
+.soc-modal-card:not(.is-fullscreen) .soc-close-button {
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+}
+
+.soc-popover-body {
+  gap: 8px;
+  margin-top: 0;
+}
+
+.soc-popover .soc-metric {
+  min-height: 58px;
+  gap: 4px;
+  padding: 9px 10px;
+  border-radius: 7px;
+}
+
+.soc-popover .soc-metric-value {
+  overflow: hidden;
+  font-size: 14px;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  word-break: normal;
+}
+
+.soc-popover .soc-metric-label,
+.soc-popover .soc-metric-sub {
+  font-size: 10px;
+}
+
+.soc-popover .soc-endpoint-list {
+  gap: 0;
+  overflow: hidden;
+  max-height: 238px;
+  overflow-y: auto;
+  border: 1px solid var(--soc-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--soc-panel-soft) 78%, transparent);
+}
+
+.soc-popover-kv {
+  display: grid;
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--soc-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--soc-panel-soft) 78%, transparent);
+}
+
+.soc-popover-kv div {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.36fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--soc-line) 74%, transparent);
+}
+
+.soc-popover-kv div:last-child {
+  border-bottom: 0;
+}
+
+.soc-popover-kv span {
+  color: var(--soc-muted);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.soc-popover-kv strong {
+  overflow: hidden;
+  color: var(--soc-text);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 12px;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soc-popover .soc-endpoint-list span {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--soc-line) 74%, transparent);
+}
+
+.soc-popover .soc-endpoint-list span:last-child {
+  border-bottom: 0;
+}
+
+.soc-popover .soc-endpoint-list code,
+.soc-popover .soc-endpoint-list em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soc-popover-body > button {
+  justify-content: center;
+  width: 100%;
+  min-height: 28px;
+}
+
+.soc-popover .soc-risk-gauge {
+  gap: 10px;
+  max-height: calc(100vh - 160px);
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.soc-popover .soc-gauge-dial svg {
+  max-width: 172px;
+}
+
+.soc-popover .soc-gauge-readout strong {
+  font-size: 30px;
+}
+
+.soc-popover .soc-gauge-breakdown {
+  gap: 6px;
+}
+
+.soc-popover .soc-gauge-contributors {
+  gap: 5px;
+  padding-top: 5px;
+}
+
+.soc-modal-card:not(.is-fullscreen) {
+  width: min(560px, 100%);
+  max-height: min(82vh, 760px);
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.soc-modal-card.is-wide:not(.is-fullscreen) {
+  width: min(900px, 100%);
+}
+
+.soc-modal-head {
+  align-items: center;
+  gap: 12px;
+  padding-bottom: 10px;
+  margin-bottom: 12px;
+}
+
+.soc-modal-list {
+  gap: 8px;
+}
+
+.soc-modal-list article {
+  gap: 4px;
+  padding: 9px 10px;
+  border-radius: 7px;
+}
+
+.soc-notify {
+  gap: 10px;
+}
+
+.soc-notify-section {
+  gap: 8px;
+}
+
+.soc-notify-section h4 {
+  gap: 8px;
+}
+
+.soc-notify-row,
+.soc-notify-field {
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+}
+
+.soc-notify-row > div,
+.soc-notify-field > div {
+  gap: 2px;
+}
+
+.soc-notify-field select,
+.soc-notify-quiet input {
+  min-height: 28px;
+  padding: 4px 8px;
+}
+
+.soc-toggle {
+  padding: 3px 8px 3px 5px;
+}
+
+.soc-notify-history {
+  gap: 5px;
+  max-height: 230px;
+}
+
+.soc-notify-item {
+  gap: 8px;
+  min-height: 42px;
+  padding: 7px 9px;
+  border-radius: 7px;
+}
+
+.soc-notify-foot {
+  gap: 8px;
+  padding-top: 9px;
+}
+
+.soc-notify-foot > div {
+  gap: 6px;
+}
+
+.soc-account {
+  gap: 12px;
+}
+
+.soc-account-id {
+  gap: 10px;
+}
+
+.soc-account-avatar {
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  font-size: 15px;
+}
+
+.soc-account-grid {
+  border-radius: 8px;
+}
+
+.soc-account-grid > div {
+  padding: 8px 10px;
+}
+
+.soc-account-actions {
+  gap: 6px;
+}
+
+.soc-account-actions .soc-ghost-button,
+.soc-account-signout {
+  min-height: 30px;
+  padding: 5px 10px;
+}
+
+.soc-account-foot {
+  font-size: 10px;
+}
+
+@media (max-width: 860px) {
+  .soc-popover {
+    inset: auto 12px 18px;
+    width: auto;
+    max-height: min(74vh, 520px);
+    overflow: auto;
+  }
+
+  .soc-popover .soc-metric {
+    min-height: 64px;
+  }
+
+  .soc-notify-row,
+  .soc-notify-field {
+    align-items: flex-start;
   }
 }

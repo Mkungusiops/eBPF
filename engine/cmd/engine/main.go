@@ -402,10 +402,10 @@ func main() {
 		Store:     st,
 		Broadcast: httpSrv,
 		DryRun:    *dryRun,
-		// Device choke enforces by default (independent of the process
-		// choke's -enforce). Dry-run forces detect-only; flip at runtime
-		// via /api/choke/device-mode.
-		Enforcing: true,
+		// Device choke starts detect-only just like the process gateway.
+		// Operators explicitly flip to enforcing at runtime after confirming
+		// protected MACs and data-plane reachability.
+		Enforcing: false,
 	})
 	httpSrv.SetDeviceGateway(deviceGW)
 	log.Printf("[devgateway] network device choke ready (ifaces=%q protected=%d dry_run=%v)",

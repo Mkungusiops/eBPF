@@ -8,7 +8,7 @@ import React, {
   useState,
 } from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { Moon, Sun } from "lucide-react";
+import { Moon, Sun, X } from "lucide-react";
 import { VirtualList } from "../../components/VirtualList";
 import {
   annotateCircuit,
@@ -138,6 +138,21 @@ function useStoredSet(key: string): [Set<number>, (next: Set<number>) => void] {
   return [value, setStored];
 }
 
+function useStoredBoolean(key: string, fallback: boolean): [boolean, (next: boolean | ((prev: boolean) => boolean)) => void] {
+  const [value, setValue] = useState<boolean>(() => Boolean(readJsonStorage<boolean>(key, fallback)));
+  const setStored = useCallback(
+    (next: boolean | ((prev: boolean) => boolean)) => {
+      setValue((prev) => {
+        const resolved = typeof next === "function" ? (next as (current: boolean) => boolean)(prev) : next;
+        writeJsonStorage(key, resolved);
+        return resolved;
+      });
+    },
+    [key],
+  );
+  return [value, setStored];
+}
+
 function useTheme(initial?: "dark" | "light"): ["dark" | "light", () => void] {
   const [theme, setTheme] = useState<"dark" | "light">(() => {
     const stored = readJsonStorage<"dark" | "light">("soc.theme", initial || "dark");
@@ -178,6 +193,8 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
   const [selectedExecs, setSelectedExecs] = useState<Set<string>>(new Set());
   const [selectedDecisionIds, setSelectedDecisionIds] = useState<Set<number>>(new Set());
   const [ackedDecisionIds, setAckedDecisionIds] = useStoredSet("choke.tape.acked");
+  const [alertsActive, setAlertsActive] = useStoredBoolean("soc.notifications", true);
+  const [alertBadgeEnabled, setAlertBadgeEnabled] = useStoredBoolean("choke.alerts.badge", true);
   const [hideAcked, setHideAcked] = useState(false);
   const [groupTape, setGroupTape] = useState(false);
   const [tapeFilterExec, setTapeFilterExec] = useState<string | null>(null);
@@ -439,6 +456,9 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
         if (drill.kind !== "closed") return setDrill({ kind: "closed" });
         if (jailOpen) return setJailOpen(false);
         if (confirm) return setConfirm(null);
+        if (popover) return setPopover(null);
+        if (notificationsOpen) return setNotificationsOpen(false);
+        if (profileOpen) return setProfileOpen(false);
         if (selectedExecs.size) return setSelectedExecs(new Set());
       }
       if (typing) return;
@@ -878,7 +898,12 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
           </div>
           <div className="choke-user-cluster">
             <button className="choke-icon-button" type="button" onClick={() => setNotificationsOpen((open) => !open)} aria-label="Notifications">
-              Alerts <NotificationDot decisions={decisions} acked={ackedDecisionIds} clearedAt={alertsClearedAt} />
+              Alerts
+              {!alertsActive ? (
+                <span className="choke-notif-muted">muted</span>
+              ) : (
+                <NotificationDot decisions={decisions} acked={ackedDecisionIds} clearedAt={alertsClearedAt} enabled={alertBadgeEnabled} />
+              )}
             </button>
             <button className="choke-icon-button" type="button" onClick={() => setCommandOpen(true)} aria-label="Command palette">
               Cmd
@@ -944,6 +969,19 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
         </div>
       </header>
 
+      {(popover || notificationsOpen || profileOpen) ? (
+        <button
+          type="button"
+          className="choke-floating-scrim"
+          aria-label="Close floating panel"
+          onClick={() => {
+            setPopover(null);
+            setNotificationsOpen(false);
+            setProfileOpen(false);
+          }}
+        />
+      ) : null}
+
       <LayeredPanels
         popover={popover}
         hostPings={hostPings}
@@ -958,6 +996,7 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
         onModeToggle={openModeConfirm}
         onKillSwitch={openKillSwitchConfirm}
         onPreset={openPresetConfirm}
+        onClose={() => setPopover(null)}
       />
 
       {notificationsOpen && (
@@ -965,7 +1004,11 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
           decisions={decisions}
           acked={ackedDecisionIds}
           clearedAt={alertsClearedAt}
+          alertsActive={alertsActive}
+          badgeEnabled={alertBadgeEnabled}
           onClose={() => setNotificationsOpen(false)}
+          onToggleAlerts={() => setAlertsActive((value) => !value)}
+          onToggleBadge={() => setAlertBadgeEnabled((value) => !value)}
           onAck={(ids) => {
             const next = new Set(ackedDecisionIds);
             ids.forEach((id) => next.add(id));
@@ -989,6 +1032,7 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
           onDensity={() => setDensity((prev) => (prev === "compact" ? "normal" : "compact"))}
           onWindow={setWindowMin}
           onSnapshot={() => void downloadSnapshot()}
+          onClose={() => setProfileOpen(false)}
         />
       )}
 
@@ -1592,18 +1636,70 @@ function CgroupTiers({ cgroups }: { cgroups: CgroupMap }) {
 }
 
 function BucketList({ buckets }: { buckets: BucketEntry[] }) {
-  const rows = sortBuckets(buckets).slice(0, 80);
+  const sorted = sortBuckets(buckets);
+  const rows = sorted.slice(0, 80);
+  const totalRate = sorted.reduce((sum, bucket) => sum + Number(bucket.rate_per_sec || 0), 0);
+  const depleted = sorted.filter((bucket) => Number(bucket.tokens || 0) <= 0).length;
+  const stateCounts = sorted.reduce<Record<string, number>>((acc, bucket) => {
+    const state = bucketFlagsLabel(bucket.flags);
+    acc[state] = (acc[state] || 0) + 1;
+    return acc;
+  }, {});
+  const activeStates = ["sever", "quarantine", "tarpit", "throttle", "observe"].filter((state) => stateCounts[state]);
+
   if (rows.length === 0) return <EmptyState title="No BPF bucket rows" body="Detect-only mode or no active transitions can leave the map empty." />;
   return (
-    <div className="choke-bucket-list">
-      {rows.map((bucket) => (
-        <div key={`${bucket.pid}-${bucket.flags}`}>
-          <span>pid {bucket.pid}</span>
-          <StateBadge state={bucketFlagsLabel(bucket.flags)} />
-          <small>{bucket.tokens}/{bucket.burst} tokens</small>
-          <strong>{bucket.rate_per_sec}/s</strong>
+    <div className="choke-bpf-mirror">
+      <div className="choke-bpf-summary" aria-label="BPF mirror summary">
+        <div>
+          <span>Mirrored PIDs</span>
+          <strong>{sorted.length}</strong>
         </div>
-      ))}
+        <div>
+          <span>Budget</span>
+          <strong>{totalRate}/s</strong>
+        </div>
+        <div>
+          <span>Depleted</span>
+          <strong>{depleted}</strong>
+        </div>
+      </div>
+
+      <div className="choke-bpf-state-strip" aria-label="BPF states">
+        {activeStates.map((state) => (
+          <span key={state}>
+            <StateBadge state={state} />
+            <strong>{stateCounts[state]}</strong>
+          </span>
+        ))}
+      </div>
+
+      <div className="choke-bucket-list" aria-label="Kernel token buckets mirrored from BPF">
+        {rows.map((bucket) => {
+          const state = bucketFlagsLabel(bucket.flags);
+          const burst = Math.max(1, Number(bucket.burst || 0));
+          const tokens = Math.max(0, Math.min(burst, Number(bucket.tokens || 0)));
+          const tokenPct = Math.round((tokens / burst) * 100);
+          const tokenLabel = tokens <= 0 ? "depleted" : tokenPct < 35 ? "low headroom" : "available";
+          return (
+            <div className={`choke-bucket-row state-${state}`} key={`${bucket.pid}-${bucket.flags}`}>
+              <div className="choke-bucket-title">
+                <strong>PID {bucket.pid}</strong>
+                <StateBadge state={state} />
+              </div>
+              <div className="choke-bucket-meter" title={`${bucket.tokens}/${bucket.burst} tokens available`}>
+                <span style={{ width: `${tokenPct}%` }} />
+              </div>
+              <div className="choke-bucket-meta">
+                <span><strong>{bucket.rate_per_sec}/s</strong> rate limit</span>
+                <span><strong>{bucket.tokens}/{bucket.burst}</strong> tokens</span>
+                <em>{tokenLabel}</em>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      {sorted.length > rows.length ? <span className="choke-muted">+{sorted.length - rows.length} more mirrored buckets</span> : null}
     </div>
   );
 }
@@ -2207,6 +2303,7 @@ function LayeredPanels({
   onModeToggle,
   onKillSwitch,
   onPreset,
+  onClose,
 }: {
   popover: PopoverName;
   hostPings: HostPingResult[];
@@ -2221,24 +2318,27 @@ function LayeredPanels({
   onModeToggle: (enforcing: boolean) => void;
   onKillSwitch: () => void;
   onPreset: (name: string) => void;
+  onClose: () => void;
 }) {
   if (!popover) return null;
   return (
     <div className="choke-popover" data-panel={`pill-popover-${popover}`} role="dialog" aria-modal="false">
       {popover === "host" ? (
         <>
-          <h3>Host reachability</h3>
+          <PopoverHeader title="Host reachability" onClose={onClose} />
           <div className="choke-kv-list">
             {hostPings.map((ping) => (
               <div key={ping.path}><span>{ping.path}</span><strong>{ping.ok ? "ok" : `down ${ping.status || ""}`} · {ping.rtt_ms}ms</strong></div>
             ))}
           </div>
-          <button type="button" onClick={onPing}>Ping all</button>
+          <div className="choke-popover-actions">
+            <button type="button" onClick={onPing}>Ping all</button>
+          </div>
         </>
       ) : null}
       {popover === "live" ? (
         <>
-          <h3>Live data stream</h3>
+          <PopoverHeader title="Live data stream" onClose={onClose} />
           <div className="choke-kv-list">
             <div><span>state</span><strong>{streamInfo.state}</strong></div>
             <div><span>last message</span><strong>{formatRelative(streamInfo.lastMessageAt)}</strong></div>
@@ -2246,38 +2346,55 @@ function LayeredPanels({
             <div><span>total messages</span><strong>{streamInfo.totalMessages}</strong></div>
             <div><span>msg/sec</span><strong>{(streamInfo.messagesByMinute.length / 60).toFixed(2)}</strong></div>
           </div>
-          <button type="button" onClick={onSnapshot}>Snapshot now</button>
-          <button type="button" onClick={onReconnect}>Force reconnect</button>
+          <div className="choke-popover-actions">
+            <button type="button" onClick={onSnapshot}>Snapshot now</button>
+            <button type="button" onClick={onReconnect}>Force reconnect</button>
+          </div>
         </>
       ) : null}
       {popover === "audit" ? (
         <>
-          <h3>Audit chain</h3>
+          <PopoverHeader title="Audit chain" onClose={onClose} />
           <div className="choke-kv-list">
             <div><span>status</span><strong>{chokeState?.audit?.ok === false ? "broken" : "verified"}</strong></div>
             <div><span>decisions</span><strong>{chokeState?.audit?.total || 0}</strong></div>
             <div><span>head</span><strong>{String(chokeState?.audit?.head_hash || chokeState?.audit?.head || chokeState?.audit?.tip || "-").slice(0, 32)}</strong></div>
             {chokeState?.audit?.ok === false ? <div><span>bad at</span><strong>{chokeState.audit.bad_at}</strong></div> : null}
           </div>
-          <button type="button" onClick={onAuditCopy}>Copy head</button>
-          <button type="button" onClick={onAuditVerify}>Re-verify now</button>
+          <div className="choke-popover-actions">
+            <button type="button" onClick={onAuditCopy}>Copy head</button>
+            <button type="button" onClick={onAuditVerify}>Re-verify now</button>
+          </div>
         </>
       ) : null}
       {popover === "mode" ? (
         <>
-          <h3>Enforcement mode</h3>
+          <PopoverHeader title="Enforcement mode" onClose={onClose} />
           <div className="choke-kv-list">
             <div><span>mode</span><strong>{mode}</strong></div>
             <div><span>dry-run</span><strong>{chokeState?.dry_run ? "on" : "off"}</strong></div>
             <div><span>kill-switch</span><strong>{chokeState?.kill_switched ? "engaged" : "standby"}</strong></div>
             <div><span>tracked</span><strong>{chokeState?.tracked || 0}</strong></div>
           </div>
-          <button type="button" onClick={() => onModeToggle(mode !== "enforcing")}>{mode === "enforcing" ? "Switch to detect-only" : "Switch to enforcing"}</button>
-          <button type="button" onClick={onKillSwitch}>Kill-switch</button>
+          <div className="choke-popover-actions">
+            <button type="button" onClick={() => onModeToggle(mode !== "enforcing")}>{mode === "enforcing" ? "Switch to detect-only" : "Switch to enforcing"}</button>
+            <button type="button" onClick={onKillSwitch}>Kill-switch</button>
+          </div>
           <div className="choke-chip-row">{Object.keys(PRESET_DESCRIPTIONS).map((name) => <button key={name} type="button" className="choke-chip" onClick={() => onPreset(name)}>{name}</button>)}</div>
         </>
       ) : null}
     </div>
+  );
+}
+
+function PopoverHeader({ title, onClose }: { title: string; onClose: () => void }) {
+  return (
+    <header className="choke-popover-header">
+      <h3>{title}</h3>
+      <button type="button" className="choke-popover-close" onClick={onClose} aria-label={`Close ${title}`}>
+        <X size={15} aria-hidden="true" />
+      </button>
+    </header>
   );
 }
 
@@ -2320,7 +2437,11 @@ function NotificationsPanel({
   decisions,
   acked,
   clearedAt,
+  alertsActive,
+  badgeEnabled,
   onClose,
+  onToggleAlerts,
+  onToggleBadge,
   onAck,
   onClear,
   onOpenDrill,
@@ -2328,7 +2449,11 @@ function NotificationsPanel({
   decisions: Decision[];
   acked: Set<number>;
   clearedAt: number;
+  alertsActive: boolean;
+  badgeEnabled: boolean;
   onClose: () => void;
+  onToggleAlerts: () => void;
+  onToggleBadge: () => void;
   onAck: (ids: number[]) => void;
   onClear: () => void;
   onOpenDrill: (execId: string) => void;
@@ -2398,9 +2523,22 @@ function NotificationsPanel({
     <aside className="choke-floating-panel alerts" data-panel="notifications-panel">
       <header>
         <h3>Alerts</h3>
-        <span className="choke-notif-count">{totalUnread} unread · {groups.length} grouped</span>
-        <button type="button" onClick={onClose}>Close</button>
+        <span className="choke-notif-count">
+          {alertsActive ? `${totalUnread} unread · ${groups.length} grouped` : "silenced"}
+        </span>
+        <button type="button" className="choke-popover-close" onClick={onClose} aria-label="Close alerts">
+          <X size={15} aria-hidden="true" />
+        </button>
       </header>
+
+      <div className="choke-alert-controlbar">
+        <button type="button" className={!alertsActive ? "active" : ""} onClick={onToggleAlerts}>
+          {alertsActive ? "Silence alerts" : "Resume alerts"}
+        </button>
+        <button type="button" className={!badgeEnabled ? "active" : ""} disabled={!alertsActive} onClick={onToggleBadge}>
+          {badgeEnabled ? "Hide 400 badge" : "Show badge"}
+        </button>
+      </div>
 
       <div className="choke-alert-sevbar">
         {ALERT_SEVERITY.filter(({ state }) => sevCounts.get(state)).map(({ state, label }) => (
@@ -2474,6 +2612,7 @@ function ProfilePanel({
   onDensity,
   onWindow,
   onSnapshot,
+  onClose,
 }: {
   userLabel: string;
   bootMs: number;
@@ -2486,10 +2625,17 @@ function ProfilePanel({
   onDensity: () => void;
   onWindow: (value: number) => void;
   onSnapshot: () => void;
+  onClose: () => void;
 }) {
   return (
     <aside className="choke-floating-panel profile" data-panel="admin-profile-dropdown-avatar">
-      <header><h3>{userLabel}</h3><span>Operator</span></header>
+      <header>
+        <h3>{userLabel}</h3>
+        <span>Operator</span>
+        <button type="button" className="choke-popover-close" onClick={onClose} aria-label="Close profile">
+          <X size={15} aria-hidden="true" />
+        </button>
+      </header>
       <div className="choke-kv-list">
         <div><span>session</span><strong>{formatUptime(Date.now() - bootMs)}</strong></div>
         <div><span>decisions seen</span><strong>{decisionsSeen}</strong></div>
@@ -2497,13 +2643,15 @@ function ProfilePanel({
         <div><span>theme</span><button type="button" onClick={onTheme}>{theme}</button></div>
         <div><span>density</span><button type="button" onClick={onDensity}>{density}</button></div>
       </div>
-      <label>Default window
+      <label className="choke-profile-window">Default window
         <select value={windowMin} onChange={(event) => onWindow(Number(event.target.value))}>
           {WINDOW_OPTIONS.map((value) => <option key={value} value={value}>{formatWindow(value)}</option>)}
         </select>
       </label>
-      <button type="button" onClick={onSnapshot}>Snapshot</button>
-      <a href="/api/logout">Sign out</a>
+      <div className="choke-popover-actions">
+        <button type="button" onClick={onSnapshot}>Snapshot</button>
+        <a href="/api/logout">Sign out</a>
+      </div>
     </aside>
   );
 }
@@ -2643,14 +2791,25 @@ function FilterChip({ label, onClear }: { label: string; onClear: () => void }) 
   return <button className="choke-filter-chip" type="button" onClick={onClear}>{label} x</button>;
 }
 
-function NotificationDot({ decisions, acked, clearedAt }: { decisions: Decision[]; acked: Set<number>; clearedAt: number }) {
+function NotificationDot({
+  decisions,
+  acked,
+  clearedAt,
+  enabled,
+}: {
+  decisions: Decision[];
+  acked: Set<number>;
+  clearedAt: number;
+  enabled: boolean;
+}) {
+  if (!enabled) return null;
   const unread = decisions.filter((decision) => {
     const ts = new Date(decision.timestamp || 0).getTime();
     if (clearedAt && ts <= clearedAt) return false;
     if (!ALERT_RANK[decisionState(decision)]) return false;
     return !acked.has(decision.id || 0);
   }).length;
-  return unread > 0 ? <span className="choke-notif-dot">{unread}</span> : null;
+  return unread > 0 ? <span className="choke-notif-dot">{unread >= DECISION_CAP ? `${DECISION_CAP}` : unread}</span> : null;
 }
 
 function toggleNumber(set: Set<number>, value: number): Set<number> {

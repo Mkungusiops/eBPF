@@ -1,23 +1,25 @@
 .devices-route {
-  /* Enterprise professional dark palette (shared with the SOC console). */
-  --devices-bg: #0f1117;
-  --devices-panel: #181c26;
-  --devices-panel-strong: #14171f;
-  --devices-panel-soft: #1f2532;
-  --devices-border: #2b3340;
-  --devices-border-strong: #3a4456;
-  --devices-text: #e9edf4;
-  --devices-muted: #99a3b4;
-  --devices-dim: #646e80;
-  --devices-accent: #6b8afd;
-  --devices-good: #34d399;
-  --devices-warn: #e1b53e;
-  --devices-danger: #f0707f;
-  --devices-info: #5b9bf0;
+  /* Enterprise-warm dark palette (shared with the SOC console). */
+  --devices-bg: #111212;
+  --devices-panel: #1d1d1b;
+  --devices-panel-strong: #191918;
+  --devices-panel-soft: #24231f;
+  --devices-border: #3a332b;
+  --devices-border-strong: #544838;
+  --devices-text: #f1ece3;
+  --devices-muted: #aea496;
+  --devices-dim: #797064;
+  --devices-accent: #849eff;
+  --devices-good: #3dd6b3;
+  --devices-warn: #d8a94a;
+  --devices-danger: #ef667a;
+  --devices-info: #79a8ff;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgb(107 138 253 / 0.07), transparent 34rem),
-    linear-gradient(135deg, #0d0f14 0%, #13161d 48%, #0e1015 100%);
+    radial-gradient(circle at 12% -8%, rgb(216 169 74 / 0.065), transparent 30rem),
+    radial-gradient(circle at 100% 0%, rgb(132 158 255 / 0.085), transparent 34rem),
+    radial-gradient(circle at 62% 100%, rgb(61 214 179 / 0.04), transparent 32rem),
+    linear-gradient(135deg, #101111 0%, #171715 48%, #111212 100%);
   color: var(--devices-text);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
@@ -37,9 +39,9 @@
 .devices-topbar,
 .devices-panel,
 .devices-modal-card {
-  border: 1px solid rgb(148 163 184 / 0.18);
-  background: rgb(24 28 38 / 0.82);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 0.22);
+  border: 1px solid rgb(190 174 148 / 0.18);
+  background: rgb(29 29 27 / 0.86);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.28);
   backdrop-filter: blur(16px);
 }
 
@@ -532,14 +534,22 @@
   display: grid;
   place-items: center;
   padding: 18px;
-  background: rgb(0 0 0 / 0.64);
-  backdrop-filter: blur(7px);
+  background:
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--devices-accent) 18%, transparent), transparent 30%),
+    rgb(0 0 0 / 0.68);
+  backdrop-filter: blur(10px) saturate(120%);
 }
 
 .devices-modal-card {
   width: min(100%, 460px);
-  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--devices-accent) 20%, var(--devices-border));
+  border-radius: 12px;
   overflow: hidden;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--devices-accent) 8%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, var(--devices-panel-strong) 82%, transparent), var(--devices-panel)),
+    var(--devices-panel);
+  box-shadow: 0 28px 80px rgb(0 0 0 / 0.38), inset 0 1px 0 rgb(255 255 255 / 0.045);
 }
 
 .devices-modal-head {
@@ -722,4 +732,40 @@
 .devices-route.theme-light .devices-table th,
 .devices-route.theme-light .devices-table td {
   border-top-color: rgb(100 116 139 / 0.16);
+}
+
+/* Compact modal treatment shared with SOC/Choke popups. */
+.devices-modal-card {
+  width: min(100%, 420px);
+  border-radius: 10px;
+}
+
+.devices-modal-head {
+  gap: 10px;
+  padding: 13px 15px 11px;
+}
+
+.devices-modal-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.devices-modal-title {
+  font-size: 0.95rem;
+}
+
+.devices-modal-message {
+  margin-top: 4px;
+  font-size: 0.76rem;
+  line-height: 1.42;
+}
+
+.devices-modal-body {
+  padding: 12px 15px;
+}
+
+.devices-modal-actions {
+  gap: 7px;
+  padding: 0 15px 14px;
 }

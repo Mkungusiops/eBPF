@@ -3,7 +3,7 @@
 // kprobe board, fleet console, notification center, risk gauge) that the modal
 // shells host. Each body is data-driven off the same snapshot the route already
 // fetches, so nothing here introduces new network calls beyond explicit probes.
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Trash2, Volume2 } from "lucide-react";
 import { cx, EmptyState } from "./components";
 import type {
@@ -930,22 +930,26 @@ interface NotifyHistoryItem {
 }
 
 type NotifyTab = "all" | "unread" | "critical" | "high";
+type NotifyChannels = { inApp: boolean; desktop: boolean; audio: boolean };
 
 export function NotificationsBody({
   history,
+  active,
+  channels,
+  onActiveChange,
+  onChannelsChange,
   onMarkAllRead,
   onClearAll
 }: {
   history: NotifyHistoryItem[];
+  active: boolean;
+  channels: NotifyChannels;
+  onActiveChange: Dispatch<SetStateAction<boolean>>;
+  onChannelsChange: Dispatch<SetStateAction<NotifyChannels>>;
   onMarkAllRead?: () => void;
   onClearAll?: () => void;
 }) {
-  const [active, setActive] = useLocalState<boolean>("soc.notifications", true);
   const [minSeverity, setMinSeverity] = useLocalState<Severity>("soc.notifyMinSeverity", "high");
-  const [channels, setChannels] = useLocalState<{ inApp: boolean; desktop: boolean; audio: boolean }>(
-    "soc.notifyChannels",
-    { inApp: true, desktop: true, audio: false }
-  );
   const [throttleMin, setThrottleMin] = useLocalState<number>("soc.notifyThrottleMin", 0);
   const [quietStart, setQuietStart] = useLocalState<string>("soc.notifyQuietStart", "");
   const [quietEnd, setQuietEnd] = useLocalState<string>("soc.notifyQuietEnd", "");
@@ -967,7 +971,7 @@ export function NotificationsBody({
     });
   }, [history, tab, search]);
 
-  const toggleChannel = (key: keyof typeof channels) => setChannels((prev) => ({ ...prev, [key]: !prev[key] }));
+  const toggleChannel = (key: keyof NotifyChannels) => onChannelsChange((prev) => ({ ...prev, [key]: !prev[key] }));
 
   return (
     <div className="soc-notify">
@@ -979,7 +983,7 @@ export function NotificationsBody({
               When off, alerts above the threshold still appear in the live feed but no badge ticks and no channel fires.
             </span>
           </div>
-          <Toggle on={active} onClick={() => setActive(!active)} label={active ? "ON" : "OFF · ALERTS IGNORED"} />
+          <Toggle on={active} onClick={() => onActiveChange(!active)} label={active ? "ON" : "OFF · ALERTS IGNORED"} />
         </div>
       </section>
 
@@ -1297,4 +1301,3 @@ export function RiskGauge({
     </div>
   );
 }
-
