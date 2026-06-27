@@ -1,0 +1,725 @@
+.devices-route {
+  /* Enterprise professional dark palette (shared with the SOC console). */
+  --devices-bg: #0f1117;
+  --devices-panel: #181c26;
+  --devices-panel-strong: #14171f;
+  --devices-panel-soft: #1f2532;
+  --devices-border: #2b3340;
+  --devices-border-strong: #3a4456;
+  --devices-text: #e9edf4;
+  --devices-muted: #99a3b4;
+  --devices-dim: #646e80;
+  --devices-accent: #6b8afd;
+  --devices-good: #34d399;
+  --devices-warn: #e1b53e;
+  --devices-danger: #f0707f;
+  --devices-info: #5b9bf0;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgb(107 138 253 / 0.07), transparent 34rem),
+    linear-gradient(135deg, #0d0f14 0%, #13161d 48%, #0e1015 100%);
+  color: var(--devices-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.devices-route * {
+  box-sizing: border-box;
+}
+
+.devices-layout {
+  width: min(1320px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 24px 0 40px;
+}
+
+.devices-topbar,
+.devices-panel,
+.devices-modal-card {
+  border: 1px solid rgb(148 163 184 / 0.18);
+  background: rgb(24 28 38 / 0.82);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.22);
+  backdrop-filter: blur(16px);
+}
+
+.devices-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: 8px;
+}
+
+.devices-title-row,
+.devices-nav,
+.devices-plane-strip,
+.devices-mode-actions,
+.devices-bulk-row,
+.devices-inline,
+.devices-row-main,
+.devices-flow-line {
+  display: flex;
+  align-items: center;
+}
+
+.devices-title-row {
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.devices-title {
+  margin: 0;
+  font-size: 1.1rem;
+  line-height: 1.25;
+  color: #a5b4fc;
+  font-weight: 760;
+}
+
+.devices-subtitle {
+  margin: 4px 0 0;
+  color: var(--devices-muted);
+  font-size: 0.78rem;
+}
+
+.devices-nav {
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.devices-link,
+.devices-button,
+.devices-icon-button,
+.devices-select,
+.devices-input {
+  border-radius: 7px;
+  border: 1px solid rgb(148 163 184 / 0.22);
+  background: rgb(24 28 38 / 0.78);
+  color: var(--devices-text);
+}
+
+.devices-link,
+.devices-button,
+.devices-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 11px;
+  font-size: 0.78rem;
+  font-weight: 690;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.devices-button:hover:not(:disabled),
+.devices-icon-button:hover:not(:disabled),
+.devices-link:hover {
+  border-color: rgb(107 138 253 / 0.52);
+  background: rgb(30 41 59 / 0.86);
+}
+
+.devices-button:disabled,
+.devices-icon-button:disabled,
+.devices-select:disabled,
+.devices-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+/* Refresh affordance: spin the icon while a refetch is in flight. */
+.devices-button.is-refreshing {
+  opacity: 1;
+}
+
+.devices-button.is-refreshing svg {
+  animation: devices-spin 0.7s linear infinite;
+}
+
+@keyframes devices-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.devices-button--primary {
+  border-color: rgb(107 138 253 / 0.45);
+  background: rgb(107 138 253 / 0.82);
+}
+
+.devices-button--danger {
+  border-color: rgb(251 113 133 / 0.42);
+  background: rgb(159 18 57 / 0.75);
+}
+
+.devices-button--good {
+  border-color: rgb(52 211 153 / 0.42);
+  background: rgb(4 120 87 / 0.78);
+}
+
+.devices-icon-button {
+  width: 34px;
+  padding: 0;
+}
+
+.devices-plane-strip {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  color: var(--devices-muted);
+  font-size: 0.74rem;
+}
+
+.devices-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  border: 1px solid rgb(148 163 184 / 0.18);
+  background: rgb(24 28 38 / 0.8);
+  color: var(--devices-muted);
+  font-size: 0.69rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.devices-pill--plain {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 620;
+}
+
+.devices-pill--good {
+  background: rgb(6 78 59 / 0.72);
+  color: #bbf7d0;
+}
+
+.devices-pill--info {
+  background: rgb(30 64 175 / 0.58);
+  color: #bfdbfe;
+}
+
+.devices-pill--warn {
+  background: rgb(146 64 14 / 0.7);
+  color: #fde68a;
+}
+
+.devices-pill--danger {
+  background: rgb(127 29 29 / 0.72);
+  color: #fecaca;
+}
+
+.devices-pill--muted {
+  background: rgb(51 65 85 / 0.68);
+  color: #cbd5e1;
+}
+
+.devices-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.devices-counts {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+.devices-count {
+  min-height: 92px;
+  border-radius: 8px;
+  padding: 14px;
+  border: 1px solid rgb(148 163 184 / 0.16);
+}
+
+.devices-count-value {
+  font-size: 1.45rem;
+  line-height: 1;
+  font-weight: 720;
+}
+
+.devices-count-label {
+  margin-top: 9px;
+  font-size: 0.67rem;
+  color: rgb(233 237 244 / 0.84);
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.devices-count--pristine {
+  background: linear-gradient(135deg, rgb(30 41 59 / 0.95), rgb(24 28 38 / 0.88));
+}
+
+.devices-count--throttled {
+  background: linear-gradient(135deg, rgb(30 64 175 / 0.78), rgb(24 28 38 / 0.88));
+}
+
+.devices-count--tarpit {
+  background: linear-gradient(135deg, rgb(146 64 14 / 0.84), rgb(24 28 38 / 0.9));
+}
+
+.devices-count--quarantined {
+  background: linear-gradient(135deg, rgb(154 52 18 / 0.88), rgb(24 28 38 / 0.9));
+}
+
+.devices-count--severed {
+  background: linear-gradient(135deg, rgb(127 29 29 / 0.9), rgb(24 28 38 / 0.9));
+}
+
+.devices-panel {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.devices-panel--padded {
+  padding: 14px;
+}
+
+.devices-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.devices-panel-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 760;
+}
+
+.devices-panel-copy {
+  margin: 4px 0 0;
+  color: var(--devices-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.devices-banner {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border: 1px solid rgb(251 113 133 / 0.32);
+  border-radius: 8px;
+  background: rgb(127 29 29 / 0.28);
+  color: #fecdd3;
+}
+
+.devices-banner--warn {
+  border-color: rgb(245 158 11 / 0.35);
+  background: rgb(120 53 15 / 0.25);
+  color: #fde68a;
+}
+
+.devices-mode-actions {
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.devices-bulk-row {
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.devices-selected {
+  min-width: 96px;
+  color: var(--devices-muted);
+  font-size: 0.82rem;
+}
+
+.devices-select,
+.devices-input {
+  min-height: 36px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.devices-select:focus,
+.devices-input:focus,
+.devices-button:focus-visible,
+.devices-icon-button:focus-visible,
+.devices-link:focus-visible {
+  border-color: rgb(107 138 253 / 0.74);
+  box-shadow: 0 0 0 3px rgb(107 138 253 / 0.18);
+}
+
+.devices-reason-input {
+  flex: 1 1 260px;
+}
+
+.devices-revert-input {
+  width: 150px;
+}
+
+.devices-toast {
+  min-height: 24px;
+  padding: 5px 0;
+  font-size: 0.78rem;
+  color: var(--devices-muted);
+}
+
+.devices-toast--ok {
+  color: #86efac;
+}
+
+.devices-toast--error {
+  color: #fda4af;
+}
+
+.devices-toast--warn {
+  color: #fbbf24;
+}
+
+.devices-table-wrap {
+  overflow-x: auto;
+}
+
+.devices-table {
+  width: 100%;
+  min-width: 940px;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.devices-table th,
+.devices-table td {
+  padding: 10px 11px;
+  text-align: left;
+  border-top: 1px solid rgb(148 163 184 / 0.12);
+  vertical-align: middle;
+}
+
+.devices-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0d1627;
+  color: var(--devices-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.devices-table tbody tr:hover > td {
+  background: rgb(20 29 47 / 0.74);
+}
+
+.devices-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #06b6d4;
+}
+
+.devices-mono {
+  font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+}
+
+.devices-device-cell {
+  min-width: 250px;
+}
+
+.devices-row-main {
+  gap: 7px;
+}
+
+.devices-device-id {
+  margin-top: 4px;
+  padding-left: 34px;
+  color: var(--devices-dim);
+  font-size: 0.68rem;
+}
+
+.devices-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 0.68rem;
+  font-weight: 790;
+  text-transform: uppercase;
+}
+
+.devices-state--pristine {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.devices-state--throttled {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+.devices-state--tarpit {
+  background: #854d0e;
+  color: #fde68a;
+}
+
+.devices-state--quarantined {
+  background: #9a3412;
+  color: #fed7aa;
+}
+
+.devices-state--severed {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.devices-state--unknown {
+  background: #334155;
+  color: #cbd5e1;
+}
+
+.devices-revert {
+  margin-left: 6px;
+  color: var(--devices-accent);
+  vertical-align: middle;
+}
+
+.devices-flow-row td {
+  background: rgb(8 13 24 / 0.5);
+}
+
+.devices-flow-panel {
+  display: grid;
+  gap: 7px;
+  padding: 2px 0 4px 35px;
+  color: #cbd5e1;
+  font-size: 0.77rem;
+}
+
+.devices-flow-title {
+  color: var(--devices-muted);
+  font-weight: 760;
+}
+
+.devices-flow-line {
+  gap: 8px;
+}
+
+.devices-flow-proto {
+  color: #67e8f9;
+}
+
+.devices-empty {
+  padding: 36px 14px;
+  text-align: center;
+  color: var(--devices-dim);
+  font-size: 0.86rem;
+}
+
+.devices-footnote {
+  margin: 14px 2px 0;
+  color: var(--devices-dim);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.devices-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: rgb(0 0 0 / 0.64);
+  backdrop-filter: blur(7px);
+}
+
+.devices-modal-card {
+  width: min(100%, 460px);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.devices-modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid rgb(148 163 184 / 0.12);
+}
+
+.devices-modal-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgb(107 138 253 / 0.14);
+  color: #67e8f9;
+}
+
+.devices-modal-icon--danger {
+  background: rgb(251 113 133 / 0.14);
+  color: #fda4af;
+}
+
+.devices-modal-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.devices-modal-message {
+  margin: 5px 0 0;
+  color: var(--devices-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.devices-modal-body {
+  padding: 15px 18px;
+}
+
+.devices-label {
+  display: grid;
+  gap: 6px;
+  color: var(--devices-muted);
+  font-size: 0.68rem;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.devices-field-error {
+  margin-top: 6px;
+  color: #fda4af;
+  font-size: 0.72rem;
+}
+
+.devices-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 18px 17px;
+}
+
+@media (max-width: 860px) {
+  .devices-layout {
+    width: min(100% - 20px, 1320px);
+    padding-top: 14px;
+  }
+
+  .devices-topbar,
+  .devices-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .devices-plane-strip {
+    justify-content: flex-start;
+  }
+
+  .devices-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .devices-counts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .devices-link,
+  .devices-button {
+    width: 100%;
+  }
+
+  .devices-bulk-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .devices-select,
+  .devices-input {
+    width: 100%;
+  }
+}
+
+
+/* ── Light theme ─────────────────────────────────────────────────────────
+   Shared with the SOC dashboard via the "soc.theme" localStorage key. The
+   Devices console hardcodes several dark surfaces, so the light variant
+   re-states them here to keep the two pages in visual sync. */
+.devices-route.theme-light {
+  --devices-bg: #f3f6f9;
+  --devices-panel: #ffffff;
+  --devices-panel-strong: #f7fafc;
+  --devices-panel-soft: #eef3f8;
+  --devices-border: #d6deea;
+  --devices-border-strong: #c2cdde;
+  --devices-text: #121a27;
+  --devices-muted: #536173;
+  --devices-dim: #7a8797;
+  --devices-accent: #4f6fe0;
+  --devices-good: #1a9b6c;
+  --devices-warn: #c0850f;
+  --devices-danger: #d6455a;
+  --devices-info: #3b74d4;
+  background:
+    radial-gradient(circle at top left, rgb(79 111 224 / 0.06), transparent 34rem),
+    linear-gradient(135deg, #f7fafc 0%, #eef2f7 100%);
+}
+
+.devices-route.theme-light .devices-topbar,
+.devices-route.theme-light .devices-panel,
+.devices-route.theme-light .devices-modal-card {
+  background: #ffffff;
+  border-color: #dbe2ee;
+  box-shadow: 0 12px 34px rgb(24 34 50 / 0.08);
+}
+
+.devices-route.theme-light .devices-link,
+.devices-route.theme-light .devices-button,
+.devices-route.theme-light .devices-icon-button,
+.devices-route.theme-light .devices-select,
+.devices-route.theme-light .devices-input,
+.devices-route.theme-light .devices-pill {
+  background: #f4f7fb;
+  border-color: #dbe2ee;
+}
+
+.devices-route.theme-light .devices-button:hover:not(:disabled),
+.devices-route.theme-light .devices-icon-button:hover:not(:disabled),
+.devices-route.theme-light .devices-link:hover {
+  background: #e8eef6;
+}
+
+.devices-route.theme-light .devices-count-label {
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-count--pristine { background: #eef2f7; }
+.devices-route.theme-light .devices-count--throttled { background: #e7ecfd; }
+.devices-route.theme-light .devices-count--tarpit { background: #fbf1e1; }
+.devices-route.theme-light .devices-count--quarantined { background: #fbe8de; }
+.devices-route.theme-light .devices-count--severed { background: #fbe3e6; }
+
+.devices-route.theme-light .devices-pill--muted {
+  background: #e8eef6;
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-table thead th {
+  background: #eef2f7;
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-table tbody tr:hover > td {
+  background: rgb(79 111 224 / 0.07);
+}
+
+.devices-route.theme-light .devices-table th,
+.devices-route.theme-light .devices-table td {
+  border-top-color: rgb(100 116 139 / 0.16);
+}

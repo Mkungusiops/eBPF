@@ -13,17 +13,30 @@
 
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ENGINE_DIR := $(ROOT)/engine
+WEB_DIR    := $(ROOT)/web
+EMBED_DIR  := $(ENGINE_DIR)/internal/api/web
 BIN        := $(ENGINE_DIR)/engine
 LINUX_ARCH ?= amd64
 LINUX_BIN  := $(ENGINE_DIR)/engine-linux-$(LINUX_ARCH)
 TETRA_CT   ?= tetragon
 
-.PHONY: build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
+.PHONY: web build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
-build:
+# Build and stage Vite's static output for go:embed. The redesigned UI is
+# the release path; missing dist/ is a build failure, not a runtime fallback.
+web:
+	@test -f "$(WEB_DIR)/package.json" || { echo "web/package.json not found"; exit 1; }
+	cd $(WEB_DIR) && npm run build
+	@mkdir -p $(EMBED_DIR)
+	@find $(EMBED_DIR) -mindepth 1 ! -name .keep -exec rm -rf {} +
+	@test -f "$(WEB_DIR)/dist/index.html" || { echo "web/dist/index.html not found after npm run build"; exit 1; }
+	@echo "→ staging Vite dist into $(EMBED_DIR)"
+	@cp -R "$(WEB_DIR)/dist/." "$(EMBED_DIR)/"
+
+build: web
 	cd $(ENGINE_DIR) && go build -o engine ./cmd/engine
 
-build-linux:
+build-linux: web
 	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o engine-linux-$(LINUX_ARCH) ./cmd/engine
 	@echo "→ $(LINUX_BIN)"
 
@@ -77,6 +90,7 @@ clean:
 	rm -f $(BIN) $(ENGINE_DIR)/engine-linux-amd64 $(ENGINE_DIR)/engine-linux-arm64
 	rm -f $(ROOT)/fake-events.db $(ROOT)/events.db
 	rm -f $(ROOT)/ebpf-poc-amd64.tar.gz $(ROOT)/ebpf-poc-arm64.tar.gz
+	find $(EMBED_DIR) -mindepth 1 ! -name .keep -exec rm -rf {} +
 
 # ─────────────────────────────────────────────────────────────────────────
 # Multipass deploy targets — drive the existing `ebpf` VM end-to-end.

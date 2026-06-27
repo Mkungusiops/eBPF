@@ -323,10 +323,10 @@ func (a *Auth) unauthorized(w http.ResponseWriter, r *http.Request) {
 
 func isPublicPath(p string) bool {
 	switch p {
-	case "/login", "/api/login", "/favicon.svg", "/favicon.ico":
+	case "/login", "/api/login", "/favicon.svg", "/favicon.ico", "/favicon-light.svg":
 		return true
 	}
-	return false
+	return isBuiltAssetPath(p) || isPWARootPath(p)
 }
 
 // HandleLogin parses form-encoded credentials and sets the session cookie.

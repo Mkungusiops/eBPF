@@ -39,9 +39,10 @@ func (s *Server) gatewayOrErr(w http.ResponseWriter) *choke.Gateway {
 
 // GET /choke — the embedded console.
 func (s *Server) handleChokeConsole(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(chokeHTML))
+	if s.serveEmbeddedWebPage(w, "choke.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // GET /api/choke/state — single-call dashboard hydrate. Returns mode,
@@ -437,18 +438,18 @@ func (s *Server) handleChokeForensicSnapshot(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="choke-forensic-snapshot.json"`)
 	writeJSON(w, map[string]interface{}{
-		"taken_at":     time.Now().UTC().Format(time.RFC3339Nano),
-		"mode":         string(g.Mode()),
-		"dry_run":      g.DryRun(),
-		"kill_switch":  g.KillSwitched(),
-		"thresholds":   thr,
-		"counts":       g.StateCounts(),
-		"circuits":     g.Snapshot(),
-		"decisions":    decisions,
-		"cgroups":      cgroups,
-		"bpf_buckets":  buckets,
-		"audit_chain":  chain,
-		"annotations":  g.AllAnnotations(),
+		"taken_at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"mode":            string(g.Mode()),
+		"dry_run":         g.DryRun(),
+		"kill_switch":     g.KillSwitched(),
+		"thresholds":      thr,
+		"counts":          g.StateCounts(),
+		"circuits":        g.Snapshot(),
+		"decisions":       decisions,
+		"cgroups":         cgroups,
+		"bpf_buckets":     buckets,
+		"audit_chain":     chain,
+		"annotations":     g.AllAnnotations(),
 		"pending_reverts": g.PendingReverts(),
 	})
 }
@@ -763,5 +764,9 @@ func (s *Server) handleChokePolicyPreview(w http.ResponseWriter, r *http.Request
 		"valid":   true,
 		"policy":  p,
 		"matches": matches,
+		// scanned is the size of the live tracked snapshot the policy was
+		// evaluated against, so the UI can show "N matched of M scanned"
+		// and explain an empty match set instead of looking broken.
+		"scanned": len(g.Snapshot()),
 	})
 }

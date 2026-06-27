@@ -19,7 +19,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
 
-// versionSHA is a hash of the embedded HTML+favicon. It changes whenever
+// versionSHA is a hash of the embedded frontend assets. It changes whenever
 // the binary is rebuilt with frontend changes — used by the dashboard's
 // version watcher to prompt a soft reload when a new version is deployed.
 var (
@@ -29,9 +29,10 @@ var (
 
 func computeVersionSHA() string {
 	h := sha256.New()
-	h.Write([]byte(indexHTML))
-	h.Write([]byte(loginHTML))
-	h.Write(faviconSVG)
+	if n, err := hashEmbeddedWebDist(h); err == nil && n > 0 {
+		return hex.EncodeToString(h.Sum(nil))[:12]
+	}
+	h.Write([]byte("web-dist-missing"))
 	return hex.EncodeToString(h.Sum(nil))[:12]
 }
 
@@ -85,11 +86,21 @@ func (s *Server) Start(addr string) error {
 	mux := http.NewServeMux()
 
 	// Public auth endpoints
-	mux.HandleFunc("/login", s.auth.HandleLoginPage)
+	mux.HandleFunc("/login", s.handleLoginPage)
 	mux.HandleFunc("/api/login", s.auth.HandleLogin)
 	mux.HandleFunc("/favicon.svg", s.handleFavicon)
 	mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	mux.HandleFunc("/favicon-light.svg", s.handleFaviconLight)
+	mux.HandleFunc("/assets/", s.handleWebAssets)
+
+	// PWA support files live at the dist root and are public so the worker,
+	// manifest, and icons load before authentication (see web_assets.go).
+	mux.HandleFunc("/sw.js", s.handlePWAFile)
+	mux.HandleFunc("/manifest.webmanifest", s.handlePWAFile)
+	mux.HandleFunc("/pwa-192x192.png", s.handlePWAFile)
+	mux.HandleFunc("/pwa-512x512.png", s.handlePWAFile)
+	mux.HandleFunc("/pwa-maskable-512x512.png", s.handlePWAFile)
+	mux.HandleFunc("/apple-touch-icon.png", s.handlePWAFile)
 
 	// Protected endpoints (registered raw; the global middleware enforces auth)
 	mux.HandleFunc("/", s.handleIndex)
@@ -265,9 +276,10 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	fmt.Fprint(w, indexHTML)
+	if s.serveEmbeddedWebPage(w, "index.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // handleVersion returns the build SHA + start time. The dashboard polls

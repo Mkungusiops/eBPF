@@ -269,9 +269,10 @@ func truncate(s string, n int) string {
 
 // handleFleetConsole serves the embedded HTML.
 func (s *Server) handleFleetConsole(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(fleetHTML))
+	if s.serveEmbeddedWebPage(w, "fleet.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // requireFleet 503s when the feature is not configured. Centralises the

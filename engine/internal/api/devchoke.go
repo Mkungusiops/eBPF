@@ -29,9 +29,10 @@ func (s *Server) deviceGatewayOrErr(w http.ResponseWriter) *choke.DeviceGateway 
 
 // GET /devices — the embedded device console.
 func (s *Server) handleDevicesConsole(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(devicesHTML))
+	if s.serveEmbeddedWebPage(w, "devices.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // GET /api/choke/devices — the device table joined with circuit state and

@@ -1,10 +1,11 @@
 # Recommended Frontend Stack — HTML → SPA rework
 
-> **Status:** recommendation · **Date:** 2026-06-25 · Companion to
-> [README.md](README.md) (the combined migration plan). This sharpens the plan's §3 "tech
-> stack": it recommends **Vite (multi-entry) + React** over the Next.js App Router the main
-> plan assumes, and adds headless-primitive choices (Radix, cmdk) that retire the riskiest
-> Phase 0 work.
+> **Status:** adopted · **Date:** 2026-06-25 · Companion to
+> [README.md](README.md) and
+> [78-panel-redesign-target-vm-e2e-certification-plan.md](78-panel-redesign-target-vm-e2e-certification-plan.md).
+> This is the active stack for the frontend-dev work: **Vite (multi-entry) + React** instead
+> of the earlier Next.js App Router proposal, plus headless primitives (Radix, cmdk) that
+> retire the riskiest hand-rolled overlay and command-palette work.
 
 ## Why this stack (the constraints it's matched to)
 
@@ -83,20 +84,16 @@ traps, accessible overlays, the command palette).
 > then judge)** — see [README.md §1.1](README.md#11-scope-options) and
 > [§6](README.md#6-phase-by-phase-plan).
 
-## How this changes the main plan if adopted
+## How this changes the main plan
 
-If you commit to this stack, the following sections of [README.md](README.md) need revising
-(not done yet — say the word):
+This stack has been adopted in [README.md](README.md) and in the current `web/` project:
 
-- **§3 Tech stack** — swap Next App Router → Vite multi-entry; add Radix/cmdk/TanStack
-  Virtual/Vitest/Playwright.
-- **§4 Repo layout** — `web/` becomes a Vite project (`vite.config.ts` with `build.rollupOptions
-  .input` listing the five HTML entries) instead of an `app/` router tree; output is
-  `web/dist/` not `out/`.
-- **§13 Build & deploy** — Makefile `web` target runs `vite build` → `web/dist`; no
-  `trailingSlash`/`basePath` handling needed; the `handleIndex` 404 fix and `isPublicPath`
-  widening still apply.
-- **§17 Day-1 quick start** — `npm create vite@latest web -- --template react-ts` instead of
-  `create-next-app`; deps add `@radix-ui/react-dialog @radix-ui/react-popover
-  @radix-ui/react-dropdown-menu cmdk @tanstack/react-virtual zustand` and dev `vitest
-  @playwright/test`.
+- **Tech stack** - Vite multi-entry replaces the former Next App Router/static-export plan.
+  Radix, cmdk, TanStack Virtual, Vitest, and Playwright are part of the active frontend gate.
+- **Repo layout** - `web/` is a Vite project with five HTML entries and
+  `build.rollupOptions.input` in `vite.config.ts`; output is `web/dist/`.
+- **Build and deploy** - the web build produces Vite assets that are staged into
+  `engine/internal/api/web/` for `go:embed`; Vite `/assets/*` replaces the earlier static
+  export asset path assumptions.
+- **Quick start** - use the existing `web/` project and run `npm install`, `npm run lint`,
+  `npm run typecheck`, `npm run test`, and `npm run build`.
