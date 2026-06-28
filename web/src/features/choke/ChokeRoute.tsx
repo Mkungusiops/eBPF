@@ -8,7 +8,8 @@ import React, {
   useState,
 } from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { Moon, Sun, X } from "lucide-react";
+import { ArrowLeft, Moon, Sun, X } from "lucide-react";
+import { EventReplay } from "../../components/EventReplay";
 import { VirtualList } from "../../components/VirtualList";
 import {
   annotateCircuit,
@@ -559,37 +560,8 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
     });
   }, [decisions, now, windowMin]);
 
-  const previousWindowDecisions = useMemo(() => {
-    const currentCutoff = now - windowMin * 60000;
-    const previousCutoff = now - windowMin * 120000;
-    return decisions.filter((decision) => {
-      const time = decision.timestamp ? new Date(decision.timestamp).getTime() : 0;
-      return time >= previousCutoff && time < currentCutoff;
-    });
-  }, [decisions, now, windowMin]);
-
-  const kpis = useMemo(() => {
-    const countKind = (rows: Decision[], predicate: (decision: Decision) => boolean) => rows.filter(predicate).length;
-    const all = currentWindowDecisions.length;
-    const sever = countKind(currentWindowDecisions, (decision) => decision.action === "sever");
-    const constrained = countKind(currentWindowDecisions, (decision) =>
-      ["throttle", "tarpit", "quarantine"].includes(decision.action || ""),
-    );
-    return {
-      all,
-      allPrev: previousWindowDecisions.length,
-      sever,
-      severPrev: countKind(previousWindowDecisions, (decision) => decision.action === "sever"),
-      constrained,
-      constrainedPrev: countKind(previousWindowDecisions, (decision) =>
-        ["throttle", "tarpit", "quarantine"].includes(decision.action || ""),
-      ),
-    };
-  }, [currentWindowDecisions, previousWindowDecisions]);
-
   const bucketSeconds = Math.max(1, Math.floor((windowMin * 60) / 30));
   const velocityBuckets = bucketizeDecisions(decisions, now, bucketSeconds, 30);
-  const kpiBuckets = bucketizeDecisions(decisions, now, Math.max(1, Math.floor((windowMin * 60) / 12)), 12);
   const topBinaries = topK(currentWindowDecisions, (decision) => decision.binary || undefined, 5);
   const topReasons = topK(currentWindowDecisions, (decision) => (decision.reason || "").replace(/\s+\d+\s*$/, ""), 5);
   const selectedEntries = useMemo(
@@ -871,31 +843,36 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
       <header className="choke-topbar">
         <div className="choke-topbar-row choke-topbar-primary" data-panel="topbar-row-1">
           <div className="choke-brand">
-            <a href="/" className="choke-link-pill">SOC</a>
+            <a href="/" className="choke-back" title="Back to SOC dashboard">
+              <ArrowLeft size={15} aria-hidden="true" />
+              <span>SOC</span>
+            </a>
+            <span className="choke-brand-divider" aria-hidden="true" />
             <span className="choke-brand-mark">Choke Gateway</span>
-            <button className="choke-link-pill" type="button" onClick={() => setPopover(popover === "mode" ? null : "mode")}>
+            <button className="choke-link-pill choke-mode-pill" type="button" onClick={() => setPopover(popover === "mode" ? null : "mode")}>
               <ModeBadge mode={mode} />
             </button>
-            <a href="/devices" className="choke-link-pill">Devices</a>
           </div>
           <input
             data-choke-global-search
             className="choke-search"
             value={globalSearch}
             onChange={(event) => setGlobalSearch(event.target.value)}
-            placeholder="Search pid:1574 binary:bash state:quarantined action:sever score:>50"
+            placeholder="Search processes, decisions, policies…"
           />
+          {/* Status condensed to a colour-dot + one word; full detail on hover/click. */}
           <div className="choke-status-cluster">
-            <button className={`choke-pill host-${hostState}`} type="button" onClick={() => setPopover(popover === "host" ? null : "host")}>
-              <span className="choke-dot" /> host {hostState}
+            <button className={`choke-pill host-${hostState}`} type="button" onClick={() => setPopover(popover === "host" ? null : "host")} title={`host ${hostState}`}>
+              <span className="choke-dot" /> host
             </button>
-            <button className={`choke-pill ${chokeState?.audit?.ok === false ? "danger" : "ok"}`} type="button" onClick={() => setPopover(popover === "audit" ? null : "audit")}>
-              audit {chokeState?.audit?.ok === false ? "broken" : "ok"} · {chokeState?.audit?.total || 0}
+            <button className={`choke-pill ${chokeState?.audit?.ok === false ? "danger" : "ok"}`} type="button" onClick={() => setPopover(popover === "audit" ? null : "audit")} title={`audit ${chokeState?.audit?.ok === false ? "broken" : "ok"} · ${chokeState?.audit?.total || 0} rows`}>
+              <span className={`choke-dot${chokeState?.audit?.ok === false ? " down" : ""}`} /> audit
             </button>
-            <button className={`choke-pill stream-${streamInfo.state}`} type="button" onClick={() => setPopover(popover === "live" ? null : "live")}>
-              stream {streamInfo.state}{streamInfo.lastMessageAt ? ` · ${formatRelative(streamInfo.lastMessageAt)}` : ""}
+            <button className={`choke-pill stream-${streamInfo.state}`} type="button" onClick={() => setPopover(popover === "live" ? null : "live")} title={`stream ${streamInfo.state}${streamInfo.lastMessageAt ? ` · ${formatRelative(streamInfo.lastMessageAt)}` : ""}`}>
+              <span className="choke-dot" /> live
             </button>
           </div>
+          {/* Only the essentials stay in the bar; Cmd, Help, Snapshot, Thaw live in the profile menu. */}
           <div className="choke-user-cluster">
             <button className="choke-icon-button" type="button" onClick={() => setNotificationsOpen((open) => !open)} aria-label="Notifications">
               Alerts
@@ -904,12 +881,6 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
               ) : (
                 <NotificationDot decisions={decisions} acked={ackedDecisionIds} clearedAt={alertsClearedAt} enabled={alertBadgeEnabled} />
               )}
-            </button>
-            <button className="choke-icon-button" type="button" onClick={() => setCommandOpen(true)} aria-label="Command palette">
-              Cmd
-            </button>
-            <button className="choke-icon-button" type="button" onClick={() => setHelpOpen(true)} aria-label="Help">
-              Help
             </button>
             <button
               className="choke-icon-button choke-theme-toggle"
@@ -920,52 +891,46 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
             >
               {theme === "light" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
             </button>
-            <button className="choke-user-pill" type="button" onClick={() => setProfileOpen((open) => !open)}>
+            <button className="choke-user-pill" type="button" onClick={() => setProfileOpen((open) => !open)} aria-label="Profile and tools">
               <span className="choke-avatar">{userLabel.slice(0, 1).toUpperCase()}</span>
               {userLabel}
             </button>
           </div>
         </div>
 
-        <div className="choke-topbar-row choke-topbar-secondary" data-panel="topbar-row-2">
+        {/* Operations bar — one calm toolbar: time window · audited incident-response
+           presets · scope + the few response controls. Replaces the old sparse two-row
+           monitor/respond stack. */}
+        <div className="choke-topbar-row choke-ops-row" data-panel="topbar-row-2" data-ir="ir-presets-trail-bar">
           <SegmentedControl values={WINDOW_OPTIONS} value={windowMin} format={formatWindow} onChange={setWindowMin} />
-          <div className="choke-kpi-strip">
-            <KpiTile label={`dec/${formatWindow(windowMin)}`} value={kpis.all} previous={kpis.allPrev} bars={kpiBuckets} onClick={() => setTapeFilterExec(null)} />
-            <KpiTile label={`sever ${formatWindow(windowMin)}`} value={kpis.sever} previous={kpis.severPrev} tone="danger" bars={bucketizeDecisions(decisions, now, Math.max(1, Math.floor((windowMin * 60) / 12)), 12, (d) => d.action === "sever")} onClick={() => setTapeActions(new Set(["sever"]))} />
-            <KpiTile label={`choke ${formatWindow(windowMin)}`} value={kpis.constrained} previous={kpis.constrainedPrev} tone="warn" bars={bucketizeDecisions(decisions, now, Math.max(1, Math.floor((windowMin * 60) / 12)), 12, (d) => ["throttle", "tarpit", "quarantine"].includes(d.action || ""))} onClick={() => setTapeActions(new Set(["throttle", "tarpit", "quarantine"]))} />
+          <span className="choke-ops-sep" aria-hidden="true" />
+          <span className="choke-preset-label">Incident Response</span>
+          <div className="choke-preset-group">
+            {Object.keys(PRESET_DESCRIPTIONS).map((name) => (
+              <button key={name} type="button" onClick={() => openPresetConfirm(name)} disabled={disabled} title="Audited incident-response preset">
+                {name}
+              </button>
+            ))}
           </div>
-          <button
-            className={`choke-action-button${refreshing ? " is-refreshing" : ""}`}
-            type="button"
-            disabled={refreshing}
-            onClick={() => void refreshAll()}
-          >
-            {refreshing ? <span className="choke-spinner" aria-hidden="true" /> : null}
-            {refreshing ? "Refreshing" : "Refresh"}
-          </button>
-          <span className="choke-scope-pill">{chokeState?.tracked || circuits.length} tracked</span>
-          <button className="choke-action-button danger" type="button" onClick={() => setJailOpen(true)} disabled={disabled}>
-            Jail Process
-          </button>
-          <button className="choke-action-button" type="button" onClick={() => void downloadSnapshot()} disabled={disabled}>
-            Snapshot
-          </button>
-          <button className="choke-action-button warn" type="button" onClick={openThawConfirm} disabled={disabled}>
-            Thaw
-          </button>
-          <button className="choke-action-button danger" type="button" onClick={openKillSwitchConfirm} disabled={disabled}>
-            {chokeState?.kill_switched ? "Disengage Kill" : "Kill-Switch"}
-          </button>
-        </div>
-
-        <div className="choke-preset-bar" data-panel="ir-presets-trail-bar">
-          <span>Incident Response</span>
-          {Object.keys(PRESET_DESCRIPTIONS).map((name) => (
-            <button key={name} type="button" onClick={() => openPresetConfirm(name)} disabled={disabled}>
-              {name}
+          <div className="choke-ops-trail">
+            <span className="choke-scope-pill">{chokeState?.tracked || circuits.length} tracked</span>
+            <button
+              className={`choke-action-button${refreshing ? " is-refreshing" : ""}`}
+              type="button"
+              disabled={refreshing}
+              onClick={() => void refreshAll()}
+            >
+              {refreshing ? <span className="choke-spinner" aria-hidden="true" /> : null}
+              {refreshing ? "Refreshing" : "Refresh"}
             </button>
-          ))}
-          <span className="choke-muted">Each preset is audited.</span>
+            <span className="choke-ops-sep" aria-hidden="true" />
+            <button className="choke-action-button" type="button" onClick={() => setJailOpen(true)} disabled={disabled}>
+              Jail Process
+            </button>
+            <button className="choke-action-button danger" type="button" onClick={openKillSwitchConfirm} disabled={disabled}>
+              {chokeState?.kill_switched ? "Disengage Kill" : "Kill-Switch"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -1032,6 +997,9 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
           onDensity={() => setDensity((prev) => (prev === "compact" ? "normal" : "compact"))}
           onWindow={setWindowMin}
           onSnapshot={() => void downloadSnapshot()}
+          onCommand={() => { setProfileOpen(false); setCommandOpen(true); }}
+          onHelp={() => { setProfileOpen(false); setHelpOpen(true); }}
+          onThaw={() => { setProfileOpen(false); openThawConfirm(); }}
           onClose={() => setProfileOpen(false)}
         />
       )}
@@ -1054,16 +1022,19 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
         </Banner>
       )}
 
-      <section className="choke-filter-strip" data-panel="active-filter-strip">
-        <span>Filters</span>
-        {globalSearch ? <FilterChip label={`search: ${globalSearch}`} onClear={() => setGlobalSearch("")} /> : null}
-        {procFilter ? <FilterChip label={`process: ${procFilter}`} onClear={() => setProcFilter("")} /> : null}
-        {tapeFilterExec ? <FilterChip label={`exec: ${shortExec(tapeFilterExec)}`} onClear={() => setTapeFilterExec(null)} /> : null}
-        {!globalSearch && !procFilter && !tapeFilterExec ? <span className="choke-muted">none</span> : null}
-        <button className="choke-inline-button" type="button" onClick={() => { setGlobalSearch(""); setProcFilter(""); setTapeFilterExec(null); }}>
-          clear all
-        </button>
-      </section>
+      {/* Active-filter bar only exists while something is filtered — no empty
+         "Filters none" band taking up a row in the common case. */}
+      {globalSearch || procFilter || tapeFilterExec ? (
+        <section className="choke-filter-strip" data-panel="active-filter-strip">
+          <span>Active filters</span>
+          {globalSearch ? <FilterChip label={`search: ${globalSearch}`} onClear={() => setGlobalSearch("")} /> : null}
+          {procFilter ? <FilterChip label={`process: ${procFilter}`} onClear={() => setProcFilter("")} /> : null}
+          {tapeFilterExec ? <FilterChip label={`exec: ${shortExec(tapeFilterExec)}`} onClear={() => setTapeFilterExec(null)} /> : null}
+          <button className="choke-inline-button" type="button" onClick={() => { setGlobalSearch(""); setProcFilter(""); setTapeFilterExec(null); }}>
+            Clear all
+          </button>
+        </section>
+      ) : null}
 
       <section className="choke-ti-ribbon" data-panel="threat-intelligence-ribbon">
         <MiniPanel title="Decision Velocity" meta={`${currentWindowDecisions.length} in ${formatWindow(windowMin)}`}>
@@ -1169,9 +1140,16 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
             title="Decision Tape"
             actions={<span className={`choke-live-indicator ${streamInfo.state}`}>{filteredDecisions.length} / {formatWindow(windowMin)}</span>}
           >
-            <div className="choke-table-toolbar">
-              <input value={tapeSearch} onChange={(event) => setTapeSearch(event.target.value)} placeholder="search reason, pid, exec_id, binary or /regex/" />
-              <div className="choke-chip-row">
+            {/* Stacked, grouped toolbar (BPF-mirror style): full-width search, then a clean
+               filter row — action facets divided from display toggles. */}
+            <div className="choke-tape-toolbar">
+              <input
+                className="choke-tape-search"
+                value={tapeSearch}
+                onChange={(event) => setTapeSearch(event.target.value)}
+                placeholder="Search reason, pid, exec_id, binary or /regex/"
+              />
+              <div className="choke-tape-filters" role="group" aria-label="Decision tape filters">
                 {["throttle", "tarpit", "quarantine", "sever", "thaw"].map((action) => (
                   <button
                     key={action}
@@ -1192,9 +1170,9 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
                   auto
                 </button>
               </div>
-            </div>
-            <div className="choke-density-spark">
-              <Sparkline bars={bucketizeDecisions(decisions, now, 1, 40)} tone="danger" />
+              <div className="choke-tape-spark" aria-label="Decision rate, last 40s">
+                <Sparkline bars={bucketizeDecisions(decisions, now, 1, 40)} tone="danger" />
+              </div>
             </div>
             {bucketizeDecisions(decisions, now, 1, 1)[0] > 5 && (
               <div className="choke-burst-banner">
@@ -1363,32 +1341,6 @@ function Sparkline({ bars, tone = "accent" }: { bars: number[]; tone?: "accent" 
         <span key={index} style={{ height: `${bar === 0 ? 2 : Math.max(2, Math.round((bar / peak) * 28))}px` }} />
       ))}
     </div>
-  );
-}
-
-function KpiTile({
-  label,
-  value,
-  previous,
-  tone = "accent",
-  bars,
-  onClick,
-}: {
-  label: string;
-  value: number;
-  previous: number;
-  tone?: "accent" | "warn" | "danger";
-  bars: number[];
-  onClick?: () => void;
-}) {
-  const delta = previous === 0 ? (value > 0 ? "new" : "-") : `${Math.round(((value - previous) / previous) * 100)}%`;
-  return (
-    <button className={`choke-kpi ${tone}`} type="button" onClick={onClick}>
-      <span>{label}</span>
-      <strong>{value}</strong>
-      <em>{delta}</em>
-      <Sparkline bars={bars} tone={tone} />
-    </button>
   );
 }
 
@@ -1704,6 +1656,29 @@ function BucketList({ buckets }: { buckets: BucketEntry[] }) {
   );
 }
 
+const PROCESS_TABLE_COLUMNS = [
+  { key: "select", label: "select" },
+  { key: "state", label: "status" },
+  { key: "pid", label: "process id" },
+  { key: "binary", label: "binary" },
+  { key: "origin", label: "origin" },
+  { key: "exec", label: "exec id" },
+  { key: "score", label: "risk" },
+  { key: "actions", label: "actions" },
+] as const;
+
+function ProcessTableHeader() {
+  return (
+    <div className="choke-process-head">
+      {PROCESS_TABLE_COLUMNS.map((column) => (
+        <span key={column.key} data-choke-col={column.key}>
+          {column.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function ProcessTable({
   rows,
   selected,
@@ -1738,35 +1713,36 @@ function ProcessTable({
   if (rows.length === 0) return <EmptyState title="No tracked processes match" body="Clear filters or wait for the next circuit snapshot." />;
   return (
     <div className={`choke-process-table ${density}`}>
-      <div className="choke-process-head">
-        <button type="button" onClick={onSelectAll}>all</button>
-        <button type="button" onClick={onClear}>clear</button>
-        <span>state</span><span>pid</span><span>binary</span><span>origin</span><span>exec_id</span><span>score</span><span>actions</span>
+      <div className="choke-process-bulkbar" role="group" aria-label="Tracked process selection">
+        <button type="button" onClick={onSelectAll}>Select all visible</button>
+        <button type="button" onClick={onClear}>Clear selection</button>
+        <span>{selected.size} selected</span>
       </div>
       <VirtualList
         className="choke-process-virtual"
         items={rows}
         estimateSize={density === "compact" ? 34 : 48}
         getKey={(entry) => entry.exec_id}
+        before={<ProcessTableHeader />}
         renderItem={(entry) => {
           const selectedRow = selected.has(entry.exec_id);
           return (
             <div className={`choke-process-row ${selectedRow ? "selected" : ""}`}>
               <input type="checkbox" checked={selectedRow} onChange={() => onSelect(entry.exec_id)} aria-label={`Select ${entry.exec_id}`} />
               <StateBadge state={entry.state} />
-              <button type="button" className="choke-link-text" onClick={() => onCopy(String(entry.pid || ""))}>{entry.pid || "-"}</button>
-              <button type="button" className="choke-link-text truncate" title={entry.binary} onClick={() => entry.binary && onFilterBinary(entry.binary)}>{entry.binary || "(unknown)"}</button>
-              <span className="truncate">{originLabel(entry) || "-"}</span>
-              <button type="button" className="choke-link-text truncate" title={entry.exec_id} onClick={() => onDrill(entry.exec_id)}>
+              <button type="button" className="choke-link-text" data-choke-col="pid" onClick={() => onCopy(String(entry.pid || ""))}>{entry.pid || "-"}</button>
+              <button type="button" className="choke-link-text truncate" data-choke-col="binary" title={entry.binary} onClick={() => entry.binary && onFilterBinary(entry.binary)}>{entry.binary || "(unknown)"}</button>
+              <span className="truncate" data-choke-col="origin">{originLabel(entry) || "-"}</span>
+              <button type="button" className="choke-link-text truncate" data-choke-col="exec" title={entry.exec_id} onClick={() => onDrill(entry.exec_id)}>
                 {shortExec(entry.exec_id)}
                 {entry.annotation?.note ? <em>note</em> : null}
                 {entry.revert_pending ? <em>revert</em> : null}
                 {(alertCounts.get(entry.exec_id) || 0) > 0 ? <em>{alertCounts.get(entry.exec_id)} alerts</em> : null}
               </button>
-              <span className="choke-score">
+              <span className="choke-score" data-choke-col="score">
                 <strong>{entry.score || 0}</strong><span><span style={{ width: `${Math.min(100, entry.score || 0)}%` }} /></span>
               </span>
-              <span className="choke-row-actions">
+              <span className="choke-row-actions" data-choke-col="actions">
                 {ACTIONS.map((action) => (
                   <button key={action} type="button" onClick={() => onAction(entry, action)}>{action.slice(0, 3)}</button>
                 ))}
@@ -2059,14 +2035,15 @@ function ProcessDrill({
           </section>
           <section>
             <h3>Event timeline</h3>
-            {events.length === 0 ? <span className="choke-muted">none</span> : null}
-            {events.slice(-12).map((event) => (
-              <div key={event.id || `${event.timestamp}-${event.event_type}`} className="choke-drill-row">
-                <span>{formatTime(event.timestamp)}</span>
-                <strong>{event.event_type || "-"}</strong>
-                <em>{event.policy_name || event.args || ""}</em>
-              </div>
-            ))}
+            <EventReplay
+              events={events.map((event) => ({
+                id: String(event.id || `${event.timestamp}-${event.event_type}`),
+                time: event.timestamp ?? "",
+                kind: event.event_type || "-",
+                detail: event.policy_name || event.args || ""
+              }))}
+              emptyLabel="No process events for this exec."
+            />
           </section>
         </div>
       ) : null}
@@ -2612,6 +2589,9 @@ function ProfilePanel({
   onDensity,
   onWindow,
   onSnapshot,
+  onCommand,
+  onHelp,
+  onThaw,
   onClose,
 }: {
   userLabel: string;
@@ -2625,6 +2605,9 @@ function ProfilePanel({
   onDensity: () => void;
   onWindow: (value: number) => void;
   onSnapshot: () => void;
+  onCommand: () => void;
+  onHelp: () => void;
+  onThaw: () => void;
   onClose: () => void;
 }) {
   return (
@@ -2636,6 +2619,10 @@ function ProfilePanel({
           <X size={15} aria-hidden="true" />
         </button>
       </header>
+      <div className="choke-profile-tools">
+        <button type="button" onClick={onCommand}>Command palette</button>
+        <button type="button" onClick={onHelp}>Help &amp; shortcuts</button>
+      </div>
       <div className="choke-kv-list">
         <div><span>session</span><strong>{formatUptime(Date.now() - bootMs)}</strong></div>
         <div><span>decisions seen</span><strong>{decisionsSeen}</strong></div>
@@ -2650,6 +2637,7 @@ function ProfilePanel({
       </label>
       <div className="choke-popover-actions">
         <button type="button" onClick={onSnapshot}>Snapshot</button>
+        <button type="button" onClick={onThaw}>Thaw all</button>
         <a href="/api/logout">Sign out</a>
       </div>
     </aside>

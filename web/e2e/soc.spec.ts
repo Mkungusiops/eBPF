@@ -21,6 +21,18 @@ test.describe("SOC route", () => {
     await expect(page.locator('[data-panel="live-event-stream"]')).toBeVisible();
     await expect(page.getByRole("button", { name: /file_open cat \/etc\/shadow/i })).toBeVisible();
 
+    await page.getByRole("button", { name: "Briefing" }).click();
+    await expect(page.getByLabel("Briefing mode")).toContainText("What is happening");
+    await expect(page.getByLabel("Briefing decision lenses")).toContainText("Business impact");
+    const affectedCopy = page.locator(".soc-briefing-item").nth(2).locator("p");
+    await affectedCopy.evaluate((node) => {
+      node.textContent =
+        "137 active processes observed; top signal is ZDJlMjUwYjEzODYxOjMyOTkzNzk4OTEyMDM1MjoxNTM0Mzg0.";
+    });
+    await expect
+      .poll(() => affectedCopy.evaluate((node) => node.scrollWidth <= node.clientWidth))
+      .toBe(true);
+
     await page.getByRole("button", { name: "Command palette" }).click();
     await expect(page.locator('[data-panel="command-palette"]')).toBeVisible();
 
@@ -96,7 +108,9 @@ test.describe("SOC route", () => {
     await expect(drill.locator(".soc-drill-narrative")).toContainText("2-process chain");
     await expect(drill).toContainText("Choke response");
     await expect(drill).toContainText("Process lineage");
-    await expect(drill.locator(".soc-drill-event")).toContainText("file_open");
+    // Event timeline is the shared replay widget; it lists the kernel events.
+    await expect(drill.locator(".event-replay")).toContainText("file_open");
+    await expect(drill.getByRole("button", { name: /Replay event timeline/i })).toBeVisible();
 
     expectNoReleaseBlockingBrowserErrors(diagnostics);
   });

@@ -96,6 +96,7 @@ func (s *Server) Start(addr string) error {
 	// PWA support files live at the dist root and are public so the worker,
 	// manifest, and icons load before authentication (see web_assets.go).
 	mux.HandleFunc("/sw.js", s.handlePWAFile)
+	mux.HandleFunc("/pwa-install-bridge.js", s.handlePWAFile)
 	mux.HandleFunc("/manifest.webmanifest", s.handlePWAFile)
 	mux.HandleFunc("/pwa-192x192.png", s.handlePWAFile)
 	mux.HandleFunc("/pwa-512x512.png", s.handlePWAFile)

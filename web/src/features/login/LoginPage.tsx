@@ -34,9 +34,15 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
   const [installPhase, setInstallPhase] = useState<InstallPhase>("idle");
   const install = usePwaInstall();
   const hasError = useMemo(() => new URLSearchParams(window.location.search).get("err") === "1", []);
-  const installBusy = installPhase !== "idle";
+  const installBusy = install.preparing || installPhase !== "idle";
   const installLabel =
-    installPhase === "checking" ? "Checking install" : installPhase === "prompting" ? "Opening install" : "Install app";
+    install.preparing
+      ? "Preparing install"
+      : installPhase === "checking"
+        ? "Checking install"
+        : installPhase === "prompting"
+          ? "Opening install"
+          : "Install app";
 
   useEffect(() => {
     applyLoginTheme(theme);
@@ -54,16 +60,20 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
     try {
       if (install.available) {
         setInstallPhase("prompting");
-        await install.promptInstall();
+        const prompted = await install.promptInstall();
+        if (!prompted) setInstallOpen(true);
         return;
       }
 
       setInstallPhase("checking");
       const promptReady =
-        install.platform === "chromium" ? await install.waitForPrompt(2200) : await delay(650).then(() => false);
+        install.platform === "desktop-chromium" || install.platform === "android-browser"
+          ? await install.waitForPrompt(2200)
+          : await delay(650).then(() => false);
       if (promptReady) {
         setInstallPhase("prompting");
-        await install.promptInstall();
+        const prompted = await install.promptInstall();
+        if (!prompted) setInstallOpen(true);
         return;
       }
       setInstallOpen(true);
@@ -87,7 +97,13 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
           >
             {installBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
             <span className={installBusy ? "inline" : "hidden sm:inline"}>
-              {installPhase === "checking" ? "Checking..." : installPhase === "prompting" ? "Opening..." : "Install"}
+              {install.preparing
+                ? "Preparing..."
+                : installPhase === "checking"
+                  ? "Checking..."
+                  : installPhase === "prompting"
+                    ? "Opening..."
+                    : "Install"}
             </span>
           </button>
         ) : null}
@@ -164,27 +180,33 @@ function InstallHelp({ platform, onClose }: { platform: PwaInstallPlatform; onCl
   const copy =
     platform === "ios-browser"
       ? {
-          title: "Install on iPhone",
-          body: "Tap Share in Chrome, Edge, or Safari, then choose Add to Home Screen with Open as Web App enabled.",
-          note: "To keep it searchable without a visible icon, add it first, move it to its own Home Screen page, then hide that page. Deleting the web app removes it from Search.",
+          title: "Install on iPhone or iPad",
+          body: "Tap Share, then Add to Home Screen. If iOS shows Open as Web App, leave it enabled before tapping Add.",
+          note: "The installed app opens as its own web app from the Home Screen and device search.",
         }
-      : platform === "chromium"
+      : platform === "android-browser"
         ? {
-            title: "Install in Chrome or Edge",
-            body: "The native install prompt is not available yet in this tab.",
-            note: "Use Install app, not Add shortcut/bookmark. On Android, a real installed PWA remains in the app drawer/search after you remove its Home Screen shortcut.",
-        }
-      : platform === "desktop-safari"
-        ? {
-            title: "Install on Safari",
-            body: "Use File, then Add to Dock when Safari offers it.",
-            note: "The app manifest and offline worker are already published.",
+            title: "Install on Android",
+            body: "Use a normal Chrome or Edge tab, open the browser menu, then choose Install app. If prompted, keep the app install option selected instead of a plain shortcut.",
+            note: "Incognito and temporary profiles cannot create the persistent app. A real installed PWA remains available from the launcher and search.",
           }
-        : {
-            title: "Install app",
-            body: "Open the browser menu and choose Install app or Add to Home Screen.",
-            note: "If the browser only creates a bookmark/shortcut, removing that icon also removes the launcher entry.",
-          };
+        : platform === "desktop-chromium"
+          ? {
+              title: "Use a regular Edge or Chrome profile",
+              body: "Close InPrivate, Incognito, and Guest windows. Open this URL in a normal Edge or Chrome profile, then use the address-bar app icon or choose Apps, then Install this site as an app.",
+              note: "Private and Guest profiles cannot create the persistent macOS app, even when the PWA itself is valid.",
+            }
+          : platform === "desktop-safari"
+            ? {
+                title: "Install on Safari",
+                body: "Use File, then Add to Dock when Safari offers it.",
+                note: "The app manifest, icons, and offline worker are already published.",
+              }
+            : {
+                title: "Install app",
+                body: "Open the browser menu and choose Install app or Add to Home Screen.",
+                note: "If the browser only creates a bookmark or shortcut, removing that icon also removes the launcher entry.",
+              };
 
   return (
     <div

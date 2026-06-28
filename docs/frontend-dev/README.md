@@ -1,7 +1,7 @@
 # Frontend Dev - Vite Multi-Entry React Console
 
 > Status: active implementation and certification plan
-> Last updated: 2026-06-25
+> Last updated: 2026-06-28
 > Supersedes: the earlier static-export framework proposal
 
 This folder tracks the frontend migration for the eBPF runtime-security console. The adopted
@@ -168,5 +168,6 @@ The frontend-dev folder is complete only when these items are true:
 ## Reference Docs
 
 - [recommended-stack.md](recommended-stack.md)
+- [security-console-ui.md](security-console-ui.md)
 - [78-panel-redesign-target-vm-e2e-certification-plan.md](78-panel-redesign-target-vm-e2e-certification-plan.md)
 - [pending-work.md](pending-work.md)

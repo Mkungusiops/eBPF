@@ -1,28 +1,27 @@
 .choke-route {
-  /* Enterprise-warm dark palette (shared with the SOC console). */
-  --bg: #111212;
-  --panel: #1d1d1b;
-  --panel-2: #24231f;
-  --panel-3: #302d27;
-  --border: rgba(190, 174, 148, 0.19);
-  --border-strong: rgba(204, 185, 153, 0.36);
-  --text: #f1ece3;
-  --muted: #aea496;
-  --dim: #797064;
-  --accent: #849eff;
-  --ok: #3dd6b3;
-  --warn: #d8a94a;
-  --danger: #ef667a;
-  --blue: #79a8ff;
-  --shadow: 0 18px 56px rgba(0, 0, 0, 0.36);
+  /* Cool neutral-slate dark palette (shared with the SOC console). */
+  --bg: #0a0c10;
+  --panel: #12161f;
+  --panel-2: #1a1f2b;
+  --panel-3: #212735;
+  --border: rgba(148, 163, 184, 0.12);
+  --border-strong: rgba(148, 163, 184, 0.22);
+  --text: #e6eaf1;
+  --muted: #9ba7b8;
+  --dim: #5c6675;
+  --accent: #6e8bff;
+  --ok: #36c795;
+  --warn: #e0a53b;
+  --danger: #f2576b;
+  --blue: #6e8bff;
+  --shadow: 0 18px 56px rgba(0, 0, 0, 0.5);
   min-height: 100vh;
   padding-bottom: 44px;
   color: var(--text);
   background:
-    radial-gradient(circle at 16% -10%, rgba(216, 169, 74, 0.065), transparent 28rem),
-    radial-gradient(circle at 94% 2%, rgba(132, 158, 255, 0.085), transparent 24rem),
-    radial-gradient(circle at 64% 100%, rgba(61, 214, 179, 0.045), transparent 28rem),
-    linear-gradient(180deg, #101111 0%, var(--bg) 48%, #111212 100%);
+    radial-gradient(circle at 100% -6%, rgba(110, 139, 255, 0.07), transparent 30rem),
+    radial-gradient(circle at 0% 100%, rgba(110, 139, 255, 0.03), transparent 30rem),
+    linear-gradient(180deg, #0b0e14 0%, var(--bg) 60%, #0a0c10 100%);
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
   line-height: 1.45;
@@ -30,19 +29,23 @@
 
 .choke-route[data-theme="light"],
 .choke-theme-light .choke-route {
-  --bg: #f5f7fb;
+  --bg: #f5f7fa;
   --panel: #ffffff;
-  --panel-2: #eef3f8;
-  --panel-3: #e1e8f2;
-  --border: rgba(83, 98, 121, 0.22);
-  --border-strong: rgba(83, 98, 121, 0.38);
-  --text: #111827;
-  --muted: #526174;
-  --dim: #7c8898;
-  --shadow: 0 18px 60px rgba(41, 55, 75, 0.16);
+  --panel-2: #eef2f7;
+  --panel-3: #e3e9f2;
+  --border: rgba(26, 34, 48, 0.12);
+  --border-strong: rgba(26, 34, 48, 0.2);
+  --text: #1a2230;
+  --muted: #51607a;
+  --dim: #79859a;
+  --accent: #4f6bef;
+  --ok: #0e9f6e;
+  --warn: #c2820a;
+  --danger: #e11d48;
+  --blue: #2563eb;
+  --shadow: 0 18px 60px rgba(41, 55, 75, 0.14);
   background:
-    radial-gradient(circle at 16% -10%, rgba(107, 138, 253, 0.14), transparent 26rem),
-    radial-gradient(circle at 94% 2%, rgba(244, 63, 94, 0.08), transparent 22rem),
+    radial-gradient(circle at 100% -6%, rgba(79, 107, 239, 0.06), transparent 28rem),
     linear-gradient(180deg, #f9fbfd 0%, var(--bg) 100%);
 }
 
@@ -81,22 +84,113 @@
   display: grid;
   gap: 12px;
   align-items: center;
-  padding: 10px 20px;
+  padding: 8px 20px;
+}
+
+/* Status reads as quiet dot+label chrome — boxed pill only appears on hover. */
+.choke-status-cluster .choke-pill {
+  min-height: 28px;
+  padding: 5px 9px;
+  color: var(--muted);
+  background: transparent;
+  border-color: transparent;
+  text-transform: capitalize;
+}
+
+.choke-status-cluster .choke-pill:hover {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+/* Tucked tools surfaced inside the profile menu. */
+.choke-profile-tools {
+  display: grid;
+  gap: 6px;
+  margin: 2px 0 10px;
+}
+
+.choke-profile-tools button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--panel-2);
+  color: var(--text);
+}
+
+.choke-profile-tools button:hover {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
 }
 
 .choke-topbar-primary {
   grid-template-columns: auto minmax(260px, 1fr) auto auto;
 }
 
-.choke-topbar-secondary {
-  grid-template-columns: auto minmax(270px, 0.8fr) auto auto auto auto auto auto;
+
+/* Back-to-SOC button — the one nav affordance in a sub-page header. */
+.choke-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 11px 5px 9px;
+  border-radius: 7px;
+  color: var(--muted);
+  background: transparent;
+  border: 1px solid transparent;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.choke-back:hover {
+  color: var(--text);
+  background: var(--panel-2);
+  border-color: var(--border);
+}
+
+.choke-back svg {
+  color: var(--accent);
+}
+
+.choke-brand-divider {
+  width: 1px;
+  height: 20px;
+  flex-shrink: 0;
+  background: var(--border);
+  margin: 0 4px;
+}
+
+/* Operations bar — single flex toolbar; response controls trail to the right. */
+.choke-topbar-row.choke-ops-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
   border-top: 1px solid var(--border);
+}
+
+.choke-ops-trail {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-left: auto;
+}
+
+.choke-ops-sep {
+  width: 1px;
+  height: 22px;
+  flex-shrink: 0;
+  align-self: center;
+  background: var(--border);
 }
 
 .choke-brand,
 .choke-status-cluster,
 .choke-user-cluster,
-.choke-kpi-strip,
 .choke-panel-actions,
 .choke-chip-row,
 .choke-row-actions,
@@ -161,6 +255,7 @@
 
 .choke-search,
 .choke-table-toolbar input,
+.choke-tape-search,
 .choke-policy-grid textarea,
 .choke-confirm input,
 .choke-jail-tools input,
@@ -186,7 +281,7 @@
 .choke-command-card input:focus,
 .choke-drill-body textarea:focus {
   border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(107, 138, 253, 0.16);
+  box-shadow: 0 0 0 3px rgba(110, 139, 255, 0.16);
 }
 
 .choke-avatar {
@@ -271,43 +366,6 @@
   background: var(--accent);
 }
 
-.choke-kpi-strip {
-  min-width: 0;
-}
-
-.choke-kpi {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  grid-template-rows: auto auto 14px;
-  gap: 1px 8px;
-  width: 122px;
-  min-width: 0;
-  min-height: 54px;
-  overflow: hidden;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  background: var(--panel-2);
-  text-align: left;
-}
-
-.choke-kpi span {
-  grid-column: 1 / -1;
-  color: var(--muted);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.choke-kpi strong {
-  font-size: 18px;
-}
-
-.choke-kpi em {
-  color: var(--dim);
-  font-size: 10px;
-  font-style: normal;
-}
 
 .choke-spark {
   display: flex;
@@ -337,24 +395,42 @@
   background: var(--danger);
 }
 
-.choke-preset-bar,
 .choke-filter-strip {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
   padding: 8px 20px;
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
 }
 
-.choke-preset-bar button {
+.choke-preset-label {
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--muted);
+}
+
+.choke-preset-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.choke-preset-group button {
   border: 1px solid var(--border);
   border-radius: 6px;
   color: var(--text);
   background: transparent;
   padding: 5px 9px;
   text-transform: capitalize;
+}
+
+.choke-preset-group button:hover:not(:disabled) {
+  border-color: var(--border-strong);
+  background: var(--panel-2);
 }
 
 .choke-muted,
@@ -366,7 +442,7 @@
   min-height: 24px;
   padding: 4px 8px;
   color: var(--accent);
-  background: rgba(107, 138, 253, 0.1);
+  background: rgba(110, 139, 255, 0.1);
 }
 
 .choke-banner {
@@ -872,12 +948,14 @@
   color: var(--warn);
 }
 
+/* Stacked toolbar — full-width search on top, filter chips below — matching the
+   Decision Tape so the two panels' filter rows line up. */
 .choke-table-toolbar {
   display: grid;
-  grid-template-columns: minmax(220px, 1fr) auto;
   gap: 10px;
-  align-items: center;
-  margin-bottom: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .choke-chip {
@@ -887,9 +965,9 @@
 }
 
 .choke-chip.on {
-  border-color: rgba(107, 138, 253, 0.45);
+  border-color: rgba(110, 139, 255, 0.45);
   color: var(--accent);
-  background: rgba(107, 138, 253, 0.1);
+  background: rgba(110, 139, 255, 0.1);
 }
 
 .choke-process-table,
@@ -906,26 +984,43 @@
 
 .choke-process-virtual {
   max-height: min(62vh, 680px);
+  overscroll-behavior: contain;
 }
 
+/* Header is rendered inside the virtual scroller so labels move with the rows. */
 .choke-process-head,
 .choke-process-row {
   display: grid;
-  grid-template-columns: 38px 106px 58px minmax(110px, 1.1fr) minmax(84px, 0.8fr) minmax(150px, 1.35fr) 92px 190px;
+  grid-template-columns: 54px 118px 78px minmax(116px, 1.1fr) minmax(84px, 0.8fr) minmax(150px, 1.35fr) 92px 190px;
   gap: 8px;
   align-items: center;
+  min-width: 930px;
 }
 
 .choke-process-head {
-  position: sticky;
-  top: 0;
-  z-index: 2;
-  border-bottom: 1px solid var(--border);
+  position: static;
+  margin-top: 4px;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
   color: var(--muted);
-  background: var(--panel);
-  padding: 7px 0;
+  background: color-mix(in srgb, var(--panel-2) 72%, var(--panel));
+  padding: 8px 10px;
   font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.choke-process-head > span,
+.choke-process-row > * {
+  min-width: 0;
+}
+
+.choke-process-head > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .choke-process-head button {
@@ -934,21 +1029,73 @@
   background: transparent;
 }
 
+.choke-process-bulkbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  padding: 8px 0 6px;
+  color: var(--muted);
+  border-top: 1px solid rgba(127, 140, 165, 0.1);
+}
+
+.choke-process-bulkbar button {
+  min-height: 24px;
+  padding: 3px 8px;
+  color: var(--text);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 10px;
+}
+
+.choke-process-bulkbar button:hover {
+  border-color: var(--border-strong);
+  background: var(--panel-3);
+}
+
+.choke-process-bulkbar span {
+  margin-left: auto;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .choke-process-row {
   border-bottom: 1px solid rgba(127, 140, 165, 0.14);
-  padding: 8px 0;
+  padding: 8px 10px;
   font-size: 12px;
 }
 
 .choke-process-table.compact .choke-process-row {
-  padding: 4px 0;
+  padding: 4px 10px;
   font-size: 11px;
+}
+
+.choke-process-head [data-choke-col="select"],
+.choke-process-row > input {
+  justify-self: center;
+}
+
+.choke-process-head [data-choke-col="state"],
+.choke-process-row > .choke-state-badge {
+  justify-content: center;
+  width: 100%;
+}
+
+.choke-process-head [data-choke-col="pid"],
+.choke-process-row [data-choke-col="pid"] {
+  width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.choke-process-row [data-choke-col="pid"] {
+  font-weight: 700;
 }
 
 .choke-process-row.selected,
 .choke-tape-row.selected,
 .choke-jail-row.selected {
-  background: rgba(107, 138, 253, 0.08);
+  background: rgba(110, 139, 255, 0.08);
 }
 
 .choke-link-text {
@@ -999,8 +1146,26 @@
   text-align: center;
 }
 
-.choke-density-spark {
-  margin-bottom: 8px;
+
+/* Decision Tape toolbar — stacked + grouped (BPF-mirror inspired) so the 8 controls
+   align cleanly in the narrow rail instead of cramming beside the search box. */
+.choke-tape-toolbar {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* Two balanced rows of four equal-width chips. */
+.choke-tape-filters {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choke-tape-spark {
+  height: 30px;
 }
 
 .choke-burst-banner {
@@ -1026,8 +1191,10 @@
 .choke-tape-head,
 .choke-tape-row {
   display: grid;
-  grid-template-columns: 24px 62px 86px minmax(0, 1fr) 76px;
-  gap: 8px;
+  /* Tools track is sized to hold both buttons so they never spill onto the
+     exec_id column; exec_id flexes and truncates (overflow:hidden below). */
+  grid-template-columns: 22px 56px 84px minmax(0, 1fr) 90px;
+  gap: 6px;
   align-items: center;
 }
 
@@ -1087,7 +1254,7 @@
   border-radius: 999px;
   padding: 1px 5px;
   color: var(--accent);
-  background: rgba(107, 138, 253, 0.1);
+  background: rgba(110, 139, 255, 0.1);
   font-size: 9px;
   font-style: normal;
 }
@@ -1107,7 +1274,7 @@
 
 .choke-tape-actions button {
   min-height: 26px;
-  padding: 4px 7px;
+  padding: 4px 6px;
   font-size: 10px;
 }
 
@@ -1170,7 +1337,7 @@
 }
 
 .choke-empty.loading {
-  border-color: rgba(107, 138, 253, 0.38);
+  border-color: rgba(110, 139, 255, 0.38);
 }
 
 .choke-popover,
@@ -1327,7 +1494,7 @@
   gap: 5px;
   border: 1px solid var(--border);
   border-radius: 7px;
-  background: rgba(107, 138, 253, 0.06);
+  background: rgba(110, 139, 255, 0.06);
   padding: 12px;
 }
 
@@ -1355,7 +1522,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 7px;
   background:
-    linear-gradient(135deg, rgba(107, 138, 253, 0.08), transparent 52%),
+    linear-gradient(135deg, rgba(110, 139, 255, 0.08), transparent 52%),
     rgba(15, 17, 23, 0.18);
   padding: 14px;
   color: var(--text);
@@ -1500,7 +1667,7 @@
 .choke-command-card button.selected,
 .choke-command-card [cmdk-item][data-selected="true"] {
   border-color: var(--accent);
-  background: rgba(107, 138, 253, 0.1);
+  background: rgba(110, 139, 255, 0.1);
 }
 
 .choke-help {
@@ -1697,7 +1864,7 @@
 
 @media (max-width: 1280px) {
   .choke-topbar-primary,
-  .choke-topbar-secondary,
+  .choke-ops-row,
   .choke-grid,
   .choke-ti-ribbon,
   .choke-policy-grid {
@@ -1706,10 +1873,13 @@
 
   .choke-status-cluster,
   .choke-user-cluster,
-  .choke-kpi-strip,
-  .choke-preset-bar,
   .choke-filter-strip {
     flex-wrap: wrap;
+  }
+
+  /* When the operations bar wraps, drop the right-alignment so groups flow naturally. */
+  .choke-ops-trail {
+    margin-left: 0;
   }
 
   .choke-table-toolbar,
@@ -1720,13 +1890,17 @@
 
   .choke-process-head,
   .choke-process-row {
-    grid-template-columns: 28px 96px 48px minmax(120px, 1fr);
+    grid-template-columns: 46px 104px 72px minmax(120px, 1fr);
   }
 
-  .choke-process-head span:nth-of-type(n + 4),
-  .choke-process-row > span:nth-of-type(n + 4),
-  .choke-process-row .choke-score,
-  .choke-process-row .choke-row-actions {
+  .choke-process-head [data-choke-col="origin"],
+  .choke-process-head [data-choke-col="exec"],
+  .choke-process-head [data-choke-col="score"],
+  .choke-process-head [data-choke-col="actions"],
+  .choke-process-row [data-choke-col="origin"],
+  .choke-process-row [data-choke-col="exec"],
+  .choke-process-row [data-choke-col="score"],
+  .choke-process-row [data-choke-col="actions"] {
     display: none;
   }
 }

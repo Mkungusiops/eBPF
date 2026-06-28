@@ -1,7 +1,6 @@
 import {
   AlertTriangle,
   ArrowLeft,
-  ArrowRight,
   ChevronDown,
   ChevronRight,
   Moon,
@@ -162,9 +161,11 @@ export function DevicesRoute({
 
   const refreshFlows = useCallback(
     async (mac: string, signal?: AbortSignal) => {
+      // Only show the loading state on first fetch; background re-polls update
+      // silently (keep showing existing flows) so expanded rows don't flash.
       setFlows((previous) => ({
         ...previous,
-        [mac]: { ...previous[mac], loading: true, error: undefined }
+        [mac]: { ...previous[mac], loading: !previous[mac]?.flows, error: undefined }
       }));
       try {
         const response = await api.fetchFlows(mac, { signal });
@@ -374,37 +375,31 @@ export function DevicesRoute({
 
   return (
     <main className={`devices-route${theme === "light" ? " theme-light" : ""}`}>
+      {/* Uniform platform header: full-width sticky bar — back-to-SOC · brand · mode,
+         then status + theme. Mirrors the Choke gateway header standard. */}
+      <header className="devices-topbar">
+        <div className="devices-topbar-row" data-panel="topbar-row-1">
+          <a className="devices-back" href="/" title="Back to SOC dashboard">
+            <ArrowLeft size={15} aria-hidden="true" />
+            <span>SOC</span>
+          </a>
+          <span className="devices-brand-divider" aria-hidden="true" />
+          <h1 className="devices-brand-mark">Network Choke - Devices</h1>
+          <ModeBadge state={state} compact />
+          <div className="devices-topbar-spacer" />
+          <PlaneStateStrip state={state} disabledMessage={disabledMessage} updatedAt={lastUpdatedAt} />
+          <button
+            type="button"
+            className="devices-icon-button"
+            title="Toggle theme"
+            aria-label="Toggle theme"
+            onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
+          >
+            {theme === "light" ? <Moon size={15} aria-hidden="true" /> : <Sun size={15} aria-hidden="true" />}
+          </button>
+        </div>
+      </header>
       <div className="devices-layout">
-        <header className="devices-topbar">
-          <div>
-            <div className="devices-title-row">
-              <nav className="devices-nav" aria-label="Devices navigation">
-                <a className="devices-link" href="/">
-                  <ArrowLeft size={15} aria-hidden="true" />
-                  SOC
-                </a>
-              </nav>
-              <div>
-                <h1 className="devices-title">Network Choke - Devices</h1>
-                <p className="devices-subtitle">Per-MAC LAN enforcement and flow inspection</p>
-              </div>
-              <a className="devices-link" href="/choke">
-                Process console
-                <ArrowRight size={15} aria-hidden="true" />
-              </a>
-              <button
-                type="button"
-                className="devices-icon-button"
-                title="Toggle theme"
-                aria-label="Toggle theme"
-                onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
-              >
-                {theme === "light" ? <Moon size={15} aria-hidden="true" /> : <Sun size={15} aria-hidden="true" />}
-              </button>
-            </div>
-          </div>
-          <PlaneStateStrip state={state} disabledMessage={disabledMessage} refreshing={refreshing} />
-        </header>
 
         {disabledMessage ? (
           <section className="devices-grid" aria-live="polite">
@@ -636,11 +631,11 @@ export function DevicesRoute({
 function PlaneStateStrip({
   state,
   disabledMessage,
-  refreshing
+  updatedAt
 }: {
   state: DeviceDataPlaneState | null;
   disabledMessage: string | null;
-  refreshing: boolean;
+  updatedAt: number | null;
 }) {
   if (disabledMessage) {
     return (
@@ -652,18 +647,43 @@ function PlaneStateStrip({
 
   return (
     <div className="devices-plane-strip" aria-label="Device data-plane state">
-      <ModeBadge state={state} compact />
-      <span className="devices-pill devices-pill--plain">
-        plane=<strong>{state?.data_plane ?? "-"}</strong>
-      </span>
-      <span className="devices-pill devices-pill--plain">
-        links=<strong>{state?.links_attached ?? 0}</strong>
-      </span>
-      <span className={`devices-pill devices-pill--plain${isBridgeMasterWarning(state) ? " devices-pill--warn" : ""}`}>
-        frames=<strong>{state?.frames_seen ?? 0}</strong>
-      </span>
-      {refreshing ? <span className="devices-pill devices-pill--info">polling</span> : null}
+      {/* Quiet secondary telemetry; hover/focus reveals what each term means. */}
+      <div className="devices-diag">
+        <span
+          tabIndex={0}
+          data-tip="Data-plane actuator: ‘noop’ = audit only, no kernel enforcement; ‘tc’ = live TC/eBPF dropping or rate-limiting by MAC."
+        >
+          plane <strong>{state?.data_plane ?? "-"}</strong>
+        </span>
+        <span
+          tabIndex={0}
+          data-tip="Network interfaces the device-choke BPF program is attached to. 0 = not attached (single-NIC box / no inline bridge)."
+        >
+          links <strong>{state?.links_attached ?? 0}</strong>
+        </span>
+        <span
+          tabIndex={0}
+          className={isBridgeMasterWarning(state) ? "is-warn" : undefined}
+          data-tip="Forwarded Ethernet frames the data plane has actually seen. Turns amber if links are up but frames stay 0 — a sign it’s attached to a bridge master instead of a slave."
+        >
+          frames <strong>{state?.frames_seen ?? 0}</strong>
+        </span>
+      </div>
+      <LiveBeacon updatedAt={updatedAt} />
     </div>
+  );
+}
+
+// A calm "live" beacon: a steady dot that emits a single radar-style ping ripple
+// each time a poll lands fresh data (keyed on updatedAt so the ring re-animates).
+// Replaces the old jarring "polling" text flash.
+function LiveBeacon({ updatedAt }: { updatedAt: number | null }) {
+  return (
+    <span className="devices-beacon" title="Live · auto-refreshing" aria-label="Live, auto-refreshing">
+      <span className="devices-beacon-core" />
+      {updatedAt ? <span className="devices-beacon-ping" key={updatedAt} /> : null}
+      <span className="devices-beacon-label">live</span>
+    </span>
   );
 }
 

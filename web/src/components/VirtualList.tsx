@@ -5,6 +5,7 @@ export function VirtualList<T>({
   items,
   estimateSize,
   renderItem,
+  before,
   className,
   getKey,
   empty,
@@ -14,6 +15,8 @@ export function VirtualList<T>({
   items: T[];
   estimateSize: number;
   renderItem: (item: T, index: number) => ReactNode;
+  /** Rendered inside the scroll viewport before virtual rows. */
+  before?: ReactNode;
   className?: string;
   getKey?: (item: T, index: number) => string | number;
   empty?: ReactNode;
@@ -40,11 +43,17 @@ export function VirtualList<T>({
   });
 
   if (items.length === 0) {
-    return <div ref={setViewportRef} className={className}>{empty}</div>;
+    return (
+      <div ref={setViewportRef} className={className}>
+        {before}
+        {empty}
+      </div>
+    );
   }
 
   return (
     <div ref={setViewportRef} className={className}>
+      {before}
       <div style={{ height: `${virtualizer.getTotalSize()}px`, position: "relative" }}>
         {virtualizer.getVirtualItems().map((virtualRow) => (
           <div

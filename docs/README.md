@@ -13,8 +13,9 @@ Design, components, and the gateway's runtime model.
   five-rung state machine (pristine → throttled → tarpit → quarantined
   → severed).
 - [network-choke-gateway.md](architecture/network-choke-gateway.md) —
-  **design (not yet built):** per-device (MAC) enforcement via a TC
-  clsact data plane on an inline Linux bridge.
+  per-device (MAC) enforcement via a TC clsact data plane on an inline
+  Linux bridge. **Built** — the `/devices` console is live and the data
+  plane is proven 6/6 in the netns lab (real per-MAC drop + restore).
 
 ## [Getting started](getting-started/)
 
@@ -27,10 +28,13 @@ First-run setup for new contributors.
 
 Production deployment paths.
 
+- [ubuntu-server.md](deployment/ubuntu-server.md) — **recommended
+  step-by-step** for a fresh Ubuntu 22.04/24.04 server: `setup.sh` →
+  build → `install.sh` (systemd) → nginx/TLS → verify.
 - [tarball-quickstart.md](deployment/tarball-quickstart.md) — fastest
   path: `make tarball`, scp, run, open in browser.
-- [linux-server.md](deployment/linux-server.md) — fresh Linux server
-  (cloud VM, bare metal, hypervisor guest).
+- [linux-server.md](deployment/linux-server.md) — the longer, manual
+  walkthrough (per-step rationale, transfer options, hardening checklist).
 - [network-choke-gateway.md](deployment/network-choke-gateway.md) —
   inline transparent-bridge gateway for the per-device (MAC) network
   choke (two NICs, TC clsact, no Tetragon).
@@ -56,16 +60,27 @@ CLI / API reference material.
 
 - [chokectl.md](reference/chokectl.md) — the `chokectl` fleet CLI.
 
-## [Frontend migration](frontend-migration/)
+## [Frontend](frontend-dev/)
 
-Plan for converting the five embedded HTML consoles (SOC, Choke,
-Devices, Fleet, Login) to a statically-exported Next.js app re-embedded
-in the Go binary.
+The dashboard frontend: a **Vite multi-entry React** app (TypeScript,
+Tailwind, Zustand, Radix, D3, Vitest + Playwright) built to a static
+bundle and embedded into the Go binary with `go:embed`. No Node runtime
+in production; Go stays the only server.
 
-- [README.md](frontend-migration/README.md) — **one combined document:**
-  architecture, phased build, timeline, the full 63-route API inventory,
-  the 78-panel per-console parity gate, cutover, and risks. (Supersedes
-  the former four-file split.)
+- [README.md](frontend-dev/README.md) — stack, scope, the five console
+  entries (SOC, Choke, Devices, Fleet, Login), and the 78-panel parity gate.
+- [recommended-stack.md](frontend-dev/recommended-stack.md) — why this stack.
+- [security-console-ui.md](frontend-dev/security-console-ui.md) — current
+  SOC briefing, Choke tracked-process table, and drilldown UI contracts.
+- [78-panel-redesign-target-vm-e2e-certification-plan.md](frontend-dev/78-panel-redesign-target-vm-e2e-certification-plan.md)
+  — the release certification plan.
+- [pending-work.md](frontend-dev/pending-work.md) — completion report.
+
+The console now runs the **UI 2.0** redesign: a cool neutral-slate
+palette, a unified enterprise header standard across all pages, an
+executive summary band on the SOC dashboard, and decluttered toolbars.
+Operational deploy history lives in
+[deployment/live-soc-adanianlabs.md](deployment/live-soc-adanianlabs.md).
 
 ## [Development](development/)
 

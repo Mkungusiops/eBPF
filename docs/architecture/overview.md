@@ -10,10 +10,11 @@ syscall and kprobe events from inside the kernel via eBPF; a Go correlation
 engine consumes them, builds a process tree, scores chains of suspicious
 behavior, persists to SQLite, and serves a real-time SOC-style dashboard.
 
-The dashboard is **single-binary, no external services**. The engine
-embeds the HTML, login page, and favicon via `go:embed`, talks to
-Tetragon over a gRPC unix socket, and writes events to a single SQLite
-file with WAL mode.
+The dashboard is **single-binary, no external services**. The frontend is a
+Vite multi-entry **React** app (TypeScript, Tailwind, Zustand, Radix, D3) built
+to a static bundle and embedded via `go:embed` — there is no Node runtime in
+production. The engine talks to Tetragon over a gRPC unix socket and writes
+events to a single SQLite file with WAL mode.
 
 ## High-level diagram
 
@@ -105,10 +106,13 @@ dependencies. Responsibilities:
   — bcrypt-hashed credentials, HttpOnly cookie sessions with 24h TTL,
   constant-time comparison, simple per-IP rate limiting.
 
-### Dashboard ([engine/internal/api/index.html](../../engine/internal/api/index.html))
+### Dashboard ([web/](../../web/) → embedded in the engine)
 
-A single-page web app served from the engine binary via `go:embed`. No
-build step, no node_modules. Uses Tailwind via CDN and zero JS frameworks.
+A Vite multi-entry **React** app (source under [`web/`](../../web/)) built to a
+static bundle and embedded into the engine binary via `go:embed`. Five console
+entries — SOC, Choke, Devices, Fleet, Login. Tailwind is compiled at build time;
+there are no runtime CDN dependencies. See
+[frontend-dev/README.md](../frontend-dev/README.md) for the stack and scope.
 
 #### Layout
 

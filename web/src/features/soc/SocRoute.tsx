@@ -40,6 +40,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent, MouseEvent } from "react";
 import type * as React from "react";
 import type { Selection as D3Selection, SimulationLinkDatum, SimulationNodeDatum } from "d3";
+import { EventReplay } from "../../components/EventReplay";
 import { VirtualList } from "../../components/VirtualList";
 import {
   EMPTY_SOC_SNAPSHOT,
@@ -190,6 +191,8 @@ export function SocRoute() {
     typeof window === "undefined" ? true : window.innerWidth >= 760
   );
   const [rangeMin, setRangeMin] = useLocalJsonState<number>("soc.prefDefaultRange", 30);
+  const [execBandOpen, setExecBandOpen] = useLocalJsonState<boolean>("soc.execBand", true);
+  const [briefingOpen, setBriefingOpen] = useLocalJsonState<boolean>("soc.briefingMode", false);
   const [query, setQuery] = useState("");
   const [hideBaseline, setHideBaseline] = useLocalJsonState<boolean>("soc.hideBaseline", true);
   const [filterUnack, setFilterUnack] = useState(false);
@@ -340,6 +343,20 @@ export function SocRoute() {
 
   const riskScore = useMemo(() => Math.min(100, counts.critical * 8 + counts.high * 3 + counts.medium), [counts]);
   const riskLabel = riskScore >= 80 ? "critical" : riskScore >= 45 ? "high" : riskScore >= 18 ? "elevated" : "low";
+  const previousRiskScore = useMemo(
+    () => Math.min(100, previousCounts.critical * 8 + previousCounts.high * 3 + previousCounts.medium),
+    [previousCounts]
+  );
+  const openContainment = useMemo(() => {
+    let critical = 0;
+    let high = 0;
+    for (const alert of rangeAlerts) {
+      if ((ackStates[alert.id] || "new") !== "new") continue;
+      if (alert.severity === "critical") critical += 1;
+      else if (alert.severity === "high") high += 1;
+    }
+    return { critical, high };
+  }, [ackStates, rangeAlerts]);
   const eps = useMemo(() => eventsPerSecond(snapshot.events, now), [now, snapshot.events]);
   const activeProcesses = useMemo(() => processSummary(rangeAlerts, rangeEvents), [rangeAlerts, rangeEvents]);
   const timeline = useMemo(() => buildTimeline(rangeAlerts, rangeMin, now, hiddenTimelineSet), [
@@ -348,7 +365,6 @@ export function SocRoute() {
     rangeAlerts,
     rangeMin
   ]);
-  const timelineSpark = useMemo(() => timeline.map((bucket) => bucket.total), [timeline]);
   const severitySparks = useMemo(() => {
     const buckets = buildTimeline(rangeAlerts, rangeMin, now, new Set(), 12);
     return Object.fromEntries(SEVERITIES.map((severity) => [severity, buckets.map((bucket) => bucket.counts[severity])])) as Record<
@@ -532,17 +548,13 @@ export function SocRoute() {
               ref={searchRef}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
-              placeholder="Search severity:critical policy:T1003 score:>50 process:bash"
+              placeholder="Search alerts, processes, policies…"
             />
             <kbd>/</kbd>
           </label>
+          {/* Grouped by function: time range · system status (host/stream) · utilities.
+             Posture is no longer duplicated here — the executive band below owns it. */}
           <div className="soc-top-actions">
-            <button type="button" className="soc-risk-button" onClick={() => setOpenPill(openPill === "risk" ? null : "risk")}>
-              <Gauge size={16} />
-              <span>risk</span>
-              <strong>{riskScore}</strong>
-              <em>{riskLabel}</em>
-            </button>
             <div className="soc-range" role="group" aria-label="Time range">
               {[5, 30, 60, 1440].map((value) => (
                 <button
@@ -555,6 +567,7 @@ export function SocRoute() {
                 </button>
               ))}
             </div>
+            <span className="soc-topbar-sep" aria-hidden="true" />
             <button type="button" className="soc-host-pill" onClick={() => setOpenPill(openPill === "host" ? null : "host")}>
               <Server size={14} />
               <span>{snapshot.whoami.host}</span>
@@ -563,6 +576,7 @@ export function SocRoute() {
               <Radio size={14} />
               <span>{stream.state}</span>
             </button>
+            <span className="soc-topbar-sep" aria-hidden="true" />
             <IconButton icon={RefreshCw} label="Refresh snapshots" onClick={refresh} active={loading} />
             <IconButton
               icon={theme === "light" ? Moon : Sun}
@@ -608,6 +622,30 @@ export function SocRoute() {
               {disabledEndpoints.join(", ")}
             </InlineNotice>
           ) : null}
+
+          <ExecutiveBand
+            open={execBandOpen}
+            onToggle={() => setExecBandOpen((value) => !value)}
+            briefingOpen={briefingOpen}
+            onToggleBriefing={() => setBriefingOpen((value) => !value)}
+            riskScore={riskScore}
+            riskLabel={riskLabel}
+            riskDelta={riskScore - previousRiskScore}
+            windowLabel={rangeMin === 1440 ? "24h" : `${rangeMin}m`}
+            totalAlerts={rangeAlerts.length}
+            openCritical={openContainment.critical}
+            openHigh={openContainment.high}
+            containmentActions={snapshot.decisions.length}
+            topTechnique={mitreRows[0]}
+            eps={eps}
+            activeProcesses={activeProcesses.count}
+            topProcess={activeProcesses.top}
+            hostName={snapshot.whoami.host}
+            hostOk={!activeEndpointErrors.length}
+            streamState={stream.state}
+            onReviewCriticals={() => openKpi("critical", "Critical alerts")}
+            onOpenRisk={() => setOpenPill("risk")}
+          />
 
           <section className="soc-kpi-grid" data-panel={PANELS["kpi-row"].id}>
             <ExecutiveMetricTile
@@ -686,7 +724,7 @@ export function SocRoute() {
               </div>
             }
           >
-            <TimelinePanel buckets={timeline} spark={timelineSpark} />
+            <TimelinePanel buckets={timeline} rangeMin={rangeMin} />
           </PanelFrame>
 
           <section className="soc-primary-grid">
@@ -1012,23 +1050,105 @@ function SidebarLink({ icon: Icon, label, href }: { icon: typeof Activity; label
   );
 }
 
-function TimelinePanel({ buckets }: { buckets: TimelineBucket[]; spark: number[] }) {
+// Stacked alert-volume-over-time chart. Each bar is a time bucket; segments are
+// severity-coloured; red dots mark statistical spikes. Hover any bar for a full
+// breakdown so an analyst can see exactly what happened in that window.
+function TimelinePanel({ buckets, rangeMin }: { buckets: TimelineBucket[]; rangeMin: number }) {
+  const [hover, setHover] = useState<number | null>(null);
   const max = Math.max(1, ...buckets.map((bucket) => bucket.total));
+  const total = buckets.reduce((sum, bucket) => sum + bucket.total, 0);
+  const avg = total / Math.max(1, buckets.length);
+  const bucketMinutes = Math.max(1, Math.round(rangeMin / Math.max(1, buckets.length)));
+
   return (
-    <div className="soc-timeline">
-      {buckets.map((bucket, index) => (
-        <div key={`${bucket.label}-${index}`} className="soc-timeline-bucket" title={`${bucket.label}: ${bucket.total}`}>
-          {bucket.anomaly ? <span className="soc-anomaly" /> : null}
-          <div className="soc-timeline-stack" style={{ height: `${Math.max(6, (bucket.total / max) * 100)}%` }}>
-            {SEVERITIES.map((severity) => {
-              const value = bucket.counts[severity];
-              if (!value) return null;
-              return <span key={severity} className={`severity-${severity}`} style={{ flex: value }} />;
-            })}
+    <div className="soc-timeline-wrap">
+      <div
+        className="soc-timeline"
+        onMouseLeave={() => setHover(null)}
+        role="img"
+        aria-label={`Alert volume over the last ${rangeMin >= 1440 ? "24 hours" : `${rangeMin} minutes`}: ${total} alerts, peak ${max} per bar. Hover a bar for the severity breakdown.`}
+      >
+        {buckets.map((bucket, index) => (
+          <div
+            key={`${bucket.label}-${index}`}
+            className={cx("soc-timeline-bucket", hover === index && "is-hover", bucket.anomaly && "is-anomaly")}
+            onMouseEnter={() => setHover(index)}
+          >
+            {bucket.anomaly ? <span className="soc-anomaly" /> : null}
+            <div className="soc-timeline-stack" style={{ height: `${Math.max(bucket.total ? 6 : 2, (bucket.total / max) * 100)}%` }}>
+              {SEVERITIES.map((severity) => {
+                const value = bucket.counts[severity];
+                if (!value) return null;
+                return <span key={severity} className={`severity-${severity}`} style={{ flex: value }} />;
+              })}
+            </div>
+            <small>{index % 5 === 0 ? bucket.label : ""}</small>
           </div>
-          <small>{index % 5 === 0 ? bucket.label : ""}</small>
-        </div>
-      ))}
+        ))}
+        {hover != null && buckets[hover] ? (
+          <TimelineTooltip
+            bucket={buckets[hover]}
+            leftPct={((hover + 0.5) / Math.max(1, buckets.length)) * 100}
+            avg={avg}
+            bucketMinutes={bucketMinutes}
+          />
+        ) : null}
+      </div>
+      <div className="soc-timeline-legend">
+        <span>{buckets[0]?.label}</span>
+        <span className="soc-timeline-legend-mid">
+          each bar ≈ {bucketMinutes}m · avg {avg.toFixed(1)} · peak {max} alerts
+        </span>
+        <span>
+          {buckets.at(-1)?.label} <em>· now</em>
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function TimelineTooltip({
+  bucket,
+  leftPct,
+  avg,
+  bucketMinutes
+}: {
+  bucket: TimelineBucket;
+  leftPct: number;
+  avg: number;
+  bucketMinutes: number;
+}) {
+  // Absolutely positioned inside the chart; the column index drives a pure-CSS
+  // clamp so the card tracks the hovered bar yet never spills past either edge.
+  return (
+    <div className="soc-timeline-tip" style={{ left: `clamp(8px, ${leftPct.toFixed(2)}%, calc(100% - 218px))` }} role="tooltip">
+      <div className="soc-timeline-tip-head">
+        <strong>{bucket.label}</strong>
+        <span>{bucketMinutes}m window</span>
+      </div>
+      {bucket.total === 0 ? (
+        <p className="soc-timeline-tip-empty">No alerts in this window.</p>
+      ) : (
+        <>
+          <div className="soc-timeline-tip-total">
+            {bucket.total} alert{bucket.total === 1 ? "" : "s"}
+          </div>
+          <div className="soc-timeline-tip-rows">
+            {SEVERITIES.map((severity) =>
+              bucket.counts[severity] ? (
+                <div key={severity} className="soc-timeline-tip-row">
+                  <span className={cx("soc-timeline-tip-dot", `sev-${severity}`)} />
+                  <span>{severity}</span>
+                  <strong>{bucket.counts[severity]}</strong>
+                </div>
+              ) : null
+            )}
+          </div>
+        </>
+      )}
+      {bucket.anomaly ? (
+        <div className="soc-timeline-tip-anomaly">⚠ Anomalous spike — far above the {avg.toFixed(1)}/bar baseline</div>
+      ) : null}
     </div>
   );
 }
@@ -1077,6 +1197,289 @@ function ExecutiveMetricTile({
         {children}
       </div>
     </button>
+  );
+}
+
+function postureSeverityClass(label: string) {
+  if (label === "critical") return "severity-critical";
+  if (label === "high") return "severity-high";
+  if (label === "elevated") return "severity-medium";
+  return "severity-low";
+}
+
+function techniqueId(label: string) {
+  return /T\d{4}(?:\.\d+)?/.exec(label)?.[0] || label.split(" ")[0] || "—";
+}
+
+function techniqueName(label: string) {
+  return label.replace(/^T\d{4}(?:\.\d+)?\s*/, "").trim() || "technique";
+}
+
+function ExecPostureGauge({ score, label }: { score: number; label: string }) {
+  const radius = 56;
+  const centerX = 66;
+  const centerY = 66;
+  const circumference = Math.PI * radius;
+  const filled = (score / 100) * circumference;
+  const arc = `M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 0 1 ${centerX + radius} ${centerY}`;
+  return (
+    <div className={cx("soc-exec-gauge", postureSeverityClass(label))}>
+      <svg viewBox="0 0 132 76" role="img" aria-label={`Security posture ${label} score ${score} of 100`}>
+        <path className="soc-exec-gauge-track" d={arc} strokeWidth={11} fill="none" strokeLinecap="round" />
+        <path
+          className="soc-exec-gauge-fill"
+          d={arc}
+          strokeWidth={11}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${filled} ${circumference}`}
+        />
+      </svg>
+      <div className="soc-exec-gauge-readout">
+        <strong>{score}</strong>
+        <small>/100</small>
+      </div>
+    </div>
+  );
+}
+
+// Executive summary band: a 5-second posture read for the Head of SOC / CTO / CEO,
+// built entirely from signals already computed on the dashboard. Collapsible for
+// analysts who live in the queue below.
+function ExecutiveBand({
+  open,
+  onToggle,
+  briefingOpen,
+  onToggleBriefing,
+  riskScore,
+  riskLabel,
+  riskDelta,
+  windowLabel,
+  totalAlerts,
+  openCritical,
+  openHigh,
+  containmentActions,
+  topTechnique,
+  eps,
+  activeProcesses,
+  topProcess,
+  hostName,
+  hostOk,
+  streamState,
+  onReviewCriticals,
+  onOpenRisk
+}: {
+  open: boolean;
+  onToggle: () => void;
+  briefingOpen: boolean;
+  onToggleBriefing: () => void;
+  riskScore: number;
+  riskLabel: string;
+  riskDelta: number;
+  windowLabel: string;
+  totalAlerts: number;
+  openCritical: number;
+  openHigh: number;
+  containmentActions: number;
+  topTechnique?: { label: string; value: number };
+  eps: number;
+  activeProcesses: number;
+  topProcess?: string;
+  hostName?: string;
+  hostOk: boolean;
+  streamState: string;
+  onReviewCriticals: () => void;
+  onOpenRisk: () => void;
+}) {
+  const trend = riskDelta > 0 ? "up" : riskDelta < 0 ? "down" : "flat";
+  const trendText = riskDelta === 0 ? `no change vs prior ${windowLabel}` : `${riskDelta > 0 ? "+" : ""}${riskDelta} vs prior ${windowLabel}`;
+  const postureClass = postureSeverityClass(riskLabel);
+  const healthy = hostOk && streamState === "live";
+  const priorityCount = openCritical + openHigh;
+  const responseGap = Math.max(0, priorityCount - containmentActions);
+  const topTechniqueName = topTechnique ? `${techniqueId(topTechnique.label)} ${techniqueName(topTechnique.label)}` : "";
+  const readableTopProcess = topProcess ? shortGraphLabel(topProcess, 32) : undefined;
+  const leadSignal = topTechniqueName || readableTopProcess || "No dominant technique or process yet";
+  const incidentLabel = openCritical
+    ? "Critical active incident queue"
+    : riskScore >= 45
+      ? "High-risk security posture"
+      : riskScore >= 18
+        ? "Elevated security posture"
+        : "No priority incident in the current window";
+  const briefingSummary = openCritical
+    ? `${openCritical} critical alert${openCritical === 1 ? "" : "s"} need containment review. Telemetry is ${healthy ? "healthy" : "degraded"}, so the dashboard can still support triage.`
+    : totalAlerts
+      ? `${totalAlerts} alert${totalAlerts === 1 ? "" : "s"} are visible in this window. The next step is to confirm whether any create business or service impact.`
+      : "No alerts are visible in this window. Keep monitoring stream health and host reachability.";
+  const responseLine = priorityCount
+    ? responseGap
+      ? `${responseGap} priority item${responseGap === 1 ? "" : "s"} still need containment ownership.`
+      : "Response decisions are logged; confirm they map to the open priority items."
+    : "No critical or high containment queue is open.";
+  const briefingItems = [
+    {
+      label: "What is happening",
+      value: incidentLabel,
+      detail: briefingSummary
+    },
+    {
+      label: "Why it matters",
+      value: leadSignal,
+      detail: topTechnique
+        ? `${topTechnique.value} technique hit${topTechnique.value === 1 ? "" : "s"} point to the current threat pattern.`
+        : "Technique attribution is not available yet; use the alert queue and process view to confirm the pattern."
+    },
+    {
+      label: "What is affected",
+      value: hostName || "Current SOC host",
+      detail: `${activeProcesses} active process${activeProcesses === 1 ? "" : "es"} observed${readableTopProcess ? `; top signal is ${readableTopProcess}.` : "."}`
+    },
+    {
+      label: "What has been done",
+      value: `${containmentActions} response action${containmentActions === 1 ? "" : "s"}`,
+      detail: `${responseLine} Host is ${hostOk ? "reachable" : "showing errors"} and stream state is ${streamState}.`
+    },
+    {
+      label: "Next action",
+      value: openCritical ? "Contain criticals first" : priorityCount ? "Clear high-priority queue" : "Keep watch",
+      detail: openCritical
+        ? "Validate true positives, group duplicates, identify asset owner, and execute the safest containment path."
+        : priorityCount
+          ? "Review high-severity items, confirm scope, and decide whether containment needs approval."
+          : "Maintain monitoring and investigate any new spike, asset owner change, or stream degradation."
+    }
+  ];
+
+  if (!open) {
+    return (
+      <section className="soc-exec-band is-collapsed" data-panel="exec-summary" aria-label="Executive summary">
+        <span className="soc-exec-eyebrow">Executive summary</span>
+        <button type="button" className={cx("soc-exec-mini-score", postureClass)} onClick={onOpenRisk} title="View risk breakdown">
+          {riskScore}
+          <em>{riskLabel} · {trendText}</em>
+        </button>
+        <span className="soc-exec-mini-stat">
+          <strong className={openCritical ? "severity-critical" : ""}>{openCritical}</strong> open critical · {openHigh} high
+        </span>
+        <span className={cx("soc-exec-mini-health", healthy ? "is-ok" : "is-warn")}>
+          host {hostOk ? "ok" : "degraded"} · stream {streamState}
+        </span>
+        <button
+          type="button"
+          className={cx("soc-exec-toggle", "soc-exec-briefing-toggle", briefingOpen && "is-active")}
+          onClick={() => {
+            if (!briefingOpen) onToggleBriefing();
+            onToggle();
+          }}
+          aria-pressed={briefingOpen}
+        >
+          <BookOpen size={13} aria-hidden="true" />
+          Briefing
+        </button>
+        <button type="button" className="soc-exec-toggle" onClick={onToggle} aria-expanded={false}>
+          Expand
+        </button>
+      </section>
+    );
+  }
+
+  return (
+    <section className="soc-exec-band" data-panel="exec-summary" aria-label="Executive summary">
+      <div className="soc-exec-band-head">
+        <span className="soc-exec-eyebrow">Executive summary · live security posture</span>
+        <div className="soc-exec-head-actions">
+          <button
+            type="button"
+            className={cx("soc-exec-toggle", "soc-exec-briefing-toggle", briefingOpen && "is-active")}
+            onClick={onToggleBriefing}
+            aria-pressed={briefingOpen}
+          >
+            <BookOpen size={13} aria-hidden="true" />
+            Briefing
+          </button>
+          <button type="button" className="soc-exec-toggle" onClick={onToggle} aria-expanded>
+            Collapse
+          </button>
+        </div>
+      </div>
+      <div className="soc-exec-band-body">
+        <button type="button" className="soc-exec-posture" onClick={onOpenRisk} title="View risk breakdown">
+          <ExecPostureGauge score={riskScore} label={riskLabel} />
+          <div className="soc-exec-posture-meta">
+            <span className="soc-exec-cell-label">Security posture</span>
+            <strong className={cx("soc-exec-posture-label", postureClass)}>{riskLabel}</strong>
+            <span className={cx("soc-exec-trend", `is-${trend}`)}>{trendText}</span>
+          </div>
+        </button>
+        <div className="soc-exec-cells">
+          <button type="button" className="soc-exec-cell is-action" onClick={onReviewCriticals}>
+            <span className="soc-exec-cell-label">Needs containment</span>
+            <strong className={openCritical ? "severity-critical" : ""}>{openCritical}</strong>
+            <span className="soc-exec-cell-sub">{openHigh} high-sev also open · review →</span>
+          </button>
+          <div className="soc-exec-cell">
+            <span className="soc-exec-cell-label">Response actions</span>
+            <strong>{containmentActions}</strong>
+            <span className="soc-exec-cell-sub">containment decisions logged</span>
+          </div>
+          <div className="soc-exec-cell">
+            <span className="soc-exec-cell-label">Top technique</span>
+            <strong className="soc-exec-cell-tech">{topTechnique ? techniqueId(topTechnique.label) : "—"}</strong>
+            <span className="soc-exec-cell-sub">
+              {topTechnique ? `${topTechnique.value} hit${topTechnique.value === 1 ? "" : "s"} · ${techniqueName(topTechnique.label)}` : "no techniques in window"}
+            </span>
+          </div>
+          <div className="soc-exec-cell">
+            <span className="soc-exec-cell-label">Throughput</span>
+            <strong>
+              {eps.toFixed(1)}
+              <small>/s</small>
+            </strong>
+            <span className="soc-exec-cell-sub">{activeProcesses} active processes</span>
+          </div>
+          <div className="soc-exec-cell">
+            <span className="soc-exec-cell-label">Operations</span>
+            <strong className={cx("soc-exec-health", healthy ? "is-ok" : "is-warn")}>{healthy ? "Healthy" : hostOk ? "Degraded" : "Check"}</strong>
+            <span className="soc-exec-cell-sub">host {hostOk ? "reachable" : "errors"} · stream {streamState}</span>
+          </div>
+        </div>
+      </div>
+      {briefingOpen ? (
+        <div className="soc-briefing" aria-label="Briefing mode">
+          <div className="soc-briefing-summary">
+            <div>
+              <span className="soc-exec-cell-label">Briefing mode</span>
+              <strong>{incidentLabel}</strong>
+            </div>
+            <p>{briefingSummary}</p>
+          </div>
+          <div className="soc-briefing-grid">
+            {briefingItems.map((item) => (
+              <section key={item.label} className="soc-briefing-item">
+                <span>{item.label}</span>
+                <strong>{item.value}</strong>
+                <p>{item.detail}</p>
+              </section>
+            ))}
+          </div>
+          <div className="soc-briefing-lenses" aria-label="Briefing decision lenses">
+            <div>
+              <span>Business impact</span>
+              <p>Confirm affected services, data exposure, customer impact, and whether executive escalation is required.</p>
+            </div>
+            <div>
+              <span>Technical scope</span>
+              <p>Map hosts, accounts, processes, and recent changes before isolation, credential rotation, or rollback.</p>
+            </div>
+            <div>
+              <span>Response execution</span>
+              <p>Validate true positives, group duplicate alerts, assign owners, and remove blockers from containment.</p>
+            </div>
+          </div>
+        </div>
+      ) : null}
+    </section>
   );
 }
 
@@ -1430,14 +1833,17 @@ function DrillPanel({
       </div>
       <div className="soc-drill-section">
         <h3>Event timeline</h3>
-        {events.slice(0, 8).map((event) => (
-          <div key={event.id} className="soc-drill-event">
-            <span>{formatTime(event.timestamp)}</span>
-            <strong>{event.eventType}</strong>
-            <code>{event.path || event.args || event.destIp || "-"}</code>
-          </div>
-        ))}
-        {!events.length ? <EmptyState title="No process events loaded" /> : null}
+        <EventReplay
+          events={events.map((event) => ({
+            id: event.id,
+            time: event.timestamp,
+            kind: event.eventType,
+            detail:
+              event.path ||
+              event.args ||
+              (event.destIp ? `${event.destIp}${event.destPort ? `:${event.destPort}` : ""}` : "")
+          }))}
+        />
       </div>
     </div>
   );
@@ -3067,8 +3473,9 @@ function processSummary(alerts: SocAlert[], events: SocEvent[]) {
   const scores = new Map<string, number>();
   for (const alert of alerts) {
     const id = alert.execId || alert.process || alert.id;
+    const label = readableProcessLabel(alert);
     ids.add(id);
-    scores.set(alert.process || id, (scores.get(alert.process || id) || 0) + alert.score);
+    scores.set(label, (scores.get(label) || 0) + alert.score);
   }
   for (const event of events) {
     if (event.execId || event.process) ids.add(event.execId || event.process || event.id);
@@ -3083,10 +3490,7 @@ function topProcessRows(alerts: SocAlert[]) {
     // Prefer a readable binary (the leaf of the alert's chain title) over the
     // opaque base64 exec_id, then fall back to the PID — so rows are always
     // human-legible instead of "ZDJlMjUwYjE…".
-    const chain = processChainFromAlert(alert);
-    const binary =
-      chain.at(-1) || (alert.process && alert.process.startsWith("/") ? alert.process : undefined);
-    const label = binary || (alert.pid ? `pid ${alert.pid}` : alert.process || alert.execId || "unknown");
+    const label = readableProcessLabel(alert);
     const key = alert.execId || label;
     const row = rows.get(key) || { process: label, score: 0, count: 0, execId: alert.execId, pid: alert.pid };
     row.score += alert.score;
@@ -3095,6 +3499,15 @@ function topProcessRows(alerts: SocAlert[]) {
     rows.set(key, row);
   }
   return [...rows.values()].sort((a, b) => b.score - a.score).slice(0, 10);
+}
+
+function readableProcessLabel(alert: SocAlert) {
+  const chain = processChainFromAlert(alert);
+  return (
+    chain.at(-1) ||
+    (alert.process && alert.process.startsWith("/") ? alert.process : undefined) ||
+    (alert.pid ? `pid ${alert.pid}` : alert.process || alert.execId || "unknown")
+  );
 }
 
 // mitreCoverage builds the ATT&CK technique breakdown. Alerts don't carry a

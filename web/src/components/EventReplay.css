@@ -1,0 +1,175 @@
+/* Shared event-timeline replay widget — self-contained so it looks identical in
+   every drill-in panel (SOC, Choke, …) regardless of the host route's tokens. */
+.event-replay {
+  --er-accent: #6e8bff;
+  --er-text: #e6eaf1;
+  --er-muted: #9ba7b8;
+  --er-dim: #5c6675;
+  --er-line: rgba(148, 163, 184, 0.16);
+  --er-row: rgba(148, 163, 184, 0.06);
+  display: grid;
+  gap: 10px;
+}
+
+/* Light theme — cover every route's light-mode hook. */
+.theme-light .event-replay,
+.soc-route.theme-light .event-replay,
+.choke-route[data-theme="light"] .event-replay,
+.choke-theme-light .event-replay,
+.devices-route.theme-light .event-replay {
+  --er-accent: #4f6bef;
+  --er-text: #1a2230;
+  --er-muted: #51607a;
+  --er-dim: #79859a;
+  --er-line: rgba(26, 34, 48, 0.14);
+  --er-row: rgba(26, 34, 48, 0.04);
+}
+
+.event-replay-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.er-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  border: 1px solid var(--er-line);
+  background: var(--er-row);
+  color: var(--er-text);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color 130ms ease, background 130ms ease;
+}
+
+.er-btn:hover {
+  border-color: color-mix(in srgb, var(--er-accent) 55%, var(--er-line));
+}
+
+.er-icon {
+  padding: 5px 8px;
+  color: var(--er-muted);
+}
+
+.er-play {
+  font-weight: 600;
+  color: var(--er-accent);
+  border-color: color-mix(in srgb, var(--er-accent) 45%, var(--er-line));
+  background: color-mix(in srgb, var(--er-accent) 12%, transparent);
+}
+
+.er-speed {
+  display: inline-flex;
+  border: 1px solid var(--er-line);
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.er-speed button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 0;
+  background: transparent;
+  color: var(--er-muted);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.er-speed button.is-active {
+  color: var(--er-accent);
+  background: color-mix(in srgb, var(--er-accent) 15%, transparent);
+}
+
+.er-scrub {
+  flex: 1 1 110px;
+  min-width: 90px;
+  height: 4px;
+  accent-color: var(--er-accent);
+  cursor: pointer;
+}
+
+.er-readout {
+  color: var(--er-muted);
+  font-size: 11px;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  white-space: nowrap;
+}
+
+.event-replay-list {
+  display: grid;
+  gap: 2px;
+  max-height: 300px;
+  overflow: auto;
+  scrollbar-width: thin;
+}
+
+.event-replay-row {
+  display: grid;
+  grid-template-columns: 64px auto minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border-left: 2px solid transparent;
+  transition: background 150ms ease, opacity 150ms ease, border-color 150ms ease;
+}
+
+.er-time {
+  color: var(--er-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+}
+
+.er-kind {
+  color: var(--er-text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.er-detail {
+  color: var(--er-muted);
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Replay states */
+.event-replay-row.is-future {
+  opacity: 0.34;
+}
+
+.event-replay-row.is-past {
+  opacity: 0.64;
+}
+
+.event-replay-row.is-current {
+  opacity: 1;
+  border-left-color: var(--er-accent);
+  background: color-mix(in srgb, var(--er-accent) 14%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--er-accent) 28%, transparent);
+}
+
+.event-replay-row.is-current .er-kind {
+  color: var(--er-accent);
+}
+
+.event-replay-empty {
+  padding: 8px 0;
+  color: var(--er-muted);
+  font-size: 12px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .event-replay-row {
+    transition: none;
+  }
+}

@@ -69,6 +69,7 @@ var pwaRootFiles = map[string]struct {
 	// The worker itself must never be long-cached or browsers won't pick up
 	// new builds; revalidate every load.
 	"sw.js":                    {"text/javascript; charset=utf-8", htmlCacheControl},
+	"pwa-install-bridge.js":    {"text/javascript; charset=utf-8", htmlCacheControl},
 	"manifest.webmanifest":     {"application/manifest+json; charset=utf-8", "public, max-age=3600"},
 	"pwa-192x192.png":          {"image/png", staticAssetCacheControl},
 	"pwa-512x512.png":          {"image/png", staticAssetCacheControl},

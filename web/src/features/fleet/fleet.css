@@ -1,31 +1,31 @@
 :root {
-  /* Enterprise-warm dark palette (shared with the SOC console). */
-  --fleet-bg: 17 18 18;
-  --fleet-panel: 29 29 27;
-  --fleet-panel-2: 36 35 31;
-  --fleet-line: 58 51 43;
-  --fleet-text: 241 236 227;
-  --fleet-muted: 174 164 150;
-  --fleet-dim: 121 112 100;
-  --fleet-accent: 132 158 255;
-  --fleet-good: 61 214 179;
-  --fleet-warn: 216 169 74;
-  --fleet-danger: 239 102 122;
-  --fleet-info: 121 168 255;
+  /* Cool neutral-slate dark palette (shared with the SOC console). */
+  --fleet-bg: 10 12 16;
+  --fleet-panel: 18 22 31;
+  --fleet-panel-2: 26 31 43;
+  --fleet-line: 40 48 65;
+  --fleet-text: 230 234 241;
+  --fleet-muted: 155 167 184;
+  --fleet-dim: 92 102 117;
+  --fleet-accent: 110 139 255;
+  --fleet-good: 54 199 149;
+  --fleet-warn: 224 165 59;
+  --fleet-danger: 242 87 107;
+  --fleet-info: 110 139 255;
   color-scheme: dark;
 }
 
 :root.theme-light {
-  --fleet-bg: 244 247 251;
+  --fleet-bg: 245 247 250;
   --fleet-panel: 255 255 255;
-  --fleet-panel-2: 248 250 252;
-  --fleet-line: 202 212 226;
-  --fleet-text: 15 23 42;
-  --fleet-muted: 82 99 124;
-  --fleet-dim: 105 119 139;
-  --fleet-accent: 8 145 178;
-  --fleet-good: 22 163 74;
-  --fleet-warn: 217 119 6;
+  --fleet-panel-2: 238 242 247;
+  --fleet-line: 214 222 234;
+  --fleet-text: 26 34 48;
+  --fleet-muted: 81 96 122;
+  --fleet-dim: 121 133 154;
+  --fleet-accent: 79 107 239;
+  --fleet-good: 14 159 110;
+  --fleet-warn: 194 130 10;
   --fleet-danger: 225 29 72;
   --fleet-info: 37 99 235;
   color-scheme: light;
@@ -44,10 +44,9 @@ body,
 body {
   margin: 0;
   background:
-    radial-gradient(circle at 12% -8%, rgb(var(--fleet-warn) / 0.06), transparent 30rem),
-    radial-gradient(circle at 100% 0%, rgb(var(--fleet-accent) / 0.08), transparent 34rem),
-    radial-gradient(circle at 62% 100%, rgb(var(--fleet-good) / 0.035), transparent 32rem),
-    linear-gradient(180deg, rgb(var(--fleet-panel-2) / 0.24), transparent 260px),
+    radial-gradient(circle at 100% 0%, rgb(var(--fleet-accent) / 0.06), transparent 36rem),
+    radial-gradient(circle at 0% 100%, rgb(var(--fleet-accent) / 0.03), transparent 32rem),
+    linear-gradient(180deg, rgb(var(--fleet-panel-2) / 0.3), transparent 260px),
     rgb(var(--fleet-bg));
   color: rgb(var(--fleet-text));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
