@@ -45,6 +45,16 @@ Production deployment paths.
   the enforcing-mode sudo-lockout trap, Tetragon enforce policies vs apt, and
   the netns device-choke verification proven 6/6).
 
+## [Production Rollout](production-rollout/)
+
+Mass deployment and day-2 operating model for many inline device-choke
+gateways.
+
+- [README.md](production-rollout/README.md) — hardware standards, site survey,
+  golden image/provisioning, fleet enrollment, secrets, staged rollout,
+  monitoring, upgrades, rollback, emergency controls, inventory, audit
+  retention, privacy, operator runbook, support workflow, and packaging backlog.
+
 ## [Operations](operations/)
 
 Day-2 ops once a deployment is live.

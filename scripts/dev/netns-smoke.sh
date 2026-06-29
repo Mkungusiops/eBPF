@@ -2,7 +2,8 @@
 # netns-smoke.sh — Stage-0 end-to-end smoke test for the network choke.
 #
 # Stands up the 3-netns lab, runs the engine in ns-gw with the real tc data
-# plane attached to the LAN-side veth, then asserts that:
+# plane attached to the LAN-side veth, flips the device gateway to enforcing,
+# then asserts that:
 #   1. the data plane actually attached (links_attached > 0),
 #   2. a device reaches upstream at baseline,
 #   3. after `sever`, that device's forwarded traffic is DROPPED,
@@ -66,6 +67,10 @@ CSRF=$(awk '$6=="csrf_token"{print $7}' "$JAR")
 GET()  { ip netns exec ns-gw curl -s -b "$JAR" "$URL$1"; }
 POST() { ip netns exec ns-gw curl -s -b "$JAR" -H "X-CSRF-Token: $CSRF" -H 'content-type: application/json' -X POST "$URL$1" -d "$2"; }
 ping_ok() { ip netns exec ns-dev ping -c1 -W1 10.0.1.2 >/dev/null 2>&1; }
+
+# Device choke intentionally boots detect-only; the destructive half of this
+# smoke test must explicitly switch the lab gateway to enforcing.
+POST /api/choke/device-mode '{"enforcing":true,"reason":"netns smoke"}' >/dev/null
 
 echo "== assertions =="
 
