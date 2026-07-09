@@ -4,6 +4,16 @@ Step-by-step recipe for getting this PoC running on a freshly-provisioned
 Linux server (cloud VM, bare metal, or hypervisor guest). Designed so the
 person reading this hasn't seen the codebase before.
 
+> **Which guide?** This is the **long, manual, detection-focused
+> walkthrough** — it explains every step and includes an alternate
+> hand-rolled systemd unit. For the **recommended, automated path** that
+> installs the packaged `ebpf-engine.service`, compiles the BPF data plane,
+> and enables the **Choke Gateway** (enforcement), use
+> [ubuntu-server.md](ubuntu-server.md) instead. To also drive the choke
+> ladder from this manual unit, add the gateway flags
+> (`-choke-policies … -enforce -cgroup-root /sys/fs/cgroup -bpf-obj …`)
+> documented in [../operations/run-on-multipass-vm.md](../operations/run-on-multipass-vm.md#choke-gateway-flags).
+
 For the architecture and design rationale, see [architecture/overview.md](../architecture/overview.md).
 
 ## 1. Server prerequisites
@@ -38,12 +48,12 @@ You have three options. Pick one based on your workflow.
 
 ### Option A — Build a tarball on a dev machine, scp it over (simplest)
 
-On a machine with Go 1.22+ installed:
+On a machine with Go 1.25+ and Node 18+ installed:
 
 ```bash
 git clone <repo-url> ebpf-poc        # or download/extract a release
 cd ebpf-poc
-make tarball                          # produces ebpf-poc-amd64.tar.gz (~12 MB)
+make tarball                          # produces ebpf-poc-amd64.tar.gz (~20 MB)
 ```
 
 For ARM64 servers, build with `make tarball LINUX_ARCH=arm64` instead
@@ -91,7 +101,8 @@ mkdir -p ~/ebpf-poc
 tar -xzf ~/ebpf-poc-amd64.tar.gz -C ~/ebpf-poc
 cd ~/ebpf-poc
 ls
-# Makefile  README.md  attacks  build.md  engine  policies  scripts
+# Makefile  README.md  attacks  docs  engine  policies  scripts
+# (the tarball also bundles the BPF sources under engine/internal/enforce/*/bpf/)
 ```
 
 > **Iterating?** When you rebuild the engine and want to push *just the

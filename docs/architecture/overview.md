@@ -1,357 +1,371 @@
 # Architecture & system overview
 
-What this project is, how the pieces fit together, and what was built or
-hardened during the most recent work session.
+What this project is, how the pieces fit together, and how an event
+travels from the kernel to an enforcement action and onto the dashboard.
 
 ## What it is
 
-A proactive, **kernel-level threat observability** PoC. Tetragon emits
-syscall and kprobe events from inside the kernel via eBPF; a Go correlation
-engine consumes them, builds a process tree, scores chains of suspicious
-behavior, persists to SQLite, and serves a real-time SOC-style dashboard.
+A proactive, **kernel-level threat detection *and* enforcement** platform.
+Tetragon emits syscall/kprobe events from inside the kernel via eBPF; a Go
+correlation engine consumes them, builds a process tree, scores chains of
+suspicious behaviour, and — this is the part that makes it more than a SOC
+dashboard — drives a **Choke Gateway** that converts those scores into
+graduated, audited enforcement actions: throttle → tarpit → quarantine
+(cgroup v2 freeze) → sever (SIGKILL), keyed on Tetragon's stable `exec_id`
+so a single process is the unit of control.
 
-The dashboard is **single-binary, no external services**. The frontend is a
-Vite multi-entry **React** app (TypeScript, Tailwind, Zustand, Radix, D3) built
-to a static bundle and embedded via `go:embed` — there is no Node runtime in
-production. The engine talks to Tetragon over a gRPC unix socket and writes
-events to a single SQLite file with WAL mode.
+A **second, parallel data plane** extends the same model from *per-process*
+to *per-device*: on an inline transparent bridge it throttles or blocks a
+LAN device's forwarded traffic keyed by **MAC address** (see
+[network-choke-gateway.md](network-choke-gateway.md)).
+
+The whole thing ships as a **single Go binary, no external services
+required**. The frontend is a Vite multi-entry **React** app (TypeScript,
+Tailwind, Zustand, Radix, D3) built to a static bundle and embedded via
+`go:embed` — there is no Node runtime in production. Storage is a single
+SQLite file (WAL mode) by default, or Postgres when configured.
 
 ## High-level diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                         Linux host (kernel ≥ 5.15)                   │
-│                                                                      │
-│   ┌─────────────┐   /dev/tcp     ┌────────────────┐                  │
-│   │  attack.sh  │ ─ syscalls ──▶ │     KERNEL     │                  │
-│   └─────────────┘                │                │                  │
-│                                  │  eBPF kprobes  │  ◀─ TracingPolicy │
-│                                  │  (tcp_connect, │     YAML applied  │
-│                                  │  setuid,       │     by tetra      │
-│                                  │  security_file)│                   │
-│                                  └────┬───────────┘                  │
-│                                       │ ringbuf                       │
-│                              ┌────────▼────────┐                      │
-│                              │ Tetragon daemon │  (Docker container)  │
-│                              │  --privileged   │                      │
-│                              │  --pid=host     │                      │
-│                              └────────┬────────┘                      │
-│                                       │ gRPC: GetEvents               │
-│                                       │ (unix socket)                 │
-│                              ┌────────▼────────┐                      │
-│                              │   engine (Go)   │                      │
-│                              │  - process tree │                      │
-│                              │  - scorer       │                      │
-│                              │  - SQLite (WAL) │                      │
-│                              │  - SSE fanout   │                      │
-│                              │  - auth (bcrypt)│                      │
-│                              │  - HTTP :8080   │                      │
-│                              └────────┬────────┘                      │
-└───────────────────────────────────────┼──────────────────────────────┘
-                                        │ HTTPS-able cookie session
-                                ┌───────▼────────┐
-                                │   Browser UI   │
-                                │ (React-free,   │
-                                │ vanilla JS,    │
-                                │ Tailwind CDN)  │
-                                └────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│                      Linux host (kernel ≥ 5.15)                          │
+│                                                                          │
+│   ┌─────────────┐    syscalls    ┌────────────────┐                      │
+│   │  attack.sh  │ ─────────────▶ │     KERNEL     │ ◀─ TracingPolicy YAML │
+│   └─────────────┘                │  eBPF kprobes  │    (tetra add)        │
+│                                  │  + cgroup/tc   │ ◀─ choke.o / devchoke.o│
+│                                  │  BPF programs  │    (cilium/ebpf load)  │
+│                                  └───┬────────┬───┘                       │
+│                     process_exec /   │        │  per-PID / per-MAC        │
+│                     process_kprobe   │        │  token buckets, verdicts  │
+│                             ┌────────▼──┐     │                           │
+│                             │ Tetragon  │     │                           │
+│                             │ container │     │                           │
+│                             └────────┬──┘     │                           │
+│                        gRPC GetEvents│        │                           │
+│                          (unix sock) │        │                           │
+│   ┌──────────────────────────────────▼────────▼────────────────────────┐ │
+│   │                          engine (Go, root)                          │ │
+│   │  process tree · scorer · origin/SSH attribution · device table      │ │
+│   │  Choke Gateway (process) ─┐        ┌─ Device Gateway (MAC)           │ │
+│   │  circuit state machine    ├─ audit │  circuit state machine          │ │
+│   │  enforcers: cgroupv2,     │ (hash- │  enforcer: devbpf/tc throttler  │ │
+│   │   severer, bpfmap         │ chained│                                 │ │
+│   │  store: SQLite(WAL)|Postgres  decisions)  metrics: OTel   HTTP :8080 │ │
+│   └───────────────────────────────────┬─────────────────────────────────┘ │
+└───────────────────────────────────────┼───────────────────────────────────┘
+                                         │ HTTP (front with nginx/TLS)
+                         ┌───────────────▼────────────────┐
+                         │  Browser — embedded React SPA  │
+                         │  SOC · Choke · Devices · Fleet  │
+                         └────────────────────────────────┘
 ```
 
 ## Components
 
 ### Tetragon (Cilium)
 
-Tetragon is the eBPF runtime. It loads each `TracingPolicy` YAML as one
-or more in-kernel eBPF programs and emits structured events to userspace
-via gRPC. We pin to **`quay.io/cilium/tetragon:v1.6.1`** because the
-`:latest` tag is no longer published.
+Tetragon is the eBPF runtime that sources events for the **process** choke.
+It loads each `TracingPolicy` YAML as one or more in-kernel eBPF programs
+and streams structured events to userspace over gRPC. We pin to
+**`quay.io/cilium/tetragon:v1.6.1`** (the `:latest` tag is no longer
+published). It runs as a `--privileged --pid=host` container.
 
-Three policies are loaded in [policies/](../../policies):
+Policies live in [policies/](../../policies) and split into two groups:
 
-| Policy                  | Kprobe                     | What it catches                                                     | MITRE              |
-|-------------------------|----------------------------|---------------------------------------------------------------------|--------------------|
-| `outbound-connections`  | `tcp_connect`              | TCP connect from `bash`/`sh`/`nc`/`socat` (shells calling out)      | T1071 C2           |
-| `privilege-escalation`  | (setuid hooks)             | `setuid(0)`, sudo to root                                           | T1548 PrivEsc      |
+**Detection policies** ([policies/](../../policies)) — `Post` action only,
+they feed the scorer:
+
+| Policy                  | Kprobe                     | Catches                                                             | MITRE          |
+|-------------------------|----------------------------|---------------------------------------------------------------------|----------------|
+| `outbound-connections`  | `tcp_connect`              | TCP connect from `bash`/`sh`/`nc`/`socat` (shells calling out)      | T1071 C2       |
+| `privilege-escalation`  | setuid hooks               | `setuid(0)`, sudo to root                                           | T1548 PrivEsc  |
 | `sensitive-file-access` | `security_file_permission` | Reads/writes of `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/`, **`/var/lib/ebpf-engine/honey/`** | T1003 CredAccess + honeypot |
 
-The honeypot prefix is the directory the engine seeds with five decoy
-credential-style files on startup ([honeypots.go](../../engine/internal/api/honeypots.go)).
-Because no legitimate process should ever read those files, **any hit
-under that prefix is a high-confidence signal** — the dashboard surfaces
-them with a 🍯 *honey* badge alongside the regular severity.
+**Enforce policies** ([policies/enforce/](../../policies/enforce)) —
+in-kernel Tetragon `Sigkill`/`Override`, applied only in enforcing
+deployments and **independent of the engine's own choke mode**:
 
-`process_exec` events are emitted for **every** `execve` for free —
-they're the spine of the process tree.
+| Policy                     | Action                                       |
+|----------------------------|----------------------------------------------|
+| `sever-pipe-to-shell`      | `Sigkill` on `curl \| sh`-style pipes        |
+| `override-credential-read` | `Sigkill` on credential-file reads by non-allowlisted binaries |
+
+The honeypot prefix is a directory the engine seeds with five decoy
+credential-style files on startup
+([honeypots.go](../../engine/internal/api/honeypots.go): `_passwd`,
+`_shadow`, `_id_rsa`, `_aws_credentials`, `_db_backup.sql`). No legitimate
+process should ever read them, so **any hit under that prefix is a
+high-confidence signal** — the dashboard surfaces it with a 🍯 *honey*
+badge.
+
+`process_exec` events fire for **every** `execve` for free — they're the
+spine of the process tree.
 
 ### Engine ([engine/](../../engine))
 
-A Go binary, ~24 MB statically linked (`CGO_ENABLED=0`), no runtime
-dependencies. Responsibilities:
+A Go binary, statically linked (`CGO_ENABLED=0`), no runtime dependencies.
+Responsibilities, by package:
 
-- **gRPC client** — subscribes to Tetragon's `GetEvents` stream over
-  `unix:///var/run/tetragon/tetragon.sock`.
-- **Process tree** ([engine/internal/tree](../../engine/internal/tree)) —
-  in-memory tree keyed by Tetragon's stable `exec_id` (which survives PID
-  reuse), TTL-bounded so old branches GC out.
-- **Scorer** ([engine/internal/score](../../engine/internal/score)) — adds
-  per-event scores to nodes, walks ancestors (≤10 hops) summing, emits an
-  alert when the chain crosses a severity threshold.
-- **Store** ([engine/internal/store](../../engine/internal/store)) — SQLite
-  with `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000`.
-  Persists `events` and `alerts` tables.
-- **HTTP API + SSE fanout** ([engine/internal/api/http.go](../../engine/internal/api/http.go))
-  — serves the embedded UI, JSON APIs, and a Server-Sent Events stream
-  for live updates. Every alert/event broadcasts to all subscribers.
-- **Auth** ([engine/internal/api/auth.go](../../engine/internal/api/auth.go))
-  — bcrypt-hashed credentials, HttpOnly cookie sessions with 24h TTL,
-  constant-time comparison, simple per-IP rate limiting.
+- **gRPC client** ([cmd/engine/main.go](../../engine/cmd/engine/main.go)) —
+  subscribes to Tetragon's `GetEvents` stream.
+- **Process tree** ([internal/tree](../../engine/internal/tree)) — in-memory
+  tree keyed by `exec_id` (survives PID reuse), TTL-bounded (~10 min).
+- **Scorer** ([internal/score](../../engine/internal/score)) — per-event
+  scores; ancestors are summed (≤10 hops) to a chain score.
+- **Store** ([internal/store](../../engine/internal/store)) — `events`,
+  `alerts`, and the hash-chained `decisions` audit table. SQLite with
+  `journal_mode=WAL` by default, or Postgres (`-store=postgres -pg-dsn …`).
+- **Choke Gateway** ([internal/choke](../../engine/internal/choke)) — the
+  per-process state machine + enforcement. See [state-ladder.md](state-ladder.md).
+  - **circuit** ([internal/choke/circuit](../../engine/internal/choke/circuit))
+    — the monotonic five-rung state machine (string-keyed, reused by both
+    gateways).
+  - **tokens** ([internal/choke/tokens](../../engine/internal/choke/tokens))
+    — operator/session token accounting.
+- **Enforcers** ([internal/enforce](../../engine/internal/enforce)) —
+  composed via `Multi`: `cgroupv2` (throttle/tarpit/quarantine-freeze),
+  `severer` (SIGKILL), and `bpfmap` (cilium/ebpf `choke.o` per-PID token
+  buckets on cgroup/connect hooks) as a telemetry mirror; plus the device
+  `devbpf`/`devthrottler` (tc data plane). A `seccomp` package exists but
+  is not currently wired into the active chain.
+- **Device Gateway + table** ([internal/choke/devgateway.go](../../engine/internal/choke/devgateway.go),
+  [internal/device](../../engine/internal/device)) — MAC-keyed enforcement,
+  passive DHCP/neigh discovery.
+- **Origin tracker** ([internal/origin](../../engine/internal/origin)) —
+  attributes processes to the SSH session (source IP + key fingerprint)
+  that spawned them, by tailing sshd's journald log on Linux.
+- **HTTP API + SSE fanout** ([internal/api](../../engine/internal/api)) —
+  serves the embedded React consoles, JSON APIs, and a Server-Sent Events
+  stream. Every alert/event/decision broadcasts to all subscribers.
+- **Fleet fanout** ([internal/api/fleet.go](../../engine/internal/api/fleet.go))
+  — when `-fleet-hosts` is set, `/api/fleet/*` logs into each peer and fans
+  the operation out server-side (drives N hosts from one console).
+- **Auth** ([internal/api/auth.go](../../engine/internal/api/auth.go)) —
+  bcrypt credentials, HMAC-signed **stateless** cookie sessions, CSRF tokens.
+- **Metrics** ([internal/metrics](../../engine/internal/metrics)) — OpenTelemetry
+  meter provider; `-otlp-endpoint` exports to an OTLP/HTTP collector.
+- **Config** ([internal/config](../../engine/internal/config)) — optional YAML
+  file (`-config`); every field maps 1:1 to a CLI flag, and **flags always win**.
 
 ### Dashboard ([web/](../../web/) → embedded in the engine)
 
-A Vite multi-entry **React** app (source under [`web/`](../../web/)) built to a
-static bundle and embedded into the engine binary via `go:embed`. Five console
-entries — SOC, Choke, Devices, Fleet, Login. Tailwind is compiled at build time;
-there are no runtime CDN dependencies. See
-[frontend-dev/README.md](../frontend-dev/README.md) for the stack and scope.
+A Vite multi-entry **React** app (source under [`web/`](../../web/)) built
+to a static bundle and embedded into the engine binary via `go:embed`
+(staged into `engine/internal/api/web/` by `make web`). Tailwind is compiled
+at build time; there are no runtime CDN dependencies — Go stays the only
+production server. Five console entries, each its own HTML entry + route:
 
-#### Layout
+| Route      | Console                | Purpose                                                        |
+|------------|------------------------|----------------------------------------------------------------|
+| `/`        | **SOC dashboard**      | Executive summary, alert triage, MITRE coverage, IOCs, live event stream |
+| `/choke`   | **Choke Gateway**      | Process state ladder, thresholds, manual override, kill-switch, policy workbench |
+| `/devices` | **Network Choke**      | Per-device (MAC) discovery, flows, jail/thaw, enforcement mode |
+| `/fleet`   | **Fleet Console**      | Drive N hosts as a unit (status, presets, thresholds, kill-switch) |
+| `/login`   | **Login**              | Auth gate                                                      |
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  ⬡ eBPF SOC   [search…]  ⊙  5m 30m 1h 24h  🔔 ⬇ ?  host …  ● live  user admin  ↪│
-├─────────────────────────────────────────────────────────────────────┤
-│  CRITICAL   HIGH    MEDIUM   EVENTS/SEC   ACTIVE PROCESSES         │
-│   12 +3↑    34 -1↓  56 ±0    4.2 eps      280 unique exec_ids      │
-├─────────────────────────────────────────────────────────────────────┤
-│  Severity timeline (clickable 1-min buckets) ▆▇█▇▆▅▆▇█▇▆▅          │
-├──────────────────────────────────┬──────────────────────────────────┤
-│  Alert triage                    │  MITRE ATT&CK coverage           │
-│  [crit][high][med] unack ✓ group │  T1071 ▓░░  T1548 ▓▓░  T1003 ▓▓▓│
-│  ──────────────────              │                                  │
-│  🔴 Suspicious chain… +5  ack… │  Top processes by score          │
-│  🟠 Sensitive file…           │  /usr/bin/bash ▓▓▓▓▓▓ 188         │
-│  🟡 …                          │                                  │
-│                                  │  IOCs observed                   │
-│                                  │  /etc/shadow ×7  127.0.0.1:4444 │
-│                                  │                                  │
-│                                  │  Network connections             │
-│                                  │  127.0.0.1:4444  bash  ×1       │
-├─────────────────────────────────────────────────────────────────────┤
-│  Live event stream  hide self-noise ✓  pause  clear   123 events   │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-#### Features built in this session
-
-| Area              | Feature                                                                                                  |
-|-------------------|----------------------------------------------------------------------------------------------------------|
-| Layout            | Dark SOC theme with glassmorphic cards, slate gradient background                                        |
-| Header            | Risk score gauge (animated SVG arc, pulses red ≥70), notification bell, JSON export, help modal          |
-| KPIs              | Critical / High / Medium counts with sparklines AND trend deltas vs prior window                         |
-| KPIs              | Events-per-second (60 s rolling), unique active processes (10 min window)                                |
-| Timeline          | Stacked-severity bars per 1-min bucket; **click to filter** alerts to that minute                        |
-| Alert triage      | Severity filter pills, free-text search, **unacked-only** filter, **group toggle** (collapse by exec_id) |
-| Alert state       | New / Ack / Resolved state machine, persisted in browser localStorage with high-water marks              |
-| Drill-down        | Slide-over panel: process lineage tree, generated narrative, IOCs, event timeline                        |
-| MITRE             | Auto-maps policies to T1071 / T1548 / T1003 with technique counts                                        |
-| Top processes     | Score-sorted with gradient bars, click → drill in                                                        |
-| IOCs              | Auto-extracts file paths and IP:port from event args                                                     |
-| Network panel     | Outbound TCP peers and source processes (separate from IOCs)                                             |
-| Event stream      | Color-coded by event type, **hide self-noise** filter, pause, clear                                      |
-| Notifications     | Browser desktop notification + Web Audio chime on critical alerts when tab is unfocused (toggleable)     |
-| Keyboard          | `/` search · `j`/`k` next/prev · `Enter` open · `a` ack · `r` resolve · `c` clear · `e` export · `?` help |
-| Resilience        | Explicit reconnect with exponential backoff, watchdog for wedged sockets, visibility-resume hook         |
-| Catch-up          | On reconnect, fetches `/api/alerts` and `/api/events` and merges anything missed during the gap          |
-| Cache             | Engine sets `Cache-Control: no-cache` on the dashboard so updates are picked up without hard-reloads     |
+The console runs the **UI 2.0** redesign: a cool neutral-slate palette, a
+unified enterprise header across all pages, an executive summary band on the
+SOC dashboard, and decluttered toolbars. See
+[frontend-dev/README.md](../frontend-dev/README.md) for the stack and the
+78-panel parity gate.
 
 ### Auth ([engine/internal/api/auth.go](../../engine/internal/api/auth.go))
 
 A single admin user with bcrypt-hashed credentials. The plaintext password
-is hashed once at startup and never stored.
+is hashed once at startup and never stored; prefer `pass_hash` in config so
+plaintext never lands on disk at all.
 
-| Property            | Value                                                                  |
-|---------------------|------------------------------------------------------------------------|
-| Algorithm           | bcrypt (`golang.org/x/crypto/bcrypt`, default cost 10)                 |
-| Username comparison | `crypto/subtle.ConstantTimeCompare`                                    |
-| Cookie name         | `soc_session`                                                          |
-| Cookie attributes   | `HttpOnly`, `SameSite=Lax`, `MaxAge=24h`, `Path=/`                     |
-| Session storage     | In-memory map of token → expiry (lost on restart, fine for single instance) |
-| Rate limit          | 10 login attempts per remote IP per minute                             |
-| Public paths        | `/login`, `/api/login`, `/favicon.svg`, `/favicon.ico`                 |
-| Everything else     | 302 to `/login` for HTML, 401 JSON for `/api/*`                        |
+| Property            | Value                                                                        |
+|---------------------|------------------------------------------------------------------------------|
+| Algorithm           | bcrypt (`golang.org/x/crypto/bcrypt`, default cost 10)                        |
+| Username comparison | `crypto/subtle.ConstantTimeCompare`                                          |
+| Cookie name         | `soc_session`                                                                |
+| Session model       | **Stateless** — HMAC-signed cookie (secret at `-secret`, auto-generated 0600). Sessions survive engine restart. |
+| CSRF                | `csrf_token` cookie echoed as `X-CSRF-Token` on unsafe writes                |
+| Rate limit          | 10 login attempts per remote IP per minute                                   |
+| Public paths        | `/login`, `/api/login`, favicons, PWA assets, `/assets/*`                    |
+| Everything else     | 302 → `/login` for HTML, 401 JSON for `/api/*`                               |
 
 Default credentials are baked in for the demo: **`admin / ebpf-soc-demo`**.
-Override with `-user` and `-pass` flags on the engine binary. Operators
-should always change them in any real deployment — the deploy guide shows
-how to wire this through systemd and an environment file.
+Override with `-user`/`-pass` (or `pass_hash` in config). Always change them
+in any real deployment.
+
+## Scoring
+
+Per-event scores accumulate down the process tree; the **chain score** is
+the sum over the ancestor walk. An alert is raised when the chain crosses 10.
+
+| Trigger                            | Score |
+|------------------------------------|-------|
+| `curl \| sh` / `wget \| sh`          | +25   |
+| `nc -e` / shell-arg netcat          | +20   |
+| credential file (`shadow`, `.ssh`)  | +20   |
+| `base64 -d` in args                 | +15   |
+| setuid(0) kprobe                    | +15   |
+| outbound TCP from a shell           | +12   |
+| sensitive file (other)              | +8    |
+| `chmod +x`                          | +5    |
+| network tool exec                   | +5    |
+| network downloader exec             | +3    |
+| `bash -c`                           | +1    |
+
+**Alert severity** thresholds: `low` ≥ 5, `medium` ≥ 10, `high` ≥ 20,
+`critical` ≥ 40 ([scorer.go](../../engine/internal/score/scorer.go)).
+Calibrated so any single event is at most "low"; "high"/"critical" requires
+a chain — which is what makes detection proactive.
+
+**Choke thresholds** are separate from alert severity. The binary defaults
+are `throttle 5 / tarpit 15 / quarantine 25 / sever 40`, but the deploy
+path (Makefile / `engine.yaml`) raises them to **`20 / 50 / 120 / 200`** so
+Ubuntu's sshd MOTD churn (which scores ~85) only reaches *tarpit*, never
+quarantine (which would freeze sshd and lock the operator out) or sever.
+See [state-ladder.md](state-ladder.md).
 
 ## HTTP API surface
 
-| Method | Path                       | Auth | Returns                                                                |
-|--------|----------------------------|------|------------------------------------------------------------------------|
-| GET    | `/`                        | yes  | the dashboard HTML                                                     |
-| GET    | `/login`                   | no   | login page                                                             |
-| POST   | `/api/login`               | no   | sets `soc_session` cookie + 303 → `/`                                  |
-| GET    | `/api/logout`              | no¹  | clears cookie + 303 → `/login`                                         |
-| GET    | `/api/whoami`              | yes  | `{"user":"admin"}`                                                     |
-| GET    | `/api/events`              | yes  | last 200 events                                                        |
-| GET    | `/api/alerts`              | yes  | last 100 alerts                                                        |
-| GET    | `/api/process/<exec_id>`   | yes  | `{chain, events}` for a given exec_id                                  |
-| GET    | `/api/stream`              | yes  | SSE: `data: {"type":"alert"\|"event", ...}`                            |
-| GET    | `/api/policies`            | yes  | the 3 TracingPolicy YAMLs (Policies viewer, needs `-policies` flag)    |
-| GET    | `/api/attacks`             | yes  | allow-listed attack scripts (Attacks panel, needs `-attacks` flag)     |
-| POST   | `/api/run-attack`          | yes  | launches `id=<allowed-script>` async; 202 on success, 429 on throttle  |
-| GET    | `/api/honeypots`           | yes  | `{prefix, files: […]}` describing the seeded decoy files               |
-| GET    | `/api/policy-stats`        | yes  | parsed `tetra tracingpolicy list` (NPOST per policy, kernel mem, mode) |
-| GET    | `/favicon.svg`             | no   | the icon (also served at `/favicon.ico`)                               |
+Grouped by console. All except the public paths require the `soc_session`
+cookie; unsafe writes also require the CSRF header.
 
-¹ Logout is intentionally tolerant — it clears the cookie regardless of
-whether the session is currently valid, so it works for already-expired
-sessions.
+### Core / SOC
 
-### Engine flags (relevant to the dashboard's tooling endpoints)
+| Method | Path                     | Returns / action                                            |
+|--------|--------------------------|-------------------------------------------------------------|
+| GET    | `/`                      | SOC dashboard HTML                                          |
+| GET    | `/login`                 | login page (public)                                        |
+| POST   | `/api/login`             | sets `soc_session` + `csrf_token`, 303 → `/` (public)      |
+| GET    | `/api/logout`            | clears cookie, 303 → `/login`                              |
+| GET    | `/api/whoami`            | `{user, hostname, server_ip, csrf}`                        |
+| GET    | `/api/events`            | recent events                                              |
+| GET    | `/api/alerts`            | recent alerts                                              |
+| GET    | `/api/process/<exec_id>` | `{chain, events}` for one exec_id                          |
+| GET    | `/api/stream`            | SSE: `alert` / `event` / `process_exit` / `decision`      |
+| GET    | `/api/policies`          | detection TracingPolicy YAMLs (`-policies`)               |
+| GET    | `/api/attacks`           | allow-listed attack scripts (`-attacks`)                  |
+| POST   | `/api/run-attack`        | launches `id=<allowed-script>` async (202/429)            |
+| GET    | `/api/honeypots`         | `{prefix, files}` of seeded decoys                        |
+| GET    | `/api/policy-stats`      | parsed `tetra tracingpolicy list` (NPOST, mode, mem)      |
+| GET    | `/api/origin`            | live SSH-session attribution snapshot                     |
+| GET    | `/api/version`           | build/version + web-asset hash                            |
+| GET    | `/api/system-health`     | store/BPF/Tetragon/OTLP live status                       |
+| GET    | `/api/decisions`         | hash-chained gateway decision log                         |
+| GET    | `/api/verify-chain`      | re-walks the audit chain; detects tampering               |
 
-| Flag         | Default                       | Effect on the dashboard                             |
-|--------------|-------------------------------|-----------------------------------------------------|
-| `-policies`  | `policies`                    | `/api/policies` reads YAMLs from this dir.          |
-| `-attacks`   | `attacks`                     | `/api/attacks` and `/api/run-attack` look here.     |
-| `-honeypots` | `/var/lib/ebpf-engine/honey`  | Decoy files seeded on startup (idempotent).         |
-| `-user`      | `admin`                       | Dashboard username.                                 |
-| `-pass`      | `ebpf-soc-demo`               | Bcrypt-hashed at startup, plaintext discarded.      |
-| `-tetragon`  | `unix:///var/run/tetragon/tetragon.sock` | gRPC socket for Tetragon's GetEvents stream. |
-| `-db`        | `events.db`                   | SQLite path. Must be **outside** any kprobe-watched path. |
-| `-http`      | `:8080`                       | HTTP listen address.                                |
-| `-fake`      | `false`                       | Synthesize events without Tetragon (UI dev mode).   |
+### Process Choke (`/choke`)
+
+`GET /api/choke/{state,circuits,buckets,thresholds,policies,cgroups,processes,process/<id>,proc/<pid>}`,
+plus writes `POST /api/choke/{manual,bulk-manual,jail,forget,thaw,annotate,kill-switch,preset,mode,forensic-snapshot}`,
+`PUT /api/choke/thresholds`, and `POST /api/choke/policy/preview`.
+
+### Device Choke (`/devices`)
+
+`GET /api/choke/{devices,device-state,device-flows}`, writes
+`POST /api/choke/{device-jail,device-thaw,device-mode,device-kill-switch}`.
+
+### Fleet (`/fleet`, enabled by `-fleet-hosts`)
+
+`GET /api/fleet/{hosts,state,cgroups,decisions,alerts,devices}`, writes
+`POST /api/fleet/{preset,kill-switch,thaw,device-jail}`, `PUT /api/fleet/thresholds`.
 
 ## Event lifecycle
 
-1. **Kernel** — a process calls `connect()` (or `setuid`, or accesses
+1. **Kernel** — a process calls `connect()` (or `setuid`, or reads
    `/etc/shadow`). The matching eBPF kprobe fires.
-2. **Tetragon** — receives the kprobe, builds a `process_kprobe` event
-   with the policy name, args, and the `exec_id` of the calling process.
-   Streams it over gRPC.
-3. **Engine consumer** ([engine/cmd/engine/main.go](../../engine/cmd/engine/main.go)):
-   - Inserts the event into `events` (SQLite, WAL).
-   - Looks up or creates the node in the process tree.
-   - Adds the event's score to the node.
-   - Walks the ancestor chain summing scores.
-4. **Engine alerter** — if the chain score crosses 10, inserts an `alerts`
-   row, classifies severity (`low ≥ 5`, `medium ≥ 10`, `high ≥ 20`,
-   `critical ≥ 40`), and broadcasts both the event and the alert to all
-   SSE subscribers.
-5. **Browser** — the SSE handler dispatches to `onEvent` / `onAlert`,
-   prepends to the live buffers, updates KPIs, sparklines, the gauge,
-   the timeline, and the panels. If notifications are enabled and the
-   tab is unfocused, fires a desktop notification + audio chime.
+2. **Tetragon** — builds a `process_kprobe`/`process_exec` event with the
+   policy name, args, and the calling process's `exec_id`; streams it over gRPC.
+3. **Engine consumer** ([main.go](../../engine/cmd/engine/main.go)) — inserts
+   the event, updates the process-tree node, adds the event's score, and
+   walks ancestors summing the chain score.
+4. **Gateway dispatch** — `dispatchGateway` calls the Choke Gateway with the
+   latest chain score on **every** event (not just alert-worthy ones), so a
+   process can transition to *throttled* before it ever raises an alert. The
+   ladder is monotonic; below-threshold calls are no-ops.
+5. **Enforcement** — if the score crossed a rung, the enforcer chain runs
+   (cgroup move / freeze / SIGKILL) and a hash-chained row is appended to
+   `decisions`.
+6. **Alerter** — if the chain score ≥ 10, an `alerts` row is written and
+   classified by severity.
+7. **Broadcast** — the event, any alert, and any decision fan out over SSE
+   to every connected console, which updates KPIs, the timeline, the panels,
+   and the state ladder in real time.
 
 ## Repository layout
 
 ```
 .
 ├── README.md                                # one-page overview + quick start
-├── Makefile                                 # build / test / fake / tarball / clean
-├── ebpf-poc-amd64.tar.gz                    # produced by `make tarball`
-├── docs/
-│   ├── README.md                            # documentation index
-│   ├── architecture/
-│   │   ├── overview.md                      # this file
-│   │   └── state-ladder.md                  # choke gateway state machine
-│   ├── getting-started/
-│   │   └── multipass-vm-setup.md            # local Linux VM on macOS via Multipass
-│   ├── deployment/
-│   │   ├── linux-server.md                  # production deployment guide
-│   │   ├── azure.md                         # Azure deployment
-│   │   └── commands.md                      # deployment command reference
-│   ├── operations/
-│   │   ├── run-on-multipass-vm.md           # day-to-day ops runbook
-│   │   └── reset-engine-and-policies.md     # reset engine + reload policies
-│   ├── reference/
-│   │   └── chokectl.md                      # chokectl fleet CLI reference
-│   └── development/
-│       └── build-plan.md                    # original 5-day build plan
+├── Makefile                                 # web/build/test/deploy/tarball/…
+├── docs/                                    # architecture, deployment, ops, reference, frontend, dev, rollout
+├── web/                                     # Vite multi-entry React source (built + embedded)
 ├── scripts/
-│   └── setup.sh                             # idempotent Day-1 install on a fresh VM
+│   ├── setup.sh                             # idempotent host bootstrap (Docker/Go/Tetragon/clang/cgroup v2)
+│   ├── chokectl                             # fleet CLI (status/preset/jail/device-*/…)
+│   └── dev/netns-*.sh                        # 3-netns lab for the device-choke data plane
 ├── policies/
-│   ├── network-watch.yaml                   # policy name: outbound-connections (tcp_connect from shells)
-│   ├── privilege-escalation.yaml            # setuid hooks
-│   └── sensitive-files.yaml                 # /etc/shadow, /etc/passwd, /etc/sudoers, /root/.ssh
-├── attacks/
-│   ├── 01-webshell.sh                       # curl payload + chmod +x + read /etc/shadow
-│   ├── 02-credential-theft.sh               # reads of shadow, sudoers, ssh keys
-│   ├── 03-reverse-shell.sh                  # bash /dev/tcp redirect to localhost listener
-│   ├── 04-privilege-escalation.sh           # setuid + root credential reads
-│   ├── 05-living-off-the-land.sh            # base64-piped curl|sh
-│   └── 06-persistence.sh                    # chmod +x staged script + dotfile recon
+│   ├── network-watch.yaml                   # → outbound-connections
+│   ├── privilege-escalation.yaml
+│   ├── sensitive-files.yaml
+│   ├── choke/                               # ChokePolicy DSL (agent-loop-cap, shell-egress-throttle, network-tools-tarpit)
+│   └── enforce/                             # Tetragon Sigkill/Override (sever-pipe-to-shell, override-credential-read)
+├── attacks/                                 # 6 attack-simulation scripts
+├── deploy/                                  # install.sh, ebpf-engine.service, engine.yaml.example, nginx conf
 └── engine/
-    ├── cmd/engine/main.go                   # main entry; gRPC client + fake mode
-    ├── go.mod, go.sum
+    ├── cmd/engine/main.go                   # entry; gRPC client, gateways, fake mode
     └── internal/
-        ├── api/
-        │   ├── http.go                      # routes, SSE fanout, drill-down handler
-        │   ├── auth.go                      # bcrypt + cookie sessions + middleware
-        │   ├── index.go                     # //go:embed of HTML/SVG assets
-        │   ├── index.html                   # dashboard SPA
-        │   ├── login.html                   # login page
-        │   └── favicon.svg                  # tab icon
-        ├── score/scorer.go                  # per-event + chain scoring rules
-        ├── store/sqlite.go                  # WAL-mode SQLite, events + alerts
-        └── tree/processtree.go              # in-memory exec_id tree with TTL
+        ├── api/                             # HTTP, SSE, auth, embedded web, fleet, choke/device handlers
+        ├── score/                           # per-event + chain scoring
+        ├── store/                           # SQLite (WAL) + Postgres, events/alerts/decisions
+        ├── tree/                            # in-memory exec_id process tree (TTL)
+        ├── choke/                           # gateway, device gateway, circuit, tokens
+        ├── enforce/                         # cgroupv2, severer, bpfmap (choke.c), devbpf (devchoke.c)
+        ├── device/                          # MAC↔IP↔hostname table + DHCP/neigh discovery
+        ├── origin/                          # SSH-session attribution (journald tailer)
+        ├── config/, logging/, metrics/, sysproc/
 ```
 
-## What was changed or fixed in this session
+## Deployment modes
 
-Beyond the dashboard rewrite and auth system, several latent issues were
-fixed end-to-end. Listed here so anyone re-reading the codebase later
-can correlate code with rationale:
+| Mode                       | How                                                                 |
+|----------------------------|---------------------------------------------------------------------|
+| **Detect-only**            | `enforce: false` — decisions audited, kernel untouched. The safe default. |
+| **Enforcing (process)**    | `-enforce` — real cgroup throttle/freeze + SIGKILL on the host it runs on. |
+| **Enforcing (device/MAC)** | 2-NIC inline bridge + `-devchoke-obj/-devchoke-iface`; independent of `-enforce`. |
+| **Dry-run**                | `-dry-run` — records decisions, executes nothing (shadow a new policy). |
+| **Fake**                   | `-fake` — synthesizes events, no Tetragon (unit tests / UI iteration only). |
 
-| File                                       | Change                                                                                                        |
-|--------------------------------------------|---------------------------------------------------------------------------------------------------------------|
-| `Makefile`                                 | `tarball` target now references `docs/development/build-plan.md` (was `build.md` at root, which moved)         |
-| `policies/sensitive-files.yaml`            | Removed the `/home/` prefix that caused a feedback loop: engine writing to `events.db` triggered the policy   |
-| `engine/internal/store/sqlite.go`          | Open SQLite with `journal_mode=WAL`, `synchronous=NORMAL`, `busy_timeout=5000` — fixes `SQLITE_BUSY` under load |
-| `engine/internal/api/index.go`             | Switched from a const string to `//go:embed` so the HTML lives in a real file (also embeds login + favicon)   |
-| `engine/internal/api/http.go`              | Added `Cache-Control: no-cache, no-store, must-revalidate` on `/`; added auth middleware wrapping             |
-| `engine/internal/api/index.html`           | Complete rewrite as the SOC dashboard described above                                                          |
-| `engine/internal/api/auth.go`              | New: bcrypt + cookie sessions + middleware                                                                     |
-| `engine/internal/api/login.html`           | New: login page matching the SOC theme                                                                         |
-| `engine/internal/api/favicon.svg`          | New: tab icon (cyan hexagon on dark)                                                                           |
-| `engine/cmd/engine/main.go`                | Added `-user` and `-pass` flags; wires `auth` into the server                                                 |
-| `attacks/03-reverse-shell.sh`              | Replaced `( … & )` subshell + bare `$!` (broke under `set -u`); wrapped `/dev/tcp` redirect in `timeout 1`    |
-
-The recommended deploy path also moved the engine's SQLite database from
-`/home/ubuntu/ebpf-poc/events.db` to `/var/lib/ebpf-engine/events.db` so
-it sits **outside** any path the credential-access policy watches. Even
-with the `/home/` prefix removed from the policy, this is a belt-and-
-suspenders best practice: the data dir should never live under a path
-that the kprobes inspect.
-
-## Testing posture
-
-| What                          | Where tested                            | Status |
-|-------------------------------|-----------------------------------------|--------|
-| `make test` (unit tests)      | macOS host                              | passes |
-| `make build`                  | macOS host (darwin/amd64)               | passes |
-| `make build-linux`            | macOS host → linux/amd64                | passes |
-| `make tarball`                | macOS host                              | passes |
-| `make fake` + auth flow       | macOS host (`/tmp/ebpf-poc-fresh`)      | passes |
-| Real Tetragon + kprobes       | Multipass Ubuntu 22.04 VM               | passes |
-| Six attack scripts            | Multipass VM                            | 5/6 — `03-reverse-shell.sh` was fixed mid-session |
-| Dashboard against real events | Multipass VM                            | passes |
-| Auth (login / 401 / logout)   | macOS clone + Multipass VM              | passes |
+The two chokes have **independent postures**: the process choke follows
+`-enforce` (flippable at runtime via `/api/choke/mode`), while the device
+choke enforces whenever it has the tc backend and is neither `dry_run` nor
+kill-switched. "Observe processes, enforce on devices" is a valid, common
+posture.
 
 ## Limitations (current)
 
-- **Single host.** One engine ↔ one Tetragon socket ↔ one SQLite. A
-  multi-host story needs a fan-in collector (e.g., NATS or gRPC chain).
-- **Detection only.** TracingPolicies use `Post`. Switching to
-  `SIGKILL` / `Override` would convert this from observability to
-  in-kernel prevention. Not done because the demo wants visibility,
-  not enforcement.
-- **No baseline learning.** Scoring is fixed in
-  [scorer.go](../../engine/internal/score/scorer.go). Real deployments
-  would tune per-environment.
-- **Single user, in-memory sessions.** Auth is a real gate, but it's
-  one admin and sessions don't survive engine restart. For multi-user
-  or HA, replace `Auth.sessions` with Redis or similar.
-- **HTTP only.** TLS termination should be done by a reverse proxy
-  (caddy/nginx) — see the deployment guide.
+- **Single host.** One engine ↔ one Tetragon socket. The Postgres backend
+  and the `/fleet` fanout are the first steps toward multi-host, but there
+  is no central fan-in collector yet — the fleet console drives peers
+  individually.
+- **Single-user auth.** One admin credential. Sessions are stateless
+  (survive restart) but there is no multi-user/RBAC model.
+- **HTTP only.** TLS termination is done by a reverse proxy (nginx/Caddy) —
+  see the deployment guides.
+- **Fixed scoring rules.** No baseline learning; tuning is manual in
+  [scorer.go](../../engine/internal/score/scorer.go) and via the thresholds.
+- **Device choke is operator-driven.** A forwarding node has no per-device
+  Tetragon telemetry, so there is no automatic score path for the MAC
+  gateway yet — it's manual jail/thaw with an audit trail.
+- **One L2 hop for device choke.** MAC keying assumes the gateway is the
+  device's L2 neighbour; devices behind a downstream router collapse to that
+  router's MAC.
+
+## Related
+
+- [state-ladder.md](state-ladder.md) — the five-rung per-process/per-device
+  state machine and its design principles.
+- [network-choke-gateway.md](network-choke-gateway.md) — the per-device (MAC)
+  data plane and inline-bridge topology.
+- [../deployment/ubuntu-server.md](../deployment/ubuntu-server.md) — the
+  recommended production deployment path.
+- [../reference/chokectl.md](../reference/chokectl.md) — the fleet CLI.
+</content>

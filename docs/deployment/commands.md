@@ -20,7 +20,7 @@ Equivalent to:
 make build-linux
 
 multipass transfer \
-  /Users/jeff/Code/eBPF/engine/engine-linux-amd64 \
+  /Users/jeff/Code/eBPF-SOC/engine/engine-linux-amd64 \
   ebpf:/home/ubuntu/ebpf-poc/engine-linux-amd64.new
 
 multipass exec ebpf -- bash -lc \
@@ -28,7 +28,7 @@ multipass exec ebpf -- bash -lc \
    mv -f /home/ubuntu/ebpf-poc/engine-linux-amd64.new \
          /home/ubuntu/ebpf-poc/engine-linux-amd64"
 
-tar -cz -C /Users/jeff/Code/eBPF policies attacks | \
+tar -cz -C /Users/jeff/Code/eBPF-SOC policies attacks | \
   multipass exec ebpf -- tar -xz -C /home/ubuntu/ebpf-poc
 
 multipass exec ebpf -- bash -lc \
@@ -58,7 +58,7 @@ HOST=azureuser@20.238.49.130
 make build-linux
 
 scp -i "$KEY" \
-  /Users/jeff/Code/eBPF/engine/engine-linux-amd64 \
+  /Users/jeff/Code/eBPF-SOC/engine/engine-linux-amd64 \
   "$HOST":/home/azureuser/ebpf-poc/engine-linux-amd64.new
 
 ssh -i "$KEY" "$HOST" \
@@ -66,7 +66,7 @@ ssh -i "$KEY" "$HOST" \
    mv -f /home/azureuser/ebpf-poc/engine-linux-amd64.new \
          /home/azureuser/ebpf-poc/engine-linux-amd64"
 
-tar -cz -C /Users/jeff/Code/eBPF policies attacks | \
+tar -cz -C /Users/jeff/Code/eBPF-SOC policies attacks | \
   ssh -i "$KEY" "$HOST" "tar -xz -C /home/azureuser/ebpf-poc"
 
 ssh -i "$KEY" "$HOST" \

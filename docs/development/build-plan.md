@@ -1,5 +1,14 @@
 # eBPF Threat Observability PoC — 5-Day Build Plan
 
+> **Historical record.** This is the *original* 5-day plan that produced the
+> first version of the codebase. The system has since grown well past it —
+> a per-process **Choke Gateway** (graduated cgroup/SIGKILL enforcement), a
+> per-device **network choke**, a **Vite multi-entry React** frontend
+> (replacing the Day-1 "vanilla JS" choice below), Postgres/OTel options,
+> and a fleet control plane. For the current design read
+> [../architecture/overview.md](../architecture/overview.md); this doc is
+> preserved for provenance, not as current guidance.
+
 > A proactive, kernel-level threat observability tool built on Tetragon, with a Go correlation engine, SQLite event store, and a live web UI. Designed to be buildable by one engineer in five working days.
 
 ---

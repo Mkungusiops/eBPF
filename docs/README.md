@@ -94,10 +94,11 @@ Operational deploy history lives in
 
 ## [Development](development/)
 
-Project history and the original build plan.
+Project history and build plans (both preserved as *how it was built*
+records — the code has since shipped past them).
 
 - [build-plan.md](development/build-plan.md) — the original 5-day build
-  plan that produced this codebase.
+  plan that produced the first version of this codebase (historical).
 - [network-choke-build-plan.md](development/network-choke-build-plan.md)
-  — staged plan to add per-device (MAC) network enforcement: netns PoC →
-  data plane → control plane → fleet/deploy.
+  — the staged plan that **built** per-device (MAC) network enforcement:
+  netns PoC → data plane → control plane → fleet/deploy. Now complete.

@@ -1,12 +1,16 @@
 # Network Choke Gateway
 
-> **Status: design / not yet implemented (drafted 2026-06-17).**
-> This document specifies a planned subsystem. File paths under
-> `engine/internal/enforce/devbpf/`, `engine/internal/device/`,
-> `engine/internal/choke/devgateway.go`, and `engine/internal/api/devchoke.go`
-> describe code **to be added**; they do not exist yet. The existing
+> **Status: BUILT (drafted 2026-06-17, implemented since).**
+> This subsystem is live: `engine/internal/enforce/devbpf/`,
+> `engine/internal/device/`, `engine/internal/choke/devgateway.go`, and
+> `engine/internal/api/devchoke.go` all exist, the `/devices` console is
+> shipped, and the data plane is proven **6/6 in the netns lab** (real
+> per-MAC drop + restore of *forwarded* traffic — see
+> [../deployment/network-choke-gateway.md](../deployment/network-choke-gateway.md)
+> for validation results and `make netns-smoke` for the automated gate).
+> This document is the design/architecture reference; the existing
 > per-process Choke Gateway ([overview.md](overview.md),
-> [state-ladder.md](state-ladder.md)) is unchanged and runs independently.
+> [state-ladder.md](state-ladder.md)) runs independently alongside it.
 
 ## What it is
 
@@ -135,7 +139,7 @@ out of scope for v1 (would require IP/LPM-trie keying — see Limitations).
    └───────────────────────────────────────────────────────┘
 ```
 
-| Component | Path (planned) | Role |
+| Component | Path | Role |
 |-----------|----------------|------|
 | Data plane | `engine/internal/enforce/devbpf/bpf/devchoke.c` | TC clsact ingress+egress classifier; MAC lookup → token bucket → drop/pass |
 | Backend interface | `engine/internal/enforce/devbpf/devbpf.go` | `DeviceChokeDataPlane` (Open/Close/Update/Delete/Snapshot), `DeviceBucket`, MAC helpers, `NoopDeviceBackend` |
@@ -360,6 +364,9 @@ mistake.
 
 ## Implementation stages
 
+All four stages below are **complete** — this is the record of how it was
+built. `make netns-smoke` is the standing regression gate for Stage 0–1.
+
 | Stage | Goal | Exit criteria |
 |-------|------|---------------|
 | **0 — netns PoC** | `devchoke.c` ingress-only drop-on-flag, loaded via `tc`/`bpftool` | Writing a MAC into `choke_devs` drops exactly that device's forwarded traffic; deleting restores it; debug counter proves transit is seen |
@@ -402,4 +409,3 @@ mistake.
   — the tracker `DeviceTable` is cloned from.
 - [`internal/api/fleet.go`](../../engine/internal/api/fleet.go)
   — the fan-out the device endpoints extend.
-</content>

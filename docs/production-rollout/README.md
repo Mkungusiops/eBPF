@@ -17,18 +17,6 @@ The current fleet implementation supports many gateways by listing peers in a
 missing operational pieces: hardware standards, provisioning, enrollment,
 secrets, monitoring, rollout gates, rollback, and day-2 ownership.
 
-## Folder Name Options
-
-Suggested names considered for this section:
-
-| Folder | Fit |
-|---|---|
-| `production-rollout` | Recommended. Covers provisioning, deployment, security, and operations. |
-| `mass-deployment` | Clear, but narrower and more install-focused. |
-| `fleet-rollout` | Good for multi-gateway control, less clear for site install work. |
-| `gateway-operations` | Good for day-2 operations, less clear for first rollout. |
-| `deployment-at-scale` | Accurate, but longer than needed. |
-
 ## Rollout Model
 
 Mass use means deploying a standard inline gateway at each controlled network

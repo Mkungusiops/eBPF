@@ -135,8 +135,20 @@ sudo systemd-run \
     -attacks        /home/ubuntu/ebpf-poc/attacks \
     -honeypots      /var/lib/ebpf-engine/honey \
     -enforce \
-    -cgroup-root    /sys/fs/cgroup
+    -cgroup-root    /sys/fs/cgroup \
+    -throttle-at 20 -tarpit-at 50 -quarantine-at 120 -sever-at 200
 ```
+
+> **⚠️ Keep the tuned thresholds when running `-enforce`.** The binary
+> defaults (`5 / 15 / 25 / 40`) are far too low for a live Ubuntu box:
+> every SSH session's MOTD churn reads `/etc/passwd`, and `sudo` reads
+> `/etc/shadow`, so `sshd`/`sudo` chains score ~85–150 and land in
+> `choke-quarantined` (frozen) or `severed` — freezing/killing `sudo` and
+> locking you out. The `20 / 50 / 120 / 200` values above (what
+> `make deploy` bakes in) keep that churn at *tarpit*. If you do get
+> locked out, the engine's HTTP API still works: `POST
+> /api/choke/kill-switch {"on":true}` then `POST /api/choke/thaw` to
+> recover (see [../deployment/azure.md](../deployment/azure.md#gotcha--enforce-will-quarantine-your-sudo)).
 
 ### Choke gateway flags
 
@@ -146,7 +158,7 @@ sudo systemd-run \
 | `-dry-run` | off | Decisions recorded, no enforcement. Stack on top of `-enforce` to shadow-roll a new policy. |
 | `-choke-policies <dir>` | `policies/choke` | DSL directory loaded at startup. |
 | `-cgroup-root <path>` | `/sys/fs/cgroup` | Where the engine creates `choke-throttled`, `choke-tarpit`, `choke-quarantined`. Must be the cgroup v2 unified mount. |
-| `-throttle-at` `-tarpit-at` `-quarantine-at` `-sever-at` | `5 / 15 / 25 / 40` | Chain-score thresholds for each tier. Tunable live via the choke console (PUT `/api/choke/thresholds`). |
+| `-throttle-at` `-tarpit-at` `-quarantine-at` `-sever-at` | `5 / 15 / 25 / 40` (binary default) | Chain-score thresholds for each tier. **Override to `20 / 50 / 120 / 200` when enforcing** (as above / `make deploy`) so sshd/sudo churn doesn't lock you out. Tunable live via the choke console (PUT `/api/choke/thresholds`). |
 
 ### What the cgroup tiers actually do
 
@@ -177,12 +189,14 @@ sudo journalctl -u ebpf-engine -n 20 --no-pager
 multipass info ebpf | awk '/IPv4/{print $2}'
 ```
 
-Two pages now serve from the same engine:
+Several pages serve from the same engine:
 
 | Path | Purpose |
 |---|---|
 | `http://<vm-ip>:8080/`        | SOC dashboard (alerts, events, MITRE coverage, IOCs) |
 | `http://<vm-ip>:8080/choke`   | **Choke Gateway Console** — process state, thresholds, manual override, kill-switch, policy workbench |
+| `http://<vm-ip>:8080/devices` | **Network Choke** — per-device (MAC) console. On a single-NIC VM it renders in `plane=noop` (audited, no drops); real enforcement needs a 2-NIC inline bridge + `-devchoke-obj/-devchoke-iface`. See [../deployment/network-choke-gateway.md](../deployment/network-choke-gateway.md). |
+| `http://<vm-ip>:8080/fleet`   | **Fleet Console** — 503s until the engine is started with `-fleet-hosts`. |
 
 Login: **`admin` / `ebpf-soc-demo`**.
 

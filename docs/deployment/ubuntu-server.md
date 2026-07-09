@@ -38,7 +38,7 @@ nginx (TLS :443)  ──►  engine (HTTP 127.0.0.1:8080)  ──►  Tetragon (
 | **Kernel with BTF** | `test -f /sys/kernel/btf/vmlinux` must succeed. All stock Ubuntu ≥ 5.15 cloud/generic kernels have it. |
 | **root / sudo** | The engine runs as root (cgroup freeze + cross-PID SIGKILL); install needs sudo. |
 | **2 vCPU / 2 GB RAM / 10 GB disk** | Comfortable for a single host. Tetragon + the engine are light. |
-| **A way to build the binary** | Either build on the server (needs Node 20 + Go ≥ 1.21) **or** build on a dev machine and ship a tarball (recommended — keeps toolchains off prod). |
+| **A way to build the binary** | Either build on the server (needs Node 20 + Go ≥ 1.25) **or** build on a dev machine and ship a tarball (recommended — keeps toolchains off prod). |
 
 > **Single-NIC vs. inline gateway.** On an ordinary single-NIC server the
 > **per-process** Tetragon choke (the whole SOC/Choke console) works fully.
@@ -85,7 +85,7 @@ The binary **embeds the built web UI**, so building runs the Vite build first.
 ### Option A — build on a dev machine, ship a tarball (recommended)
 
 Keeps Node/Go off the production server. On your laptop or a build box (with
-**Node 20+** and **Go ≥ 1.21**):
+**Node 20+** and **Go ≥ 1.25**):
 
 ```bash
 make tarball            # builds web + linux binary, bundles policies/attacks/scripts/deploy
@@ -232,7 +232,7 @@ curl -s -b "$J" https://SERVER/api/whoami            # {"user":"admin","host":..
 
 # 3. Kernel events are flowing (drive an exec while tailing)
 journalctl -u ebpf-engine -f &        # watch for ALERT lines
-bash attacks/credential-access.sh     # or any attacks/*.sh — should raise a critical alert
+bash attacks/02-credential-theft.sh   # or any attacks/*.sh — should raise a critical alert
 ```
 
 Then open the dashboard in a browser and confirm: the **Executive summary** band

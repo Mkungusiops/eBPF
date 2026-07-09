@@ -10,9 +10,13 @@
 > [docs/architecture/network-choke-gateway.md](../architecture/network-choke-gateway.md).
 > This doc is the *how-to-build*; that doc is the *what-and-why*.
 >
-> **Status:** none of the `devbpf` / `device` / `devgateway` code below
-> exists yet — this plan creates it. The existing per-process choke
-> ([overview.md](../architecture/overview.md)) is untouched.
+> **Status: BUILT.** The `devbpf` / `device` / `devgateway` code this plan
+> describes now exists and is validated 6/6 in the netns lab (`make
+> netns-smoke`). This document is preserved as the *how it was built*
+> record; the deploy recipe is
+> [deployment/network-choke-gateway.md](../deployment/network-choke-gateway.md).
+> The existing per-process choke ([overview.md](../architecture/overview.md))
+> is untouched.
 
 ---
 
@@ -62,7 +66,7 @@ then ship it across a fleet (Stage 3).
 uname -r                      # ≥ 6.6
 sudo apt install -y clang llvm libbpf-dev iproute2 linux-headers-$(uname -r)
 which tc bpftool ip clang     # all must resolve
-go version                    # 1.22+ (the engine's existing requirement)
+go version                    # 1.25+ (the engine's go.mod requirement)
 ```
 
 Everything through **Stage 1** runs in **network namespaces — no extra

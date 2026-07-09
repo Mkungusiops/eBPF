@@ -1,8 +1,8 @@
 # Tarball quickstart — build, ship, run
 
 The fastest path from a clean checkout to the dashboard in a browser.
-Build the tarball on any machine with Go 1.22+ (Linux or macOS), ship it
-to a Linux host, run the engine, open the URL.
+Build the tarball on any machine with Go 1.25+ and Node 18+ (Linux or
+macOS), ship it to a Linux host, run the engine, open the URL.
 
 For the full deployment guide with TLS, systemd, and tuning, see
 [linux-server.md](linux-server.md).
@@ -10,7 +10,8 @@ For the full deployment guide with TLS, systemd, and tuning, see
 ## Prerequisites
 
 **Build machine** (any OS):
-- Go 1.22+
+- Go 1.25+ (matches the `go` directive in `engine/go.mod`)
+- Node 18+ / npm (the React console is built and embedded by `make tarball`)
 - `make`, `tar`
 
 **Target machine** (Linux):
@@ -33,9 +34,12 @@ From the repo root on your build machine:
 make tarball
 ```
 
-This cross-compiles `engine/engine-linux-amd64` and bundles it with the
-policies, attack scripts, scripts, and docs into
-`ebpf-poc-amd64.tar.gz` at the repo root (~12 MB).
+This builds the embedded React console, cross-compiles
+`engine/engine-linux-amd64`, and bundles it with the `policies/`,
+`attacks/`, and `scripts/` trees, the `Makefile`, `README.md`, the BPF
+data-plane C sources (`choke.c`, `devchoke.c`), and `build-plan.md` into
+`ebpf-poc-amd64.tar.gz` at the repo root (~20 MB — the binary is a static
+Go ELF with the UI embedded).
 
 For ARM64 servers (Graviton, Ampere, Raspberry Pi 5):
 

@@ -141,7 +141,7 @@ router and the LAN is back online — the gateway is not a hard dependency.
 ## 3. Get the bundle onto the box
 
 ```bash
-# On a dev machine with Go 1.22+:
+# On a dev machine with Go 1.25+ and Node 18+:
 git clone <repo-url> ebpf-poc && cd ebpf-poc
 make build-linux                      # or: make tarball   (ships the .c sources + binary)
 scp engine/engine-linux-amd64 user@gateway:~/
