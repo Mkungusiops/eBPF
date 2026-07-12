@@ -1,0 +1,107 @@
+# Fully open-source (Apache-2.0 / PostgreSQL) control-plane substrate for Phase 1.
+# Every image here is permissive OSS and self-hostable — the same stack runs
+# managed for SaaS and on-prem for residency (docs/plan/d4c-tech-decisions.md).
+#
+#   NATS JetStream  bus                 Apache-2.0
+#   ClickHouse      events (firehose)   Apache-2.0
+#   PostgreSQL      control state       PostgreSQL License
+#   Keycloak        identity/OIDC       Apache-2.0
+#   SeaweedFS       object store (S3)    Apache-2.0
+#
+# This is a DEV/single-node substrate (Keycloak start-dev, no replication).
+# Production uses Helm/managed equivalents; the wire and schema are identical.
+#
+#   docker compose -f deploy/docker-compose.oss.yml up -d
+#
+# Sequencing (ADR §5): Keycloak + Postgres first, then NATS, then ClickHouse.
+# ClickHouse/SeaweedFS can stay stopped until the firehose/forensics need them.
+
+name: ebpf-soc-oss
+
+services:
+  # ── Message bus ───────────────────────────────────────────────────────────
+  nats:
+    image: nats:2.10-alpine
+    command: ["-js", "-sd", "/data", "-m", "8222"] # JetStream, store dir, monitor
+    ports:
+      - "4222:4222" # client
+      - "8222:8222" # monitoring
+    volumes:
+      - nats-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8222/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Events (firehose) ─────────────────────────────────────────────────────
+  # Add only when process_exec volume demands it; Postgres covers early volume.
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.8-alpine
+    ports:
+      - "8123:8123" # HTTP
+      - "9000:9000" # native
+    environment:
+      CLICKHOUSE_DB: ebpf_soc
+      CLICKHOUSE_USER: soc
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:?set CLICKHOUSE_PASSWORD}
+    ulimits:
+      nofile: { soft: 262144, hard: 262144 }
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O-", "http://localhost:8123/ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Control state ─────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ebpf_soc
+      POSTGRES_USER: soc
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U soc -d ebpf_soc"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ── Identity (OIDC broker) ────────────────────────────────────────────────
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    command: ["start-dev"] # dev only; production uses `start` + a hostname/TLS
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:?set KEYCLOAK_ADMIN_PASSWORD}
+      KC_DB: postgres
+      KC_DB_URL: jdbc:postgresql://postgres:5432/ebpf_soc
+      KC_DB_USERNAME: soc
+      KC_DB_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── Object store (S3-compatible; cold/forensic/export) ────────────────────
+  seaweedfs:
+    image: chrislusf/seaweedfs:3.73
+    command: ["server", "-s3", "-dir=/data"]
+    ports:
+      - "8333:8333" # S3 API
+      - "9333:9333" # master
+      - "8888:8888" # filer
+    volumes:
+      - seaweedfs-data:/data
+
+volumes:
+  nats-data:
+  clickhouse-data:
+  postgres-data:
+  seaweedfs-data:
