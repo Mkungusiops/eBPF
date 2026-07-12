@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/command"
 	"github.com/jeffmk/ebpf-poc-engine/internal/cpclient"
@@ -370,5 +371,64 @@ func TestIngestToCentralStoreIsolation(t *testing.T) {
 	// An unscoped read is impossible (fails closed).
 	if _, err := cs.Query(centralstore.Scope{}, 100); err != centralstore.ErrNoScope {
 		t.Fatalf("unscoped read err = %v, want ErrNoScope", err)
+	}
+}
+
+// --- Layers 4→3: RBAC scope gates the tenant-scoped store read --------------
+
+// TestReadPathIsolationLayers34 proves the read side of the invariant: an
+// operator's RBAC scope (Layer 4) decides which tenant the store (Layer 3) is
+// queried for. A tenant-bound analyst reads only their tenant and is DENIED
+// another's; a cross-tenant MSOC role may read another tenant, but the access is
+// audited. Denials never fall through to a Layer-3 read.
+func TestReadPathIsolationLayers34(t *testing.T) {
+	cs, err := centralstore.Open(filepath.Join(t.TempDir(), "central.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cs.Close() })
+
+	seed := func(tenant, agent string, ids ...int) {
+		for _, id := range ids {
+			rec := uplink.EventRecord(&store.Event{ID: int64(id), ExecID: fmt.Sprintf("e-%d", id)})
+			if err := cs.Put(ingest.StampedRecord{TenantID: tenant, AgentID: agent, Record: rec}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("tenant-a", "agent-a", 1, 2, 3)
+	seed("tenant-b", "agent-b", 1)
+
+	aud := authz.NewMemAuditor()
+	analystA := authz.Principal{Subject: "analyst@a", Grants: []authz.Grant{{Role: authz.RoleTenantAnalyst, TenantID: "tenant-a"}}}
+	admin := authz.Principal{Subject: "msoc@soc", Grants: []authz.Grant{{Role: authz.RoleMSOCAdmin}}}
+
+	// authorizedRead gates the Layer-3 store read behind a Layer-4 decision.
+	authorizedRead := func(p authz.Principal, tenant string) ([]centralstore.Row, bool) {
+		if d := authz.Authorize(p, tenant, authz.ActionRead, aud); !d.Allowed {
+			return nil, false
+		}
+		rows, err := cs.Query(centralstore.Scope{TenantID: tenant}, 100)
+		if err != nil {
+			t.Fatalf("authorized read failed: %v", err)
+		}
+		return rows, true
+	}
+
+	// Analyst reads own tenant.
+	if rows, ok := authorizedRead(analystA, "tenant-a"); !ok || len(rows) != 3 {
+		t.Fatalf("analyst@a own-tenant read: ok=%v rows=%d, want ok=true rows=3", ok, len(rows))
+	}
+	// Analyst is DENIED another tenant — never reaches the store.
+	if _, ok := authorizedRead(analystA, "tenant-b"); ok {
+		t.Fatal("analyst@a read tenant-b — Layer 4 failed to gate the Layer 3 read")
+	}
+	// MSOC admin reads another tenant, and it is audited.
+	if rows, ok := authorizedRead(admin, "tenant-b"); !ok || len(rows) != 1 {
+		t.Fatalf("msoc-admin cross-tenant read: ok=%v rows=%d, want ok=true rows=1", ok, len(rows))
+	}
+	recs := aud.Records()
+	if len(recs) != 1 || recs[0].Subject != "msoc@soc" || recs[0].Tenant != "tenant-b" {
+		t.Fatalf("cross-tenant read not audited: %+v", recs)
 	}
 }
