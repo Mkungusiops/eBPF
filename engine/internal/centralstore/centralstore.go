@@ -35,6 +35,19 @@ import (
 // invariant fails closed: no tenant ⇒ no rows, never another tenant's rows.
 var ErrNoScope = errors.New("centralstore: read requires a non-empty tenant scope (fail-closed)")
 
+// TenantStore is the tenant-scoped central store contract. The SQLite Store
+// (single-node/tests) and the Postgres PGStore (RLS-enforced production backend)
+// both implement it, so ingest and the read path are backend-agnostic.
+type TenantStore interface {
+	Put(ingest.StampedRecord) error
+	Count(Scope) (int, error)
+	Query(Scope, int) ([]Row, error)
+	QueryAcross([]string, int) ([]Row, error)
+	Close() error
+}
+
+var _ TenantStore = (*Store)(nil)
+
 // Scope is the tenant a read is authorized for.
 type Scope struct{ TenantID string }
 

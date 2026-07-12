@@ -33,6 +33,21 @@ jobs:
   go:
     name: Go — vet · test · build 3 binaries
     runs-on: ubuntu-latest
+    # Postgres service so the RLS isolation integration test
+    # (internal/centralstore) runs in CI rather than skipping. NATS JetStream is
+    # exercised via an embedded in-process server, so it needs no service here.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: soc
+          POSTGRES_PASSWORD: socpass
+          POSTGRES_DB: ebpf_soc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U soc -d ebpf_soc"
+          --health-interval 10s --health-timeout 5s --health-retries 5
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +70,8 @@ jobs:
 
       - name: go test
         working-directory: engine
+        env:
+          EBPF_TEST_PG_DSN: postgres://soc:socpass@localhost:5432/ebpf_soc?sslmode=disable
         run: go test ./...
 
       # All three build targets must compile from the shared internal/ packages
