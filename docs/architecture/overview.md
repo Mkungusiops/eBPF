@@ -188,9 +188,11 @@ plaintext never lands on disk at all.
 | Public paths        | `/login`, `/api/login`, favicons, PWA assets, `/assets/*`                    |
 | Everything else     | 302 → `/login` for HTML, 401 JSON for `/api/*`                               |
 
-Default credentials are baked in for the demo: **`admin / ebpf-soc-demo`**.
-Override with `-user`/`-pass` (or `pass_hash` in config). Always change them
-in any real deployment.
+There is **no baked-in credential**. You must set one via `-user`/`-pass` (or
+`pass_hash` in config, preferred for production so plaintext never lands on
+disk); the engine **fails fast at startup** if none is provided rather than
+shipping a known default. The demo deploy paths (`make deploy`, the netns dev
+labs) set `admin / ebpf-soc-demo` explicitly — change it for any real deployment.
 
 ## Scoring
 

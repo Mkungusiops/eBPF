@@ -77,6 +77,7 @@ run() {
   echo "running engine in ns-gw, attaching devchoke to $GW_LAN ..."
   exec ip netns exec ns-gw "$bin" \
     -fake \
+    -pass ebpf-soc-demo \
     -db /tmp/netns-lab-events.db \
     -http :8080 \
     -devchoke-obj "$obj" \

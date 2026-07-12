@@ -3,6 +3,10 @@
 # Targets:
 #   make build           native build of the engine binary -> engine/engine
 #   make build-linux     cross-compile linux/amd64 (or arm64) -> engine/engine-linux-<arch>
+#   make build-agent     native build of the choke-agent -> engine/agent
+#   make build-controlplane  native build of the control-plane stub -> engine/controlplane
+#   make proto-lint      validate the agent<->control-plane protobuf IDL (protoc only)
+#   make proto           regenerate gRPC Go stubs into engine/gen (needs `make proto-tools` once)
 #   make test            run all Go unit tests
 #   make vet             go vet
 #   make fake            run the engine in fake mode on :8080 (no Tetragon needed)
@@ -16,11 +20,31 @@ ENGINE_DIR := $(ROOT)/engine
 WEB_DIR    := $(ROOT)/web
 EMBED_DIR  := $(ENGINE_DIR)/internal/api/web
 BIN        := $(ENGINE_DIR)/engine
+# Phase 0 build-target split (docs/plan/architecture.md §1). The agent and
+# control-plane binaries compile over the SAME internal/ packages as the
+# engine — new entrypoints only, no packages moved. See cmd/agent, cmd/controlplane.
+AGENT_BIN  := $(ENGINE_DIR)/agent
+CP_BIN     := $(ENGINE_DIR)/controlplane
 LINUX_ARCH ?= amd64
 LINUX_BIN  := $(ENGINE_DIR)/engine-linux-$(LINUX_ARCH)
+AGENT_LINUX_BIN := $(ENGINE_DIR)/agent-linux-$(LINUX_ARCH)
+CP_LINUX_BIN    := $(ENGINE_DIR)/controlplane-linux-$(LINUX_ARCH)
+# Phase 1 wire contract (docs/plan/wire-contract.md). The agent↔control-plane
+# protobuf/gRPC IDL and the generated Go stubs.
+PROTO_DIR  := $(ENGINE_DIR)/proto
+GEN_DIR    := $(ENGINE_DIR)/gen
+# Pin protoc-gen-go to the module's protobuf version so generated code matches
+# the runtime library (engine/go.mod: google.golang.org/protobuf v1.36.11).
+PROTOC_GEN_GO_VERSION      ?= v1.36.11
+PROTOC_GEN_GO_GRPC_VERSION ?= v1.5.1
 TETRA_CT   ?= tetragon
+# Throwaway credential for the local `make fake` dev/UI target only. The engine
+# no longer ships a built-in password default (Phase 0, deliverable #3), so dev
+# tooling must pass one explicitly. Override with FAKE_PASS=… if you like; this
+# is never used for a real deployment (see `make deploy`, which sets its own).
+FAKE_PASS  ?= fake-dev
 
-.PHONY: web build build-linux test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
+.PHONY: web build build-linux build-agent build-agent-linux build-controlplane build-controlplane-linux proto proto-tools proto-lint test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
 # Build and stage Vite's static output for go:embed. The redesigned UI is
 # the release path; missing dist/ is a build failure, not a runtime fallback.
@@ -39,6 +63,60 @@ build: web
 build-linux: web
 	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o engine-linux-$(LINUX_ARCH) ./cmd/engine
 	@echo "→ $(LINUX_BIN)"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 0 build-target split (docs/plan/architecture.md §1).
+# cmd/agent and cmd/controlplane are NEW entrypoints over the SAME internal/
+# packages — the strangler seam for the eventual agent / control-plane split.
+# cmd/engine stays built and unchanged; nothing is moved.
+# ─────────────────────────────────────────────────────────────────────────
+
+# The per-host sensing+enforcing agent (native; depends on web for the local
+# debug-console assets, same as `build`).
+build-agent: web
+	cd $(ENGINE_DIR) && go build -o agent ./cmd/agent
+	@echo "→ $(AGENT_BIN)"
+
+# Static linux agent — the shipping form. CGO_ENABLED=0 keeps it a single
+# dependency-free binary (the agent-ergonomics invariant, architecture.md §6).
+build-agent-linux: web
+	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o agent-linux-$(LINUX_ARCH) ./cmd/agent
+	@echo "→ $(AGENT_LINUX_BIN)"
+
+# The control-plane stub (native). Minimal HTTP over internal/api + internal/store;
+# no embedded console, so no web dependency.
+build-controlplane:
+	cd $(ENGINE_DIR) && go build -o controlplane ./cmd/controlplane
+	@echo "→ $(CP_BIN)"
+
+# Static linux control plane — it runs in a container/K8s (architecture.md §3).
+build-controlplane-linux:
+	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o controlplane-linux-$(LINUX_ARCH) ./cmd/controlplane
+	@echo "→ $(CP_LINUX_BIN)"
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 1 wire contract (docs/plan/wire-contract.md).
+# `proto-lint` validates the IDL with protoc alone (no language plugins) — safe
+# to run in CI. `proto` regenerates the Go stubs under engine/gen (needs the
+# plugins; `proto-tools` installs them, pinned to the module's protobuf version).
+# ─────────────────────────────────────────────────────────────────────────
+proto-tools:
+	cd $(ENGINE_DIR) && go install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	cd $(ENGINE_DIR) && go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@$(PROTOC_GEN_GO_GRPC_VERSION)
+	@echo "→ installed protoc-gen-go $(PROTOC_GEN_GO_VERSION) + protoc-gen-go-grpc $(PROTOC_GEN_GO_GRPC_VERSION) (ensure $$(go env GOPATH)/bin is on PATH)"
+
+# Syntax/import validation only — no plugins required, so this is the CI gate.
+proto-lint:
+	protoc -I $(PROTO_DIR) --descriptor_set_out=/dev/null $(PROTO_DIR)/ebpfsoc/v1/*.proto
+	@echo "→ proto IDL valid"
+
+proto: proto-lint
+	@mkdir -p $(GEN_DIR)
+	protoc -I $(PROTO_DIR) \
+		--go_out=$(GEN_DIR) --go_opt=module=github.com/jeffmk/ebpf-poc-engine/gen \
+		--go-grpc_out=$(GEN_DIR) --go-grpc_opt=module=github.com/jeffmk/ebpf-poc-engine/gen \
+		$(PROTO_DIR)/ebpfsoc/v1/*.proto
+	@echo "→ generated Go stubs under $(GEN_DIR)"
 
 # Compile the network (per-device) choke data plane locally. Linux only —
 # needs clang + the kernel uapi headers. The deploy path builds this on the
@@ -64,7 +142,7 @@ vet:
 # fake mode is retained for unit tests + UI iteration only. Production
 # never uses it — see `make deploy` for the real path.
 fake: build
-	$(BIN) -fake -db $(ROOT)/fake-events.db
+	$(BIN) -fake -db $(ROOT)/fake-events.db -pass $(FAKE_PASS)
 
 policies-apply:
 	@for p in $(ROOT)/policies/*.yaml; do \
@@ -88,6 +166,8 @@ tarball: build-linux
 
 clean:
 	rm -f $(BIN) $(ENGINE_DIR)/engine-linux-amd64 $(ENGINE_DIR)/engine-linux-arm64
+	rm -f $(AGENT_BIN) $(ENGINE_DIR)/agent-linux-amd64 $(ENGINE_DIR)/agent-linux-arm64
+	rm -f $(CP_BIN) $(ENGINE_DIR)/controlplane-linux-amd64 $(ENGINE_DIR)/controlplane-linux-arm64
 	rm -f $(ROOT)/fake-events.db $(ROOT)/events.db
 	rm -f $(ROOT)/ebpf-poc-amd64.tar.gz $(ROOT)/ebpf-poc-arm64.tar.gz
 	find $(EMBED_DIR) -mindepth 1 ! -name .keep -exec rm -rf {} +

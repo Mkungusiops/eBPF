@@ -13,6 +13,13 @@
 /engine/engine-darwin-*
 /engine/engine-windows-*
 /engine/engine.exe
+# Phase 0 build-target split binaries (`make build-agent`, `make build-controlplane`)
+/engine/agent
+/engine/agent-linux-*
+/engine/controlplane
+/engine/controlplane-linux-*
+# Phase 1 generated gRPC stubs (`make proto`) are COMMITTED so CI and consumers
+# build without the protoc plugins; regenerate from engine/proto/ via `make proto`.
 *.exe
 
 # Bundles produced by `make tarball`

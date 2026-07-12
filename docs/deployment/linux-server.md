@@ -268,8 +268,10 @@ the sensitive-files YAML.
 
 ## 6. Set credentials
 
-The default credentials (`admin / ebpf-soc-demo`) are baked into the
-binary for the demo. **Change them in any real deployment.**
+There is **no baked-in credential**: the engine **fails fast at startup** if
+you don't set one (via `-pass`/`-pass-hash` or `pass`/`pass_hash` in config), so
+a missing password can never ship as a known default. Set a strong one — prefer
+`pass_hash` so plaintext never lands on disk. **Change it for any real deployment.**
 
 The clean way is an environment file consumed by systemd (next step).
 For a quick manual run:

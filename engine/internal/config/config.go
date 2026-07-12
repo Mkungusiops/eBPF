@@ -23,7 +23,12 @@ type File struct {
 	DB       string `yaml:"db"`
 	HTTP     string `yaml:"http"`
 	User     string `yaml:"user"`
-	Pass     string `yaml:"pass"`
+	// Plaintext password, bcrypted at startup. There is NO built-in default
+	// (Phase 0, deliverable #3): if neither pass nor pass_hash is supplied
+	// here or via -pass/-pass-hash, the engine fails fast at startup rather
+	// than shipping a known credential. Prefer pass_hash for production so
+	// plaintext never lands on disk.
+	Pass string `yaml:"pass"`
 	// Pre-hashed bcrypt password. When set, takes precedence over Pass
 	// (plaintext). Lets operators avoid putting plaintext credentials
 	// in /etc/ebpf-engine/engine.yaml. Generate with:

@@ -1,0 +1,95 @@
+// CommandService — control-plane → agent actions. The agent dials out and holds
+// the stream (works through customer NAT with no inbound access); the CP pushes
+// SIGNED commands down it. Every command is verified, acked, and audited on both
+// ends, and local guardrails override any command. See docs/plan/wire-contract.md §5.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+import "ebpfsoc/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service CommandService {
+  // The agent opens the stream and sends CommandAcks; the server streams
+  // Commands. Agent-initiated so no inbound connectivity to the host is needed.
+  rpc Commands(stream CommandAck) returns (stream Command);
+}
+
+message Command {
+  string command_id = 1;
+  google.protobuf.Timestamp issued_at = 2;
+  google.protobuf.Timestamp expires_at = 3;
+  // Fleet-service signature over the command's canonical bytes, and the key id
+  // that produced it. The agent verifies before acting (threat-model CH-5, SC-4).
+  bytes signature = 4;
+  string signer_key_id = 5;
+
+  oneof action {
+    SetMode set_mode = 10;
+    Jail jail = 11;
+    Thaw thaw = 12;
+    SetThresholds set_thresholds = 13;
+    ApplyPreset apply_preset = 14;
+    KillSwitch kill_switch = 15;
+    UpdateProtectedList update_protected_list = 16;
+  }
+}
+
+message SetMode {
+  EnforcementMode mode = 1;
+}
+
+// Jail moves a target to a choke tier immediately (operator-driven override).
+message Jail {
+  string exec_id = 1;
+  uint32 pid = 2;
+  string tier = 3; // throttle | tarpit | quarantine | sever
+}
+
+message Thaw {
+  string exec_id = 1;
+  uint32 pid = 2;
+}
+
+message SetThresholds {
+  int32 throttle_at = 1;
+  int32 tarpit_at = 2;
+  int32 quarantine_at = 3;
+  int32 sever_at = 4;
+}
+
+message ApplyPreset {
+  string preset = 1; // named threshold/mode bundle
+}
+
+// KillSwitch is the fleet-wide emergency halt of enforcement (threat-model EN-2).
+message KillSwitch {
+  bool halt_all_enforcement = 1;
+  string reason = 2;
+}
+
+// UpdateProtectedList adjusts the local allow-lists the agent refuses to enforce
+// against. NOTE: the agent applies conservative local minimums regardless — a
+// command can never remove sudo/sshd/systemd protection and cause self-lockout
+// (threat-model EN-1/EN-4; the sudo-lockout trap).
+message UpdateProtectedList {
+  repeated string protected_binaries = 1;
+  repeated string protected_macs = 2;
+}
+
+message CommandAck {
+  string command_id = 1;
+  Status status = 2;
+  string detail = 3;
+  google.protobuf.Timestamp applied_at = 4;
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_ACCEPTED = 1; // valid signature, queued
+    STATUS_APPLIED = 2;  // effected on the host
+    STATUS_REJECTED = 3; // bad signature or failed local guardrail
+    STATUS_EXPIRED = 4;  // past expires_at
+  }
+}

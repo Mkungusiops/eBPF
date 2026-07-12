@@ -158,7 +158,9 @@ That single command:
 6. prints the URLs for the SOC dashboard and Choke console.
 
 Open the printed `http://<vm-ip>:8080/choke` URL. Login: **`admin` /
-`ebpf-soc-demo`** (change it for any real deployment).
+`ebpf-soc-demo`** — the credential `make deploy` sets for the demo. There is no
+built-in default (the engine fails fast without a password); change it for any
+real deployment.
 
 **Trigger a real attack and watch the gateway respond:**
 

@@ -1,0 +1,38 @@
+// HeartbeatService — periodic agent health/liveness + hints. Cheap and
+// unary; the authoritative agent registry (architecture.md §3.5) is built from
+// these. A missed heartbeat never stops enforcement (autonomy invariant).
+// See docs/plan/wire-contract.md §2.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+import "ebpfsoc/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service HeartbeatService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message HeartbeatRequest {
+  AgentInfo agent_info = 1;
+  DataPlaneState data_plane = 2;
+  // Unshipped WAL rows — a health + backpressure signal (a growing buffer means
+  // the agent is enforcing/observing fine but cannot drain upstream).
+  uint64 buffer_depth = 3;
+  // The agent's view of uplink progress (last acked telemetry sequence).
+  uint64 last_acked_seq = 4;
+  // The policy bundle version the agent currently has applied.
+  string applied_policy_version = 5;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp server_time = 1;
+  // Desired cadence — lets the CP tune load per fleet.
+  uint32 desired_heartbeat_interval_s = 2;
+  // Hint that commands are queued (re)open/keep the command stream.
+  bool commands_pending = 3;
+  // Hint to pull a new policy bundle (agent still verifies the signature).
+  string desired_policy_version = 4;
+}

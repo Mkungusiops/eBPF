@@ -93,4 +93,5 @@ echo "────────────────────────�
 # Engine output goes to a VM-side file (it's chatty in -fake mode); the
 # launcher's stdout stays a one-time banner.
 exec "$BIN" -fake -db /tmp/ui-demo.db -http 0.0.0.0:$PORT \
+  -pass ebpf-soc-demo \
   -devchoke-obj "$OBJ" -devchoke-iface "$IFACE" >>/tmp/ui-demo.log 2>&1

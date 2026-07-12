@@ -94,7 +94,7 @@ sleep 0.5
 
 echo "== starting platform in ns-gw (attach $GW_LAN) =="
 ip netns exec ns-gw "$BIN" -fake -db /tmp/netns-device-containment.db \
-  -http 127.0.0.1:8080 -devchoke-obj "$OBJ" -devchoke-iface "$GW_LAN" \
+  -http 127.0.0.1:8080 -pass ebpf-soc-demo -devchoke-obj "$OBJ" -devchoke-iface "$GW_LAN" \
   >/tmp/netns-device-containment-engine.log 2>&1 &
 ENGINE_PID=$!
 

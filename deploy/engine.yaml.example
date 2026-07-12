@@ -18,13 +18,19 @@ db:    "/var/lib/ebpf-engine/events.db"
 # `make pg-vm` to bring up a local container.
 # pg_dsn: "postgres://engine:engine@127.0.0.1:5432/ebpf?sslmode=disable"
 
-# ── Auth (CHANGE BEFORE PRODUCTION USE) ───────────────────────────────
+# ── Auth (REQUIRED — the engine fails fast without a credential) ──────
 user: "admin"
-# Plaintext password is bcrypted at startup. For production, prefer
-# pass_hash (a pre-computed bcrypt hash) so plaintext never sits on disk.
-# Generate with: htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n'
-pass: "ebpf-soc-demo"
-# pass_hash: "$2a$10$abc...xyz"   # takes precedence over pass when set
+# You MUST set exactly one of `pass` or `pass_hash`. There is NO built-in
+# default (Phase 0 hardening): if neither is provided here or via
+# -pass/-pass-hash, the engine refuses to start rather than shipping a known
+# credential. Uncomment one of the lines below and set a real value.
+#
+# For production prefer pass_hash (a pre-computed bcrypt hash) so plaintext
+# never sits on disk. Generate with:
+#   htpasswd -bnBC 10 "" 'your-password' | tr -d ':\n' | sed 's/^[$]2y/$2a/'
+#
+# pass: "choose-a-strong-password"   # plaintext, bcrypted at startup
+# pass_hash: "$2a$10$abc...xyz"      # takes precedence over pass when set
 
 # Path to the HMAC signing secret used for stateless session cookies.
 # Auto-created 0600 on first start with 32 random bytes. Sessions

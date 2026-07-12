@@ -1,0 +1,49 @@
+// TelemetryService — the agent → control-plane firehose (events, alerts,
+// decisions). At-least-once with agent-assigned dedup keys and WAL-backed
+// resume so reconnects never double-count or lose data.
+// See docs/plan/wire-contract.md §4.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+import "ebpfsoc/v1/common.proto";
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service TelemetryService {
+  // Bidirectional: the agent streams batches; the server streams cumulative
+  // acks and optional backpressure. The agent resumes from the last acked
+  // sequence held in its local WAL after any partition.
+  rpc StreamTelemetry(stream TelemetryBatch) returns (stream TelemetryAck);
+}
+
+message TelemetryBatch {
+  // Monotonic per-agent batch sequence. Drives cumulative ack + resume.
+  uint64 agent_seq = 1;
+  repeated TelemetryRecord records = 2;
+}
+
+message TelemetryRecord {
+  // Agent-assigned, STABLE across resends. The collector dedups on
+  // (agent_id-from-cert, dedup_key), making replays after reconnect safe
+  // (threat-model CH-3).
+  string dedup_key = 1;
+  oneof payload {
+    ProcessEvent event = 2;
+    Alert alert = 3;
+    Decision decision = 4;
+  }
+}
+
+message TelemetryAck {
+  // Cumulative: the agent may free WAL rows through this batch sequence.
+  uint64 acked_through_seq = 1;
+  // Optional flow control — throttle a flooding/compromised agent without
+  // affecting other tenants (threat-model CH-4).
+  Backpressure backpressure = 2;
+}
+
+message Backpressure {
+  uint32 max_in_flight_batches = 1; // 0 = server default
+  uint32 pause_ms = 2;              // suggested pause before the next batch
+}
