@@ -211,6 +211,14 @@ func main() {
 	if credential == "" {
 		log.Fatalf("auth: no dashboard credential configured — set -pass, -pass-hash, or pass/pass_hash in the config file; the built-in demo default has been removed so a missing password fails fast instead of shipping a known credential")
 	}
+	// SECURITY: enforce the dashboard password policy on plaintext credentials
+	// (the same policy the login page displays). Pre-hashed bcrypt values can't
+	// be composition-checked, so they pass through — the operator owns that.
+	if !api.IsBcryptHash(credential) {
+		if err := api.ValidatePasswordPolicy(credential); err != nil {
+			log.Fatalf("auth: %v — set a compliant -pass/pass, or supply a pre-hashed -pass-hash/pass_hash", err)
+		}
+	}
 	auth, err := api.NewAuth(*authUser, credential, *secretPath)
 	if err != nil {
 		log.Fatalf("auth: %v", err)

@@ -8,6 +8,7 @@ package heartbeat
 
 import (
 	"context"
+	"sort"
 	"sync"
 	"time"
 
@@ -29,6 +30,9 @@ type Record struct {
 	Mode                 ebpfsocv1.EnforcementMode
 	BufferDepth          uint64
 	AppliedPolicyVersion string
+	// Latest data-plane snapshot the agent reported (compact; may be empty).
+	Chokes  []*ebpfsocv1.ChokeSummary
+	Devices []*ebpfsocv1.DeviceSummary
 }
 
 // Registry holds the latest Record per (tenant, agent). Safe for concurrent use.
@@ -54,6 +58,8 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 		LastSeen:             r.now(),
 		BufferDepth:          req.GetBufferDepth(),
 		AppliedPolicyVersion: req.GetAppliedPolicyVersion(),
+		Chokes:               req.GetChokes(),
+		Devices:              req.GetDevices(),
 	}
 	if info := req.GetAgentInfo(); info != nil {
 		rec.Version = info.GetAgentVersion()
@@ -73,6 +79,22 @@ func (r *Registry) Get(tenant, agent string) (Record, bool) {
 	defer r.mu.Unlock()
 	rec, ok := r.agents[key(tenant, agent)]
 	return rec, ok
+}
+
+// ListTenant returns every agent record for a tenant, newest-seen first. The
+// tenant scoping is the caller's authz boundary; this only filters by the
+// tenant already stamped on each record at heartbeat time.
+func (r *Registry) ListTenant(tenant string) []Record {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]Record, 0, len(r.agents))
+	for _, rec := range r.agents {
+		if rec.TenantID == tenant {
+			out = append(out, rec)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].LastSeen.After(out[j].LastSeen) })
+	return out
 }
 
 // Count returns how many agents have reported.

@@ -47,3 +47,29 @@ func Enroll(ctx context.Context, cc *grpc.ClientConn, bootstrapToken string, inf
 		CommandEndpoint: resp.GetCommandEndpoint(),
 	}, nil
 }
+
+// Renew rotates an already-enrolled identity over the agent's EXISTING mTLS
+// connection cc (authenticated by the current client cert). It mints a fresh
+// keypair + CSR locally and exchanges it for a new cert bound to the same
+// tenant/agent — the server derives those from the peer cert, not the request.
+func Renew(ctx context.Context, cc *grpc.ClientConn, info *ebpfsocv1.AgentInfo) (*Enrolled, error) {
+	keyPEM, csrDER, err := mtls.GenerateKeyAndCSR()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := ebpfsocv1.NewEnrollmentServiceClient(cc).Renew(ctx, &ebpfsocv1.RenewRequest{
+		CsrPem:    csrDER,
+		AgentInfo: info,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &Enrolled{
+		CertPEM:         resp.GetCertificatePem(),
+		KeyPEM:          keyPEM,
+		CABundlePEM:     resp.GetCaBundlePem(),
+		AgentID:         resp.GetAgentId(),
+		UplinkEndpoint:  resp.GetUplinkEndpoint(),
+		CommandEndpoint: resp.GetCommandEndpoint(),
+	}, nil
+}

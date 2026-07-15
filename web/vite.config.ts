@@ -89,7 +89,8 @@ export default defineConfig({
         choke: resolve(root, "choke.html"),
         devices: resolve(root, "devices.html"),
         fleet: resolve(root, "fleet.html"),
-        login: resolve(root, "login.html")
+        login: resolve(root, "login.html"),
+        console: resolve(root, "console.html")
       }
     }
   }

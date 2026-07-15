@@ -38,6 +38,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"sort"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -153,10 +154,11 @@ func main() {
 		// telemetry/heartbeat/command loops in the background; enforcement never
 		// depends on any of them (autonomy).
 		controlPlane   = flag.String("controlplane", "", "control-plane endpoint host:port; empty runs the agent standalone (no uplink)")
-		bootstrapToken = flag.String("bootstrap-token", "", "one-time enrollment token; required when -controlplane is set")
-		caBundlePath   = flag.String("ca-bundle", "", "path to the PEM CA bundle pinned to trust the control plane during enrollment; required when -controlplane is set")
+		bootstrapToken = flag.String("bootstrap-token", "", "one-time enrollment token; needed only for the FIRST enrollment (a persisted -state-dir identity is reused tokenless on restart)")
+		caBundlePath   = flag.String("ca-bundle", "", "path to the PEM CA bundle pinned to trust the control plane during enrollment; needed only for the first enrollment")
 		cpServerName   = flag.String("controlplane-servername", "", "TLS server name for the control-plane certificate (defaults to the host part of -controlplane)")
 		fleetPubKey    = flag.String("fleet-pubkey", "", "path to the fleet command-signing ed25519 public key (hex); required to accept remote commands, otherwise the command channel is disabled")
+		cpStateDir     = flag.String("state-dir", "", "directory to persist the enrolled mTLS identity (cert/key/CA) so restarts reuse it instead of consuming a new bootstrap token; enables a durable, reboot-safe agent")
 	)
 	flag.Parse()
 
@@ -214,6 +216,13 @@ func main() {
 	}
 	if credential == "" {
 		log.Fatalf("auth: no console credential configured — set -pass, -pass-hash, or pass/pass_hash in the config file; the built-in demo default has been removed so a missing password fails fast instead of shipping a known credential")
+	}
+	// SECURITY: enforce the password policy on plaintext credentials (mirrors
+	// the login page). Pre-hashed bcrypt values can't be checked here.
+	if !api.IsBcryptHash(credential) {
+		if err := api.ValidatePasswordPolicy(credential); err != nil {
+			log.Fatalf("auth: %v — set a compliant -pass/pass, or supply a pre-hashed -pass-hash/pass_hash", err)
+		}
 	}
 
 	// Metrics: OTel meter provider + instruments. Empty endpoint disables the
@@ -668,12 +677,18 @@ func main() {
 	// plane only means telemetry buffers locally and no new commands arrive —
 	// the kernel keeps enforcing the last-applied policy (the autonomy moat).
 	if *controlPlane != "" {
-		if *bootstrapToken == "" || *caBundlePath == "" {
-			log.Fatalf("controlplane: -controlplane requires -bootstrap-token and -ca-bundle")
+		// First enrollment needs a one-time token + the pinned CA. A restart
+		// with a persisted identity in -state-dir needs neither (it's reused).
+		if *cpStateDir == "" && (*bootstrapToken == "" || *caBundlePath == "") {
+			log.Fatalf("controlplane: -controlplane requires -state-dir (persisted identity) or -bootstrap-token + -ca-bundle (first enrollment)")
 		}
-		caPEM, err := os.ReadFile(*caBundlePath)
-		if err != nil {
-			log.Fatalf("controlplane: read -ca-bundle: %v", err)
+		var caPEM []byte
+		if *caBundlePath != "" {
+			b, err := os.ReadFile(*caBundlePath)
+			if err != nil {
+				log.Fatalf("controlplane: read -ca-bundle: %v", err)
+			}
+			caPEM = b
 		}
 		upBuf = uplink.NewBuffer()
 
@@ -713,6 +728,7 @@ func main() {
 			ServerName:     serverName,
 			BootstrapToken: *bootstrapToken,
 			CABundlePEM:    caPEM,
+			StateDir:       *cpStateDir,
 			AgentInfo:      agentInfo(),
 			Buffer:         upBuf,
 			Processor:      proc,
@@ -721,6 +737,8 @@ func main() {
 					AgentInfo:   agentInfo(),
 					DataPlane:   &ebpfsocv1.DataPlaneState{Mode: gatewayMode(gw)},
 					BufferDepth: uint64(upBuf.PendingDepth()),
+					Chokes:      chokeSummaries(gw),
+					Devices:     deviceSummaries(deviceGW),
 				}
 			},
 			Logf: log.Printf,
@@ -1038,6 +1056,49 @@ func gatewayMode(g *choke.Gateway) ebpfsocv1.EnforcementMode {
 	default:
 		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
 	}
+}
+
+// chokeSummaries builds the compact, capped choke snapshot the agent puts on
+// each heartbeat so the central console can render a per-tenant Choke view.
+// Highest-score first (the processes an operator cares about); the rich
+// interactive surface stays agent-local.
+func chokeSummaries(g *choke.Gateway) []*ebpfsocv1.ChokeSummary {
+	if g == nil {
+		return nil
+	}
+	snap := g.Snapshot()
+	sort.Slice(snap, func(i, j int) bool { return snap[i].Score > snap[j].Score })
+	if len(snap) > 100 {
+		snap = snap[:100]
+	}
+	out := make([]*ebpfsocv1.ChokeSummary, 0, len(snap))
+	for _, e := range snap {
+		out = append(out, &ebpfsocv1.ChokeSummary{
+			ExecId: e.ExecID, Pid: e.PID, Binary: e.Binary, State: e.State, Score: int32(e.Score),
+		})
+	}
+	return out
+}
+
+// deviceSummaries builds the compact device snapshot for the heartbeat (empty
+// when the device data plane is inactive, as on a host with no -devchoke-iface).
+func deviceSummaries(g *choke.DeviceGateway) []*ebpfsocv1.DeviceSummary {
+	if g == nil {
+		return nil
+	}
+	snap := g.Snapshot()
+	if len(snap) > 100 {
+		snap = snap[:100]
+	}
+	out := make([]*ebpfsocv1.DeviceSummary, 0, len(snap))
+	for _, d := range snap {
+		label := d.Hostname
+		if label == "" {
+			label = d.Vendor
+		}
+		out = append(out, &ebpfsocv1.DeviceSummary{Mac: d.MAC, State: d.State, Label: label})
+	}
+	return out
 }
 
 // gatewayApplier adapts control-plane commands onto the local choke gateway.

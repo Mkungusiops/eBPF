@@ -192,6 +192,25 @@
     width: 6px; height: 6px; border-radius: 9999px; background: #10b981;
     box-shadow: 0 0 6px #10b981;
   }
+
+  /* Password policy checklist — mirrors engine/internal/api/passwordpolicy.go */
+  .policy { list-style: none; margin: 0 0 16px; padding: 0; font-size: 11px; }
+  .policy .policy-head {
+    color: var(--mute); text-transform: uppercase;
+    letter-spacing: 0.1em; font-size: 10px; margin-bottom: 8px;
+  }
+  .policy li { display: flex; align-items: center; gap: 8px; color: var(--mute); margin-bottom: 5px; }
+  .policy li .chk {
+    width: 14px; height: 14px; border-radius: 999px; border: 1px solid var(--line);
+    display: inline-flex; align-items: center; justify-content: center; flex: none;
+  }
+  .policy li.met { color: #6ee7b7; }
+  .policy li.met .chk { border-color: rgba(16,185,129,0.5); background: rgba(16,185,129,0.12); }
+  .policy li.met .chk::after {
+    content: ""; width: 4px; height: 7px; margin-top: -2px;
+    border: solid #6ee7b7; border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  button[type="submit"]:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
 </style>
 </head>
 <body>
@@ -236,12 +255,20 @@
         </button>
       </div>
     </div>
-    <button type="submit">Sign in</button>
+    <ul id="pwPolicy" class="policy" aria-live="polite">
+      <li class="policy-head">Password must meet the following requirements</li>
+      <li data-rule="length"><span class="chk"></span>At least 14 characters</li>
+      <li data-rule="upper"><span class="chk"></span>At least one uppercase letter</li>
+      <li data-rule="lower"><span class="chk"></span>At least one lowercase letter</li>
+      <li data-rule="digits"><span class="chk"></span>At least 3 numbers</li>
+      <li data-rule="special"><span class="chk"></span>At least 3 special characters</li>
+    </ul>
+    <button type="submit" id="submitBtn" disabled>Sign in</button>
   </form>
 
   <div class="footer">
-    <span>Default credentials</span>
-    <code>admin / ebpf-soc-demo</code>
+    <span>Session</span>
+    <code>HMAC cookie · CSRF · rate-limited</code>
   </div>
 </div>
 
@@ -286,6 +313,37 @@
       open.style.display = show ? 'none'   : 'inline';
       off.style.display  = show ? 'inline' : 'none';
     });
+  })();
+
+  // Live password-policy checklist — mirrors passwordpolicy.go + passwordPolicy.ts.
+  (function () {
+    var input = document.getElementById('pass');
+    var btn = document.getElementById('submitBtn');
+    var items = document.querySelectorAll('#pwPolicy li[data-rule]');
+    if (!input) return;
+    var form = input.form;
+    function count(s, re) { var m = s.match(re); return m ? m.length : 0; }
+    function evaluate() {
+      var pw = input.value || '';
+      var rules = {
+        length: pw.length >= 14,
+        upper: /[A-Z]/.test(pw),
+        lower: /[a-z]/.test(pw),
+        digits: count(pw, /[0-9]/g) >= 3,
+        special: count(pw, /[^A-Za-z0-9]/g) >= 3
+      };
+      var allOk = true;
+      items.forEach(function (li) {
+        var ok = !!rules[li.getAttribute('data-rule')];
+        li.classList.toggle('met', ok);
+        if (!ok) allOk = false;
+      });
+      if (btn) btn.disabled = !allOk;
+      return allOk;
+    }
+    input.addEventListener('input', evaluate);
+    evaluate();
+    if (form) form.addEventListener('submit', function (e) { if (!evaluate()) e.preventDefault(); });
   })();
 </script>
 </body>

@@ -13,7 +13,7 @@ import (
 // Backend is the enforce.Enforcer that turns Decisions into cgroup v2
 // operations. ActSever is rejected with enforce.ErrUnsupported so a
 // Multi() chain dispatches it to the Severer (which sends SIGKILL).
-type Backend struct {
+type Backend struct { 
 	Mgr *Manager
 }
 

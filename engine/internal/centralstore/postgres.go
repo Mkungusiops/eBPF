@@ -144,8 +144,10 @@ func (s *PGStore) Query(scope Scope, limit int) ([]Row, error) {
 	var out []Row
 	err := s.withTenant(scope.TenantID, func(tx *sql.Tx) error {
 		rows, err := tx.Query(
+			// Newest-first: an operator console shows recent activity, and the
+			// LIMIT must take the most recent rows, not the oldest.
 			`SELECT tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload
-			   FROM telemetry ORDER BY at LIMIT $1`, limit) // RLS supplies the tenant filter
+			   FROM telemetry ORDER BY at DESC LIMIT $1`, limit) // RLS supplies the tenant filter
 		if err != nil {
 			return err
 		}

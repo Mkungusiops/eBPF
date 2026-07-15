@@ -19,9 +19,11 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/command"
 	"github.com/jeffmk/ebpf-poc-engine/internal/cpclient"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enrollment"
+	"github.com/jeffmk/ebpf-poc-engine/internal/fleet"
 	"github.com/jeffmk/ebpf-poc-engine/internal/heartbeat"
 	"github.com/jeffmk/ebpf-poc-engine/internal/ingest"
 	"github.com/jeffmk/ebpf-poc-engine/internal/mtls"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policypull"
 	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/uplink"
@@ -38,6 +40,7 @@ type harness struct {
 	tokens        *enrollment.TokenStore
 	dispatcher    *command.Dispatcher
 	registry      *heartbeat.Registry
+	fleetSvc      *fleet.Service
 	fleetVerifier signing.Verifier
 }
 
@@ -72,6 +75,7 @@ func newHarness(t *testing.T, sink ingest.Sink) *harness {
 	}
 	dispatcher := command.NewDispatcher(fleetSigner, time.Minute)
 	registry := heartbeat.NewRegistry()
+	fleetSvc := fleet.NewService(fleetSigner, "fleet-key")
 
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -82,11 +86,12 @@ func newHarness(t *testing.T, sink ingest.Sink) *harness {
 	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(sink))
 	ebpfsocv1.RegisterCommandServiceServer(gs, dispatcher)
 	ebpfsocv1.RegisterHeartbeatServiceServer(gs, heartbeat.NewServer(registry, 30*time.Second))
+	ebpfsocv1.RegisterPolicyServiceServer(gs, fleet.NewPolicyServer(fleetSvc))
 	go func() { _ = gs.Serve(lis) }()
 	t.Cleanup(gs.Stop)
 
 	return &harness{
-		ca: ca, addr: lis.Addr().String(), tokens: tokens,
+		ca: ca, addr: lis.Addr().String(), tokens: tokens, fleetSvc: fleetSvc,
 		dispatcher: dispatcher, registry: registry, fleetVerifier: fleetVerifier,
 	}
 }
@@ -430,5 +435,50 @@ func TestReadPathIsolationLayers34(t *testing.T) {
 	recs := aud.Records()
 	if len(recs) != 1 || recs[0].Subject != "msoc@soc" || recs[0].Tenant != "tenant-b" {
 		t.Fatalf("cross-tenant read not audited: %+v", recs)
+	}
+}
+
+// --- fleet: staged signed-bundle distribution, tenant-isolated over mTLS -----
+
+// TestFleetPolicyPullOverMTLS proves an agent pulls its ring's signed policy
+// bundle over real mTLS, that the bundle verifies on the agent, and that an
+// agent only ever receives ITS tenant's bundle (tenant derived from the cert).
+func TestFleetPolicyPullOverMTLS(t *testing.T) {
+	h := newHarness(t, ingest.NewMemSink())
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	h.fleetSvc.Publish("tenant-a", "v1", []byte("policy-A"))
+	h.fleetSvc.Publish("tenant-b", "vb", []byte("policy-B"))
+
+	pull := func(en *enrollment.Enrolled) *policypull.Applied {
+		client := policypull.NewClient(h.fleetVerifier)
+		applied, changed, err := client.Pull(ctx, ebpfsocv1.NewPolicyServiceClient(h.mtlsConn(t, en)))
+		if err != nil || !changed || applied == nil {
+			t.Fatalf("policy pull = (%v,%v,%v)", applied, changed, err)
+		}
+		return applied
+	}
+
+	// Agent in tenant-a gets tenant-a's bundle — verified — and never tenant-b's.
+	a := pull(h.enroll(t, ctx, "tenant-a"))
+	if a.Version != "v1" || string(a.Content) != "policy-A" {
+		t.Fatalf("tenant-a agent got %s/%q, want v1/policy-A", a.Version, a.Content)
+	}
+	b := pull(h.enroll(t, ctx, "tenant-b"))
+	if string(b.Content) != "policy-B" {
+		t.Fatalf("tenant-b agent got %q — cross-tenant policy leak", b.Content)
+	}
+
+	// Staged rollout over the wire: a canary agent sees v2 before the fleet ring.
+	agentC := h.enroll(t, ctx, "tenant-a")
+	h.fleetSvc.SetAgentRing("tenant-a", agentC.AgentID, fleet.RingCanary)
+	h.fleetSvc.Publish("tenant-a", "v2", []byte("policy-A2")) // rollout starts at canary
+	if got := pull(agentC); got.Version != "v2" {
+		t.Fatalf("canary agent after publish = %s, want v2", got.Version)
+	}
+	// A default (fleet-ring) agent still gets stable v1 mid-rollout.
+	if got := pull(h.enroll(t, ctx, "tenant-a")); got.Version != "v1" {
+		t.Fatalf("fleet-ring agent mid-rollout = %s, want v1", got.Version)
 	}
 }

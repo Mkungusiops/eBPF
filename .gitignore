@@ -90,6 +90,12 @@ attack-run.log
 !.env.example
 !.env.template
 
+# Deployment state written by scripts/deploy-platform.sh. Holds the generated
+# database passwords, the control-plane admin bearer, the CA bundle, and the
+# fleet signing public key — one directory per deployed server.
+.deploy/
+
+
 # Generic key & cert material
 *.pem
 *.key

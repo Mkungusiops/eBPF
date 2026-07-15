@@ -38,8 +38,13 @@ type HeartbeatRequest struct {
 	LastAckedSeq uint64 `protobuf:"varint,4,opt,name=last_acked_seq,json=lastAckedSeq,proto3" json:"last_acked_seq,omitempty"`
 	// The policy bundle version the agent currently has applied.
 	AppliedPolicyVersion string `protobuf:"bytes,5,opt,name=applied_policy_version,json=appliedPolicyVersion,proto3" json:"applied_policy_version,omitempty"`
-	unknownFields        protoimpl.UnknownFields
-	sizeCache            protoimpl.SizeCache
+	// Compact snapshot of the agent's data-plane state so the central console can
+	// render Choke/Devices per tenant without a second channel. Capped by the
+	// agent; the authoritative interactive surface remains the agent-local API.
+	Chokes        []*ChokeSummary  `protobuf:"bytes,6,rep,name=chokes,proto3" json:"chokes,omitempty"`
+	Devices       []*DeviceSummary `protobuf:"bytes,7,rep,name=devices,proto3" json:"devices,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
@@ -107,6 +112,160 @@ func (x *HeartbeatRequest) GetAppliedPolicyVersion() string {
 	return ""
 }
 
+func (x *HeartbeatRequest) GetChokes() []*ChokeSummary {
+	if x != nil {
+		return x.Chokes
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetDevices() []*DeviceSummary {
+	if x != nil {
+		return x.Devices
+	}
+	return nil
+}
+
+// ChokeSummary is one process the agent is currently choking (or watching),
+// trimmed to what an operator scans in a fleet-wide view.
+type ChokeSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ExecId        string                 `protobuf:"bytes,1,opt,name=exec_id,json=execId,proto3" json:"exec_id,omitempty"`
+	Pid           uint32                 `protobuf:"varint,2,opt,name=pid,proto3" json:"pid,omitempty"`
+	Binary        string                 `protobuf:"bytes,3,opt,name=binary,proto3" json:"binary,omitempty"`
+	State         string                 `protobuf:"bytes,4,opt,name=state,proto3" json:"state,omitempty"` // watch | throttle | tarpit | quarantine | sever
+	Score         int32                  `protobuf:"varint,5,opt,name=score,proto3" json:"score,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChokeSummary) Reset() {
+	*x = ChokeSummary{}
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChokeSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChokeSummary) ProtoMessage() {}
+
+func (x *ChokeSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChokeSummary.ProtoReflect.Descriptor instead.
+func (*ChokeSummary) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *ChokeSummary) GetExecId() string {
+	if x != nil {
+		return x.ExecId
+	}
+	return ""
+}
+
+func (x *ChokeSummary) GetPid() uint32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *ChokeSummary) GetBinary() string {
+	if x != nil {
+		return x.Binary
+	}
+	return ""
+}
+
+func (x *ChokeSummary) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ChokeSummary) GetScore() int32 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+// DeviceSummary is one device under the MAC gateway (empty when the device
+// data plane is inactive).
+type DeviceSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Mac           string                 `protobuf:"bytes,1,opt,name=mac,proto3" json:"mac,omitempty"`
+	State         string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	Label         string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeviceSummary) Reset() {
+	*x = DeviceSummary{}
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeviceSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeviceSummary) ProtoMessage() {}
+
+func (x *DeviceSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeviceSummary.ProtoReflect.Descriptor instead.
+func (*DeviceSummary) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *DeviceSummary) GetMac() string {
+	if x != nil {
+		return x.Mac
+	}
+	return ""
+}
+
+func (x *DeviceSummary) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *DeviceSummary) GetLabel() string {
+	if x != nil {
+		return x.Label
+	}
+	return ""
+}
+
 type HeartbeatResponse struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	ServerTime *timestamppb.Timestamp `protobuf:"bytes,1,opt,name=server_time,json=serverTime,proto3" json:"server_time,omitempty"`
@@ -122,7 +281,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -134,7 +293,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -147,7 +306,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{1}
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *HeartbeatResponse) GetServerTime() *timestamppb.Timestamp {
@@ -183,7 +342,7 @@ var File_ebpfsoc_v1_heartbeat_proto protoreflect.FileDescriptor
 const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\n" +
 	"\x1aebpfsoc/v1/heartbeat.proto\x12\n" +
-	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x82\x02\n" +
+	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x02\n" +
 	"\x10HeartbeatRequest\x124\n" +
 	"\n" +
 	"agent_info\x18\x01 \x01(\v2\x15.ebpfsoc.v1.AgentInfoR\tagentInfo\x129\n" +
@@ -191,7 +350,19 @@ const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"data_plane\x18\x02 \x01(\v2\x1a.ebpfsoc.v1.DataPlaneStateR\tdataPlane\x12!\n" +
 	"\fbuffer_depth\x18\x03 \x01(\x04R\vbufferDepth\x12$\n" +
 	"\x0elast_acked_seq\x18\x04 \x01(\x04R\flastAckedSeq\x124\n" +
-	"\x16applied_policy_version\x18\x05 \x01(\tR\x14appliedPolicyVersion\"\xf2\x01\n" +
+	"\x16applied_policy_version\x18\x05 \x01(\tR\x14appliedPolicyVersion\x120\n" +
+	"\x06chokes\x18\x06 \x03(\v2\x18.ebpfsoc.v1.ChokeSummaryR\x06chokes\x123\n" +
+	"\adevices\x18\a \x03(\v2\x19.ebpfsoc.v1.DeviceSummaryR\adevices\"}\n" +
+	"\fChokeSummary\x12\x17\n" +
+	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x10\n" +
+	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x16\n" +
+	"\x06binary\x18\x03 \x01(\tR\x06binary\x12\x14\n" +
+	"\x05state\x18\x04 \x01(\tR\x05state\x12\x14\n" +
+	"\x05score\x18\x05 \x01(\x05R\x05score\"M\n" +
+	"\rDeviceSummary\x12\x10\n" +
+	"\x03mac\x18\x01 \x01(\tR\x03mac\x12\x14\n" +
+	"\x05state\x18\x02 \x01(\tR\x05state\x12\x14\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\"\xf2\x01\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vserver_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12?\n" +
@@ -213,25 +384,29 @@ func file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP() []byte {
 	return file_ebpfsoc_v1_heartbeat_proto_rawDescData
 }
 
-var file_ebpfsoc_v1_heartbeat_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_ebpfsoc_v1_heartbeat_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
 var file_ebpfsoc_v1_heartbeat_proto_goTypes = []any{
 	(*HeartbeatRequest)(nil),      // 0: ebpfsoc.v1.HeartbeatRequest
-	(*HeartbeatResponse)(nil),     // 1: ebpfsoc.v1.HeartbeatResponse
-	(*AgentInfo)(nil),             // 2: ebpfsoc.v1.AgentInfo
-	(*DataPlaneState)(nil),        // 3: ebpfsoc.v1.DataPlaneState
-	(*timestamppb.Timestamp)(nil), // 4: google.protobuf.Timestamp
+	(*ChokeSummary)(nil),          // 1: ebpfsoc.v1.ChokeSummary
+	(*DeviceSummary)(nil),         // 2: ebpfsoc.v1.DeviceSummary
+	(*HeartbeatResponse)(nil),     // 3: ebpfsoc.v1.HeartbeatResponse
+	(*AgentInfo)(nil),             // 4: ebpfsoc.v1.AgentInfo
+	(*DataPlaneState)(nil),        // 5: ebpfsoc.v1.DataPlaneState
+	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
 }
 var file_ebpfsoc_v1_heartbeat_proto_depIdxs = []int32{
-	2, // 0: ebpfsoc.v1.HeartbeatRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
-	3, // 1: ebpfsoc.v1.HeartbeatRequest.data_plane:type_name -> ebpfsoc.v1.DataPlaneState
-	4, // 2: ebpfsoc.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
-	0, // 3: ebpfsoc.v1.HeartbeatService.Heartbeat:input_type -> ebpfsoc.v1.HeartbeatRequest
-	1, // 4: ebpfsoc.v1.HeartbeatService.Heartbeat:output_type -> ebpfsoc.v1.HeartbeatResponse
-	4, // [4:5] is the sub-list for method output_type
-	3, // [3:4] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 0: ebpfsoc.v1.HeartbeatRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
+	5, // 1: ebpfsoc.v1.HeartbeatRequest.data_plane:type_name -> ebpfsoc.v1.DataPlaneState
+	1, // 2: ebpfsoc.v1.HeartbeatRequest.chokes:type_name -> ebpfsoc.v1.ChokeSummary
+	2, // 3: ebpfsoc.v1.HeartbeatRequest.devices:type_name -> ebpfsoc.v1.DeviceSummary
+	6, // 4: ebpfsoc.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
+	0, // 5: ebpfsoc.v1.HeartbeatService.Heartbeat:input_type -> ebpfsoc.v1.HeartbeatRequest
+	3, // 6: ebpfsoc.v1.HeartbeatService.Heartbeat:output_type -> ebpfsoc.v1.HeartbeatResponse
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_heartbeat_proto_init() }
@@ -246,7 +421,7 @@ func file_ebpfsoc_v1_heartbeat_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_heartbeat_proto_rawDesc), len(file_ebpfsoc_v1_heartbeat_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   4,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

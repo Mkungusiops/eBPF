@@ -26,6 +26,61 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+type RenewRequest struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Fresh agent-generated CSR (PEM). A new keypair is minted per renewal; the
+	// private key never leaves the host.
+	CsrPem []byte `protobuf:"bytes,1,opt,name=csr_pem,json=csrPem,proto3" json:"csr_pem,omitempty"`
+	// Updated agent facts captured at renewal (version/arch/hostname).
+	AgentInfo     *AgentInfo `protobuf:"bytes,2,opt,name=agent_info,json=agentInfo,proto3" json:"agent_info,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RenewRequest) Reset() {
+	*x = RenewRequest{}
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[0]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RenewRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RenewRequest) ProtoMessage() {}
+
+func (x *RenewRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[0]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RenewRequest.ProtoReflect.Descriptor instead.
+func (*RenewRequest) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_enrollment_proto_rawDescGZIP(), []int{0}
+}
+
+func (x *RenewRequest) GetCsrPem() []byte {
+	if x != nil {
+		return x.CsrPem
+	}
+	return nil
+}
+
+func (x *RenewRequest) GetAgentInfo() *AgentInfo {
+	if x != nil {
+		return x.AgentInfo
+	}
+	return nil
+}
+
 type EnrollRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// One-time, short-lived, tenant-scoped token minted by an operator in the
@@ -40,7 +95,7 @@ type EnrollRequest struct {
 
 func (x *EnrollRequest) Reset() {
 	*x = EnrollRequest{}
-	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[0]
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -52,7 +107,7 @@ func (x *EnrollRequest) String() string {
 func (*EnrollRequest) ProtoMessage() {}
 
 func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[0]
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -65,7 +120,7 @@ func (x *EnrollRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollRequest.ProtoReflect.Descriptor instead.
 func (*EnrollRequest) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_enrollment_proto_rawDescGZIP(), []int{0}
+	return file_ebpfsoc_v1_enrollment_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *EnrollRequest) GetBootstrapToken() string {
@@ -110,7 +165,7 @@ type EnrollResponse struct {
 
 func (x *EnrollResponse) Reset() {
 	*x = EnrollResponse{}
-	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -122,7 +177,7 @@ func (x *EnrollResponse) String() string {
 func (*EnrollResponse) ProtoMessage() {}
 
 func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_enrollment_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -135,7 +190,7 @@ func (x *EnrollResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EnrollResponse.ProtoReflect.Descriptor instead.
 func (*EnrollResponse) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_enrollment_proto_rawDescGZIP(), []int{1}
+	return file_ebpfsoc_v1_enrollment_proto_rawDescGZIP(), []int{2}
 }
 
 func (x *EnrollResponse) GetCertificatePem() []byte {
@@ -185,7 +240,11 @@ var File_ebpfsoc_v1_enrollment_proto protoreflect.FileDescriptor
 const file_ebpfsoc_v1_enrollment_proto_rawDesc = "" +
 	"\n" +
 	"\x1bebpfsoc/v1/enrollment.proto\x12\n" +
-	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x87\x01\n" +
+	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"]\n" +
+	"\fRenewRequest\x12\x17\n" +
+	"\acsr_pem\x18\x01 \x01(\fR\x06csrPem\x124\n" +
+	"\n" +
+	"agent_info\x18\x02 \x01(\v2\x15.ebpfsoc.v1.AgentInfoR\tagentInfo\"\x87\x01\n" +
 	"\rEnrollRequest\x12'\n" +
 	"\x0fbootstrap_token\x18\x01 \x01(\tR\x0ebootstrapToken\x12\x17\n" +
 	"\acsr_pem\x18\x02 \x01(\fR\x06csrPem\x124\n" +
@@ -197,9 +256,10 @@ const file_ebpfsoc_v1_enrollment_proto_rawDesc = "" +
 	"\bagent_id\x18\x03 \x01(\tR\aagentId\x12@\n" +
 	"\x0ecert_not_after\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\fcertNotAfter\x12'\n" +
 	"\x0fuplink_endpoint\x18\x05 \x01(\tR\x0euplinkEndpoint\x12)\n" +
-	"\x10command_endpoint\x18\x06 \x01(\tR\x0fcommandEndpoint2T\n" +
+	"\x10command_endpoint\x18\x06 \x01(\tR\x0fcommandEndpoint2\x93\x01\n" +
 	"\x11EnrollmentService\x12?\n" +
-	"\x06Enroll\x12\x19.ebpfsoc.v1.EnrollRequest\x1a\x1a.ebpfsoc.v1.EnrollResponseB<Z:github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1b\x06proto3"
+	"\x06Enroll\x12\x19.ebpfsoc.v1.EnrollRequest\x1a\x1a.ebpfsoc.v1.EnrollResponse\x12=\n" +
+	"\x05Renew\x12\x18.ebpfsoc.v1.RenewRequest\x1a\x1a.ebpfsoc.v1.EnrollResponseB<Z:github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1b\x06proto3"
 
 var (
 	file_ebpfsoc_v1_enrollment_proto_rawDescOnce sync.Once
@@ -213,23 +273,27 @@ func file_ebpfsoc_v1_enrollment_proto_rawDescGZIP() []byte {
 	return file_ebpfsoc_v1_enrollment_proto_rawDescData
 }
 
-var file_ebpfsoc_v1_enrollment_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_ebpfsoc_v1_enrollment_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_ebpfsoc_v1_enrollment_proto_goTypes = []any{
-	(*EnrollRequest)(nil),         // 0: ebpfsoc.v1.EnrollRequest
-	(*EnrollResponse)(nil),        // 1: ebpfsoc.v1.EnrollResponse
-	(*AgentInfo)(nil),             // 2: ebpfsoc.v1.AgentInfo
-	(*timestamppb.Timestamp)(nil), // 3: google.protobuf.Timestamp
+	(*RenewRequest)(nil),          // 0: ebpfsoc.v1.RenewRequest
+	(*EnrollRequest)(nil),         // 1: ebpfsoc.v1.EnrollRequest
+	(*EnrollResponse)(nil),        // 2: ebpfsoc.v1.EnrollResponse
+	(*AgentInfo)(nil),             // 3: ebpfsoc.v1.AgentInfo
+	(*timestamppb.Timestamp)(nil), // 4: google.protobuf.Timestamp
 }
 var file_ebpfsoc_v1_enrollment_proto_depIdxs = []int32{
-	2, // 0: ebpfsoc.v1.EnrollRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
-	3, // 1: ebpfsoc.v1.EnrollResponse.cert_not_after:type_name -> google.protobuf.Timestamp
-	0, // 2: ebpfsoc.v1.EnrollmentService.Enroll:input_type -> ebpfsoc.v1.EnrollRequest
-	1, // 3: ebpfsoc.v1.EnrollmentService.Enroll:output_type -> ebpfsoc.v1.EnrollResponse
-	3, // [3:4] is the sub-list for method output_type
-	2, // [2:3] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	3, // 0: ebpfsoc.v1.RenewRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
+	3, // 1: ebpfsoc.v1.EnrollRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
+	4, // 2: ebpfsoc.v1.EnrollResponse.cert_not_after:type_name -> google.protobuf.Timestamp
+	1, // 3: ebpfsoc.v1.EnrollmentService.Enroll:input_type -> ebpfsoc.v1.EnrollRequest
+	0, // 4: ebpfsoc.v1.EnrollmentService.Renew:input_type -> ebpfsoc.v1.RenewRequest
+	2, // 5: ebpfsoc.v1.EnrollmentService.Enroll:output_type -> ebpfsoc.v1.EnrollResponse
+	2, // 6: ebpfsoc.v1.EnrollmentService.Renew:output_type -> ebpfsoc.v1.EnrollResponse
+	5, // [5:7] is the sub-list for method output_type
+	3, // [3:5] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_enrollment_proto_init() }
@@ -244,7 +308,7 @@ func file_ebpfsoc_v1_enrollment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_enrollment_proto_rawDesc), len(file_ebpfsoc_v1_enrollment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -202,11 +202,49 @@ func ClientTLSConfig(clientCertPEM, clientKeyPEM []byte, caPool *x509.CertPool, 
 	}, nil
 }
 
+// DynamicClientTLSConfig builds a client mTLS config whose certificate is read
+// fresh from getCert on every handshake. After an agent renews its cert, the
+// next (re)connection picks up the new one without rebuilding the config — the
+// live connection is unaffected (TLS validates the cert only at handshake), so
+// rotation is seamless. getCert must never return nil for a healthy agent.
+func DynamicClientTLSConfig(getCert func() *tls.Certificate, caPool *x509.CertPool, serverName string) *tls.Config {
+	return &tls.Config{
+		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			if c := getCert(); c != nil {
+				return c, nil
+			}
+			return nil, errors.New("mtls: no client certificate available")
+		},
+		RootCAs:    caPool,
+		ServerName: serverName,
+		MinVersion: tls.VersionTLS13,
+	}
+}
+
 // BootstrapTLSConfig is server-auth only — used for the single Enroll call
 // before the agent holds a client cert. The agent still verifies the control
 // plane against the pinned CA.
 func BootstrapTLSConfig(caPool *x509.CertPool, serverName string) *tls.Config {
 	return &tls.Config{RootCAs: caPool, ServerName: serverName, MinVersion: tls.VersionTLS13}
+}
+
+// ServerTLSConfigVerifyOptional presents the server cert and verifies a client
+// cert IF one is given: the bootstrap Enroll call (no client cert yet) is
+// allowed, while every other channel presents a cert that TLS verifies against
+// the CA before a handler reads its subject. Production may instead split the
+// server-auth enrollment endpoint from the mTLS-required channels; the security
+// property (tenant derived only from a verified cert) is identical.
+func ServerTLSConfigVerifyOptional(serverCertPEM, serverKeyPEM []byte, clientCAs *x509.CertPool) (*tls.Config, error) {
+	cert, err := tls.X509KeyPair(serverCertPEM, serverKeyPEM)
+	if err != nil {
+		return nil, err
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.VerifyClientCertIfGiven,
+		ClientCAs:    clientCAs,
+		MinVersion:   tls.VersionTLS13,
+	}, nil
 }
 
 func newSerial() *big.Int {

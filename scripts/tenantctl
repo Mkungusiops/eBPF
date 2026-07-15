@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+#
+# tenantctl — tenant lifecycle against a running control plane.
+#
+# A tenant is not a row in one table; it is the isolation key that appears in
+# four places (docs/plan/tenant-isolation-invariant.md):
+#
+#   Layer 1  the agent's client certificate  (Subject.Organization = tenant_id)
+#   Layer 2  stamped onto every record at ingest
+#   Layer 3  the storage partition / RLS predicate
+#   Layer 4  the authz decision on every read
+#
+# So `create` registers the tenant in control state, and `enroll-token` mints
+# the one-time bootstrap token that binds an agent's certificate — and therefore
+# everything it will ever report — to that tenant.
+#
+#   ./scripts/tenantctl create       acme --ssh <alias>
+#   ./scripts/tenantctl list                --ssh <alias>
+#   ./scripts/tenantctl enroll-token acme   --ssh <alias> [--out FILE]
+#   ./scripts/tenantctl whoami              --ssh <alias>
+#   ./scripts/tenantctl telemetry    acme   --ssh <alias> [--limit 20]
+#
+# Auth: CP_ADMIN_TOKEN (bearer). With --ssh the request is issued FROM the
+# server, because the operator API binds to loopback there by design — nothing
+# is exposed to the network to make this convenient.
+#
+# Env:
+#   CP_ADMIN_TOKEN   required
+#   CP_URL           default http://127.0.0.1:9090
+
+LOG_TAG="tenantctl"
+source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+
+CMD="${1:-}"; shift || true
+ARG=""
+if [[ $# -gt 0 && "$1" != --* ]]; then ARG="$1"; shift; fi
+
+SSH_TO=""; OUT_FILE=""; LIMIT="20"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --ssh)   SSH_TO="${2:?}"; shift 2 ;;
+    --out)   OUT_FILE="${2:?}"; shift 2 ;;
+    --limit) LIMIT="${2:?}"; shift 2 ;;
+    -h|--help) sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) die "unknown flag: $1" ;;
+  esac
+done
+
+CP_URL="${CP_URL:-http://127.0.0.1:9090}"
+if [[ "$CMD" != "-h" && "$CMD" != "--help" ]]; then
+  [[ -n "${CP_ADMIN_TOKEN:-}" ]] || die "CP_ADMIN_TOKEN is not set (find it in .deploy/<name>/secrets.env)"
+fi
+
+# api <method> <path> [json-body] — curl, run locally or on the server.
+#
+# The token is passed to the remote shell through an environment variable, not
+# interpolated into the command string, so it never lands in the server's
+# process list where any local user could read it from /proc.
+api() {
+  local method="$1" path="$2" body="${3:-}"
+
+  if [[ -n "$SSH_TO" ]]; then
+    # $CP_ADMIN_TOKEN below is escaped so it expands on the SERVER, from the
+    # environment we set for that one command — it is never part of the command
+    # string, so it stays out of the server's /proc process list.
+    local remote="curl -sS -X $method -H 'Content-Type: application/json'"
+    remote+=" -H \"Authorization: Bearer \$CP_ADMIN_TOKEN\""
+    if [[ -n "$body" ]]; then remote+=" -d $(printf '%q' "$body")"; fi
+    remote+=" -w '\\n%{http_code}' '$CP_URL$path'"
+    ssh "${SSH_BASE_OPTS[@]}" "$SSH_TO" \
+      "CP_ADMIN_TOKEN=$(printf '%q' "$CP_ADMIN_TOKEN") sh -c $(printf '%q' "$remote")"
+  else
+    local args=(-sS -X "$method" -H 'Content-Type: application/json'
+                -H "Authorization: Bearer $CP_ADMIN_TOKEN" -w '\n%{http_code}')
+    if [[ -n "$body" ]]; then args+=(-d "$body"); fi
+    curl "${args[@]}" "$CP_URL$path"
+  fi
+}
+
+# Split curl's "<body>\n<status>" into the two globals the callers check.
+call() { # call <method> <path> [body] → RESP_BODY, RESP_CODE
+  if [[ "${DRY_RUN:-0}" == "1" ]]; then
+    dim "dry-run: $1 $CP_URL$2"
+    RESP_CODE=200
+    RESP_BODY='{"dry_run":true,"token":"DRY-RUN-TOKEN","expires_in_s":900,"ca_bundle_pem":"-----BEGIN CERTIFICATE-----"}'
+    return 0
+  fi
+  local raw; raw="$(api "$@")" || die "cannot reach the control plane at $CP_URL${SSH_TO:+ (via ssh $SSH_TO)}"
+  RESP_CODE="$(printf '%s' "$raw" | tail -n1 | tr -d '[:space:]')"
+  RESP_BODY="$(printf '%s' "$raw" | sed '$d')"
+}
+
+json_field() { # json_field <key> — from RESP_BODY, without requiring jq
+  if have_cmd jq; then
+    printf '%s' "$RESP_BODY" | jq -r ".$1 // empty"
+  else
+    printf '%s' "$RESP_BODY" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+  fi
+}
+
+expect_ok() { # expect_ok <what>
+  case "$RESP_CODE" in
+    200|201) return 0 ;;
+    401) die "unauthenticated — CP_ADMIN_TOKEN is wrong" ;;
+    404) die "$1: not found, or you are not authorized for this tenant.
+     The control plane answers 404 rather than 403 on an authz denial, on
+     purpose: a 403 would confirm that another tenant's data exists." ;;
+    *)   die "$1 failed (HTTP $RESP_CODE): $RESP_BODY" ;;
+  esac
+}
+
+# ── commands ───────────────────────────────────────────────────────────────
+
+# The control plane has no tenant-CRUD endpoint yet (Phase 1 keeps the registry
+# in the database), so creation is a control-state INSERT. Minting a token for
+# the tenant is what actually brings it to life.
+cmd_create() {
+  [[ -n "$ARG" ]] || die "usage: tenantctl create <tenant-id>"
+  [[ -n "$SSH_TO" ]] || die "--ssh <alias> is required (this writes to the control-state database)"
+  SSH_ALIAS="$SSH_TO"; export SSH_ALIAS
+
+  local sql="INSERT INTO tenants (tenant_id, display_name) VALUES ('$ARG', '$ARG')
+             ON CONFLICT (tenant_id) DO NOTHING;"
+  rsudo "cd /etc/ebpf-soc/stack && docker compose exec -T postgres psql -U soc -d ebpf_soc -v ON_ERROR_STOP=1 -c \"$sql\"" >/dev/null \
+    || die "could not register the tenant — have the migrations been applied? (scripts/migrate.sh)"
+  ok "tenant '$ARG' registered"
+  dim "next: ./scripts/tenantctl enroll-token $ARG --ssh $SSH_TO"
+}
+
+cmd_list() {
+  [[ -n "$SSH_TO" ]] || die "--ssh <alias> is required"
+  SSH_ALIAS="$SSH_TO"; export SSH_ALIAS
+  printf '\n'
+  rsudo "cd /etc/ebpf-soc/stack && docker compose exec -T postgres psql -U soc -d ebpf_soc -c \
+    \"SELECT t.tenant_id, t.status, t.retention_days, count(a.agent_id) AS agents
+      FROM tenants t LEFT JOIN agents a USING (tenant_id)
+      GROUP BY t.tenant_id, t.status, t.retention_days ORDER BY t.tenant_id;\"" \
+    || die "could not read the tenant registry"
+}
+
+# The important one. The token is single-use and short-lived (15 min default):
+# it is the capability that lets an agent obtain a certificate carrying this
+# tenant_id. Treat it like a password — one per agent, minted at install time.
+cmd_enroll_token() {
+  [[ -n "$ARG" ]] || die "usage: tenantctl enroll-token <tenant-id>"
+  call POST /api/admin/enroll-token "{\"tenant\":\"$ARG\"}"
+  expect_ok "minting an enrollment token"
+
+  local token expires
+  token="$(json_field token)"
+  expires="$(if have_cmd jq; then printf '%s' "$RESP_BODY" | jq -r '.expires_in_s'; else printf '?'; fi)"
+  [[ -n "$token" ]] || die "the control plane returned no token: $RESP_BODY"
+
+  if [[ -n "$OUT_FILE" ]]; then
+    if [[ "${DRY_RUN:-0}" == "1" ]]; then
+      dim "dry-run: would write the enrollment token to $OUT_FILE"
+      return 0
+    fi
+    mkdir -p "$(dirname "$OUT_FILE")"
+    ( umask 077; printf '%s\n' "$token" >"$OUT_FILE" )
+    ok "enrollment token for '$ARG' → $OUT_FILE (0600, expires in ${expires}s)"
+  else
+    ok "enrollment token for '$ARG' (expires in ${expires}s):"
+    printf '\n  %s\n\n' "$token"
+    dim "single-use — a second agent needs a second token"
+  fi
+}
+
+cmd_whoami() {
+  call GET /api/whoami
+  expect_ok "whoami"
+  printf '%s\n' "$RESP_BODY"
+}
+
+cmd_telemetry() {
+  [[ -n "$ARG" ]] || die "usage: tenantctl telemetry <tenant-id>"
+  call GET "/api/telemetry?tenant=$ARG&limit=$LIMIT"
+  expect_ok "reading telemetry for '$ARG'"
+  if have_cmd jq; then printf '%s' "$RESP_BODY" | jq .; else printf '%s\n' "$RESP_BODY"; fi
+}
+
+case "$CMD" in
+  create)       cmd_create ;;
+  list)         cmd_list ;;
+  enroll-token) cmd_enroll_token ;;
+  whoami)       cmd_whoami ;;
+  telemetry)    cmd_telemetry ;;
+  -h|--help)    sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown command: ${CMD:-<none>} (try: create, list, enroll-token, whoami, telemetry)" ;;
+esac

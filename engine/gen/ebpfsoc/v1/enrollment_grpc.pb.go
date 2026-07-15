@@ -24,6 +24,7 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	EnrollmentService_Enroll_FullMethodName = "/ebpfsoc.v1.EnrollmentService/Enroll"
+	EnrollmentService_Renew_FullMethodName  = "/ebpfsoc.v1.EnrollmentService/Renew"
 )
 
 // EnrollmentServiceClient is the client API for EnrollmentService service.
@@ -34,6 +35,13 @@ type EnrollmentServiceClient interface {
 	// client certificate whose subject encodes tenant_id + agent_id. Idempotent
 	// only in that a spent token is rejected (threat-model SC-7).
 	Enroll(ctx context.Context, in *EnrollRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
+	// Renew re-issues a certificate for an ALREADY-enrolled agent, called over
+	// its existing mTLS identity — no bootstrap token. The tenant_id + agent_id
+	// are read from the caller's verified client certificate, never the request,
+	// so an agent cannot change tenants at renewal (isolation invariant R4). This
+	// lets a long-lived agent rotate before expiry without an operator minting a
+	// fresh token (threat-model CH-6).
+	Renew(ctx context.Context, in *RenewRequest, opts ...grpc.CallOption) (*EnrollResponse, error)
 }
 
 type enrollmentServiceClient struct {
@@ -54,6 +62,16 @@ func (c *enrollmentServiceClient) Enroll(ctx context.Context, in *EnrollRequest,
 	return out, nil
 }
 
+func (c *enrollmentServiceClient) Renew(ctx context.Context, in *RenewRequest, opts ...grpc.CallOption) (*EnrollResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(EnrollResponse)
+	err := c.cc.Invoke(ctx, EnrollmentService_Renew_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // EnrollmentServiceServer is the server API for EnrollmentService service.
 // All implementations must embed UnimplementedEnrollmentServiceServer
 // for forward compatibility.
@@ -62,6 +80,13 @@ type EnrollmentServiceServer interface {
 	// client certificate whose subject encodes tenant_id + agent_id. Idempotent
 	// only in that a spent token is rejected (threat-model SC-7).
 	Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error)
+	// Renew re-issues a certificate for an ALREADY-enrolled agent, called over
+	// its existing mTLS identity — no bootstrap token. The tenant_id + agent_id
+	// are read from the caller's verified client certificate, never the request,
+	// so an agent cannot change tenants at renewal (isolation invariant R4). This
+	// lets a long-lived agent rotate before expiry without an operator minting a
+	// fresh token (threat-model CH-6).
+	Renew(context.Context, *RenewRequest) (*EnrollResponse, error)
 	mustEmbedUnimplementedEnrollmentServiceServer()
 }
 
@@ -74,6 +99,9 @@ type UnimplementedEnrollmentServiceServer struct{}
 
 func (UnimplementedEnrollmentServiceServer) Enroll(context.Context, *EnrollRequest) (*EnrollResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method Enroll not implemented")
+}
+func (UnimplementedEnrollmentServiceServer) Renew(context.Context, *RenewRequest) (*EnrollResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method Renew not implemented")
 }
 func (UnimplementedEnrollmentServiceServer) mustEmbedUnimplementedEnrollmentServiceServer() {}
 func (UnimplementedEnrollmentServiceServer) testEmbeddedByValue()                           {}
@@ -114,6 +142,24 @@ func _EnrollmentService_Enroll_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _EnrollmentService_Renew_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenewRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(EnrollmentServiceServer).Renew(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: EnrollmentService_Renew_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(EnrollmentServiceServer).Renew(ctx, req.(*RenewRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // EnrollmentService_ServiceDesc is the grpc.ServiceDesc for EnrollmentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -124,6 +170,10 @@ var EnrollmentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Enroll",
 			Handler:    _EnrollmentService_Enroll_Handler,
+		},
+		{
+			MethodName: "Renew",
+			Handler:    _EnrollmentService_Renew_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

@@ -25,6 +25,29 @@ message HeartbeatRequest {
   uint64 last_acked_seq = 4;
   // The policy bundle version the agent currently has applied.
   string applied_policy_version = 5;
+  // Compact snapshot of the agent's data-plane state so the central console can
+  // render Choke/Devices per tenant without a second channel. Capped by the
+  // agent; the authoritative interactive surface remains the agent-local API.
+  repeated ChokeSummary chokes = 6;
+  repeated DeviceSummary devices = 7;
+}
+
+// ChokeSummary is one process the agent is currently choking (or watching),
+// trimmed to what an operator scans in a fleet-wide view.
+message ChokeSummary {
+  string exec_id = 1;
+  uint32 pid = 2;
+  string binary = 3;
+  string state = 4; // watch | throttle | tarpit | quarantine | sever
+  int32 score = 5;
+}
+
+// DeviceSummary is one device under the MAC gateway (empty when the device
+// data plane is inactive).
+message DeviceSummary {
+  string mac = 1;
+  string state = 2;
+  string label = 3;
 }
 
 message HeartbeatResponse {

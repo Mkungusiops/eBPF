@@ -1,7 +1,8 @@
-import { Download, Eye, EyeOff, Loader2, LogIn, Moon, Share2, Sun, X } from "lucide-react";
+import { Check, Download, Eye, EyeOff, Loader2, LogIn, Moon, Share2, Sun, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { Button } from "../../components/ui";
 import { usePwaInstall, type PwaInstallPlatform } from "../../lib/pwaInstall";
+import { PASSWORD_RULES, evaluatePassword, passwordMeetsPolicy } from "../../lib/passwordPolicy";
 import { loadJSON, saveJSON } from "../../lib/storage";
 
 type Theme = "dark" | "light";
@@ -29,7 +30,10 @@ export function applyLoginTheme(theme: Theme): void {
 
 export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
   const [showPassword, setShowPassword] = useState(false);
+  const [password, setPassword] = useState("");
   const [theme, setTheme] = useState<Theme>(() => initialTheme || readLoginTheme());
+  const ruleState = useMemo(() => evaluatePassword(password), [password]);
+  const policyOk = useMemo(() => passwordMeetsPolicy(password), [password]);
   const [installOpen, setInstallOpen] = useState(false);
   const [installPhase, setInstallPhase] = useState<InstallPhase>("idle");
   const install = usePwaInstall();
@@ -51,7 +55,12 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     const form = event.currentTarget;
-    if (!form.checkValidity()) return;
+    // Enforce the password policy client-side too, so a non-compliant entry
+    // never reaches /api/login. The engine enforces the same policy on the
+    // stored credential at startup (engine/internal/api/passwordpolicy.go).
+    if (!form.checkValidity() || !passwordMeetsPolicy(password)) {
+      event.preventDefault();
+    }
   }
 
   async function handleInstallClick(): Promise<void> {
@@ -149,6 +158,9 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
                 type={showPassword ? "text" : "password"}
                 autoComplete="current-password"
                 required
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                aria-describedby="password-policy"
                 className="h-10 min-w-0 flex-1 bg-transparent px-3 text-text outline-none"
               />
               <button
@@ -161,7 +173,32 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
               </button>
             </div>
           </label>
-          <Button type="submit" tone="info" className="w-full">
+          <ul id="password-policy" aria-live="polite" className="space-y-1.5 text-xs">
+            <li className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-muted">
+              Password must meet the following requirements
+            </li>
+            {PASSWORD_RULES.map((rule) => {
+              const met = ruleState[rule.id];
+              return (
+                <li
+                  key={rule.id}
+                  data-met={met ? "true" : "false"}
+                  className={`flex items-center gap-2 ${met ? "text-emerald-400" : "text-muted"}`}
+                >
+                  <span
+                    aria-hidden="true"
+                    className={`grid h-4 w-4 shrink-0 place-items-center rounded-full border ${
+                      met ? "border-emerald-400/50 bg-emerald-400/10" : "border-white/15"
+                    }`}
+                  >
+                    {met ? <Check className="h-3 w-3" /> : null}
+                  </span>
+                  <span>{rule.label}</span>
+                </li>
+              );
+            })}
+          </ul>
+          <Button type="submit" tone="info" className="w-full" disabled={!policyOk}>
             <LogIn className="h-4 w-4" />
             Sign in
           </Button>

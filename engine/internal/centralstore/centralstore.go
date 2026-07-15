@@ -140,7 +140,7 @@ func (s *Store) Query(scope Scope, limit int) ([]Row, error) {
 	}
 	rows, err := s.db.Query(
 		`SELECT tenant_id,agent_id,dedup_key,kind,exec_id,binary,at,payload
-		   FROM telemetry WHERE tenant_id = ? ORDER BY at LIMIT ?`, scope.TenantID, limit)
+		   FROM telemetry WHERE tenant_id = ? ORDER BY at DESC LIMIT ?`, scope.TenantID, limit)
 	if err != nil {
 		return nil, err
 	}

@@ -74,7 +74,7 @@ services:
 
   # ── Identity (OIDC broker) ────────────────────────────────────────────────
   keycloak:
-    image: quay.io/keycloak/keycloak:25.0
+    image: quay.io/keycloak/keycloak:26.0 # 26.x for KC_BOOTSTRAP_ADMIN_* env
     command: ["start-dev"] # dev only; production uses `start` + a hostname/TLS
     environment:
       KC_BOOTSTRAP_ADMIN_USERNAME: admin

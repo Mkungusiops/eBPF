@@ -44,16 +44,24 @@ func NewStore(signer signing.Signer, keyID string) *Store {
 
 // Set signs (version, etag, content) and makes it the current bundle.
 func (s *Store) Set(version, etag string, content []byte) {
-	sig := s.signer.Sign(canonicalBundle(version, etag, content))
+	b := SignedBundle(s.signer, s.keyID, version, etag, content)
 	s.mu.Lock()
-	s.cur = &ebpfsocv1.PolicyBundle{
+	s.cur = b
+	s.mu.Unlock()
+}
+
+// SignedBundle builds a signed PolicyBundle over the canonical (version, etag,
+// content) form. The agent's Client.Pull verifies exactly this form, so any
+// producer (the fleet service, tests) that signs via SignedBundle interoperates
+// with the agent's verification.
+func SignedBundle(signer signing.Signer, keyID, version, etag string, content []byte) *ebpfsocv1.PolicyBundle {
+	return &ebpfsocv1.PolicyBundle{
 		Version:     version,
 		Etag:        etag,
 		Content:     content,
-		Signature:   sig,
-		SignerKeyId: s.keyID,
+		Signature:   signer.Sign(canonicalBundle(version, etag, content)),
+		SignerKeyId: keyID,
 	}
-	s.mu.Unlock()
 }
 
 // forEtag returns the current bundle, or a not_modified response when the
