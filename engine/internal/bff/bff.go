@@ -30,8 +30,9 @@ import (
 const (
 	sessionCookie = "soc_session"
 	stateCookie   = "soc_login_state"
+	retryCookie   = "soc_login_retry" // loop-guard for the restart-on-mismatch path
 	sessionTTL    = 8 * time.Hour
-	loginTTL      = 5 * time.Minute
+	loginTTL      = 10 * time.Minute
 )
 
 type session struct {
@@ -139,17 +140,23 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	state := q.Get("state")
+	// The one-time login state can legitimately be absent/stale on the callback:
+	// the cookie expired (a slow login), was overwritten by a second tab/attempt,
+	// the user hit a stale /auth/callback, or the server restarted mid-login. None
+	// of those are the user's fault, so restart the flow once instead of showing a
+	// dead-end error (restartLogin guards against an infinite loop).
 	sc, err := r.Cookie(stateCookie)
 	if err != nil || sc.Value == "" || sc.Value != state {
-		http.Error(w, "state mismatch", http.StatusBadRequest)
+		h.restartLogin(w, r, "state")
 		return
 	}
+	clearCookie(w, stateCookie) // single-use
 	h.mu.Lock()
 	pl, ok := h.pending[state]
 	delete(h.pending, state)
 	h.mu.Unlock()
 	if !ok || time.Since(pl.created) > loginTTL {
-		http.Error(w, "unknown or expired login", http.StatusBadRequest)
+		h.restartLogin(w, r, "expired")
 		return
 	}
 
@@ -182,7 +189,25 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 		Secure: h.secure, SameSite: http.SameSiteLaxMode, MaxAge: int(sessionTTL.Seconds()),
 	})
 	clearCookie(w, stateCookie)
+	clearCookie(w, retryCookie)
 	http.Redirect(w, r, h.appURL, http.StatusFound)
+}
+
+// restartLogin recovers from a transient state/expiry miss on the callback by
+// sending the browser back through /auth/login for a fresh nonce. It only does
+// this once — a retry cookie breaks the loop so a browser that genuinely cannot
+// keep cookies gets a clear message instead of bouncing forever.
+func (h *Handler) restartLogin(w http.ResponseWriter, r *http.Request, reason string) {
+	if c, err := r.Cookie(retryCookie); err == nil && c.Value == "1" {
+		clearCookie(w, retryCookie)
+		http.Error(w, "sign-in could not be completed ("+reason+") — please try again", http.StatusBadRequest)
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name: retryCookie, Value: "1", Path: "/", HttpOnly: true,
+		Secure: h.secure, SameSite: http.SameSiteLaxMode, MaxAge: 120,
+	})
+	http.Redirect(w, r, "/auth/login", http.StatusFound)
 }
 
 // logout ends the local session AND, via OIDC RP-initiated logout, the IdP's SSO
