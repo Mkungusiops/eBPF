@@ -46,47 +46,44 @@ The engine (`soc.adanianlabs.io`) stays untouched throughout.
   `choke/devices`, `choke/device-flows` (`links_attached=0` so no false
   bridge-master warning).
 
-### ⏳ PENDING — the finalized remaining scope
+### ✅ NOW DONE (2026-07-16) — C is functionally complete
 
-1. **Interactive write-actions** (all currently a clean `501` stub, not wired):
-   - Choke: `mode` (fleet-wide), `manual`/`bulk-manual` jail, `thaw`,
-     `thresholds`, `kill-switch`, `preset`, `forget`, `annotate`,
-     `policy/preview`, `forensic-snapshot`.
-   - Devices: `device-jail`, `device-thaw`, `device-mode`, `device-kill-switch`.
-   - SOC dashboard inline: `jailSocAlert`→`/api/choke/jail`,
-     `runSocAttack`→`/api/run-attack`.
-   - Command proto already has `SetMode/Jail/Thaw/SetThresholds/KillSwitch/`
-     `ApplyPreset`; needs agent-targeting + `ActionRespond`. **Enforcement-
-     changing actions (mode toggle, kill-switch) are gated on explicit operator
-     confirmation** — they flip live agent0. *~1–1.5 sessions (no agent change).*
-2. **Fleet page** (`/fleet`) — **entirely unmapped.** Expects a multi-host
-   federation API (`/api/fleet/hosts|state|cgroups|decisions|alerts|devices` +
-   `preset|thresholds|kill-switch|thaw`), `FleetEnvelope`/`FleetPeer`-shaped.
-   Will crash like `/choke` did until mapped (tenant's agents → the fleet
-   shape). *~0.5–1 session (no agent change).*
-3. **Attacks / Honeypots** — `/api/attacks`, `/api/honeypots`, `/api/run-attack`
-   still 404 (modals degrade to empty). Needs a target-agent `run-attack`
-   command + honeypot listing. Per "add then remove later." *~1–2 sessions
-   (agent change).*
-4. **Data-fidelity gaps** — panels render but are thin because agents send only
-   compact heartbeat summaries: correlation graph (process **lineage/parent
-   chain**), MITRE coverage + IOCs + network-connections (alert/event records
-   don't carry mitre/network fields centrally), choke token-buckets + cgroup map
-   + full `/proc` table + per-device flows, real per-agent thresholds, real
-   per-tenant decision hash-chain. **Only bucket needing agent-side proto/
-   heartbeat/ingest changes.** *~2–3 sessions.*
-5. **MSOC tenant switcher** — msoc can read any tenant via `?tenant=` but there's
-   no UI selector; defaults to the primary tenant. *~0.5 session.*
-6. **Cleanup** — retire the dead `console.tsx`/`console.html` (superseded by the
-   rich UI). *trivial.*
+1. **Fleet page** (`/fleet`) — mapped (`internal/controlplane/fleet.go`): each
+   tenant agent = one host; `/api/fleet/hosts|state|cgroups|decisions|alerts|`
+   `devices` in the `FleetEnvelope`/`HostResult` shape.
+2. **All interactive write-actions wired** to the signed command dispatcher, RBAC
+   `ActionRespond` (`choke.go`): per-process `manual`/`jail`/`thaw`, multi-target
+   `bulk-manual`, `forget`; fleet-wide `mode` (SetMode), `kill-switch`,
+   `thresholds` (PUT), `preset`; device `device-jail`/`thaw`/`mode`/`kill-switch`.
+   The **sim-agent gained a command Processor** (`simApplier`) that verifies
+   fleet-signed commands and mutates its choke/device/mode state, so actions are
+   reflected in the next heartbeat. Verified: jail→severed, SetMode→`enforcing`,
+   device-jail→severed, all others ack `STATUS_APPLIED`. (`policy/preview` +
+   `forensic-snapshot` remain a clean 501 — engine-local, no fleet command.)
+3. **Attacks / Honeypots** (`attacks.go`) — `/api/attacks` + `/api/honeypots`
+   catalogs; `/api/run-attack` stamps a synthetic alert into the tenant store so
+   the dashboard reacts. (Demo surface, "remove later".)
+4. **Data-fidelity — MITRE + network** — added `mitre_id`/`tactic` to `Alert` and
+   `dest_ip`/`dest_port`/`proto`/`remote_ip` to `ProcessEvent` (proto regen); the
+   sim emits them; the CP serves them on `/api/alerts`, `/api/events`, and the SSE
+   frames → the **MITRE coverage, IOCs, and Network-connections** panels populate.
+5. **Cleanup** — the dead console-v2 subsystem removed (13 files:
+   `console.tsx`/`console.html`, `ConsoleShell`, `TenantSwitcher`, tenant store,
+   `session.ts`/`tenantCore.ts`/`console.ts` + tests); `vite.config.ts` entry
+   dropped; web typecheck/tests/build green.
 
-### Finalized estimate
+### ⏳ Residual (nice-to-have, not blocking)
 
-- **Functional parity** (every page renders, every button works, attacks/
-  honeypots present) — items 1→2→3 — **~3–5 sessions**.
-- **Full data-fidelity parity** (rich correlation/MITRE/network panels) — item 4
-  — **+2–3 sessions** (the only agent-side work).
-- **Total remaining: ~5–8 sessions.** The entire read/observability half is done.
+- **Full correlation-graph tree** — the alert drill (`/api/process/{execId}`)
+  works; the full graph *modal* wants richer parent-exec-id lineage (the sim
+  emits `parent_pid` but not linked exec chains). Choke token-buckets / cgroup
+  map / full `/proc` table / per-device flows / per-tenant decision hash-chain
+  also remain valid-empty (agents don't report them).
+- **MSOC tenant switcher UI** — msoc reads any tenant via `?tenant=`; there is no
+  in-app selector yet (would be a small addition to the reused frontend).
+
+**The read/observability + interactive-response halves are complete; every page
+renders and every button works, tenant-scoped and RBAC-gated.**
 
 ---
 

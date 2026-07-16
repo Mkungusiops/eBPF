@@ -35,7 +35,15 @@ import (
 var (
 	binaries = []string{"/usr/bin/curl", "/bin/sh", "/usr/bin/python3", "/usr/sbin/sshd", "/usr/bin/sudo",
 		"/usr/bin/wget", "/bin/bash", "/usr/bin/nc", "/usr/local/bin/pg_isready", "/usr/sbin/ip", "/usr/bin/install"}
-	policies   = []string{"privilege-escalation", "sensitive-file-access", "override-credential-read", "reverse-shell", "container-escape"}
+	policies = []string{"privilege-escalation", "sensitive-file-access", "override-credential-read", "reverse-shell", "container-escape"}
+	// MITRE ATT&CK technique + tactic per policy (feeds the coverage panel).
+	mitreByPolicy = map[string][2]string{
+		"privilege-escalation":     {"T1548", "privilege-escalation"},
+		"sensitive-file-access":    {"T1005", "collection"},
+		"override-credential-read": {"T1003", "credential-access"},
+		"reverse-shell":            {"T1059", "execution"},
+		"container-escape":         {"T1611", "privilege-escalation"},
+	}
 	sevs       = []string{"critical", "high", "medium", "low", "info"}
 	sevScore   = map[string]int32{"critical": 92, "high": 74, "medium": 45, "low": 18, "info": 5}
 	alertTitle = []string{
@@ -51,27 +59,38 @@ func execID(i int) string { return fmt.Sprintf("ZXhlYy0%08d", i) }
 
 func evEvent(seq int) *ebpfsocv1.TelemetryRecord {
 	b := binaries[rand.Intn(len(binaries))]
+	ev := &ebpfsocv1.ProcessEvent{
+		OccurredAt: timestamppb.Now(), EventType: "process_exec",
+		Pid: uint32(2000000 + rand.Intn(600000)), ParentPid: uint32(1 + rand.Intn(4000)),
+		ExecId: execID(seq), Binary: b, Args: "--sim run", Uid: uint32(rand.Intn(1000)),
+		PolicyName: policies[rand.Intn(len(policies))],
+	}
+	if seq%3 == 0 { // a network-connection event (feeds IOCs + Network panels)
+		ev.EventType = "process_kprobe"
+		ev.DestIp = fmt.Sprintf("185.%d.%d.%d", rand.Intn(255), rand.Intn(255), 1+rand.Intn(254))
+		ev.DestPort = uint32([]int{443, 4444, 8080, 53, 22, 9001}[rand.Intn(6)])
+		ev.Proto = "tcp"
+		ev.RemoteIp = fmt.Sprintf("10.0.%d.%d", rand.Intn(255), 1+rand.Intn(254))
+	}
 	return &ebpfsocv1.TelemetryRecord{
 		DedupKey: fmt.Sprintf("ev-%d-%d", seq, time.Now().UnixNano()),
-		Payload: &ebpfsocv1.TelemetryRecord_Event{Event: &ebpfsocv1.ProcessEvent{
-			OccurredAt: timestamppb.Now(), EventType: "process_exec",
-			Pid: uint32(2000000 + rand.Intn(600000)), ParentPid: uint32(1 + rand.Intn(4000)),
-			ExecId: execID(seq), Binary: b, Args: "--sim run", Uid: uint32(rand.Intn(1000)),
-			PolicyName: policies[rand.Intn(len(policies))],
-		}},
+		Payload:  &ebpfsocv1.TelemetryRecord_Event{Event: ev},
 	}
 }
 
 func evAlert(seq int) *ebpfsocv1.TelemetryRecord {
 	sev := sevs[rand.Intn(len(sevs))]
 	b := binaries[rand.Intn(len(binaries))]
+	pol := policies[rand.Intn(len(policies))]
+	mt := mitreByPolicy[pol]
 	title := fmt.Sprintf(alertTitle[rand.Intn(len(alertTitle))], b, sevScore[sev])
 	return &ebpfsocv1.TelemetryRecord{
 		DedupKey: fmt.Sprintf("al-%d-%d", seq, time.Now().UnixNano()),
 		Payload: &ebpfsocv1.TelemetryRecord_Alert{Alert: &ebpfsocv1.Alert{
 			OccurredAt: timestamppb.Now(), Severity: sev, Title: title,
-			Description: "Detected by " + policies[rand.Intn(len(policies))] + " policy on a monitored host.",
+			Description: "Detected by " + pol + " policy on a monitored host.",
 			ExecId:      execID(seq), Score: sevScore[sev],
+			MitreId: mt[0], Tactic: mt[1],
 		}},
 	}
 }
@@ -126,21 +145,37 @@ func trickle(ctx context.Context, buf *uplink.Buffer) {
 	}
 }
 
-// simApplier is the sim-agent's command target. It keeps a mutable choke state
-// so a jail/thaw dispatched from the console is reflected in the next heartbeat —
-// the operator sees the process change state. It satisfies command.Applier.
+// simApplier is the sim-agent's command target. It keeps mutable choke + device
+// + mode state so console actions (jail/thaw, device jail/thaw, SetMode) are
+// reflected in the next heartbeat — the operator sees the change. Satisfies
+// command.Applier.
 type simApplier struct {
-	mu     sync.Mutex
-	chokes map[string]*ebpfsocv1.ChokeSummary // key = exec_id, else pid:<n>
+	mu      sync.Mutex
+	chokes  map[string]*ebpfsocv1.ChokeSummary // key = exec_id, else pid:<n>
+	devices map[string]string                  // mac -> state
+	mode    ebpfsocv1.EnforcementMode
+	killed  bool
 }
 
 func newSimApplier() *simApplier {
-	a := &simApplier{chokes: map[string]*ebpfsocv1.ChokeSummary{}}
+	a := &simApplier{
+		chokes:  map[string]*ebpfsocv1.ChokeSummary{},
+		devices: map[string]string{},
+		mode:    ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY,
+	}
 	for i, st := range []string{"severed", "severed", "quarantined", "tarpit", "throttled", "severed", "quarantined"} {
 		id := execID(500 + i)
 		a.chokes[id] = &ebpfsocv1.ChokeSummary{
 			ExecId: id, Pid: uint32(2500000 + i), Binary: binaries[i%len(binaries)], State: st, Score: 40 + int32(i*7),
 		}
+	}
+	for i, m := range []string{"fa:18:7b:2e:19:0d", "42:70:72:90:ae:3c", "ae:8d:d0:89:13:26", "12:34:56:78:9a:bc",
+		"d2:68:e2:12:6a:72", "8e:cc:95:df:23:98", "f6:21:5c:41:b6:ba"} {
+		st := "pristine"
+		if i == 2 {
+			st = "throttled"
+		}
+		a.devices[m] = st
 	}
 	return a
 }
@@ -169,6 +204,10 @@ func (a *simApplier) key(execID string, pid uint32) string {
 func (a *simApplier) Jail(execID string, pid uint32, tier string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if mac, ok := strings.CutPrefix(execID, "device:"); ok {
+		a.devices[mac] = tierState(tier)
+		return nil
+	}
 	a.chokes[a.key(execID, pid)] = &ebpfsocv1.ChokeSummary{
 		ExecId: execID, Pid: pid, Binary: "console-jailed", State: tierState(tier), Score: 95,
 	}
@@ -177,42 +216,47 @@ func (a *simApplier) Jail(execID string, pid uint32, tier string) error {
 func (a *simApplier) Thaw(execID string, pid uint32) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if mac, ok := strings.CutPrefix(execID, "device:"); ok {
+		a.devices[mac] = "pristine"
+		return nil
+	}
 	delete(a.chokes, a.key(execID, pid))
 	return nil
 }
-func (a *simApplier) SetMode(ebpfsocv1.EnforcementMode) error { return nil }
-func (a *simApplier) SetThresholds(_, _, _, _ int32) error    { return nil }
-func (a *simApplier) ApplyPreset(string) error                { return nil }
-func (a *simApplier) KillSwitch(bool, string) error           { return nil }
-func (a *simApplier) SetProtectedList(_, _ []string) error    { return nil }
+func (a *simApplier) SetMode(m ebpfsocv1.EnforcementMode) error {
+	a.mu.Lock()
+	a.mode = m
+	a.mu.Unlock()
+	return nil
+}
+func (a *simApplier) KillSwitch(halt bool, _ string) error {
+	a.mu.Lock()
+	a.killed = halt
+	a.mu.Unlock()
+	return nil
+}
+func (a *simApplier) SetThresholds(_, _, _, _ int32) error { return nil }
+func (a *simApplier) ApplyPreset(string) error             { return nil }
+func (a *simApplier) SetProtectedList(_, _ []string) error { return nil }
 
-func (a *simApplier) snapshot() []*ebpfsocv1.ChokeSummary {
+// heartbeat is the synthetic data-plane snapshot; choke/device/mode reflect live
+// console actions.
+func (a *simApplier) heartbeat() *ebpfsocv1.HeartbeatRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	out := make([]*ebpfsocv1.ChokeSummary, 0, len(a.chokes))
+	chokes := make([]*ebpfsocv1.ChokeSummary, 0, len(a.chokes))
 	for _, c := range a.chokes {
-		out = append(out, c)
+		chokes = append(chokes, c)
 	}
-	return out
-}
-
-// heartbeat is the synthetic data-plane snapshot; chokes reflect live jail/thaw.
-func (a *simApplier) heartbeat() *ebpfsocv1.HeartbeatRequest {
-	macs := []string{"fa:18:7b:2e:19:0d", "42:70:72:90:ae:3c", "ae:8d:d0:89:13:26", "12:34:56:78:9a:bc",
-		"d2:68:e2:12:6a:72", "8e:cc:95:df:23:98", "f6:21:5c:41:b6:ba"}
-	var devices []*ebpfsocv1.DeviceSummary
-	for i, m := range macs {
-		st := "pristine"
-		if i == 2 {
-			st = "throttled"
-		}
-		devices = append(devices, &ebpfsocv1.DeviceSummary{Mac: m, State: st})
+	devices := make([]*ebpfsocv1.DeviceSummary, 0, len(a.devices))
+	for mac, st := range a.devices {
+		devices = append(devices, &ebpfsocv1.DeviceSummary{Mac: mac, State: st})
 	}
 	return &ebpfsocv1.HeartbeatRequest{
-		DataPlane:            &ebpfsocv1.DataPlaneState{Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY},
+		DataPlane:            &ebpfsocv1.DataPlaneState{Mode: a.mode},
 		BufferDepth:          0,
 		AppliedPolicyVersion: "pol-sim-1",
-		Chokes:               a.snapshot(),
+		Chokes:               chokes,
 		Devices:              devices,
 	}
 }

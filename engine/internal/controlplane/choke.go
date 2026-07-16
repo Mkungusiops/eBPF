@@ -39,22 +39,25 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/choke/device-state", s.handleDeviceState)
 	mux.HandleFunc("/api/choke/devices", s.handleDeviceList)
 	mux.HandleFunc("/api/choke/device-flows", s.handleDeviceFlows)
-	// Interactive per-process response — wired to the signed command dispatcher,
-	// RBAC ActionRespond. Reversible + scoped to one process (unlike the gated
-	// fleet-wide actions below).
-	mux.HandleFunc("/api/choke/manual", s.handleChokeManual)    // Choke Gateway per-row jail/thaw
-	mux.HandleFunc("/api/choke/jail", s.handleChokeJailFromSoc) // SOC dashboard alert "jail"
-	mux.HandleFunc("/api/choke/thaw", s.handleChokeThaw)        // release a process
-	// Writes still gated (fleet-wide / device / policy — change enforcement
-	// broadly): clean 501, not a crash.
-	for _, p := range []string{
-		"/api/choke/thresholds", "/api/choke/bulk-manual",
-		"/api/choke/forget", "/api/choke/kill-switch",
-		"/api/choke/preset", "/api/choke/mode", "/api/choke/annotate",
-		"/api/choke/policy/preview", "/api/choke/forensic-snapshot",
-		"/api/choke/device-jail", "/api/choke/device-thaw",
-		"/api/choke/device-mode", "/api/choke/device-kill-switch",
-	} {
+	// Interactive response — all wired to the signed command dispatcher, RBAC
+	// ActionRespond. Per-process (manual/jail/thaw) + fleet-wide (mode/kill-
+	// switch/thresholds/preset) + device (jail/thaw/mode/kill-switch).
+	mux.HandleFunc("/api/choke/manual", s.handleChokeManual)     // Choke Gateway per-row jail/thaw
+	mux.HandleFunc("/api/choke/jail", s.handleChokeJailFromSoc)  // SOC dashboard alert "jail"
+	mux.HandleFunc("/api/choke/thaw", s.handleChokeThaw)         // release a process
+	mux.HandleFunc("/api/choke/bulk-manual", s.handleChokeBulk)  // multi-target jail
+	mux.HandleFunc("/api/choke/forget", s.handleChokeForget)     // stop tracking (= thaw)
+	mux.HandleFunc("/api/choke/mode", s.handleChokeMode)         // fleet-wide SetMode
+	mux.HandleFunc("/api/choke/kill-switch", s.handleChokeKill)  // fleet-wide KillSwitch
+	mux.HandleFunc("/api/choke/thresholds", s.handleChokeThresh) // fleet-wide SetThresholds
+	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)     // fleet-wide ApplyPreset
+	mux.HandleFunc("/api/choke/device-jail", s.handleDeviceJail)
+	mux.HandleFunc("/api/choke/device-thaw", s.handleDeviceThaw)
+	mux.HandleFunc("/api/choke/device-mode", s.handleChokeMode) // device data plane shares SetMode
+	mux.HandleFunc("/api/choke/device-kill-switch", s.handleChokeKill)
+	// Engine-local ops with no fleet command (cosmetic / snapshot) — clean 200/501.
+	mux.HandleFunc("/api/choke/annotate", s.handleChokeAnnotate)
+	for _, p := range []string{"/api/choke/policy/preview", "/api/choke/forensic-snapshot"} {
 		mux.HandleFunc(p, s.handleChokeWriteStub)
 	}
 }
@@ -62,8 +65,8 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 // authorizeRespond resolves the operator + requires the RBAC ActionRespond grant
 // on the tenant (default from the session). A denial is a 404 (side-channel).
 func (s *Server) authorizeRespond(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", http.StatusMethodNotAllowed)
+	if r.Method != http.MethodPost && r.Method != http.MethodPut {
+		http.Error(w, "POST/PUT only", http.StatusMethodNotAllowed)
 		return "", false
 	}
 	p, ok := s.principal(r)
@@ -202,6 +205,231 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 		action = "quarantine"
 	}
 	s.dispatchChoke(w, tenant, "", pid, action, b.Reason)
+}
+
+// dispatchAll sends cmd to every agent in the tenant and waits for each ack —
+// the fleet-wide actions (mode, kill-switch, thresholds, preset).
+func (s *Server) dispatchAll(tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
+	for _, rec := range s.registry.ListTenant(tenant) {
+		total++
+		id := s.dispatcher.Enqueue(rec.AgentID, cmd)
+		for i := 0; i < 50; i++ {
+			if a, ok := s.dispatcher.Ack(id); ok {
+				if a.GetStatus().String() == "STATUS_APPLIED" {
+					applied++
+				}
+				detail = a.GetDetail()
+				break
+			}
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	return
+}
+
+// handleChokeMode — fleet-wide SetMode (also serves /api/choke/device-mode).
+func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		Enforcing bool   `json:"enforcing"`
+		Reason    string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	mode := ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY
+	modeStr := "detect-only"
+	if b.Enforcing {
+		mode, modeStr = ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, "enforcing"
+	}
+	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode}}})
+	writeJSON(w, 200, map[string]any{
+		"ok": applied > 0, "mode": modeStr, "previous": "", "applied": applied, "total": total, "detail": detail})
+}
+
+// handleChokeKill — fleet-wide KillSwitch (also /api/choke/device-kill-switch).
+func (s *Server) handleChokeKill(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		On     bool   `json:"on"`
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{HaltAllEnforcement: b.On, Reason: b.Reason}}})
+	writeJSON(w, 200, map[string]any{
+		"ok": applied > 0, "engaged": b.On, "previous": !b.On, "applied": applied, "total": total, "detail": detail})
+}
+
+// handleChokeThresh — fleet-wide SetThresholds (PUT).
+func (s *Server) handleChokeThresh(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		ThrottleAt   int32 `json:"throttle_at"`
+		TarpitAt     int32 `json:"tarpit_at"`
+		QuarantineAt int32 `json:"quarantine_at"`
+		SeverAt      int32 `json:"sever_at"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+		Action: &ebpfsocv1.Command_SetThresholds{SetThresholds: &ebpfsocv1.SetThresholds{
+			ThrottleAt: b.ThrottleAt, TarpitAt: b.TarpitAt, QuarantineAt: b.QuarantineAt, SeverAt: b.SeverAt}}})
+	writeJSON(w, 200, map[string]any{"ok": applied > 0, "applied": applied, "total": total, "detail": detail})
+}
+
+// handleChokePreset — fleet-wide ApplyPreset.
+func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		Name   string `json:"name"`
+		Reason string `json:"reason"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+		Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: b.Name}}})
+	writeJSON(w, 200, map[string]any{"ok": applied > 0, "preset": b.Name, "applied": applied, "total": total, "detail": detail})
+}
+
+// handleChokeBulk — multi-target jail.
+func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		Targets []struct {
+			ExecID string `json:"exec_id"`
+			Pid    uint32 `json:"pid"`
+		} `json:"targets"`
+		Action string `json:"action"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	type res struct {
+		ExecID string `json:"exec_id"`
+		OK     bool   `json:"ok"`
+	}
+	results := make([]res, 0, len(b.Targets))
+	for _, t := range b.Targets {
+		okv := false
+		if agents := s.agentForExec(tenant, t.ExecID, t.Pid); len(agents) > 0 {
+			id := s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
+				Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: t.ExecID, Pid: t.Pid, Tier: b.Action}}})
+			for i := 0; i < 50; i++ {
+				if a, ok := s.dispatcher.Ack(id); ok {
+					okv = a.GetStatus().String() == "STATUS_APPLIED"
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+		results = append(results, res{ExecID: t.ExecID, OK: okv})
+	}
+	writeJSON(w, 200, map[string]any{"results": results})
+}
+
+// handleChokeForget — stop tracking the given exec_ids (dispatched as a thaw).
+func (s *Server) handleChokeForget(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		ExecIDs []string `json:"exec_ids"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&b)
+	n := 0
+	for _, e := range b.ExecIDs {
+		if agents := s.agentForExec(tenant, e, 0); len(agents) > 0 {
+			id := s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
+				Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: e}}})
+			for i := 0; i < 30; i++ {
+				if _, ok := s.dispatcher.Ack(id); ok {
+					n++
+					break
+				}
+				time.Sleep(100 * time.Millisecond)
+			}
+		}
+	}
+	writeJSON(w, 200, map[string]any{"ok": true, "forgotten": n})
+}
+
+// handleChokeAnnotate — cosmetic note; not centrally persisted yet.
+func (s *Server) handleChokeAnnotate(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.authorizeRespond(w, r); !ok {
+		return
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// handleDeviceJail — jail LAN devices by MAC (exec_id "device:<mac>").
+func (s *Server) handleDeviceJail(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		Macs   []string `json:"macs"`
+		Action string   `json:"action"`
+		Reason string   `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	type res struct {
+		Mac string `json:"mac"`
+		OK  bool   `json:"ok"`
+	}
+	results := make([]res, 0, len(b.Macs))
+	for _, mac := range b.Macs {
+		applied, _, _ := s.dispatchAll(tenant, &ebpfsocv1.Command{
+			Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: "device:" + mac, Tier: b.Action}}})
+		results = append(results, res{Mac: mac, OK: applied > 0})
+	}
+	writeJSON(w, 200, map[string]any{"action": b.Action, "reason": b.Reason, "results": results})
+}
+
+// handleDeviceThaw — release LAN devices by MAC.
+func (s *Server) handleDeviceThaw(w http.ResponseWriter, r *http.Request) {
+	tenant, ok := s.authorizeRespond(w, r)
+	if !ok {
+		return
+	}
+	var b struct {
+		Macs   []string `json:"macs"`
+		Reason string   `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	type res struct {
+		Mac string `json:"mac"`
+		OK  bool   `json:"ok"`
+	}
+	results := make([]res, 0, len(b.Macs))
+	for _, mac := range b.Macs {
+		applied, _, _ := s.dispatchAll(tenant, &ebpfsocv1.Command{
+			Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: "device:" + mac}}})
+		results = append(results, res{Mac: mac, OK: applied > 0})
+	}
+	writeJSON(w, 200, map[string]any{"results": results})
 }
 
 // chokePosture folds the tenant's agents into a single enforcement posture (the

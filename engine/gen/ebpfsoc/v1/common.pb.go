@@ -264,6 +264,10 @@ type ProcessEvent struct {
 	Args          string                 `protobuf:"bytes,7,opt,name=args,proto3" json:"args,omitempty"`
 	Uid           uint32                 `protobuf:"varint,8,opt,name=uid,proto3" json:"uid,omitempty"`
 	PolicyName    string                 `protobuf:"bytes,9,opt,name=policy_name,json=policyName,proto3" json:"policy_name,omitempty"` // set for kprobe events
+	DestIp        string                 `protobuf:"bytes,10,opt,name=dest_ip,json=destIp,proto3" json:"dest_ip,omitempty"`            // outbound connection destination (network events)
+	DestPort      uint32                 `protobuf:"varint,11,opt,name=dest_port,json=destPort,proto3" json:"dest_port,omitempty"`
+	Proto         string                 `protobuf:"bytes,12,opt,name=proto,proto3" json:"proto,omitempty"`                       // tcp | udp
+	RemoteIp      string                 `protobuf:"bytes,13,opt,name=remote_ip,json=remoteIp,proto3" json:"remote_ip,omitempty"` // source/remote peer (IOC)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -361,6 +365,34 @@ func (x *ProcessEvent) GetPolicyName() string {
 	return ""
 }
 
+func (x *ProcessEvent) GetDestIp() string {
+	if x != nil {
+		return x.DestIp
+	}
+	return ""
+}
+
+func (x *ProcessEvent) GetDestPort() uint32 {
+	if x != nil {
+		return x.DestPort
+	}
+	return 0
+}
+
+func (x *ProcessEvent) GetProto() string {
+	if x != nil {
+		return x.Proto
+	}
+	return ""
+}
+
+func (x *ProcessEvent) GetRemoteIp() string {
+	if x != nil {
+		return x.RemoteIp
+	}
+	return ""
+}
+
 // Alert mirrors internal/store.Alert (a scored suspicious chain).
 type Alert struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -369,7 +401,9 @@ type Alert struct {
 	Title         string                 `protobuf:"bytes,3,opt,name=title,proto3" json:"title,omitempty"`
 	Description   string                 `protobuf:"bytes,4,opt,name=description,proto3" json:"description,omitempty"`
 	ExecId        string                 `protobuf:"bytes,5,opt,name=exec_id,json=execId,proto3" json:"exec_id,omitempty"`
-	Score         int32                  `protobuf:"varint,6,opt,name=score,proto3" json:"score,omitempty"` // chain score at the time of alert
+	Score         int32                  `protobuf:"varint,6,opt,name=score,proto3" json:"score,omitempty"`                   // chain score at the time of alert
+	MitreId       string                 `protobuf:"bytes,7,opt,name=mitre_id,json=mitreId,proto3" json:"mitre_id,omitempty"` // MITRE ATT&CK technique id (e.g. T1059)
+	Tactic        string                 `protobuf:"bytes,8,opt,name=tactic,proto3" json:"tactic,omitempty"`                  // MITRE tactic (e.g. execution)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -444,6 +478,20 @@ func (x *Alert) GetScore() int32 {
 		return x.Score
 	}
 	return 0
+}
+
+func (x *Alert) GetMitreId() string {
+	if x != nil {
+		return x.MitreId
+	}
+	return ""
+}
+
+func (x *Alert) GetTactic() string {
+	if x != nil {
+		return x.Tactic
+	}
+	return ""
 }
 
 // Decision mirrors internal/store.Decision — an entry of the hash-chained
@@ -691,7 +739,7 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\rprocess_links\x18\x02 \x01(\x05R\fprocessLinks\x12!\n" +
 	"\fdevice_plane\x18\x03 \x01(\tR\vdevicePlane\x12!\n" +
 	"\fdevice_links\x18\x04 \x01(\x05R\vdeviceLinks\x12/\n" +
-	"\x04mode\x18\x05 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\"\x93\x02\n" +
+	"\x04mode\x18\x05 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\"\xfc\x02\n" +
 	"\fProcessEvent\x12;\n" +
 	"\voccurred_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12\x1d\n" +
@@ -705,7 +753,12 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x04args\x18\a \x01(\tR\x04args\x12\x10\n" +
 	"\x03uid\x18\b \x01(\rR\x03uid\x12\x1f\n" +
 	"\vpolicy_name\x18\t \x01(\tR\n" +
-	"policyName\"\xc7\x01\n" +
+	"policyName\x12\x17\n" +
+	"\adest_ip\x18\n" +
+	" \x01(\tR\x06destIp\x12\x1b\n" +
+	"\tdest_port\x18\v \x01(\rR\bdestPort\x12\x14\n" +
+	"\x05proto\x18\f \x01(\tR\x05proto\x12\x1b\n" +
+	"\tremote_ip\x18\r \x01(\tR\bremoteIp\"\xfa\x01\n" +
 	"\x05Alert\x12;\n" +
 	"\voccurred_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12\x1a\n" +
@@ -713,7 +766,9 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x05title\x18\x03 \x01(\tR\x05title\x12 \n" +
 	"\vdescription\x18\x04 \x01(\tR\vdescription\x12\x17\n" +
 	"\aexec_id\x18\x05 \x01(\tR\x06execId\x12\x14\n" +
-	"\x05score\x18\x06 \x01(\x05R\x05score\"\x83\x05\n" +
+	"\x05score\x18\x06 \x01(\x05R\x05score\x12\x19\n" +
+	"\bmitre_id\x18\a \x01(\tR\amitreId\x12\x16\n" +
+	"\x06tactic\x18\b \x01(\tR\x06tactic\"\x83\x05\n" +
 	"\bDecision\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\x03R\x02id\x12;\n" +
 	"\voccurred_at\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\n" +

@@ -58,6 +58,10 @@ message ProcessEvent {
   string args = 7;
   uint32 uid = 8;
   string policy_name = 9;    // set for kprobe events
+  string dest_ip = 10;       // outbound connection destination (network events)
+  uint32 dest_port = 11;
+  string proto = 12;         // tcp | udp
+  string remote_ip = 13;     // source/remote peer (IOC)
 }
 
 // Alert mirrors internal/store.Alert (a scored suspicious chain).
@@ -68,6 +72,8 @@ message Alert {
   string description = 4;
   string exec_id = 5;
   int32 score = 6;           // chain score at the time of alert
+  string mitre_id = 7;       // MITRE ATT&CK technique id (e.g. T1059)
+  string tactic = 8;         // MITRE tactic (e.g. execution)
 }
 
 // Decision mirrors internal/store.Decision — an entry of the hash-chained

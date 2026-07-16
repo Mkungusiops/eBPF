@@ -33,8 +33,9 @@ func (s *Server) buildHTTP() http.Handler {
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleStream)
-	s.registerChokeRoutes(mux) // rich Choke Gateway + Devices API, tenant-scoped
-	s.registerFleetRoutes(mux) // Fleet view: tenant's agents as hosts
+	s.registerChokeRoutes(mux)  // rich Choke Gateway + Devices API, tenant-scoped
+	s.registerFleetRoutes(mux)  // Fleet view: tenant's agents as hosts
+	s.registerAttackRoutes(mux) // quick-fire attacks + honeypots (demo/lab)
 	mux.HandleFunc("/api/admin/enroll-token", s.handleEnrollToken)
 	mux.HandleFunc("/api/admin/command", s.handleCommand)
 	if s.cfg.BFF != nil {
@@ -231,6 +232,8 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		Score       int32  `json:"score"`
 		ExecID      string `json:"exec_id"`
 		Process     string `json:"process"`
+		MitreID     string `json:"mitre_id"`
+		Tactic      string `json:"tactic"`
 		At          int64  `json:"at"`
 		Timestamp   string `json:"timestamp"` // RFC3339 — the SOC frontend reads this
 	}
@@ -247,7 +250,8 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		out = append(out, alertView{
 			Agent: row.AgentID, Severity: a.GetSeverity(), Title: a.GetTitle(),
 			Description: a.GetDescription(), Score: a.GetScore(), ExecID: a.GetExecId(),
-			Process: row.Binary, At: at.UnixNano(), Timestamp: at.UTC().Format(time.RFC3339Nano),
+			Process: row.Binary, MitreID: a.GetMitreId(), Tactic: a.GetTactic(),
+			At: at.UnixNano(), Timestamp: at.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	// Bare array: the engine's contract. The SOC dashboard unwraps either shape,
@@ -280,6 +284,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		Process    string `json:"process"`
 		Args       string `json:"args"`
 		PolicyName string `json:"policy_name"`
+		DestIP     string `json:"dest_ip,omitempty"`
+		DestPort   uint32 `json:"dest_port,omitempty"`
+		Proto      string `json:"proto,omitempty"`
+		RemoteIP   string `json:"remote_ip,omitempty"`
 		Timestamp  string `json:"timestamp"`
 	}
 	out := make([]eventView, 0, len(rows))
@@ -295,7 +303,8 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		out = append(out, eventView{
 			Agent: row.AgentID, ExecID: e.GetExecId(), PID: e.GetPid(),
 			EventType: e.GetEventType(), Process: e.GetBinary(), Args: e.GetArgs(),
-			PolicyName: e.GetPolicyName(), Timestamp: at.UTC().Format(time.RFC3339Nano),
+			PolicyName: e.GetPolicyName(), DestIP: e.GetDestIp(), DestPort: e.GetDestPort(),
+			Proto: e.GetProto(), RemoteIP: e.GetRemoteIp(), Timestamp: at.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "count": len(out), "events": out})
@@ -602,7 +611,8 @@ func streamFrame(row centralstore.Row) string {
 			"id": row.DedupKey, "agent": row.AgentID, "exec_id": e.GetExecId(),
 			"pid": e.GetPid(), "event_type": e.GetEventType(), "process": e.GetBinary(),
 			"args": e.GetArgs(), "policy_name": e.GetPolicyName(),
-			"timestamp": at.UTC().Format(time.RFC3339Nano),
+			"dest_ip": e.GetDestIp(), "dest_port": e.GetDestPort(), "proto": e.GetProto(),
+			"remote_ip": e.GetRemoteIp(), "timestamp": at.UTC().Format(time.RFC3339Nano),
 		}}
 	case "alert":
 		a := row.Record.GetAlert()
@@ -617,6 +627,7 @@ func streamFrame(row centralstore.Row) string {
 			"id": row.DedupKey, "agent": row.AgentID, "severity": a.GetSeverity(),
 			"title": a.GetTitle(), "description": a.GetDescription(), "score": a.GetScore(),
 			"exec_id": a.GetExecId(), "process": row.Binary,
+			"mitre_id": a.GetMitreId(), "tactic": a.GetTactic(),
 			"timestamp": at.UTC().Format(time.RFC3339Nano),
 		}}
 	case "decision":
