@@ -146,5 +146,5 @@ row's hash incorporates the prior row's hash.
   — the hash-chained audit log.
 - [`docs/architecture/overview.md`](overview.md)
   — broader system overview (where the gateway fits in the engine).
-- [`docs/operations/run-on-multipass-vm.md`](../operations/run-on-multipass-vm.md)
+- [`docs/deployment/ubuntu-server.md`](../deployment/ubuntu-server.md)
   — deploy guide with the gateway flags spelled out.

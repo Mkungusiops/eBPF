@@ -11,8 +11,8 @@ person reading this hasn't seen the codebase before.
 > and enables the **Choke Gateway** (enforcement), use
 > [ubuntu-server.md](ubuntu-server.md) instead. To also drive the choke
 > ladder from this manual unit, add the gateway flags
-> (`-choke-policies … -enforce -cgroup-root /sys/fs/cgroup -bpf-obj …`)
-> documented in [../operations/run-on-multipass-vm.md](../operations/run-on-multipass-vm.md#choke-gateway-flags).
+> (`-choke-policies … -enforce -cgroup-root /sys/fs/cgroup -bpf-obj …`) — see
+> the engine's `--help` and [../architecture/network-choke-gateway.md](../architecture/network-choke-gateway.md).
 
 For the architecture and design rationale, see [architecture/overview.md](../architecture/overview.md).
 

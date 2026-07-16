@@ -426,7 +426,7 @@ You're on an older `chokectl`. The script self-documents:
 - [Architecture overview](../architecture/overview.md) — where the gateway fits in
   the engine
 - [State ladder](../architecture/state-ladder.md) — what each transition action means
-- [Multipass deploy](../operations/run-on-multipass-vm.md) — single-host setup that
+- [Single-host deploy](../deployment/ubuntu-server.md) — the single-host setup that
   the fleet is built on
 - [`scripts/chokectl`](../../scripts/chokectl) — the script itself
 - [`chokectl.hosts.example`](../../chokectl.hosts.example) — sample config

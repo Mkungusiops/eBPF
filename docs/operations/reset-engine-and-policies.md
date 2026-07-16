@@ -42,8 +42,8 @@ multipass exec ebpf -- sudo systemd-run \
 
 > Omit `-enforce` (as above) to run **detect-only** — decisions are audited
 > but nothing is choked. Add `-enforce -cgroup-root /sys/fs/cgroup` to
-> actually throttle/freeze/SIGKILL. See
-> [run-on-multipass-vm.md](run-on-multipass-vm.md) for the full flag set.
+> actually throttle/freeze/SIGKILL. See the engine's `--help` or
+> [../deployment/ubuntu-server.md](../deployment/ubuntu-server.md) for the flags.
 
 Verify:
 
@@ -131,8 +131,8 @@ multipass exec ebpf -- sudo journalctl -u ebpf-engine -n 50 --no-pager
 
 ## Related
 
-- [run-on-multipass-vm.md](run-on-multipass-vm.md) — full deploy runbook +
-  the complete choke-gateway flag set.
 - [../deployment/ubuntu-server.md](../deployment/ubuntu-server.md) —
-  permanent systemd install.
+  permanent systemd install + the choke-gateway flag set.
+- [../deployment/orbstack-local-mirror.md](../deployment/orbstack-local-mirror.md)
+  — the local OrbStack dev stack.
 </content>

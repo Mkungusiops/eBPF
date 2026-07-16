@@ -15,10 +15,10 @@ Project docs, organized by audience.
 - [developer-onboarding.md](getting-started/developer-onboarding.md) — **read
   first**: the whole picture for a new developer (binaries, layout, build/test,
   local-run options, key concepts).
-- [multipass-vm-setup.md](getting-started/multipass-vm-setup.md) — bring up a
-  local Linux VM on macOS (real kernel events / eBPF) via Multipass.
 
-Also at the repo root: **[CONTRIBUTING.md](../CONTRIBUTING.md)** (branch/commit/PR
+Local dev runs on the **OrbStack mirror** —
+[deployment/orbstack-local-mirror.md](deployment/orbstack-local-mirror.md). Also
+at the repo root: **[CONTRIBUTING.md](../CONTRIBUTING.md)** (branch/commit/PR
 conventions + local gates).
 
 ## [Architecture](architecture/)
@@ -75,8 +75,6 @@ SaaS/MSSP platform. Design references (not status reports).
 
 ## [Operations](operations/)
 
-- [run-on-multipass-vm.md](operations/run-on-multipass-vm.md) — day-to-day runbook
-  for the Multipass deployment.
 - [reset-engine-and-policies.md](operations/reset-engine-and-policies.md) — reset
   the engine and reload policies (demo-prep / clean slate).
 

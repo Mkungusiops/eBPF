@@ -33,10 +33,11 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
                                                                   + SIGKILL on sever
 ```
 
-> **Production path is Multipass / real Linux only.** `make fake`
-> exists for unit tests and frontend iteration but is **not** the
-> deploy story. To exercise the gateway against real eBPF events,
-> see [docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md).
+> **Real eBPF runs on Linux only.** `make fake` exists for unit tests and
+> frontend iteration but is **not** the deploy story. For local development use
+> the [OrbStack mirror](docs/deployment/orbstack-local-mirror.md); to run the
+> engine against real eBPF events, deploy to a Linux host
+> ([docs/deployment/ubuntu-server.md](docs/deployment/ubuntu-server.md)).
 
 ## Documentation
 
@@ -49,14 +50,12 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 | [docs/architecture/overview.md](docs/architecture/overview.md) | How everything works: components, data flow, full API surface |
 | [docs/architecture/state-ladder.md](docs/architecture/state-ladder.md) | The five-rung per-process/per-device state machine |
 | [docs/architecture/network-choke-gateway.md](docs/architecture/network-choke-gateway.md) | Per-device (MAC) enforcement via `tc` clsact on an inline bridge |
-| [docs/getting-started/multipass-vm-setup.md](docs/getting-started/multipass-vm-setup.md) | Local Linux VM on macOS via Multipass |
 | [docs/deployment/ubuntu-server.md](docs/deployment/ubuntu-server.md) | Recommended step-by-step deploy on a fresh Ubuntu server |
 | [docs/deployment/tarball-quickstart.md](docs/deployment/tarball-quickstart.md) | Fastest path: `make tarball`, scp, run |
 | [docs/deployment/network-choke-gateway.md](docs/deployment/network-choke-gateway.md) | Inline transparent-bridge gateway for the device choke |
 | [docs/deployment/azure.md](docs/deployment/azure.md) | Azure deployment guide |
 | [docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md) | Durable local mirror of the multi-tenant console (OrbStack + systemd) |
 | [docs/production-rollout/README.md](docs/production-rollout/README.md) | Mass-deployment + day-2 operating model for many gateways |
-| [docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md) | Day-to-day ops runbook |
 | [docs/operations/reset-engine-and-policies.md](docs/operations/reset-engine-and-policies.md) | Reset the engine and reload policies |
 | [docs/reference/chokectl.md](docs/reference/chokectl.md) | `chokectl` fleet CLI reference |
 | [docs/frontend-dev/README.md](docs/frontend-dev/README.md) | The embedded React console (stack, entries, parity gate) |
@@ -134,55 +133,32 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 The Go code itself builds on macOS for development convenience, but
 Tetragon only runs on Linux — actual events flow only on a Linux host.
 
-## Quick start — deploy to the Multipass VM
+## Quick start
 
-**Prerequisite**: a Multipass VM named `ebpf` running Ubuntu 22.04+
-(kernel ≥ 5.15, BTF enabled). First-time setup:
-[docs/getting-started/multipass-vm-setup.md](docs/getting-started/multipass-vm-setup.md).
+### Local development — the OrbStack mirror
 
-```bash
-make deploy
-```
+For day-to-day work on the multi-tenant console + control plane, run the durable
+local stack — Postgres + Keycloak + control plane + console, all systemd-managed
+in one OrbStack machine, with a synthetic agent feeding realistic tenant data:
 
-That single command:
+**[docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md)**
+— one-machine setup, survives reboot, no eBPF required.
 
-1. builds the embedded React console (`make web`) and cross-compiles
-   `engine-linux-amd64` (no CGO),
-2. transfers the binary + `policies/` + `attacks/` + `scripts/` + the BPF
-   C sources into `ebpf:/home/ubuntu/ebpf-poc`,
-3. runs `setup.sh` to install Docker / Go / Tetragon / clang, compile the
-   BPF objects, and enable cgroup v2 controllers,
-4. applies every TracingPolicy under `policies/` and `policies/enforce/`
-   (the latter carries Tetragon `Sigkill`/`Override` actions),
-5. (re)starts the engine as a transient systemd unit with the process
-   choke gateway **enforcing** (`-enforce -bpf-obj … -cgroup-root …`) and
-   thresholds tuned so sshd MOTD churn only reaches *tarpit*,
-6. prints the URLs for the SOC dashboard and Choke console.
+`make fake` (or `engine -fake`) synthesizes events with no kernel at all — handy
+for pure UI iteration and tests.
 
-Open the printed `http://<vm-ip>:8080/choke` URL. Login: **`admin` /
-`ebpf-soc-demo`** — the credential `make deploy` sets for the demo. There is no
-built-in default (the engine fails fast without a password); change it for any
-real deployment.
+### Engine against real eBPF
 
-**Trigger a real attack and watch the gateway respond:**
+Real Tetragon events + kernel enforcement require a **Linux host** (a server, or
+an OrbStack Ubuntu machine running Tetragon). Deploy the engine there, then run
+the attack demo:
 
-```bash
-make vm-attack SCRIPT=03-reverse-shell.sh
-make vm-status        # see live cgroup tier populations
-make vm-logs          # tail engine output
-```
-
-The reverse-shell process will move up the ladder — `pristine` →
-`throttled` → `tarpit` … — as its chain score climbs. You'll see it in
-the console's Decision Tape and in the kernel:
-
-```bash
-multipass exec ebpf -- cat /sys/fs/cgroup/choke-throttled/cgroup.procs
-multipass exec ebpf -- cat /sys/fs/cgroup/choke-quarantined/cgroup.procs
-```
-
-For the full step-by-step walkthrough (or to debug a `make deploy`
-failure), see **[docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md)**.
+1. Deploy — **[docs/deployment/ubuntu-server.md](docs/deployment/ubuntu-server.md)**
+   (recommended) or [tarball-quickstart.md](docs/deployment/tarball-quickstart.md).
+2. Open `http://<host>:8080/choke`, trigger an attack from `attacks/` (e.g.
+   `03-reverse-shell.sh`), and watch the process climb the state ladder
+   (`pristine → throttled → tarpit → …`) in the Decision Tape and in the kernel
+   cgroups (`/sys/fs/cgroup/choke-*/cgroup.procs`).
 
 ## How detection + enforcement works
 

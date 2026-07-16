@@ -103,9 +103,8 @@ cross-tenant read-denial tests — keep them passing.
 | You want… | Use | Real eBPF? |
 | --- | --- | --- |
 | Hack on the **console / control plane** (multi-tenant, OIDC, RBAC) with realistic data | **OrbStack mirror** → [../deployment/orbstack-local-mirror.md](../deployment/orbstack-local-mirror.md) | No (synthetic via `simagent`) |
-| Exercise the **engine against real kernel events** on macOS | **Multipass VM** → [multipass-vm-setup.md](multipass-vm-setup.md) | Yes |
 | Just render the UI / poke the engine API with no kernel | `engine -fake` (synthesizes events) | No |
-| Deploy to a real server | [../deployment/](../deployment/) (start with `ubuntu-server.md`) | Yes |
+| The **engine against real kernel events** (Tetragon) | A Linux host — deploy to a server ([../deployment/ubuntu-server.md](../deployment/ubuntu-server.md)) or an OrbStack Ubuntu machine running Tetragon | Yes |
 
 ## 8. Key concepts (read before deep work)
 
