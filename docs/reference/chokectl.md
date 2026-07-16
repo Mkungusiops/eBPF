@@ -15,8 +15,8 @@ without juggling 7 browser tabs.
 > with `-fleet-hosts <file>`), which fans the same operations out to peers
 > server-side. Use whichever fits — `chokectl` for scripting/CI and
 > single-command sweeps, `/fleet` for a point-and-click control plane.
-> See [deployment/commands.md](../deployment/commands.md#one-time-enable-the-fleet-multi-host-console-on-azure)
-> for the `/fleet` bring-up.
+> Bring up `/fleet` by starting the engine with `-fleet-hosts <file>` (a
+> `chokectl.hosts`-format peer list; see `chokectl.hosts.example`).
 
 ---
 

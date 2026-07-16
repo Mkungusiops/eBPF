@@ -98,9 +98,16 @@ func (s *CHStore) Query(scope Scope, limit int) ([]Row, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := s.db.Query(
-		"SELECT tenant_id, agent_id, dedup_key, kind, exec_id, `binary`, at, payload "+
-			"FROM telemetry FINAL WHERE tenant_id = ? ORDER BY at DESC LIMIT ?", scope.TenantID, limit)
+	q := "SELECT tenant_id, agent_id, dedup_key, kind, exec_id, `binary`, at, payload " +
+		"FROM telemetry FINAL WHERE tenant_id = ?"
+	args := []any{scope.TenantID}
+	if scope.Kind != "" {
+		q += " AND kind = ?"
+		args = append(args, scope.Kind)
+	}
+	q += " ORDER BY at DESC LIMIT ?"
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

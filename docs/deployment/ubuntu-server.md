@@ -291,5 +291,4 @@ sudo systemctl start ebpf-engine     # recreated empty on boot
 
 - [linux-server.md](linux-server.md) — the longer, manual walkthrough (per-step rationale, alternate transfer methods, hardening checklist).
 - [tarball-quickstart.md](tarball-quickstart.md) — the absolute fastest `make tarball` → run path.
-- [commands.md](commands.md) — deploy command reference.
 - [../architecture/overview.md](../architecture/overview.md) — how the system fits together.

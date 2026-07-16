@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver ("pgx")
@@ -143,11 +144,18 @@ func (s *PGStore) Query(scope Scope, limit int) ([]Row, error) {
 	}
 	var out []Row
 	err := s.withTenant(scope.TenantID, func(tx *sql.Tx) error {
-		rows, err := tx.Query(
-			// Newest-first: an operator console shows recent activity, and the
-			// LIMIT must take the most recent rows, not the oldest.
-			`SELECT tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload
-			   FROM telemetry ORDER BY at DESC LIMIT $1`, limit) // RLS supplies the tenant filter
+		// Newest-first: an operator console shows recent activity, and the LIMIT
+		// must take the most recent rows. RLS supplies the tenant filter; an
+		// optional kind narrows to alerts/events/decisions.
+		q := `SELECT tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload FROM telemetry`
+		args := []any{}
+		if scope.Kind != "" {
+			args = append(args, scope.Kind)
+			q += ` WHERE kind = $1`
+		}
+		args = append(args, limit)
+		q += ` ORDER BY at DESC LIMIT $` + strconv.Itoa(len(args))
+		rows, err := tx.Query(q, args...)
 		if err != nil {
 			return err
 		}

@@ -129,6 +129,18 @@ func isCrossTenant(r Role) bool {
 	return r == RoleMSOCAdmin || r == RoleCrossTenantResponder
 }
 
+// CanRespond reports whether the principal holds any role that grants the
+// respond action. The console uses it to enable/disable action controls; the
+// server still authorizes every action per-tenant (Authorize) regardless.
+func CanRespond(p Principal) bool {
+	for _, g := range p.Grants {
+		if roleCan(g.Role, ActionRespond) {
+			return true
+		}
+	}
+	return false
+}
+
 func roleCan(r Role, a Action) bool {
 	switch r {
 	case RoleReadOnly:

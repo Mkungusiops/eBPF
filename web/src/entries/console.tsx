@@ -3,7 +3,19 @@ import { createRoot } from "react-dom/client";
 
 import { ConsoleShell } from "../app/ConsoleShell";
 import { useTenantStore } from "../stores/tenant";
-import { fetchChoke, fetchDevices, fetchFleet, fetchTelemetry } from "../lib/console";
+import {
+  fetchAlerts,
+  fetchChoke,
+  fetchDevices,
+  fetchFleet,
+  fetchTelemetry,
+  jailProcess,
+  thawProcess,
+  type AlertRow,
+  type ChokeRow,
+  type ChokeTier
+} from "../lib/console";
+import { ApiError } from "../lib/api";
 import { registerServiceWorker } from "../lib/pwa";
 
 function bootstrapTheme() {
@@ -30,9 +42,31 @@ function relativeTime(unixNanos: number): string {
 // Stable module-level loaders — passing an inline arrow would re-fire the effect
 // every render and thrash the 5s refresh timer.
 const loadSoc = (t: string) => fetchTelemetry(t, 50);
+const loadAlerts = (t: string) => fetchAlerts(t, 200);
 const loadChoke = (t: string) => fetchChoke(t);
 const loadDevices = (t: string) => fetchDevices(t);
 const loadFleet = (t: string) => fetchFleet(t);
+
+// Severity is domain-standard: red → orange → amber → blue → grey.
+const SEVERITIES = ["critical", "high", "medium", "low", "info"] as const;
+const SEV_COLOR: Record<string, string> = {
+  critical: "#f43f5e",
+  high: "#fb923c",
+  medium: "#fbbf24",
+  low: "#38bdf8",
+  info: "#94a3b8"
+};
+function sevColor(s: string): string {
+  return SEV_COLOR[s.toLowerCase()] ?? SEV_COLOR.info;
+}
+function SeverityChip({ sev }: { sev: string }) {
+  const c = sevColor(sev);
+  return (
+    <span style={{ color: c, border: `1px solid ${c}`, borderRadius: 999, padding: "1px 8px", fontSize: "0.7rem", fontWeight: 700, textTransform: "uppercase", whiteSpace: "nowrap" }}>
+      {sev || "info"}
+    </span>
+  );
+}
 
 // useTenantResource loads a tenant-scoped resource and refreshes it every 5s
 // while the tab is mounted. Authorization is server-side; a 404 surfaces as an
@@ -150,22 +184,164 @@ function SocView() {
   );
 }
 
+// SeverityTimeline stacks alert counts by severity across ~40 time buckets —
+// the console's "severity over time" strip, derived from the alert list.
+function SeverityTimeline({ alerts }: { alerts: AlertRow[] }) {
+  const rects: ReactNode[] = [];
+  if (alerts.length > 0) {
+    const N = 40;
+    const H = 60;
+    const times = alerts.map((a) => a.at / 1e6);
+    const min = Math.min(...times);
+    const span = Math.max(1, Math.max(...times) - min);
+    const buckets = Array.from({ length: N }, () => ({}) as Record<string, number>);
+    for (const a of alerts) {
+      const i = Math.min(N - 1, Math.max(0, Math.floor(((a.at / 1e6 - min) / span) * N)));
+      const sev = a.severity.toLowerCase();
+      buckets[i][sev] = (buckets[i][sev] ?? 0) + 1;
+    }
+    const maxCount = Math.max(1, ...buckets.map((b) => Object.values(b).reduce((s, n) => s + n, 0)));
+    const bw = 100 / N;
+    buckets.forEach((b, i) => { 
+      let y = H;
+      for (const sev of SEVERITIES) {
+        const c = b[sev] ?? 0; 
+        if (!c) continue;
+        const h = (c / maxCount) * H;
+        y -= h;
+        rects.push(<rect key={`${i}-${sev}`} x={i * bw + 0.12} y={y} width={bw * 0.78} height={h} fill={sevColor(sev)} />);
+      }
+    });
+  }
+  return (
+    <svg viewBox="0 0 100 60" preserveAspectRatio="none" role="img" aria-label="Alert severity over time"
+      style={{ width: "100%", height: 84, display: "block", borderRadius: 6, background: "rgba(148,163,184,0.06)" }}>
+      {rects}
+    </svg>
+  );
+}
+
+// AlertItem is one triage row; clicking it drills into the description + exec id.
+const alertGrid: CSSProperties = { display: "grid", gridTemplateColumns: "88px 52px 1fr 150px 78px", gap: 10, alignItems: "center" };
+function AlertItem({ a }: { a: AlertRow }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ borderTop: "1px solid rgba(148,163,184,0.18)" }}>
+      <button type="button" onClick={() => setOpen((o) => !o)}
+        style={{ appearance: "none", background: "transparent", border: 0, color: "inherit", font: "inherit", cursor: "pointer", width: "100%", textAlign: "left", padding: "8px 6px", ...alertGrid }}>
+        <SeverityChip sev={a.severity} />
+        <span style={{ fontVariantNumeric: "tabular-nums" }}>{a.score}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{a.title || "—"}</span>
+        <span style={{ ...mono, opacity: 0.7, fontSize: "0.78rem" }}>{a.agent.slice(0, 18)}</span>
+        <span style={{ opacity: 0.7, fontSize: "0.8rem" }}>{relativeTime(a.at)}</span>
+      </button>
+      {open && (
+        <div style={{ padding: "0 6px 12px", fontSize: "0.82rem" }}>
+          <div style={{ opacity: 0.9, marginBottom: 5 }}>{a.description || a.title}</div>
+          <div style={{ ...mono, fontSize: "0.72rem", opacity: 0.6 }}>exec_id: {a.exec_id || "—"}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AlertsView() {
+  const active = useTenantStore((s) => s.activeTenant);
+  const { data, state } = useTenantResource(loadAlerts, active);
+  const alerts = data?.alerts ?? [];
+  const counts = SEVERITIES.map((sev) => ({ sev, n: alerts.filter((a) => a.severity.toLowerCase() === sev).length })).filter((c) => c.n > 0);
+  return (
+    <View
+      title={`Alerts · ${active ?? "—"}`}
+      blurb="Tenant-scoped alert triage from the control plane. Click a row to drill into the chain and exec id."
+      state={state}
+      count={data?.count ?? 0}
+      countLabel="alerts"
+      emptyText={`No alerts reported yet for ${active ?? "this tenant"}.`}
+    >
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap", marginBottom: 10, alignItems: "center" }}>
+        {counts.map((c) => (
+          <span key={c.sev} style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+            <SeverityChip sev={c.sev} />
+            <b style={{ fontVariantNumeric: "tabular-nums" }}>{c.n}</b>
+          </span>
+        ))}
+      </div>
+      <SeverityTimeline alerts={alerts} />
+      <div style={{ marginTop: 12 }}>
+        <div style={{ ...alertGrid, opacity: 0.7, fontSize: "0.78rem", padding: "0 6px 4px" }}>
+          <span>Severity</span>
+          <span>Score</span>
+          <span>Alert</span>
+          <span>Agent</span>
+          <span>When</span>
+        </div>
+        {alerts.map((a, i) => (
+          <AlertItem key={a.exec_id ? `${a.exec_id}-${i}` : i} a={a} />
+        ))}
+      </div>
+    </View>
+  );
+}
+
+// ChokeActions dispatches a signed jail/thaw command for one process. Rendered
+// only when the operator can respond; the server re-authorizes per tenant.
+function ChokeActions({ tenant, row }: { tenant: string; row: ChokeRow }) {
+  const [tier, setTier] = useState<ChokeTier>("tarpit");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState("");
+  const run = (fn: () => Promise<{ status: string }>) => {
+    setBusy(true);
+    setMsg("");
+    fn()
+      .then((r) => setMsg(r.status === "STATUS_APPLIED" ? "✓ applied" : r.status.replace("STATUS_", "").toLowerCase()))
+      .catch((e) => setMsg(e instanceof ApiError && e.status === 404 ? "not authorized" : "failed"))
+      .finally(() => setBusy(false));
+  };
+  const ctl: CSSProperties = {
+    appearance: "none", font: "inherit", fontSize: "0.75rem", padding: "2px 7px", borderRadius: 5,
+    border: "1px solid rgba(148,163,184,0.3)", background: "transparent", color: "inherit", cursor: "pointer"
+  };
+  return (
+    <span style={{ display: "inline-flex", gap: 5, alignItems: "center", flexWrap: "wrap" }}>
+      <select value={tier} onChange={(e) => setTier(e.target.value as ChokeTier)} disabled={busy} style={ctl}>
+        <option value="throttle">throttle</option>
+        <option value="tarpit">tarpit</option>
+        <option value="quarantine">quarantine</option>
+        <option value="sever">sever</option>
+      </select>
+      <button type="button" disabled={busy} style={ctl} onClick={() => run(() => jailProcess(tenant, row.agent, row.exec_id, row.pid, tier))}>Jail</button>
+      <button type="button" disabled={busy} style={ctl} onClick={() => run(() => thawProcess(tenant, row.agent, row.exec_id, row.pid))}>Thaw</button>
+      {msg && <span style={{ fontSize: "0.72rem", opacity: 0.8 }}>{msg}</span>}
+    </span>
+  );
+}
+
 function ChokeView() {
   const active = useTenantStore((s) => s.activeTenant);
+  const canRespond = useTenantStore((s) => s.identity?.canRespond) ?? false;
   const { data, state } = useTenantResource(loadChoke, active);
   const rows = data?.chokes ?? [];
+  const head = canRespond ? ["State", "Score", "Binary", "PID", "Agent", "Action"] : ["State", "Score", "Binary", "PID", "Agent"];
   return (
     <View
       title="Choke"
-      blurb="Processes the tenant's agents are choking or watching, aggregated fleet-wide (highest score first)."
+      blurb={
+        canRespond
+          ? "Processes the tenant's agents are choking or watching. Jail moves a process to a tier; Thaw releases it (signed, RBAC-gated)."
+          : "Processes the tenant's agents are choking or watching, aggregated fleet-wide (highest score first)."
+      }
       state={state}
       count={data?.count ?? 0}
       countLabel="tracked processes"
       emptyText="No processes are being choked or watched right now."
     >
       <DataTable
-        head={["State", "Score", "Binary", "PID", "Agent"]}
-        rows={rows.map((c) => [c.state, c.score, <span style={mono}>{c.binary || "—"}</span>, c.pid, <span style={{ ...mono, opacity: 0.7 }}>{c.agent.slice(0, 20)}</span>])}
+        head={head}
+        rows={rows.map((c) => {
+          const base = [c.state, c.score, <span style={mono}>{c.binary || "—"}</span>, c.pid, <span style={{ ...mono, opacity: 0.7 }}>{c.agent.slice(0, 20)}</span>];
+          return active && canRespond ? [...base, <ChokeActions tenant={active} row={c} />] : base;
+        })}
       />
     </View>
   );
@@ -222,6 +398,7 @@ function FleetView() {
 
 const TABS = [
   { id: "soc", label: "SOC", node: <SocView /> },
+  { id: "alerts", label: "Alerts", node: <AlertsView /> },
   { id: "choke", label: "Choke", node: <ChokeView /> },
   { id: "devices", label: "Devices", node: <DevicesView /> },
   { id: "fleet", label: "Fleet", node: <FleetView /> }

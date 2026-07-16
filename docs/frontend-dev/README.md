@@ -163,11 +163,9 @@ The frontend-dev folder is complete only when these items are true:
 - Embedded binary tests prove route fallback, asset caching, login asset access, and version hashing.
 - Target VM Playwright evidence exists for login, SOC, Choke, Devices, Fleet, SSE, safe attack,
   and representative Choke write behavior.
-- `pending-work.md` records any remaining release blockers with evidence status.
 
 ## Reference Docs
 
 - [recommended-stack.md](recommended-stack.md)
 - [security-console-ui.md](security-console-ui.md)
 - [78-panel-redesign-target-vm-e2e-certification-plan.md](78-panel-redesign-target-vm-e2e-certification-plan.md)
-- [pending-work.md](pending-work.md)

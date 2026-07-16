@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchChoke, fetchDevices, fetchFleet, fetchTelemetry } from "../lib/console";
+import { fetchAlerts, fetchChoke, fetchDevices, fetchFleet, fetchTelemetry } from "../lib/console";
 
 function jsonResponse(obj: unknown) {
   return {
@@ -39,15 +39,17 @@ describe("fetchTelemetry", () => {
     expect(String(spy.mock.calls[0][0])).toContain("tenant=a%20b");
   });
 
-  it("fleet/choke/devices hit their tenant-scoped endpoints", async () => {
-    const spy = vi.fn(async (_input: RequestInfo | URL) => jsonResponse({ count: 0, agents: [], chokes: [], devices: [] }));
+  it("fleet/choke/devices/alerts hit their tenant-scoped endpoints", async () => {
+    const spy = vi.fn(async (_input: RequestInfo | URL) => jsonResponse({ count: 0, agents: [], chokes: [], devices: [], alerts: [] }));
     vi.stubGlobal("fetch", spy);
     await fetchFleet("acme-corp");
     await fetchChoke("acme-corp");
     await fetchDevices("acme-corp");
+    await fetchAlerts("acme-corp", 200);
     const urls = spy.mock.calls.map((c) => String(c[0]));
     expect(urls[0]).toContain("/api/fleet?tenant=acme-corp");
     expect(urls[1]).toContain("/api/choke?tenant=acme-corp");
     expect(urls[2]).toContain("/api/devices?tenant=acme-corp");
+    expect(urls[3]).toContain("/api/alerts?tenant=acme-corp&limit=200");
   });
 });

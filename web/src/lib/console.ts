@@ -79,6 +79,46 @@ export async function fetchDevices(tenant: string): Promise<{ tenant: string; co
   return api(`/api/devices?tenant=${encodeURIComponent(tenant)}`);
 }
 
+export interface AlertRow {
+  agent: string;
+  severity: string;
+  title: string;
+  description: string;
+  score: number;
+  exec_id: string;
+  at: number; // unix nanoseconds
+}
+export async function fetchAlerts(tenant: string, limit = 200): Promise<{ tenant: string; count: number; alerts: AlertRow[] }> {
+  return api(`/api/alerts?tenant=${encodeURIComponent(tenant)}&limit=${limit}`);
+}
+
+export interface CommandResult {
+  command_id: string;
+  status: string; // STATUS_APPLIED | STATUS_REJECTED | ...
+  detail: string;
+}
+
+export type ChokeTier = "throttle" | "tarpit" | "quarantine" | "sever";
+
+// jailProcess / thawProcess dispatch a signed operator command to the agent
+// over the control plane. The server authorizes `respond` per tenant (a denial
+// is a 404); the UI only offers these when the operator can respond.
+export async function jailProcess(tenant: string, agent: string, execId: string, pid: number, tier: ChokeTier): Promise<CommandResult> {
+  return api<CommandResult>("/api/admin/command", {
+    method: "POST",
+    redirectOn401: false,
+    body: { tenant, agent_id: agent, jail: { exec_id: execId, pid, tier } }
+  });
+}
+
+export async function thawProcess(tenant: string, agent: string, execId: string, pid: number): Promise<CommandResult> {
+  return api<CommandResult>("/api/admin/command", {
+    method: "POST",
+    redirectOn401: false,
+    body: { tenant, agent_id: agent, thaw: { exec_id: execId, pid } }
+  });
+}
+
 /** loginUrl is where the SPA sends the browser to begin the OIDC login (BFF). */
 export function loginUrl(): string {
   return "/auth/login";

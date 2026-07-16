@@ -9,6 +9,8 @@ export interface TenantIdentity {
   tenants: string[];
   /** holds an MSOC cross-tenant role */
   crossTenant: boolean;
+  /** holds a role that grants the respond action (enables action controls) */
+  canRespond?: boolean;
 }
 
 /** Shape of GET /api/whoami served by the BFF. */
@@ -16,13 +18,15 @@ export interface WhoamiResponse {
   subject: string;
   tenants: string[] | null;
   cross_tenant: boolean;
+  can_respond?: boolean;
 }
 
 export function parseWhoami(raw: WhoamiResponse): TenantIdentity {
   return {
     subject: raw.subject,
     tenants: raw.tenants ?? [],
-    crossTenant: Boolean(raw.cross_tenant)
+    crossTenant: Boolean(raw.cross_tenant),
+    canRespond: Boolean(raw.can_respond)
   };
 }
 

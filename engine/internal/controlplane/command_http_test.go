@@ -91,4 +91,29 @@ func TestCommandEndpoint(t *testing.T) {
 	if code, _ := postCommand(t, base, "admin-secret", map[string]any{"set_mode": "detect"}); code != http.StatusBadRequest {
 		t.Fatalf("missing-target command = %d, want 400", code)
 	}
+
+	// Jail with a valid tier enqueues.
+	if code, out := postCommand(t, base, "admin-secret", map[string]any{
+		"tenant": "tenant-a", "agent_id": "agent-x", "jail": map[string]any{"exec_id": "e", "pid": 7, "tier": "tarpit"},
+	}); code != 200 || out["command_id"] == "" {
+		t.Fatalf("jail command = %d %v, want 200 + id", code, out)
+	}
+	// Jail with a bogus tier is rejected.
+	if code, _ := postCommand(t, base, "admin-secret", map[string]any{
+		"tenant": "tenant-a", "agent_id": "agent-x", "jail": map[string]any{"exec_id": "e", "pid": 7, "tier": "nope"},
+	}); code != http.StatusBadRequest {
+		t.Fatalf("bad-tier jail = %d, want 400", code)
+	}
+	// Thaw enqueues.
+	if code, out := postCommand(t, base, "admin-secret", map[string]any{
+		"tenant": "tenant-a", "agent_id": "agent-x", "thaw": map[string]any{"exec_id": "e", "pid": 7},
+	}); code != 200 || out["command_id"] == "" {
+		t.Fatalf("thaw command = %d %v, want 200 + id", code, out)
+	}
+
+	// whoami advertises the admin's respond capability so the UI can gate actions.
+	who := getJSON(t, base+"/api/whoami", "admin-secret")
+	if who["can_respond"] != true {
+		t.Fatalf("whoami can_respond = %v, want true", who["can_respond"])
+	}
 }

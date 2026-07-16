@@ -49,7 +49,12 @@ type TenantStore interface {
 var _ TenantStore = (*Store)(nil)
 
 // Scope is the tenant a read is authorized for.
-type Scope struct{ TenantID string }
+// Scope selects the tenant to read and, optionally, a single record kind
+// (event | alert | decision). An empty Kind returns all kinds.
+type Scope struct {
+	TenantID string
+	Kind     string
+}
 
 // Row is a stored, tenant-stamped telemetry record.
 type Row struct {
@@ -138,9 +143,15 @@ func (s *Store) Query(scope Scope, limit int) ([]Row, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
-	rows, err := s.db.Query(
-		`SELECT tenant_id,agent_id,dedup_key,kind,exec_id,binary,at,payload
-		   FROM telemetry WHERE tenant_id = ? ORDER BY at DESC LIMIT ?`, scope.TenantID, limit)
+	q := `SELECT tenant_id,agent_id,dedup_key,kind,exec_id,binary,at,payload FROM telemetry WHERE tenant_id = ?`
+	args := []any{scope.TenantID}
+	if scope.Kind != "" {
+		q += ` AND kind = ?`
+		args = append(args, scope.Kind)
+	}
+	q += ` ORDER BY at DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return nil, err
 	}

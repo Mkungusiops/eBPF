@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -174,7 +175,11 @@ func main() {
 	defer cancel()
 	var bffH *bff.Handler
 	if *oidcIssuer != "" {
-		bffH, err = bff.New(ctx, *oidcIssuer, *oidcClient, *oidcSecret, *oidcRedir, *appURL, true)
+		// Secure cookies only make sense behind TLS; derive from the redirect
+		// scheme so an HTTP (dev/local) deployment isn't locked out by cookies
+		// the browser refuses to send back over plain HTTP.
+		secureCookies := strings.HasPrefix(*oidcRedir, "https://")
+		bffH, err = bff.New(ctx, *oidcIssuer, *oidcClient, *oidcSecret, *oidcRedir, *appURL, secureCookies)
 		if err != nil {
 			log.Fatalf("oidc: %v", err)
 		}

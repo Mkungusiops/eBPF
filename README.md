@@ -44,6 +44,8 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 |-----|---------|
 | **README.md** (this file) | One-page overview + quick start |
 | [docs/](docs/README.md) | Full documentation index |
+| [docs/getting-started/developer-onboarding.md](docs/getting-started/developer-onboarding.md) | **New here? Start here** — binaries, layout, build/test, local-run options |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Branch/commit/PR conventions + the local gates a change must pass |
 | [docs/architecture/overview.md](docs/architecture/overview.md) | How everything works: components, data flow, full API surface |
 | [docs/architecture/state-ladder.md](docs/architecture/state-ladder.md) | The five-rung per-process/per-device state machine |
 | [docs/architecture/network-choke-gateway.md](docs/architecture/network-choke-gateway.md) | Per-device (MAC) enforcement via `tc` clsact on an inline bridge |
@@ -52,7 +54,7 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 | [docs/deployment/tarball-quickstart.md](docs/deployment/tarball-quickstart.md) | Fastest path: `make tarball`, scp, run |
 | [docs/deployment/network-choke-gateway.md](docs/deployment/network-choke-gateway.md) | Inline transparent-bridge gateway for the device choke |
 | [docs/deployment/azure.md](docs/deployment/azure.md) | Azure deployment guide |
-| [docs/deployment/commands.md](docs/deployment/commands.md) | Deployment command reference |
+| [docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md) | Durable local mirror of the multi-tenant console (OrbStack + systemd) |
 | [docs/production-rollout/README.md](docs/production-rollout/README.md) | Mass-deployment + day-2 operating model for many gateways |
 | [docs/operations/run-on-multipass-vm.md](docs/operations/run-on-multipass-vm.md) | Day-to-day ops runbook |
 | [docs/operations/reset-engine-and-policies.md](docs/operations/reset-engine-and-policies.md) | Reset the engine and reload policies |

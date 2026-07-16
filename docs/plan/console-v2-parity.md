@@ -11,13 +11,89 @@
 > `console.html` SPA. Retiring the monolith is a **separate, later** step
 > (migration runbook §4–5), explicitly deferred.
 
-## Status when this doc was written (2026-07-15)
+## ⭐ FINALIZED STATUS — 2026-07-15 (authoritative; supersedes the sections below)
 
-Already live on `console.adanianlabs.io` (read-only, tenant-scoped, behind OIDC):
-SOC telemetry, Choke, Devices, Fleet — four tabs. Central command channel
-(`POST /api/admin/command`, `SetMode`/`SetThresholds`) is proven live. Agents
-report compact choke/device snapshots on the heartbeat; the control plane serves
-`/api/telemetry`, `/api/fleet`, `/api/choke`, `/api/devices`.
+**The approach pivoted.** The original plan (a bespoke 4-tab console with custom
+`/api/posture|timeline|graph|mitre` endpoints) was scrapped after the rebuilt
+panels "didn't look anything close to the SOC UI." The finalized approach:
+**`console.adanianlabs.io` serves soc's *actual* React frontend** (`index.html`
+/`soc`, `choke`, `devices`, `fleet` pages from `web/dist`, via the console nginx
+block), and **the control plane answers soc's *real* `/api/*` contract,
+tenant-scoped** by the operator's OIDC session (`authorizeRead` defaults the
+tenant from `TenantScope[0]`). Identical UI, because it is the same frontend.
+The engine (`soc.adanianlabs.io`) stays untouched throughout.
+
+### ✅ DONE — live + verified (analyst + msoc sessions)
+
+- **Serving + auth** — nginx console block serves the rich multi-page app
+  (`try_files $uri $uri.html /index.html`); `= /login → /auth/login` and
+  `= /api/logout → /auth/logout` (SOC app hardcodes engine paths); Keycloak
+  login, RP-initiated logout, tenant isolation (analyst→other tenant = 404,
+  msoc cross-tenant = 200).
+- **SOC dashboard** (`/`) — the whole main page renders with real tenant data:
+  KPI row, severity timeline, alert triage + drill-down, top-processes, live
+  event stream (SSE), policy viewer, system health, version, account. CP serves
+  `whoami` (+`user`/`host`/`role`/`can_respond` aliases), `version`, `alerts`
+  (bare array), `events`, `decisions` (bare array), `policies` + `policy-stats`
+  (derived from distinct `policy_name`+counts — no agent change),
+  `process/{execId}` (event-based drill), `system-health`, and **`/api/stream`
+  (tenant-scoped SSE store-poll bridge** emitting event/alert/decision frames +
+  heartbeats).
+- **Choke Gateway** (`/choke`) — renders; CP serves `choke/state`, `circuits`,
+  `buckets`, `cgroups`, `processes`, `verify-chain`, `choke/process/`, `proc/`
+  (`internal/controlplane/choke.go`), tenant-scoped from heartbeat summaries.
+- **Devices** (`/devices`) — renders; CP serves `choke/device-state`,
+  `choke/devices`, `choke/device-flows` (`links_attached=0` so no false
+  bridge-master warning).
+
+### ⏳ PENDING — the finalized remaining scope
+
+1. **Interactive write-actions** (all currently a clean `501` stub, not wired):
+   - Choke: `mode` (fleet-wide), `manual`/`bulk-manual` jail, `thaw`,
+     `thresholds`, `kill-switch`, `preset`, `forget`, `annotate`,
+     `policy/preview`, `forensic-snapshot`.
+   - Devices: `device-jail`, `device-thaw`, `device-mode`, `device-kill-switch`.
+   - SOC dashboard inline: `jailSocAlert`→`/api/choke/jail`,
+     `runSocAttack`→`/api/run-attack`.
+   - Command proto already has `SetMode/Jail/Thaw/SetThresholds/KillSwitch/`
+     `ApplyPreset`; needs agent-targeting + `ActionRespond`. **Enforcement-
+     changing actions (mode toggle, kill-switch) are gated on explicit operator
+     confirmation** — they flip live agent0. *~1–1.5 sessions (no agent change).*
+2. **Fleet page** (`/fleet`) — **entirely unmapped.** Expects a multi-host
+   federation API (`/api/fleet/hosts|state|cgroups|decisions|alerts|devices` +
+   `preset|thresholds|kill-switch|thaw`), `FleetEnvelope`/`FleetPeer`-shaped.
+   Will crash like `/choke` did until mapped (tenant's agents → the fleet
+   shape). *~0.5–1 session (no agent change).*
+3. **Attacks / Honeypots** — `/api/attacks`, `/api/honeypots`, `/api/run-attack`
+   still 404 (modals degrade to empty). Needs a target-agent `run-attack`
+   command + honeypot listing. Per "add then remove later." *~1–2 sessions
+   (agent change).*
+4. **Data-fidelity gaps** — panels render but are thin because agents send only
+   compact heartbeat summaries: correlation graph (process **lineage/parent
+   chain**), MITRE coverage + IOCs + network-connections (alert/event records
+   don't carry mitre/network fields centrally), choke token-buckets + cgroup map
+   + full `/proc` table + per-device flows, real per-agent thresholds, real
+   per-tenant decision hash-chain. **Only bucket needing agent-side proto/
+   heartbeat/ingest changes.** *~2–3 sessions.*
+5. **MSOC tenant switcher** — msoc can read any tenant via `?tenant=` but there's
+   no UI selector; defaults to the primary tenant. *~0.5 session.*
+6. **Cleanup** — retire the dead `console.tsx`/`console.html` (superseded by the
+   rich UI). *trivial.*
+
+### Finalized estimate
+
+- **Functional parity** (every page renders, every button works, attacks/
+  honeypots present) — items 1→2→3 — **~3–5 sessions**.
+- **Full data-fidelity parity** (rich correlation/MITRE/network panels) — item 4
+  — **+2–3 sessions** (the only agent-side work).
+- **Total remaining: ~5–8 sessions.** The entire read/observability half is done.
+
+---
+
+## Original plan (pre-pivot — retained for reference)
+
+> The sections below describe the superseded 4-tab approach and its bespoke
+> endpoint names. Kept for provenance; the finalized status above is current.
 
 C is the work to reach **feature parity with the rich panels** of the engine
 console.

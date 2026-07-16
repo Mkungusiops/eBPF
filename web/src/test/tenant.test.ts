@@ -26,10 +26,11 @@ function jsonResponse(obj: unknown) {
 
 describe("tenantCore", () => {
   it("parses whoami and coerces null tenants to []", () => {
-    expect(parseWhoami({ subject: "a", tenants: null, cross_tenant: false })).toEqual({
+    expect(parseWhoami({ subject: "a", tenants: null, cross_tenant: false, can_respond: false })).toEqual({
       subject: "a",
       tenants: [],
-      crossTenant: false
+      crossTenant: false,
+      canRespond: false
     });
   });
 
@@ -96,6 +97,6 @@ describe("console api client", () => {
       "fetch",
       vi.fn(async () => jsonResponse({ subject: "alice", tenants: ["tenant-a"], cross_tenant: false }))
     );
-    expect(await fetchWhoami()).toEqual({ subject: "alice", tenants: ["tenant-a"], crossTenant: false });
+    expect(await fetchWhoami()).toEqual({ subject: "alice", tenants: ["tenant-a"], crossTenant: false, canRespond: false });
   });
 });

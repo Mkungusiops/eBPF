@@ -306,3 +306,6 @@ NOTES.md.local
 
 # Compiled BPF objects — built on the target by setup.sh / `make devchoke`
 *.o
+
+# Local dev credentials — never commit
+docs/credentials/
