@@ -68,10 +68,13 @@ func TestNoRawTelemetryQueriesOutsideCentralStore(t *testing.T) {
 
 // rpcPosture is the maintained isolation classification of every wire RPC.
 // "tenant-scoped": tenant is derived from the mTLS cert and enforced.
-// "bootstrap":     pre-identity (issues the cert); carries no tenant data.
+// "bootstrap":     pre-identity (issues the first cert); carries no tenant data.
+// "cert-derived":  post-identity; the mTLS peer cert (never the request) names
+//                  the tenant/agent, so the call acts only on its own identity.
 // Adding an RPC to the proto without classifying it here fails the ratchet below.
 var rpcPosture = map[string]string{
 	"ebpfsoc.v1.EnrollmentService.Enroll":         "bootstrap",
+	"ebpfsoc.v1.EnrollmentService.Renew":          "cert-derived",
 	"ebpfsoc.v1.TelemetryService.StreamTelemetry": "tenant-scoped",
 	"ebpfsoc.v1.CommandService.Commands":          "tenant-scoped",
 	"ebpfsoc.v1.PolicyService.GetBundle":          "tenant-scoped",

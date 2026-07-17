@@ -70,7 +70,14 @@ type Auth struct {
 
 	mu        sync.Mutex
 	loginRate map[string]*rateBucket
+	// loginRateLimit is attempts per rolling minute per IP; 0 disables the
+	// limit (dev/E2E). Defaults to defaultRateLimit.
+	loginRateLimit int
 }
+
+// SetLoginRateLimit overrides the per-IP login rate limit (attempts/minute).
+// 0 disables it — for dev / E2E harnesses that authenticate many times.
+func (a *Auth) SetLoginRateLimit(n int) { a.loginRateLimit = n }
 
 type rateBucket struct {
 	count   int
@@ -138,8 +145,9 @@ func NewAuth(user, passOrHash, secretPath string) (*Auth, error) {
 		cookie:     "soc_session",
 		csrfName:   "csrf_token",
 		secret:     secret,
-		sessionTTL: defaultSessionTTL,
-		loginRate:  make(map[string]*rateBucket),
+		sessionTTL:     defaultSessionTTL,
+		loginRate:      make(map[string]*rateBucket),
+		loginRateLimit: defaultRateLimit,
 	}, nil
 }
 
@@ -243,6 +251,9 @@ func (a *Auth) verifySession(cookie string) (session, error) {
 func (a *Auth) rateAllowed(remote string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.loginRateLimit <= 0 { // disabled (dev/E2E)
+		return true
+	}
 	b, ok := a.loginRate[remote]
 	now := time.Now()
 	if !ok || now.After(b.resetAt) {
@@ -250,7 +261,7 @@ func (a *Auth) rateAllowed(remote string) bool {
 		return true
 	}
 	b.count++
-	return b.count <= defaultRateLimit
+	return b.count <= a.loginRateLimit
 }
 
 // Middleware authenticates and CSRF-checks every request. Public paths
@@ -323,7 +334,10 @@ func (a *Auth) unauthorized(w http.ResponseWriter, r *http.Request) {
 
 func isPublicPath(p string) bool {
 	switch p {
-	case "/login", "/api/login", "/favicon.svg", "/favicon.ico", "/favicon-light.svg":
+	// /api/logout is public so signing out always works — it only clears the
+	// session cookies (idempotent). Gating it behind auth means an expired
+	// session dead-ends on logout instead of clearing.
+	case "/login", "/api/login", "/api/logout", "/favicon.svg", "/favicon.ico", "/favicon-light.svg":
 		return true
 	}
 	return isBuiltAssetPath(p) || isPWARootPath(p)

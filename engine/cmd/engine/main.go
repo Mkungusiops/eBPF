@@ -63,6 +63,7 @@ func main() {
 		authPass    = flag.String("pass", "", "dashboard password (plaintext; bcrypted at startup). REQUIRED unless -pass-hash or config supplies one — there is no built-in default; a missing password fails fast")
 		authHash    = flag.String("pass-hash", "", "bcrypt-hashed dashboard password; takes precedence over -pass when set")
 		secretPath  = flag.String("secret", "", "path to HMAC signing secret for session cookies; auto-generated 0600 if missing (default: /etc/ebpf-engine/secret)")
+		loginRate   = flag.Int("login-rate", 5, "login attempts per rolling minute per IP (anti-brute-force); 0 disables it for dev/E2E")
 		policiesDir = flag.String("policies", "policies", "directory containing TracingPolicy YAMLs (for read-only viewer)")
 		attacksDir  = flag.String("attacks", "attacks", "directory containing allowlisted attack scripts (for quick-fire panel)")
 		honeypotDir = flag.String("honeypots", "/var/lib/ebpf-engine/honey", "directory where decoy files are seeded; access fires alerts when watched by sensitive-files policy")
@@ -223,6 +224,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("auth: %v", err)
 	}
+	auth.SetLoginRateLimit(*loginRate)
 	httpSrv := api.NewServer(st, pt, broadcast, auth)
 	if *fleetHosts != "" {
 		// Same credentials chokectl uses by default; the engine itself acts
