@@ -143,7 +143,7 @@ do_ssh() {
   # flag soup, and the operator can use the same alias by hand.
   local alias="ebpf-soc-$(slugify "$host")"
   state_set SSH_ALIAS "$alias"
-  install_ssh_alias "$alias" "$host" "$user" "$port" "$key"
+  install_ssh_alias "$alias" "$host" "$user" "$port" "$key"  
 
   export SSH_ALIAS="$alias"
 

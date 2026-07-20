@@ -95,6 +95,10 @@ attack-run.log
 # fleet signing public key — one directory per deployed server.
 .deploy/
 
+# Build + credential output from scripts/deploy/*.sh: cross-compiled binaries
+# and credentials-<host>.txt (every generated login/secret, 0600).
+.deploy-build/
+
 
 # Generic key & cert material
 *.pem

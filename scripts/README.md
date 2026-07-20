@@ -4,17 +4,39 @@ Operational tooling for the eBPF-SOC platform. Everything here sources
 [`lib/common.sh`](lib/common.sh), which owns logging, prompts, the resumable
 state store, and the single SSH/sudo transport all remote scripts ride on.
 
-## Deploy the platform to a server
+## Deploy (start here)
+
+[**`deploy/`**](deploy/) holds the deploy scripts, split by *what* you deploy
+(single-tenant engine vs. multi-tenant control plane) and *where* (OrbStack,
+Ubuntu, or Linux). This is the OrbStack-first path and the place to start:
+
+```bash
+./scripts/deploy/single-tenant-orbstack.sh          # engine  -> http://<ip>:8090/
+./scripts/deploy/multi-tenant-orbstack.sh           # console -> http://<ip>/
+SSH_HOST=ubuntu@10.0.0.5 ./scripts/deploy/multi-tenant-ubuntu.sh   # a server
+```
+
+See [`deploy/README.md`](deploy/README.md) for the full 2×3 grid, the shared
+provisioning library, and how to add a target. The rest of this page covers the
+supporting operational scripts (migrations, PKI, agent enrollment, backups, …).
+
+## The resumable server wizard — `deploy-platform.sh`
+
+An alternative to `deploy/multi-tenant-*.sh`: a heavier, **resumable** eleven-step
+multi-tenant server deploy with a Docker-Compose data tier, a `.deploy/` step
+ledger, and tight integration with `migrate.sh` / `pki.sh` / `tenantctl` /
+`smoke.sh`. Reach for it when a production server wants that full flow; otherwise
+`deploy/multi-tenant-*.sh` is simpler. The two do not share state.
 
 ```bash
 ./scripts/deploy-platform.sh
 ```
 
-An eleven-step wizard. **Step 1 establishes the SSH access every later step
-uses**: it asks for the server address and login user, generates a deployment
-key (or takes an existing one), installs the public key on the server, writes a
-`~/.ssh/config` alias, and proves both SSH and sudo work non-interactively.
-Nothing after that prompts for a password.
+**Step 1 establishes the SSH access every later step uses**: it asks for the
+server address and login user, generates a deployment key (or takes an existing
+one), installs the public key on the server, writes a `~/.ssh/config` alias, and
+proves both SSH and sudo work non-interactively. Nothing after that prompts for a
+password.
 
 | # | Step | What it does |
 |---|------|--------------|
@@ -82,7 +104,7 @@ Detect-only by default. Pass `--enforce` when you mean to freeze and kill.
 | `fleet-upgrade.sh` | Canary → early → rest, with per-host rollback. |
 
 Pre-existing, unchanged: `setup.sh` (host bootstrap), `chokectl` (fleet CLI),
-`multipass-doctor.sh`, `dev/netns-*.sh` (device-choke lab).
+`dev/netns-*.sh` (device-choke lab).
 
 ## Two things worth knowing
 
