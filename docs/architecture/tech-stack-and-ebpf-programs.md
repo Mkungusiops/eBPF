@@ -17,33 +17,37 @@ depth), and [../plan/d4c-tech-decisions.md](../plan/d4c-tech-decisions.md)
 
 ## 1. Tech stack
 
-| Layer | Technology | Why it was chosen |
-| --- | --- | --- |
-| Kernel telemetry | **Tetragon v1.6.1** (`quay.io/cilium/tetragon`) + `cilium/tetragon/api` Go client | Ships pre-written, CO-RE eBPF programs, a declarative policy language (TracingPolicy YAML), stable `exec_id` process-tree tracking, and a gRPC event stream. [build-plan.md](../development/build-plan.md) records the call explicitly: writing libbpf+C from scratch would have added ~2 weeks. |
-| Kernel enforcement | **Hand-written eBPF C** compiled with `clang -target bpf`, loaded via **`cilium/ebpf` v0.21.0** | Tetragon can detect and `Sigkill`, but cannot do per-PID token buckets or MAC-keyed shaping of *forwarded* traffic. Those two data planes had to be custom. `cilium/ebpf` is a pure-Go loader — no libbpf at runtime, so the binary stays static. |
-| Non-BPF enforcement | **cgroup v2** (`cpu.max`, freezer), **seccomp**, `SIGKILL` | Gives the rungs eBPF can't express: CPU throttling (5% / 1%), full process freeze (quarantine), and syscall denial — the ladder below `sever`. |
-| Engine / agent / control plane | **Go 1.25** | Single statically-linked binary per role, trivial cross-compile to `linux/amd64` + `arm64`, and Tetragon's first-class Go bindings. |
-| Wire protocol | **gRPC 1.80 + Protobuf 1.36** (`engine/proto` → `engine/gen/ebpfsoc/v1`) | Five typed services — enrollment, heartbeat, telemetry, policy, command — with generated clients on both ends and streaming for telemetry. |
-| Transport auth | **mTLS** (`engine/internal/mtls`) | Mutual agent ↔ control-plane authentication; an agent identity can't be spoofed by holding only a bearer token. |
-| Command integrity | **Ed25519** (`engine/internal/signing`) | "Signed-everything-downstream": the fleet service signs commands and policy bundles; agents hold only the public key, so a compromised channel can't forge a `sever`. |
-| Identity / SSO | **Keycloak 26** + **OIDC** (`coreos/go-oidc/v3`) | Multi-tenant realms, RBAC, and token lifecycle for the MSSP model — no hand-rolled auth. |
-| Edge store | **SQLite (WAL)** via `modernc.org/sqlite` | Pure-Go, cgo-free — the reason the gateway can be one static binary. One file per gateway; survives control-plane loss. |
-| Central store | **PostgreSQL 16** (`pgx/v5`) | Relational, transactional system-of-record for tenants, fleets, devices, policies. |
-| Analytics store | **ClickHouse 24.8** (`clickhouse-go/v2`) | Kernel events arrive in the millions; columnar storage makes SOC aggregations and time-range queries fast where Postgres would not scale. |
-| Event bus | **NATS 2.10** (`nats.go` + embeddable `nats-server`) | Fan-out of telemetry/commands between services; embeddable, so single-process dev runs need no broker. |
-| Object storage | **SeaweedFS 3.73** | Blob/artifact store in the OSS compose stack. |
-| Observability | **OpenTelemetry** SDK + OTLP/HTTP metrics exporter | Vendor-neutral metrics; export to whatever the customer already runs. |
-| Console | **React 18 + TypeScript 5.7 + Vite 6** | SPA compiled to a static bundle; Vite for fast HMR during panel work. |
-| UI layer | **Tailwind 3.4**, **Radix UI** (dialog / dropdown / popover), **lucide-react**, **cmdk** | Accessible unstyled primitives + utility CSS instead of a heavyweight component framework — keeps the bundle small enough to embed. |
-| Client state & viz | **Zustand 5**, **D3 7**, **@tanstack/react-virtual** | Minimal store (no Redux boilerplate); custom D3 charts; virtualization so multi-thousand-row event tables stay smooth. |
-| Reporting | **jsPDF + jspdf-autotable** | Client-side SOC report export — no server-side render service. |
-| Offline / install | **vite-plugin-pwa** | Installable console. |
-| Bundle delivery | **`go:embed`** | The React build is compiled *into* the Go binary — zero Node runtime and no external web server in production. |
-| Testing | **Vitest 2** + Testing Library + jsdom; **Playwright 1.49** e2e; Go `testing` | Unit coverage on both sides plus real-browser E2E against the deployed stack. |
-| Edge / TLS | **nginx** (`deploy/nginx/`) | TLS termination and reverse proxy in front of the control plane. |
-| Packaging & runtime | **Docker + docker-compose**, **systemd** units, **OrbStack** for the local mirror | Compose for the OSS stack; systemd for bare-metal gateways; OrbStack mirrors prod locally on macOS. |
-| Infrastructure-as-code | **Terraform** (`hashicorp/kubernetes`, `hashicorp/helm`) | Repeatable multi-tenant cluster provisioning. |
-| Build & CI | **GNU Make**, **clang/LLVM**, **GitHub Actions** | One `make` entry point for BPF objects, Go cross-builds, tarballs and deploys. |
+The **Where it lives** column is the first file to open when you need to touch
+that technology — the wrapper package for a library, or the config that stands
+up an external service.
+
+| Layer | Technology | Where it lives | Why it was chosen |
+| --- | --- | --- | --- |
+| Kernel telemetry | **Tetragon v1.6.1** (`quay.io/cilium/tetragon`) + `cilium/tetragon/api` Go client | `engine/cmd/engine/main.go`, `engine/cmd/agent/main.go` (gRPC stream consumers) | Ships pre-written, CO-RE eBPF programs, a declarative policy language (TracingPolicy YAML), stable `exec_id` process-tree tracking, and a gRPC event stream. [build-plan.md](../development/build-plan.md) records the call explicitly: writing libbpf+C from scratch would have added ~2 weeks. |
+| Kernel enforcement | **Hand-written eBPF C** compiled with `clang -target bpf`, loaded via **`cilium/ebpf` v0.21.0** | `engine/internal/enforce/bpfmap/` (PID plane), `engine/internal/enforce/devbpf/` (device plane); loaders in `cilium_linux.go`, C in `bpf/` | Tetragon can detect and `Sigkill`, but cannot do per-PID token buckets or MAC-keyed shaping of *forwarded* traffic. Those two data planes had to be custom. `cilium/ebpf` is a pure-Go loader — no libbpf at runtime, so the binary stays static. |
+| Non-BPF enforcement | **cgroup v2** (`cpu.max`, freezer), **seccomp**, `SIGKILL` | `engine/internal/enforce/cgroupv2/`, `engine/internal/enforce/seccomp/`, `engine/internal/enforce/severer.go` | Gives the rungs eBPF can't express: CPU throttling (5% / 1%), full process freeze (quarantine), and syscall denial — the ladder below `sever`. |
+| Engine / agent / control plane | **Go 1.25** | `engine/go.mod`; five binaries under `engine/cmd/` (`engine`, `agent`, `controlplane`, `simagent`, `socbackup`) | Single statically-linked binary per role, trivial cross-compile to `linux/amd64` + `arm64`, and Tetragon's first-class Go bindings. |
+| Wire protocol | **gRPC 1.80 + Protobuf 1.36** | `engine/proto/` (`.proto` sources) → `engine/gen/ebpfsoc/v1/` (generated) | Five typed services — enrollment, heartbeat, telemetry, policy, command — with generated clients on both ends and streaming for telemetry. |
+| Transport auth | **mTLS** | `engine/internal/mtls/` | Mutual agent ↔ control-plane authentication; an agent identity can't be spoofed by holding only a bearer token. |
+| Command integrity | **Ed25519** | `engine/internal/signing/` | "Signed-everything-downstream": the fleet service signs commands and policy bundles; agents hold only the public key, so a compromised channel can't forge a `sever`. |
+| Identity / SSO | **Keycloak 26** + **OIDC** (`coreos/go-oidc/v3`) | `engine/internal/identity/` (OIDC + Keycloak client), `engine/internal/authz/` (RBAC); container in `deploy/docker-compose.oss.yml` | Multi-tenant realms, RBAC, and token lifecycle for the MSSP model — no hand-rolled auth. |
+| Edge store | **SQLite (WAL)** via `modernc.org/sqlite` | `engine/internal/store/sqlite.go` | Pure-Go, cgo-free — the reason the gateway can be one static binary. One file per gateway; survives control-plane loss. |
+| Central store | **PostgreSQL 16** (`pgx/v5`) | `engine/internal/centralstore/postgres.go`; schema in `scripts/migrations/postgres/` | Relational, transactional system-of-record for tenants, fleets, devices, policies. |
+| Analytics store | **ClickHouse 24.8** (`clickhouse-go/v2`) | `engine/internal/centralstore/clickhouse.go`; schema in `scripts/migrations/clickhouse/` | Kernel events arrive in the millions; columnar storage makes SOC aggregations and time-range queries fast where Postgres would not scale. |
+| Event bus | **NATS 2.10** (`nats.go` + embeddable `nats-server`) | `engine/internal/bus/` (interface), `engine/internal/bus/natsbus/` (impl) | Fan-out of telemetry/commands between services; embeddable, so single-process dev runs need no broker. |
+| Object storage | **SeaweedFS 3.73** | `deploy/docker-compose.oss.yml` | Blob/artifact store in the OSS compose stack. |
+| Observability | **OpenTelemetry** SDK + OTLP/HTTP metrics exporter | `engine/internal/metrics/metrics.go` | Vendor-neutral metrics; export to whatever the customer already runs. |
+| Console | **React 18 + TypeScript 5.7 + Vite 6** | `web/src/` (`entries/`, `features/`, `components/`); build config `web/vite.config.ts` | SPA compiled to a static bundle; Vite for fast HMR during panel work. |
+| UI layer | **Tailwind 3.4**, **Radix UI** (dialog / dropdown / popover), **lucide-react**, **cmdk** | `web/tailwind.config.ts`, `web/postcss.config.cjs`, `web/src/styles.css`; usage in `web/src/features/` | Accessible unstyled primitives + utility CSS instead of a heavyweight component framework — keeps the bundle small enough to embed. |
+| Client state & viz | **Zustand 5**, **D3 7**, **@tanstack/react-virtual** | `web/src/stores/stream.ts` (store), `web/src/features/soc/SocRoute.tsx` (D3 charts), `web/src/components/VirtualList.tsx` | Minimal store (no Redux boilerplate); custom D3 charts; virtualization so multi-thousand-row event tables stay smooth. |
+| Reporting | **jsPDF + jspdf-autotable** | `web/src/features/soc/SocRoute.tsx` | Client-side SOC report export — no server-side render service. |
+| Offline / install | **vite-plugin-pwa** | `web/vite.config.ts` | Installable console. |
+| Bundle delivery | **`go:embed`** | `engine/internal/api/web_embed.go` (`//go:embed all:web`) | The React build is compiled *into* the Go binary — zero Node runtime and no external web server in production. |
+| Testing | **Vitest 2** + Testing Library + jsdom; **Playwright 1.49** e2e; Go `testing` | `web/src/test/` + `web/vitest.config.ts`; `web/e2e/` + `web/playwright.config.ts`; `*_test.go` beside each Go package | Unit coverage on both sides plus real-browser E2E against the deployed stack. |
+| Edge / TLS | **nginx** | `deploy/nginx/ebpf-engine.conf` | TLS termination and reverse proxy in front of the control plane. |
+| Packaging & runtime | **Docker + docker-compose**, **systemd** units, **OrbStack** for the local mirror | `deploy/docker-compose.oss.yml`, `deploy/controlplane.Dockerfile`, `deploy/*.service`, `scripts/deploy/*-orbstack.sh` | Compose for the OSS stack; systemd for bare-metal gateways; OrbStack mirrors prod locally on macOS. |
+| Infrastructure-as-code | **Terraform** (`hashicorp/kubernetes`, `hashicorp/helm`) | `deploy/terraform/` | Repeatable multi-tenant cluster provisioning. |
+| Build & CI | **GNU Make**, **clang/LLVM**, **GitHub Actions** | `Makefile` (root), `.github/workflows/ci.yml` | One `make` entry point for BPF objects, Go cross-builds, tarballs and deploys. |
 
 ---
 
