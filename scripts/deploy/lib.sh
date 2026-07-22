@@ -109,7 +109,37 @@ systemctl daemon-reload"
 provision_engine() {
   require_driver
   [[ -f "$BUILD_DIR/engine" ]] || build_binaries engine
-  [[ -n "$ENGINE_PASS" ]] || ENGINE_PASS="$(gen_engine_password)"
+
+  # Credential stability: reuse the password already on the host instead of
+  # minting a new one every deploy. Rotating on each run invalidates whatever the
+  # operator last wrote down, which makes frequent redeploys painful. Rotation is
+  # still available on demand — delete /etc/ebpf-engine/engine.yaml (or pass
+  # ENGINE_PASS=…) and the next deploy generates a fresh one.
+  if [[ -z "$ENGINE_PASS" ]]; then
+    ENGINE_PASS="$(RUN "sed -n \"s/^pass: '\\(.*\\)'\$/\\1/p\" /etc/ebpf-engine/engine.yaml 2>/dev/null | tail -1" 2>/dev/null || true)"
+    [[ -n "$ENGINE_PASS" ]] && log "reusing the existing engine password (redeploy)" \
+                            || ENGINE_PASS="$(gen_engine_password)"
+  fi
+
+  # Graceful degrade, mirroring the agent's contract: tetragon mode needs a
+  # kernel >= 5.15 WITH BTF. Probe the target and fall back to -fake rather than
+  # failing the deploy, so the same command works on a host that cannot carry
+  # eBPF (an older VM, a restricted cloud kernel) — it just detects less.
+  if [[ "$ENGINE_MODE" == tetragon ]]; then
+    local kcap
+    kcap="$(RUN 'rel=$(uname -r); maj=${rel%%.*}; min=${rel#*.}; min=${min%%.*}
+      if [ -f /sys/kernel/btf/vmlinux ] && { [ "$maj" -gt 5 ] || { [ "$maj" -eq 5 ] && [ "$min" -ge 15 ]; }; }; then
+        echo ok
+      else
+        echo "no kernel=$rel btf=$([ -f /sys/kernel/btf/vmlinux ] && echo yes || echo no)"
+      fi' 2>/dev/null | tr -d '\r')"
+    if [[ "$kcap" != ok ]]; then
+      warn "target cannot run Tetragon ($kcap) — falling back to -fake (synthesised events, no kernel detection)"
+      ENGINE_MODE=fake
+    else
+      log "target supports real eBPF (kernel >= 5.15 + BTF)"
+    fi
+  fi
 
   log "installing packages"
   if [[ "$ENGINE_MODE" == tetragon ]]; then PKG ca-certificates curl; RUN "command -v docker >/dev/null || (curl -fsSL https://get.docker.com | sh)"; fi
@@ -120,13 +150,39 @@ provision_engine() {
 
   if [[ "$ENGINE_MODE" == tetragon ]]; then
     log "starting Tetragon ($TETRAGON_IMAGE)"
+    # --server-address is REQUIRED: Tetragon defaults to a TCP listener
+    # (localhost:54321) and never creates a unix socket, but the engine is
+    # configured below to dial unix:///var/run/tetragon/tetragon.sock. Without
+    # this flag the socket never appears and the engine can't subscribe.
     RUN "docker rm -f tetragon >/dev/null 2>&1 || true
       docker run -d --name tetragon --restart unless-stopped --privileged --pid=host \
         -v /sys/kernel:/sys/kernel -v /var/run/tetragon:/var/run/tetragon \
-        $TETRAGON_IMAGE >/dev/null"
+        $TETRAGON_IMAGE --server-address unix:///var/run/tetragon/tetragon.sock >/dev/null"
     # ship policies + attacks for real detection
     RUN "mkdir -p /var/lib/ebpf-engine/policies /var/lib/ebpf-engine/attacks"
     tar -C "$REPO_ROOT" -cf - policies attacks 2>/dev/null | RUN "tar -C /var/lib/ebpf-engine -xf - 2>/dev/null || true"
+
+    # Tetragon needs a moment to attach its BPF programs and open the gRPC socket;
+    # the engine fails to subscribe if it starts first.
+    log "waiting for the Tetragon socket"
+    RUN "for i in \$(seq 1 40); do [ -S /var/run/tetragon/tetragon.sock ] && break; sleep 3; done
+      [ -S /var/run/tetragon/tetragon.sock ] || { echo 'tetragon socket never appeared:'; docker logs --tail 30 tetragon 2>&1; exit 1; }" \
+      || die "Tetragon did not start — this host may not permit privileged BPF (check: docker logs tetragon)"
+
+    # Load the TracingPolicies. Without these Tetragon only emits bare execve
+    # events: no setuid/sensitive-file/network kprobes, so the scorer never sees
+    # the signals it grades and /api/policy-stats has nothing to report.
+    log "applying TracingPolicies (detection + enforcement)"
+    RUN "applied=0
+      for p in /var/lib/ebpf-engine/policies/*.yaml /var/lib/ebpf-engine/policies/enforce/*.yaml; do
+        [ -f \"\$p\" ] || continue
+        docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || continue
+        if docker exec tetragon tetra tracingpolicy add \"/tmp/\$(basename \"\$p\")\" >/dev/null 2>&1; then
+          applied=\$((applied+1))
+        fi
+      done
+      echo \"  \$applied TracingPolicy file(s) loaded\"
+      docker exec tetragon tetra tracingpolicy list 2>/dev/null | head -12 || true"
   fi
 
   # The password goes in a mode-0600 config file, never on the command line:
@@ -150,19 +206,58 @@ YAML"
   local fakeflag=""; [[ "$ENGINE_MODE" == fake ]] && fakeflag="-fake"
   _systemd_unit ebpf-engine "eBPF SOC engine (single-tenant)" \
     "/usr/local/bin/ebpf-engine -config /etc/ebpf-engine/engine.yaml $fakeflag -login-rate $LOGIN_RATE"
-  RUN "systemctl enable --now ebpf-engine >/dev/null 2>&1; sleep 3"
+  # restart, not `enable --now`: the latter no-ops when the service is already
+  # running, so a redeploy would keep the OLD process alive — still in -fake mode,
+  # still holding the previous password — while the unit file and engine.yaml on
+  # disk describe the new config. Every credential/mode change needs a restart.
+  RUN "systemctl enable ebpf-engine >/dev/null 2>&1; systemctl restart ebpf-engine; sleep 3"
 
   local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost:$ENGINE_PORT/login" || true)"
   [[ "$code" == 200 ]] && ok "engine live at http://$TARGET_HOST:$ENGINE_PORT/ (login $ENGINE_USER / $ENGINE_PASS)" \
                        || die "engine did not come up (HTTP $code); check: systemctl status ebpf-engine"
 }
 
+# console_password <username> — the STABLE password for a console user.
+#
+# Keycloak hashes passwords, so there is nothing to read back once a user exists;
+# without a record of our own, every deploy would have to invent a new one and
+# silently invalidate the operator's credentials. This keeps a 0600 record on the
+# host and reuses it. Prints ONLY the password (callers capture stdout), so any
+# diagnostics here must go to stderr.
+#
+# To rotate: delete the user's line from /etc/ebpf-soc/console-users.env (or the
+# whole file) and redeploy.
+console_password() {
+  local user="$1" key pw
+  key="USER_$(printf '%s' "$user" | tr -c 'A-Za-z0-9' '_')"
+  pw="$(RUN "grep -h '^$key=' /etc/ebpf-soc/console-users.env 2>/dev/null | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
+  pw="${pw//[$'\r\n']/}"
+  if [[ -z "$pw" ]]; then
+    pw="$(gen_engine_password)"
+    RUN "umask 077; mkdir -p /etc/ebpf-soc; touch /etc/ebpf-soc/console-users.env
+      sed -i '/^$key=/d' /etc/ebpf-soc/console-users.env
+      printf '%s=%s\n' '$key' '$pw' >> /etc/ebpf-soc/console-users.env" >/dev/null 2>&1
+  fi
+  printf '%s' "$pw"
+}
+
 # ─── multi-tenant: the control plane ────────────────────────────────────────
 provision_controlplane() {
   require_driver
   [[ -f "$BUILD_DIR/controlplane" ]] || build_binaries controlplane
-  [[ -n "$PG_PASS" ]]         || PG_PASS="$(gen_secret 24)"
-  [[ -n "$CP_ADMIN_TOKEN" ]]  || CP_ADMIN_TOKEN="$(gen_token)"
+  # Credential stability (same rationale as the engine): reuse what is already on
+  # the host so a redeploy never invalidates credentials the operator is using.
+  # Both live in /etc/ebpf-soc/controlplane.env, written 0600 further down.
+  if [[ -z "$PG_PASS" ]]; then
+    PG_PASS="$(RUN "grep -oE 'postgres://postgres:[^@]*' /etc/ebpf-soc/controlplane.env 2>/dev/null | head -1 | sed 's|postgres://postgres:||'" 2>/dev/null || true)"
+    [[ -n "$PG_PASS" ]] && log "reusing the existing Postgres password (redeploy)" \
+                        || PG_PASS="$(gen_secret 24)"
+  fi
+  if [[ -z "$CP_ADMIN_TOKEN" ]]; then
+    CP_ADMIN_TOKEN="$(RUN "grep -h '^CP_ADMIN_TOKEN=' /etc/ebpf-soc/controlplane.env 2>/dev/null | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
+    [[ -n "$CP_ADMIN_TOKEN" ]] && log "reusing the existing control-plane admin token (redeploy)" \
+                               || CP_ADMIN_TOKEN="$(gen_token)"
+  fi
   # Keycloak's admin is created ONLY on first start (start-dev persists it in H2),
   # so KC_BOOTSTRAP_ADMIN_PASSWORD is ignored on every later boot. Regenerating it
   # on a redeploy would leave kcadm unable to authenticate against the persisted
@@ -172,6 +267,23 @@ provision_controlplane() {
   KC_ADMIN_PASS="$(RUN "grep -h '^KC_BOOTSTRAP_ADMIN_PASSWORD=' /etc/ebpf-soc/keycloak.env 2>/dev/null | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
   [[ -n "$KC_ADMIN_PASS" ]] && log "reusing the existing Keycloak admin password (redeploy)" \
                             || KC_ADMIN_PASS="$(gen_engine_password)"
+
+  # Permanent admin. Keycloak's env-bootstrapped admin is flagged "temporary"
+  # (the console nags to replace it). We create a real one — ebpf-admin — and
+  # delete the temporary one at the end. Its password is persisted + reused like
+  # the bootstrap one, so kcadm keeps authenticating on redeploys AFTER the temp
+  # admin is gone. Alphanumeric so it never needs shell-escaping in kcadm calls.
+  local PERM_ADMIN_USER="ebpf-admin"
+  local PERM_ADMIN_PW
+  PERM_ADMIN_PW="$(RUN "grep -h '^KC_PERM_ADMIN_PASSWORD=' /etc/ebpf-soc/keycloak-admin.env 2>/dev/null | tail -1 | cut -d= -f2-" 2>/dev/null || true)"
+  [[ -n "$PERM_ADMIN_PW" ]] && log "reusing the existing permanent-admin password (redeploy)" \
+                            || PERM_ADMIN_PW="Ebpf$(gen_secret 22)Zz9"
+
+  # kcadm login that PREFERS the permanent admin and falls back to the bootstrap
+  # admin (first deploy, before ebpf-admin exists). Substituted into every kcadm
+  # block below so none of them depend on the temporary admin surviving.
+  local KC_CFG="/opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user '$PERM_ADMIN_USER' --password '$PERM_ADMIN_PW' >/dev/null 2>&1 || /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1"
+
   local issuer="http://$TARGET_HOST:$KC_PORT/realms/ebpf-soc"
   local redirect="http://$TARGET_HOST/auth/callback"
 
@@ -195,8 +307,32 @@ KC_HTTP_ENABLED=true
 KC_HOSTNAME_STRICT=false
 KC_HEALTH_ENABLED=true
 EOF"
+  # Persist the permanent-admin password (0600) so redeploys reuse it.
+  RUN "umask 077; cat > /etc/ebpf-soc/keycloak-admin.env <<EOF
+KC_PERM_ADMIN_USER=$PERM_ADMIN_USER
+KC_PERM_ADMIN_PASSWORD=$PERM_ADMIN_PW
+EOF"
+
+  # Install the eBPF-SOC themes BEFORE Keycloak starts, so they're discovered at
+  # boot (Keycloak scans themes once, at startup). Properties/CSS only — no
+  # FreeMarker overrides — so they survive Keycloak upgrades:
+  #
+  #   ebpf-soc/login        the SOC console sign-in (accent "SOC CONSOLE" pill)
+  #   ebpf-soc/admin        rebrands the LOGGED-IN admin console (masthead logo,
+  #                         favicon, tab title) — a different theme type
+  #   ebpf-soc-admin/login  master-realm sign-in; inherits ebpf-soc and only
+  #                         flips the pill to an amber "PLATFORM ADMIN"
+  #
+  # COPYFILE_DISABLE keeps macOS AppleDouble (._*) sidecar files out of the tar.
+  log "installing the eBPF-SOC Keycloak themes (login + admin)"
+  COPYFILE_DISABLE=1 tar -C "$DEPLOY_LIB_DIR/keycloak-theme" -cf - ebpf-soc ebpf-soc-admin 2>/dev/null | \
+    RUN "rm -rf /opt/keycloak/themes/ebpf-soc /opt/keycloak/themes/ebpf-soc-admin; mkdir -p /opt/keycloak/themes; tar -C /opt/keycloak/themes -xf - 2>/dev/null; find /opt/keycloak/themes -name '._*' -delete 2>/dev/null; true"
+
   _systemd_unit ebpf-keycloak "Keycloak (ebpf-soc SSO)" "/opt/keycloak/bin/kc.sh start-dev" "" /etc/ebpf-soc/keycloak.env
-  RUN "systemctl enable --now ebpf-keycloak >/dev/null 2>&1"
+  # Always (re)start so a newly-installed/updated theme is discovered — Keycloak
+  # scans themes at boot. start-dev disables theme caching, so this is the only
+  # restart the theme needs.
+  RUN "systemctl enable ebpf-keycloak >/dev/null 2>&1; systemctl restart ebpf-keycloak"
   log "waiting for Keycloak"
   RUN "for i in \$(seq 1 40); do curl -fsS http://localhost:$KC_PORT/realms/master >/dev/null 2>&1 && break; sleep 6; done"
 
@@ -207,20 +343,53 @@ EOF"
   # below fails. Prove auth works; if it does not, reset Keycloak's local store so
   # it re-bootstraps with the current env password. The realm/client/users are
   # fully re-declared just below, so a reset loses nothing this script owns.
-  if ! RUN "/opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1"; then
-    warn "Keycloak admin auth failed — resetting the local store to re-bootstrap with the current password"
+  # Auth must succeed as EITHER the permanent admin (redeploys) or the bootstrap
+  # admin (first deploy). Only if BOTH fail is the store genuinely wedged — then
+  # reset so it re-bootstraps. Using KC_CFG (not just the bootstrap admin) is what
+  # keeps a redeploy from wiping everything once the temp admin has been removed.
+  if ! RUN "$KC_CFG"; then
+    warn "Keycloak admin auth failed (both permanent and bootstrap) — resetting the local store to re-bootstrap"
     RUN "systemctl stop ebpf-keycloak; rm -rf /opt/keycloak/data/h2; systemctl start ebpf-keycloak"
     RUN "for i in \$(seq 1 40); do curl -fsS http://localhost:$KC_PORT/realms/master >/dev/null 2>&1 && break; sleep 6; done"
   fi
+
+  # Ensure the permanent admin exists (idempotent): create if missing, (re)set its
+  # persisted password, grant the master 'admin' role. After this, kcadm can rely
+  # on ebpf-admin and the temporary bootstrap admin can be removed at the end.
+  log "ensuring the permanent Keycloak admin ($PERM_ADMIN_USER)"
+  RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
+    $KC_CFG || { echo 'kcadm auth failed'; exit 1; }
+    uid(){ K get users -r master -q username=\"\$1\" -q exact=true --fields id --format csv --noquotes 2>/dev/null | tail -1; }
+    if [ -z \"\$(uid $PERM_ADMIN_USER)\" ]; then
+      K create users -r master -s username=$PERM_ADMIN_USER -s enabled=true -s email=$PERM_ADMIN_USER@local -s emailVerified=true -s firstName=eBPF -s lastName=Admin >/dev/null 2>&1 || true
+    fi
+    K set-password -r master --username $PERM_ADMIN_USER --new-password '$PERM_ADMIN_PW' >/dev/null 2>&1
+    K add-roles -r master --uusername $PERM_ADMIN_USER --rolename admin >/dev/null 2>&1"
 
   # Realm, client, roles, tenant mapper, users, password policy
   log "configuring realm ebpf-soc"
   local first_tenant; first_tenant="$(echo $TENANTS | awk '{print $1}')"
   local CP_SECRET
   CP_SECRET="$(RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
-    K config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1
+    { $KC_CFG; }
     K create realms -s realm=ebpf-soc -s enabled=true -s sslRequired=NONE -s 'passwordPolicy=$PASSWORD_POLICY' >/dev/null 2>&1 || true
     K update users/profile -r ebpf-soc -s 'unmanagedAttributePolicy=ENABLED' >/dev/null 2>&1 || true
+    # Brand all three themeable surfaces (login / admin console / account console).
+    # displayName drives the login tab title (\"Sign in to {displayName}\") AND the
+    # label above the realm name in the admin realm-selector — that is where the
+    # stock \"Keycloak\" text comes from. displayNameHtml is cleared because master
+    # ships the Keycloak logo markup in it.
+    K update realms/ebpf-soc -s loginTheme=ebpf-soc -s accountTheme=ebpf-soc \
+      -s 'displayName=eBPF SOC' -s 'displayNameHtml=' >/dev/null 2>&1 || true
+    K update realms/master   -s loginTheme=ebpf-soc-admin -s adminTheme=ebpf-soc -s accountTheme=ebpf-soc \
+      -s 'displayName=eBPF SOC Platform Admin' -s 'displayNameHtml=' >/dev/null 2>&1 || true
+    # sslRequired must be applied by UPDATE, not just at realm-create: the create
+    # above is skipped on every redeploy, and master (which we never create) ships
+    # with 'external' — i.e. HTTPS demanded for any non-localhost request. These
+    # scripts bring the stack up on plain HTTP, so external breaks browser access
+    # by IP. Put TLS in front for production and set this back to EXTERNAL.
+    K update realms/ebpf-soc -s sslRequired=NONE >/dev/null 2>&1 || true
+    K update realms/master   -s sslRequired=NONE >/dev/null 2>&1 || true
     K create roles -r ebpf-soc -s name=tenant-analyst >/dev/null 2>&1 || true
     K create roles -r ebpf-soc -s name=msoc-admin >/dev/null 2>&1 || true
     CID=\$(K create clients -r ebpf-soc -s clientId=console-bff -s enabled=true -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=true -s directAccessGrantsEnabled=true -s 'redirectUris=[\"$redirect\",\"http://$TARGET_HOST/*\"]' -s 'webOrigins=[\"http://$TARGET_HOST\"]' -i 2>/dev/null || K get clients -r ebpf-soc -q clientId=console-bff --fields id --format csv | tail -1 | tr -d '\"')
@@ -230,21 +399,31 @@ EOF"
   # one operator per tenant + one cross-tenant msoc-admin
   local userlist=""
   for t in $TENANTS; do
-    local u; u="op-$(echo $t | cut -d- -f1)"; local pw; pw="$(gen_engine_password)"
+    local u; u="op-$(echo $t | cut -d- -f1)"; local pw; pw="$(console_password "$u")"
     RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
-      K config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1
+      { $KC_CFG; }
       K create users -r ebpf-soc -s username=$u -s enabled=true -s email=$u@local -s firstName=$u -s lastName=op -s emailVerified=true -s 'attributes.tenant=[\"$t\"]' >/dev/null 2>&1 || true
       K add-roles -r ebpf-soc --uusername $u --rolename tenant-analyst >/dev/null 2>&1
       K set-password -r ebpf-soc --username $u --new-password '$pw' >/dev/null 2>&1"
     userlist+="  $u / $pw   (tenant-analyst, $t)\n"
   done
-  local msoc_pw; msoc_pw="$(gen_engine_password)"
+  local msoc_pw; msoc_pw="$(console_password msoc)"
   RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
-    K config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1
+    { $KC_CFG; }
     K create users -r ebpf-soc -s username=msoc -s enabled=true -s email=msoc@local -s firstName=msoc -s lastName=admin -s emailVerified=true -s 'attributes.tenant=[\"$first_tenant\"]' >/dev/null 2>&1 || true
     K add-roles -r ebpf-soc --uusername msoc --rolename msoc-admin >/dev/null 2>&1
     K set-password -r ebpf-soc --username msoc --new-password '$msoc_pw' >/dev/null 2>&1"
   userlist+="  msoc / $msoc_pw   (msoc-admin, cross-tenant)\n"
+
+  # Remove Keycloak's temporary bootstrap admin now that the permanent ebpf-admin
+  # is in place and proven (the console's "temporary admin" warning goes away).
+  # EXACT username match — an infix search on "admin" also matches "ebpf-admin",
+  # so a loose query + tail would delete the wrong account.
+  log "removing Keycloak's temporary bootstrap admin"
+  RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
+    /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user '$PERM_ADMIN_USER' --password '$PERM_ADMIN_PW' >/dev/null 2>&1 || { echo 'permanent admin auth failed — keeping temp admin'; exit 0; }
+    AID=\$(K get users -r master -q username=admin -q exact=true --fields id --format csv --noquotes 2>/dev/null | tail -1)
+    [ -n \"\$AID\" ] && K delete users/\$AID -r master >/dev/null 2>&1 && echo 'temp admin removed' || echo 'no temp admin present'"
 
   # Control plane
   log "installing control plane"
@@ -262,12 +441,24 @@ EOF"
   _systemd_unit ebpf-soc-controlplane "ebpf-soc control plane (multi-tenant)" \
     "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 127.0.0.1:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub" \
     "postgresql.service ebpf-keycloak.service" /etc/ebpf-soc/controlplane.env
-  RUN "systemctl enable --now ebpf-soc-controlplane >/dev/null 2>&1; sleep 3; chmod 0644 /var/lib/ebpf-soc/fleet.pub 2>/dev/null || true"
+  # MUST be restart, not `enable --now`: the latter is a no-op when the service is
+  # already running, so a redeploy would leave the control plane holding the OLD
+  # Postgres password (PG_PASS is rotated above) while its env file has the new
+  # one. Already-pooled connections keep working, but every NEW connection fails
+  # auth — producing intermittent 500 "query failed" on the SOC read endpoints.
+  RUN "systemctl enable ebpf-soc-controlplane >/dev/null 2>&1; systemctl restart ebpf-soc-controlplane; sleep 3; chmod 0644 /var/lib/ebpf-soc/fleet.pub 2>/dev/null || true"
 
   # nginx: serve the console dist + proxy /api,/auth to the CP
   log "installing console frontend + nginx"
   RUN "mkdir -p /var/www/console"
   put_dir "$REPO_ROOT/web/dist" /var/www/console
+  # The console HTML links /favicon.svg, but Vite never emits one: in the
+  # single-tenant build the ENGINE serves it from a go:embed handler. Here nginx
+  # serves the SPA statically, so without these files the request falls through
+  # try_files to index.html and the browser gets HTML instead of an icon (no
+  # favicon at all). Ship the engine's embedded icons alongside the bundle.
+  PUT "$REPO_ROOT/engine/internal/api/favicon.svg"       /var/www/console/favicon.svg
+  PUT "$REPO_ROOT/engine/internal/api/favicon-light.svg" /var/www/console/favicon-light.svg
   RUN "cat > /etc/nginx/sites-available/console <<'NGINX'
 server {
     listen 80 default_server;
@@ -297,17 +488,20 @@ NGINX
     _systemd_unit "ebpf-$label" "ebpf-soc sim-agent ($t)" \
       "/usr/local/bin/ebpf-simagent -cp-http http://127.0.0.1:$CP_HTTP_PORT -cp-grpc 127.0.0.1:9443 -server-name localhost -admin-token $CP_ADMIN_TOKEN -tenant $t -state-dir /var/lib/ebpf-$label -label $label -fleet-pubkey /var/lib/ebpf-soc/fleet.pub" \
       "ebpf-soc-controlplane.service"
-    RUN "systemctl enable --now ebpf-$label >/dev/null 2>&1"
+    # restart, not `enable --now`: the unit's ExecStart embeds CP_ADMIN_TOKEN,
+    # which is regenerated every deploy. Without a restart the running sim-agent
+    # keeps presenting the old token and its uplink is rejected.
+    RUN "systemctl enable ebpf-$label >/dev/null 2>&1; systemctl restart ebpf-$label"
   done
   RUN "sleep 8"
 
   local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost/" || true)"
   echo
   ok "control plane live at  http://$TARGET_HOST/   (console HTTP $code)"
-  echo "  Keycloak admin:  http://$TARGET_HOST:$KC_PORT/admin/  (admin / $KC_ADMIN_PASS)"
+  echo "  Keycloak admin:  http://$TARGET_HOST:$KC_PORT/admin/  ($PERM_ADMIN_USER / $PERM_ADMIN_PW)"
   printf "  Console logins:\n%b" "$userlist"
   dim "credentials also written to $BUILD_DIR/credentials-$TARGET_HOST.txt"
-  { echo "# ebpf-soc multi-tenant — $TARGET_HOST — $(date)"; echo "Keycloak admin: admin / $KC_ADMIN_PASS"; printf "%b" "$userlist"; echo "postgres: postgres / $PG_PASS"; echo "cp admin token: $CP_ADMIN_TOKEN"; echo "console-bff secret: $CP_SECRET"; } > "$BUILD_DIR/credentials-$TARGET_HOST.txt"
+  { echo "# ebpf-soc multi-tenant — $TARGET_HOST — $(date)"; echo "Keycloak admin: $PERM_ADMIN_USER / $PERM_ADMIN_PW"; printf "%b" "$userlist"; echo "postgres: postgres / $PG_PASS"; echo "cp admin token: $CP_ADMIN_TOKEN"; echo "console-bff secret: $CP_SECRET"; } > "$BUILD_DIR/credentials-$TARGET_HOST.txt"
   chmod 0600 "$BUILD_DIR/credentials-$TARGET_HOST.txt"
 }
 

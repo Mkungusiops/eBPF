@@ -1,0 +1,357 @@
+/*
+ * ebpf-soc.css — reskin Keycloak's stock login to match the eBPF-SOC console.
+ *
+ * Every value here is lifted straight from the console's design tokens
+ * (web/src/styles.css :root / theme-dark) so the Keycloak login is visually
+ * indistinguishable from the app the operator lands in afterwards:
+ *
+ *   surface  #0a0c10   panel #12161f   text #e6eaf1   muted #9ba7b8
+ *   accent   #6e8bff   (buttons/focus)      brand cyan #22d3ee (hex mark)
+ *   danger   #f2576b   font Inter           card = subtle ring + soft glow
+ *
+ * Loaded after the base css/login.css, so these rules win. PatternFly is heavy
+ * on specificity, hence the targeted !important on the properties the base
+ * theme sets inline-strong.
+ */
+
+:root {
+  --ebpf-surface: #0a0c10;
+  --ebpf-panel: #12161f;
+  --ebpf-row: #1a1f2b;
+  --ebpf-input: #0e1220;
+  --ebpf-text: #e6eaf1;
+  --ebpf-muted: #9ba7b8;
+  --ebpf-dim: #5c6675;
+  --ebpf-accent: #6e8bff;
+  --ebpf-accent-strong: #5b78f0;
+  --ebpf-brand: #22d3ee;
+  --ebpf-danger: #f2576b;
+  --ebpf-border: rgba(255, 255, 255, 0.10);
+  --ebpf-font: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+
+  /* Context pill — which plane you are signing into. Overridden by the thin
+   * per-realm child theme (ebpf-soc-admin) so one stylesheet serves both. */
+  --ebpf-context: "SOC Console";
+  --ebpf-context-fg: #6e8bff;
+  --ebpf-context-bg: rgba(110, 139, 255, 0.10);
+  --ebpf-context-bd: rgba(110, 139, 255, 0.25);
+}
+
+/* ── Page background ──────────────────────────────────────────────────────
+ * Kill the stock PatternFly geometric photo and replace it with the console's
+ * near-black surface plus the same faint accent glow.
+ * NOTE: <body> carries NO class on this template — the container is
+ * div.login-pf-page — so the gradients go on html/body, not body.login-pf-page. */
+html.login-pf,
+body,
+.login-pf-page {
+  background-color: var(--ebpf-surface) !important;
+}
+html.login-pf {
+  background-image:
+    radial-gradient(circle at 100% 0%, rgba(110, 139, 255, 0.07), transparent 38rem),
+    radial-gradient(circle at 0% 100%, rgba(34, 211, 238, 0.05), transparent 34rem) !important;
+  background-repeat: no-repeat !important;
+  background-attachment: fixed !important;
+}
+body {
+  color: var(--ebpf-text);
+  font-family: var(--ebpf-font);
+  margin: 0;
+}
+
+/* ── Vertical centering ───────────────────────────────────────────────────
+ * Stock PatternFly pins the card near the top; the platform console centers it.
+ * Flex-column with justify-content:center centers the brand + card as a group.
+ * align-items is left at `stretch` on purpose so the children keep their
+ * Bootstrap grid widths (col-sm-offset-*) and horizontal centering is untouched. */
+.login-pf-page {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-top: 0 !important;
+  padding-bottom: 2rem;
+}
+
+/* ── Brand header ─────────────────────────────────────────────────────────
+ * The stock header prints the realm name ("Keycloak" / "EBPF-SOC"). Hide that
+ * text and render one consistent brand for every realm: the hexagon shield
+ * mark above an "eBPF SOC" wordmark, so master and ebpf-soc look identical. */
+#kc-header {
+  padding: 0;
+}
+#kc-header-wrapper {
+  font-size: 0;           /* hides the realm-name text node */
+  line-height: 0;
+  padding: 2.75rem 1rem 0.25rem;
+  color: transparent;
+  text-shadow: none;
+  background-image: none !important;
+}
+/* The master realm renders the stock Keycloak logo as a background-image on
+ * div.kc-logo-text; font-size:0 hides text but not that image. Remove it so
+ * only our brand shows, identically on every realm. */
+#kc-header-wrapper div.kc-logo-text,
+#kc-header-wrapper .kc-logo-text,
+#kc-header-wrapper img,
+.login-pf-brand {
+  display: none !important;
+}
+#kc-header-wrapper::before {
+  content: "";
+  display: block;
+  width: 54px;
+  height: 54px;
+  margin: 0 auto 0.75rem;
+  background: url("../img/brand.svg") center / contain no-repeat;
+}
+#kc-header-wrapper::after {
+  content: "eBPF SOC";
+  display: block;
+  font-family: var(--ebpf-font);
+  font-size: 1.35rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-align: center;
+  color: var(--ebpf-text);
+}
+
+/* ── Card ─────────────────────────────────────────────────────────────────
+ * The console's panel: dark, thin light border, rounded, accent ring + soft
+ * drop shadow (its --shadow-glow token). */
+.login-pf-page .card-pf {
+  background: var(--ebpf-panel) !important;
+  border: 1px solid var(--ebpf-border) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 0 0 1px rgba(110, 139, 255, 0.16), 0 20px 70px rgba(0, 0, 0, 0.32) !important;
+  padding: 2rem 2rem 2.25rem !important;
+  margin-top: 1.25rem;
+}
+
+/* Card title — the console badge + "Sign in" heading. A CSS-only accent pill
+ * is injected above the title to echo the app's "eBPF runtime security" chip. */
+#kc-page-title {
+  font-family: var(--ebpf-font);
+  color: var(--ebpf-text);
+  font-size: 1.5rem;
+  font-weight: 600;
+  margin: 0;
+}
+/* The context pill. Same shape as the console's "eBPF runtime security" chip,
+ * but its label + colour come from CSS variables so a per-realm child theme can
+ * say WHICH plane you are entering — SOC Console (accent) vs Platform Admin
+ * (amber) — without duplicating a single line of this stylesheet. */
+#kc-page-title::before {
+  content: var(--ebpf-context);
+  display: block;              /* own line, above the title (matches the console) */
+  width: max-content;
+  max-width: 100%;
+  margin-bottom: 0.85rem;
+  padding: 0.2rem 0.6rem;
+  border: 1px solid var(--ebpf-context-bd);
+  border-radius: 6px;
+  background: var(--ebpf-context-bg);
+  color: var(--ebpf-context-fg);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* ── Labels + helper text ─────────────────────────────────────────────────*/
+.pf-c-form__label,
+.pf-c-form__label-text,
+label {
+  color: var(--ebpf-text) !important;
+  font-family: var(--ebpf-font);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+#kc-form-options,
+.pf-c-form__helper-text,
+.kc-feedback-text,
+small,
+.instruction {
+  color: var(--ebpf-muted) !important;
+}
+
+/* ── Inputs ───────────────────────────────────────────────────────────────*/
+.pf-c-form-control,
+input[type="text"],
+input[type="password"],
+input[type="email"],
+input[type="number"] {
+  background: var(--ebpf-row) !important;   /* matches the console's bg-row inputs */
+  border: 1px solid var(--ebpf-border) !important;
+  border-radius: 8px !important;
+  color: var(--ebpf-text) !important;
+  font-family: var(--ebpf-font);
+  height: 2.6rem;
+  padding: 0 0.75rem;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.pf-c-form-control::placeholder { color: var(--ebpf-dim) !important; }
+.pf-c-form-control:hover { border-color: rgba(255, 255, 255, 0.18) !important; }
+.pf-c-form-control:focus,
+.pf-c-form-control:focus-visible {
+  border-color: var(--ebpf-accent) !important;
+  box-shadow: 0 0 0 3px rgba(110, 139, 255, 0.22) !important;
+  outline: none !important;
+}
+/* PatternFly draws the focus underline via a background-image; remove it. */
+.pf-c-form-control { --pf-c-form-control--BorderBottomColor: transparent; background-image: none !important; }
+
+/* Password field + its show/hide button share one rounded group. */
+.pf-c-input-group {
+  background: transparent !important;
+  border-radius: 8px;
+}
+.pf-c-input-group .pf-c-button.pf-m-control {
+  background: var(--ebpf-row) !important;
+  border: 1px solid var(--ebpf-border) !important;
+  border-left: 0 !important;
+  border-radius: 0 8px 8px 0 !important;
+  color: var(--ebpf-muted) !important;
+}
+.pf-c-input-group .pf-c-form-control { border-radius: 8px 0 0 8px !important; }
+.pf-c-input-group .pf-c-button.pf-m-control:hover { color: var(--ebpf-accent) !important; }
+
+/* ── Primary button ───────────────────────────────────────────────────────
+ * Matches the console's submit button exactly: <Button tone="info"> renders as
+ * bg-info/10 + border-info/30 + text-info, where --info is this same #6e8bff.
+ * Understated accent tint, not a bright solid — so it reads as one product. */
+.pf-c-button.pf-m-primary,
+input[type="submit"].pf-m-primary,
+#kc-login {
+  background: rgba(110, 139, 255, 0.10) !important;
+  border: 1px solid rgba(110, 139, 255, 0.30) !important;
+  border-radius: 8px !important;
+  color: var(--ebpf-accent) !important;
+  font-family: var(--ebpf-font);
+  font-weight: 600;
+  height: 2.7rem;
+  letter-spacing: 0.01em;
+  box-shadow: none !important;
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+.pf-c-button.pf-m-primary:hover,
+#kc-login:hover {
+  background: rgba(110, 139, 255, 0.18) !important;
+  border-color: rgba(110, 139, 255, 0.45) !important;
+  color: var(--ebpf-text) !important;
+}
+.pf-c-button.pf-m-primary:active,
+#kc-login:active { transform: translateY(1px); }
+
+/* Secondary / control buttons */
+.pf-c-button.pf-m-secondary {
+  background: transparent !important;
+  border: 1px solid var(--ebpf-border) !important;
+  color: var(--ebpf-text) !important;
+  border-radius: 8px !important;
+}
+
+/* ── Links ────────────────────────────────────────────────────────────────*/
+a,
+#kc-registration a,
+#kc-info-wrapper a,
+.pf-c-login__main-footer-links-item-link {
+  color: var(--ebpf-accent) !important;
+}
+a:hover { color: var(--ebpf-accent-strong) !important; }
+
+/* ── Alerts (errors / info) ───────────────────────────────────────────────*/
+.pf-c-alert.pf-m-danger,
+.alert-error,
+.pf-c-alert.pf-m-error {
+  background: rgba(242, 87, 107, 0.10) !important;
+  border: 1px solid rgba(242, 87, 107, 0.30) !important;
+  border-radius: 8px;
+  color: var(--ebpf-danger) !important;
+}
+.pf-c-alert.pf-m-success {
+  background: rgba(54, 199, 149, 0.10) !important;
+  border: 1px solid rgba(54, 199, 149, 0.30) !important;
+  border-radius: 8px;
+}
+.pf-c-alert__title, .kc-feedback-text { color: inherit !important; }
+
+/* ── Checkbox (Remember me) ───────────────────────────────────────────────*/
+.pf-c-check__input { accent-color: var(--ebpf-accent); }
+.pf-c-check__label { color: var(--ebpf-muted) !important; }
+
+/* ── Footer / locale ──────────────────────────────────────────────────────*/
+#kc-info,
+#kc-locale,
+.pf-c-login__main-footer { color: var(--ebpf-muted); }
+
+/* ── Light mode ───────────────────────────────────────────────────────────
+ * The console follows the OS colour scheme (web/src/lib/theme.ts has no manual
+ * toggle — prefers-color-scheme is the only input), so the login page in front
+ * of it must do the same or the hand-off flips colour mid-flow.
+ *
+ * Values are the console's own .theme-light tokens from web/src/styles.css:
+ *   surface #f5f7fa  panel #ffffff  row #eef2f7  text #1a2230
+ *   muted   #51607a  dim   #79859a  accent #4f6bef  danger #e11d48
+ *
+ * Most of the sheet already reads these through --ebpf-* variables, so the
+ * overrides below cover those plus the handful of rules that hard-code an rgba
+ * tuned for a dark background. */
+@media (prefers-color-scheme: light) {
+  :root {
+    --ebpf-surface: #f5f7fa;
+    --ebpf-panel: #ffffff;
+    --ebpf-row: #eef2f7;
+    --ebpf-input: #ffffff;
+    --ebpf-text: #1a2230;
+    --ebpf-muted: #51607a;
+    --ebpf-dim: #79859a;
+    --ebpf-accent: #4f6bef;
+    --ebpf-accent-strong: #3f57cc;
+    --ebpf-danger: #e11d48;
+    --ebpf-border: rgba(15, 23, 42, 0.12);
+
+    --ebpf-context-fg: #4f6bef;
+    --ebpf-context-bg: rgba(79, 107, 239, 0.10);
+    --ebpf-context-bd: rgba(79, 107, 239, 0.28);
+  }
+
+  /* Softer, lighter ambient wash than the dark build's glow. */
+  html.login-pf {
+    background-image:
+      radial-gradient(circle at 100% 0%, rgba(79, 107, 239, 0.08), transparent 38rem),
+      radial-gradient(circle at 0% 100%, rgba(8, 145, 178, 0.06), transparent 34rem) !important;
+  }
+
+  /* On white the accent ring reads as grime; use a plain elevation shadow. */
+  .login-pf-page .card-pf {
+    box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06), 0 12px 32px rgba(15, 23, 42, 0.10) !important;
+  }
+
+  .pf-c-form-control:hover { border-color: rgba(15, 23, 42, 0.22) !important; }
+  .pf-c-form-control:focus,
+  .pf-c-form-control:focus-visible {
+    box-shadow: 0 0 0 3px rgba(79, 107, 239, 0.18) !important;
+  }
+
+  .pf-c-button.pf-m-primary,
+  input[type="submit"].pf-m-primary,
+  #kc-login {
+    background: rgba(79, 107, 239, 0.10) !important;
+    border-color: rgba(79, 107, 239, 0.32) !important;
+  }
+  .pf-c-button.pf-m-primary:hover,
+  #kc-login:hover {
+    background: rgba(79, 107, 239, 0.18) !important;
+    border-color: rgba(79, 107, 239, 0.48) !important;
+    color: var(--ebpf-text) !important;
+  }
+
+  .pf-c-alert.pf-m-danger,
+  .alert-error,
+  .pf-c-alert.pf-m-error {
+    background: rgba(225, 29, 72, 0.08) !important;
+    border-color: rgba(225, 29, 72, 0.28) !important;
+  }
+}

@@ -3,16 +3,15 @@ import {
   AlertTriangle,
   Check,
   ChevronRight,
-  Moon,
   Power,
   RefreshCw,
   Server,
   ShieldCheck,
-  Sun,
   Unlock,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useOSTheme } from "../../lib/theme";
 import {
   fleetErrorMessage,
   isFleetDisabled,
@@ -91,30 +90,6 @@ const PRESETS: Array<{
   }
 ];
 
-function readInitialTheme(): "dark" | "light" {
-  try {
-    const raw = localStorage.getItem("soc.theme");
-    const value = raw ? (JSON.parse(raw) as unknown) : null;
-    return value === "light" || raw === "light" ? "light" : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
-function applyTheme(theme: "dark" | "light") {
-  document.documentElement.classList.toggle("theme-light", theme === "light");
-  document.body.classList.toggle("theme-light", theme === "light");
-  try {
-    localStorage.setItem("soc.theme", JSON.stringify(theme));
-  } catch {
-    // Storage is optional in private browsing or locked-down kiosks.
-  }
-  const favicon = document.getElementById("appFavicon") as HTMLLinkElement | null;
-  if (favicon) {
-    favicon.href = theme === "light" ? "/favicon-light.svg" : "/favicon.svg";
-  }
-}
-
 function emptySnapshot(): FleetStateSnapshot {
   return {
     peers: [],
@@ -136,7 +111,8 @@ function targetsForMode(mode: ApplyMode, selected: Set<string>): string[] | null
 }
 
 export default function FleetRoute() {
-  const [theme, setTheme] = useState<"dark" | "light">(() => readInitialTheme());
+  // Applies the OS theme + keeps it live; Fleet renders no theme-dependent markup.
+  useOSTheme();
   const [who, setWho] = useState("...");
   const [snapshot, setSnapshot] = useState<FleetStateSnapshot>(() => emptySnapshot());
   const [pollStatus, setPollStatus] = useState<PollStatus>("idle");
@@ -151,10 +127,6 @@ export default function FleetRoute() {
   const [confirmState, setConfirmState] = useState<ConfirmState | null>(null);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const toastId = useRef(0);
-
-  useEffect(() => {
-    applyTheme(theme);
-  }, [theme]);
 
   useEffect(() => {
     readWhoami()
@@ -422,15 +394,6 @@ export default function FleetRoute() {
           </a>
           <span className="fleet-btn fleet-btn--sm fleet-btn--active">Fleet</span>
         </nav>
-
-        <button
-          className="fleet-icon-btn"
-          type="button"
-          title="Toggle theme"
-          onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
-        >
-          {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
-        </button>
 
         <div className="fleet-user">
           <span>signed in as</span>

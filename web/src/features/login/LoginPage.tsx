@@ -1,37 +1,19 @@
-import { Check, Download, Eye, EyeOff, Loader2, LogIn, Moon, Share2, Sun, X } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { Check, Download, Eye, EyeOff, Loader2, LogIn, Share2, X } from "lucide-react";
+import { FormEvent, useMemo, useState } from "react";
 import { Button } from "../../components/ui";
 import { usePwaInstall, type PwaInstallPlatform } from "../../lib/pwaInstall";
 import { PASSWORD_RULES, evaluatePassword, passwordMeetsPolicy } from "../../lib/passwordPolicy";
-import { loadJSON, saveJSON } from "../../lib/storage";
+import { useOSTheme } from "../../lib/theme";
 
-type Theme = "dark" | "light";
 type InstallPhase = "idle" | "checking" | "prompting";
 
-export function readLoginTheme(): Theme {
-  try {
-    const raw = window.localStorage.getItem("soc.theme");
-    if (raw === "light" || raw === "dark") return raw;
-  } catch {
-    // Storage failures should not block login.
-  }
-  const stored = loadJSON<Theme>("soc.theme", "dark");
-  return stored === "light" ? "light" : "dark";
-}
-
-export function applyLoginTheme(theme: Theme): void {
-  document.documentElement.classList.toggle("theme-light", theme === "light");
-  document.documentElement.classList.toggle("theme-dark", theme === "dark");
-  document.body.classList.toggle("theme-light", theme === "light");
-  document.body.classList.toggle("theme-dark", theme === "dark");
-  const favicon = document.getElementById("appFavicon") as HTMLLinkElement | null;
-  if (favicon) favicon.href = theme === "light" ? "/favicon-light.svg" : "/favicon.svg";
-}
-
-export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
+export function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [password, setPassword] = useState("");
-  const [theme, setTheme] = useState<Theme>(() => initialTheme || readLoginTheme());
+  // Theme follows the OS and nothing else — see src/lib/theme.ts. The hook keeps
+  // the document classes + favicon in sync and re-renders on an OS change; the
+  // login page has no other use for the value.
+  useOSTheme();
   const ruleState = useMemo(() => evaluatePassword(password), [password]);
   const policyOk = useMemo(() => passwordMeetsPolicy(password), [password]);
   const [installOpen, setInstallOpen] = useState(false);
@@ -47,11 +29,6 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
         : installPhase === "prompting"
           ? "Opening install"
           : "Install app";
-
-  useEffect(() => {
-    applyLoginTheme(theme);
-    saveJSON("soc.theme", theme);
-  }, [theme]);
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     const form = event.currentTarget;
@@ -116,15 +93,6 @@ export function LoginPage({ initialTheme }: { initialTheme?: Theme }) {
             </span>
           </button>
         ) : null}
-        <button
-          type="button"
-          title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-          aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-          className="grid h-10 w-10 place-items-center rounded-md border border-slate-900/10 bg-panel/85 text-muted shadow-glow backdrop-blur transition hover:border-accent/40 hover:text-accent dark:border-white/10"
-          onClick={() => setTheme((value) => (value === "light" ? "dark" : "light"))}
-        >
-          {theme === "light" ? <Moon className="h-4 w-4" /> : <Sun className="h-4 w-4" />}
-        </button>
       </div>
       <section className="w-full max-w-md rounded-lg border border-white/10 bg-panel p-6 shadow-glow">
         <div className="mb-6">

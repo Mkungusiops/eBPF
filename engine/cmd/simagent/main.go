@@ -46,12 +46,15 @@ var (
 	}
 	sevs       = []string{"critical", "high", "medium", "low", "info"}
 	sevScore   = map[string]int32{"critical": 92, "high": 74, "medium": 45, "low": 18, "info": 5}
+	// Every template MUST consume both args (%s binary, %d score): the single
+	// Sprintf below always passes two. A template with only %s made Go append
+	// "%!(EXTRA int32=45)" to the alert title, which then rendered in the console.
 	alertTitle = []string{
 		"Suspicious chain: /bin/sh → %s (score %d)",
-		"Sensitive file accessed: /etc/shadow by %s",
+		"Sensitive file accessed: /etc/shadow by %s (score %d)",
 		"Privilege escalation attempt via %s (score %d)",
-		"Reverse shell indicators from %s",
-		"Credential store read by %s",
+		"Reverse shell indicators from %s (score %d)",
+		"Credential store read by %s (score %d)",
 	}
 )
 

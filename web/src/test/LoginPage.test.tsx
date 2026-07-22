@@ -5,7 +5,8 @@ import { LoginPage } from "../features/login/LoginPage";
 
 describe("LoginPage password policy", () => {
   it("shows every requirement and gates Sign in until the policy is met", () => {
-    const { container } = render(<LoginPage initialTheme="dark" />);
+    // No theme prop: the page derives its theme from the OS (src/lib/theme.ts).
+    const { container } = render(<LoginPage />);
 
     // The five policy requirements are rendered for the operator.
     expect(screen.getByText("At least 14 characters")).toBeTruthy();

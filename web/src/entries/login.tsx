@@ -1,7 +1,9 @@
 import { renderApp } from "../app/render";
-import { applyLoginTheme, LoginPage, readLoginTheme } from "../features/login/LoginPage";
+import { LoginPage } from "../features/login/LoginPage";
+import { initTheme } from "../lib/theme";
 
-const initialTheme = readLoginTheme();
-applyLoginTheme(initialTheme);
+// Apply the OS theme before React mounts so the first paint is already correct
+// (no flash of dark on a light desktop).
+initTheme();
 
-renderApp(<LoginPage initialTheme={initialTheme} />);
+renderApp(<LoginPage />);

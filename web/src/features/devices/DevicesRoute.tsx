@@ -3,17 +3,16 @@ import {
   ArrowLeft,
   ChevronDown,
   ChevronRight,
-  Moon,
   Network,
   Power,
   RefreshCcw,
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
-  Sun,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useOSTheme } from "../../lib/theme";
 
 import {
   createDevicesApi,
@@ -77,38 +76,14 @@ export interface DevicesRouteProps {
 
 const DISABLED_MESSAGE = "device choke disabled (start with -devchoke-iface)";
 
-// Theme is shared across every console page via the "soc.theme" localStorage
-// key so toggling on the SOC dashboard stays in sync here (and vice versa).
-function readSharedTheme(): "dark" | "light" {
-  try {
-    const raw = localStorage.getItem("soc.theme");
-    const value = raw ? (JSON.parse(raw) as unknown) : null;
-    return value === "light" || raw === "light" ? "light" : "dark";
-  } catch {
-    return "dark";
-  }
-}
-
-function persistSharedTheme(theme: "dark" | "light") {
-  try {
-    localStorage.setItem("soc.theme", JSON.stringify(theme));
-  } catch {
-    // localStorage is optional (private mode / locked-down kiosks).
-  }
-  const favicon = document.getElementById("appFavicon") as HTMLLinkElement | null;
-  if (favicon) favicon.href = theme === "light" ? "/favicon-light.svg" : "/favicon.svg";
-}
-
 export function DevicesRoute({
   api: providedApi,
   pollMs = 4000,
   now = () => Date.now()
 }: DevicesRouteProps) {
   const api = useMemo(() => providedApi ?? createDevicesApi(), [providedApi]);
-  const [theme, setTheme] = useState<"dark" | "light">(() => readSharedTheme());
-  useEffect(() => {
-    persistSharedTheme(theme);
-  }, [theme]);
+  // Theme comes from the OS for every console page — see src/lib/theme.ts.
+  const theme = useOSTheme();
   const [state, setState] = useState<DeviceDataPlaneState | null>(null);
   const [devices, setDevices] = useState<DeviceEntry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -388,15 +363,6 @@ export function DevicesRoute({
           <ModeBadge state={state} compact />
           <div className="devices-topbar-spacer" />
           <PlaneStateStrip state={state} disabledMessage={disabledMessage} updatedAt={lastUpdatedAt} />
-          <button
-            type="button"
-            className="devices-icon-button"
-            title="Toggle theme"
-            aria-label="Toggle theme"
-            onClick={() => setTheme((current) => (current === "light" ? "dark" : "light"))}
-          >
-            {theme === "light" ? <Moon size={15} aria-hidden="true" /> : <Sun size={15} aria-hidden="true" />}
-          </button>
         </div>
       </header>
       <div className="devices-layout">

@@ -1126,7 +1126,6 @@ export function AccountBody({
   host,
   role,
   theme,
-  onToggleTheme,
   streamState,
   versionSha,
   storageKeyCount
@@ -1135,7 +1134,6 @@ export function AccountBody({
   host: string;
   role?: string;
   theme: "dark" | "light";
-  onToggleTheme: () => void;
   streamState: string;
   versionSha?: string;
   storageKeyCount: number;
@@ -1178,9 +1176,7 @@ export function AccountBody({
       </dl>
 
       <div className="soc-account-actions">
-        <button type="button" className="soc-ghost-button" onClick={onToggleTheme}>
-          Switch to {theme === "dark" ? "light" : "dark"} theme
-        </button>
+        <span className="soc-account-theme">Theme: {theme} (follows your OS setting)</span>
         <a className="soc-account-signout" href="/api/logout">
           Sign out
         </a>

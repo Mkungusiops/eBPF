@@ -29,6 +29,9 @@ conventions + local gates).
   enforcement machine (pristine → throttled → tarpit → quarantined → severed).
 - [network-choke-gateway.md](architecture/network-choke-gateway.md) — per-device
   (MAC) enforcement via a TC clsact data plane on an inline Linux bridge.
+- [tech-stack-and-ebpf-programs.md](architecture/tech-stack-and-ebpf-programs.md)
+  — reference tables: every technology and why it was chosen, plus every eBPF
+  program, its hook, and the function it serves.
 
 ## [Plan](plan/) — the multi-tenant SOC conversion
 

@@ -19,7 +19,6 @@ import {
   Maximize2,
   Menu,
   Minimize2,
-  Moon,
   Network,
   Radio,
   RefreshCw,
@@ -28,7 +27,6 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
-  Sun,
   Terminal,
   UserCircle,
   Wifi,
@@ -52,6 +50,7 @@ import {
   runSocAttack
 } from "./api";
 import { useStream } from "../../lib/stream";
+import { useOSTheme } from "../../lib/theme";
 import type { StreamFrame } from "../../lib/types";
 import {
   EmptyState,
@@ -183,7 +182,8 @@ export function SocRoute() {
   );
   const now = useNow(1000);
 
-  const [theme, setTheme] = useLocalJsonState<"dark" | "light">("soc.theme", "dark");
+  // Theme follows the OS for every console page — see src/lib/theme.ts.
+  const theme = useOSTheme();
   // Default open on desktop, collapsed on phones — a 234px drawer over a
   // ~390px screen would otherwise bury the content on first load.
   const [sidebarOpen, setSidebarOpen] = useLocalJsonState<boolean>(
@@ -578,11 +578,6 @@ export function SocRoute() {
             </button>
             <span className="soc-topbar-sep" aria-hidden="true" />
             <IconButton icon={RefreshCw} label="Refresh snapshots" onClick={refresh} active={loading} />
-            <IconButton
-              icon={theme === "light" ? Moon : Sun}
-              label="Toggle theme"
-              onClick={() => setTheme(theme === "light" ? "dark" : "light")}
-            />
           </div>
         </header>
 
@@ -894,7 +889,6 @@ export function SocRoute() {
         commandQuery={commandQuery}
         setCommandQuery={setCommandQuery}
         theme={theme}
-        setTheme={setTheme}
         stream={stream}
         onActionComplete={refresh}
       />
@@ -1876,7 +1870,6 @@ function SocModals({
   commandQuery,
   setCommandQuery,
   theme,
-  setTheme,
   stream,
   onActionComplete
 }: {
@@ -1908,7 +1901,6 @@ function SocModals({
   commandQuery: string;
   setCommandQuery: React.Dispatch<React.SetStateAction<string>>;
   theme: "dark" | "light";
-  setTheme: React.Dispatch<React.SetStateAction<"dark" | "light">>;
   stream: StreamTelemetry;
   onActionComplete: () => void;
 }) {
@@ -2003,7 +1995,6 @@ function SocModals({
           host={snapshot.whoami.host}
           role={snapshot.whoami.role}
           theme={theme}
-          onToggleTheme={() => setTheme(theme === "light" ? "dark" : "light")}
           streamState={stream.state}
           versionSha={snapshot.version.sha}
           storageKeyCount={SOC_STORAGE_KEYS.length}

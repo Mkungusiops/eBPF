@@ -50,6 +50,7 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 | [docs/architecture/overview.md](docs/architecture/overview.md) | How everything works: components, data flow, full API surface |
 | [docs/architecture/state-ladder.md](docs/architecture/state-ladder.md) | The five-rung per-process/per-device state machine |
 | [docs/architecture/network-choke-gateway.md](docs/architecture/network-choke-gateway.md) | Per-device (MAC) enforcement via `tc` clsact on an inline bridge |
+| [docs/architecture/tech-stack-and-ebpf-programs.md](docs/architecture/tech-stack-and-ebpf-programs.md) | Tech stack (what + why) and the full eBPF program inventory |
 | [docs/deployment/ubuntu-server.md](docs/deployment/ubuntu-server.md) | Recommended step-by-step deploy on a fresh Ubuntu server |
 | [docs/deployment/tarball-quickstart.md](docs/deployment/tarball-quickstart.md) | Fastest path: `make tarball`, scp, run |
 | [docs/deployment/network-choke-gateway.md](docs/deployment/network-choke-gateway.md) | Inline transparent-bridge gateway for the device choke |

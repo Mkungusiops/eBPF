@@ -28,7 +28,12 @@ import (
 )
 
 const (
-	sessionCookie = "soc_session"
+	// Distinct from the single-tenant engine's "soc_session" ON PURPOSE. Cookies
+	// are scoped by host and path but NOT by port, so when the engine (:8090) and
+	// this console (:80) run on one host they share a cookie slot: signing into
+	// one silently overwrites the other's session and logs it out. Co-hosting is
+	// normal for local development, so the names must not collide.
+	sessionCookie = "soc_cp_session"
 	stateCookie   = "soc_login_state"
 	retryCookie   = "soc_login_retry" // loop-guard for the restart-on-mismatch path
 	sessionTTL    = 8 * time.Hour

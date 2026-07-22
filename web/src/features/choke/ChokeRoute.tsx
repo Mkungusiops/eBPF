@@ -8,7 +8,7 @@ import React, {
   useState,
 } from "react";
 import { Command as CommandPrimitive } from "cmdk";
-import { ArrowLeft, Moon, Sun, X } from "lucide-react";
+import { ArrowLeft, X } from "lucide-react";
 import { EventReplay } from "../../components/EventReplay";
 import { VirtualList } from "../../components/VirtualList";
 import {
@@ -40,6 +40,7 @@ import {
   isDisabledError,
 } from "./api";
 import { useStream } from "../../lib/stream";
+import { useOSTheme } from "../../lib/theme";
 import type {
   Alert,
   BucketEntry,
@@ -111,9 +112,7 @@ type JailDetail =
   | { kind: "ready"; process: SysProcEntry; detail: SysProcDetail }
   | { kind: "error"; process: SysProcEntry; message: string };
 
-interface ChokeRouteProps {
-  initialTheme?: "dark" | "light";
-}
+interface ChokeRouteProps {}
 
 function useInterval(callback: () => void, delayMs: number | null, enabled = true): void {
   const ref = useRef(callback);
@@ -154,25 +153,21 @@ function useStoredBoolean(key: string, fallback: boolean): [boolean, (next: bool
   return [value, setStored];
 }
 
-function useTheme(initial?: "dark" | "light"): ["dark" | "light", () => void] {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    const stored = readJsonStorage<"dark" | "light">("soc.theme", initial || "dark");
-    return stored === "light" ? "light" : "dark";
-  });
-
+// Choke's stylesheet keys off its own "choke-theme-light" class, so on top of
+// the shared OS theme (which sets .theme-light/.theme-dark + the favicon) this
+// mirrors the state onto Choke's class.
+function useChokeTheme(): "dark" | "light" {
+  const theme = useOSTheme();
   useEffect(() => {
-    document.documentElement.classList.toggle("choke-theme-light", theme === "light");
-    document.body.classList.toggle("choke-theme-light", theme === "light");
-    writeJsonStorage("soc.theme", theme);
-    const favicon = document.querySelector<HTMLLinkElement>("#appFavicon");
-    if (favicon) favicon.href = theme === "light" ? "/favicon-light.svg" : "/favicon.svg";
+    const light = theme === "light";
+    document.documentElement.classList.toggle("choke-theme-light", light);
+    document.body.classList.toggle("choke-theme-light", light);
   }, [theme]);
-
-  return [theme, () => setTheme((prev) => (prev === "light" ? "dark" : "light"))];
+  return theme;
 }
 
-export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElement {
-  const [theme, toggleTheme] = useTheme(initialTheme);
+export function ChokeRoute(): React.ReactElement {
+  const theme = useChokeTheme();
   const sharedStream = useStream();
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [chokeState, setChokeState] = useState<ChokeState | null>(null);
@@ -470,7 +465,6 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
       }
       if (event.key === "J") setJailOpen(true);
       if (event.key === "K") openKillSwitchConfirm();
-      if (event.key === "t") toggleTheme();
       if (event.key === "g") window.location.href = "/";
       if (["c", "f", "m", "d"].includes(event.key)) {
         const map: Record<string, string> = { c: "containment", f: "forensic", m: "maintenance", d: "default" };
@@ -826,7 +820,6 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
       { group: "action", label: "Toggle kill-switch", run: openKillSwitchConfirm },
       { group: "action", label: "Thaw quarantine", run: openThawConfirm },
       { group: "action", label: "Download forensic snapshot", run: () => void downloadSnapshot() },
-      { group: "view", label: "Toggle theme", run: toggleTheme },
       { group: "view", label: "Toggle density", run: () => setDensity((prev) => (prev === "compact" ? "normal" : "compact")) },
       { group: "view", label: "Show help", run: () => setHelpOpen(true) },
       ...circuits.slice(0, 25).map((entry) => ({
@@ -835,7 +828,7 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
         run: () => void openDrill(entry.exec_id),
       })),
     ],
-    [circuits, toggleTheme],
+    [circuits],
   );
 
   return (
@@ -881,15 +874,6 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
               ) : (
                 <NotificationDot decisions={decisions} acked={ackedDecisionIds} clearedAt={alertsClearedAt} enabled={alertBadgeEnabled} />
               )}
-            </button>
-            <button
-              className="choke-icon-button choke-theme-toggle"
-              type="button"
-              onClick={toggleTheme}
-              aria-label={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-              title={theme === "light" ? "Switch to dark theme" : "Switch to light theme"}
-            >
-              {theme === "light" ? <Moon size={16} aria-hidden="true" /> : <Sun size={16} aria-hidden="true" />}
             </button>
             <button className="choke-user-pill" type="button" onClick={() => setProfileOpen((open) => !open)} aria-label="Profile and tools">
               <span className="choke-avatar">{userLabel.slice(0, 1).toUpperCase()}</span>
@@ -993,7 +977,6 @@ export function ChokeRoute({ initialTheme }: ChokeRouteProps): React.ReactElemen
           theme={theme}
           density={density}
           windowMin={windowMin}
-          onTheme={toggleTheme}
           onDensity={() => setDensity((prev) => (prev === "compact" ? "normal" : "compact"))}
           onWindow={setWindowMin}
           onSnapshot={() => void downloadSnapshot()}
@@ -2585,7 +2568,6 @@ function ProfilePanel({
   theme,
   density,
   windowMin,
-  onTheme,
   onDensity,
   onWindow,
   onSnapshot,
@@ -2601,7 +2583,6 @@ function ProfilePanel({
   theme: string;
   density: string;
   windowMin: number;
-  onTheme: () => void;
   onDensity: () => void;
   onWindow: (value: number) => void;
   onSnapshot: () => void;
@@ -2627,7 +2608,7 @@ function ProfilePanel({
         <div><span>session</span><strong>{formatUptime(Date.now() - bootMs)}</strong></div>
         <div><span>decisions seen</span><strong>{decisionsSeen}</strong></div>
         <div><span>acked</span><strong>{ackedCount}</strong></div>
-        <div><span>theme</span><button type="button" onClick={onTheme}>{theme}</button></div>
+        <div><span>theme</span><strong>{theme} (follows OS)</strong></div>
         <div><span>density</span><button type="button" onClick={onDensity}>{density}</button></div>
       </div>
       <label className="choke-profile-window">Default window
