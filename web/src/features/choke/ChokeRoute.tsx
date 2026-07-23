@@ -34,6 +34,7 @@ import {
   previewPolicy,
   setMode,
   thawQuarantine,
+  releaseProcess,
   toggleKillSwitch,
   updateThresholds,
   verifyChain,
@@ -90,6 +91,8 @@ import {
   topK,
   writeJsonStorage,
 } from "./utils";
+import { EnforcementLadder } from "../common/EnforcementLadder";
+import { ACTION_FOR_RUNG, PROCESS_TERMINAL } from "../common/enforcement";
 import "./ChokeRoute.css";
 
 const PROC_RENDER_CAP = 300;
@@ -1217,7 +1220,7 @@ export function ChokeRoute(): React.ReactElement {
       <ProcessDrill
         drill={drill}
         onClose={() => setDrill({ kind: "closed" })}
-        onManual={openManualConfirm}
+        onRefresh={() => void refreshAll()}
         onForget={async (execId) => {
           await forgetCircuits([execId]);
           pushToast("forgot circuit", "ok");
@@ -1915,15 +1918,15 @@ function PolicyPreview({
 function ProcessDrill({
   drill,
   onClose,
-  onManual,
   onForget,
   onAnnotate,
   onCopy,
+  onRefresh,
 }: {
   drill: DrillState;
   onClose: () => void;
-  onManual: (entry: CircuitEntry, action: ChokeAction) => void;
   onForget: (execId: string) => Promise<void>;
+  onRefresh: () => void;
   onAnnotate: (execId: string, note: string) => Promise<void>;
   onCopy: (value: string) => void;
 }) {
@@ -1965,8 +1968,45 @@ function ProcessDrill({
           </div>
           <section>
             <h3>Response</h3>
+            {/* The same ladder the correlation graph uses. Choke Gateway has
+                more detail and no visualisation; the graph has visualisation
+                and less detail — but the enforcement control is identical, so
+                an operator never has to relearn it when switching surface. */}
+            <EnforcementLadder
+              target={{
+                id: entry.exec_id || drill.execId,
+                label: entry.binary || "(unknown process)",
+                pid: entry.pid,
+                host: originLabel(entry) || undefined
+              }}
+              state={entry.state || "pristine"}
+              policy={PROCESS_TERMINAL}
+              apply={async (rung, why) => {
+                const execId = entry.exec_id || drill.execId;
+                try {
+                  if (rung === "pristine") {
+                    await releaseProcess(execId, entry.pid, why);
+                  } else {
+                    await manualAction({
+                      exec_id: execId,
+                      pid: entry.pid,
+                      binary: entry.binary,
+                      action: ACTION_FOR_RUNG[rung] as ChokeAction,
+                      reason: why
+                    });
+                  }
+                  return { ok: true, detail: `${ACTION_FOR_RUNG[rung]} accepted` };
+                } catch (error) {
+                  return { ok: false, detail: (error as Error).message || "action failed" };
+                }
+              }}
+              readState={async () => {
+                const list = await getCircuits();
+                return list.find((c) => c.exec_id === (entry.exec_id || drill.execId))?.state;
+              }}
+              onSettled={onRefresh}
+            />
             <div className="choke-row-actions wide">
-              {ACTIONS.map((action) => <button key={action} type="button" onClick={() => onManual(entry, action)}>{action}</button>)}
               <button type="button" onClick={() => void onForget(drill.execId)}>forget</button>
               <button type="button" onClick={() => onCopy(entry.exec_id || drill.execId)}>copy exec_id</button>
               {entry.pid ? <button type="button" onClick={() => onCopy(String(entry.pid))}>copy pid</button> : null}

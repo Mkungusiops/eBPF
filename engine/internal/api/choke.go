@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
@@ -158,6 +159,25 @@ func validateThresholds(c circuit.Config) error {
 // to the prior state after the given delay. Useful for "tarpit this for
 // 5 minutes while I investigate" — frees the operator from having to
 // remember to undo it.
+// requireReasonForDestructive rejects an unjustified quarantine/sever.
+//
+// Those two rungs are the ones an audit asks about: quarantine freezes a
+// process and sever SIGKILLs it (terminal — thaw cannot bring it back). A
+// reason that is merely OPTIONAL becomes an empty reason under time pressure,
+// leaving the audit chain recording that something drastic happened with no
+// statement of why. Enforced server-side so it cannot be skipped by calling the
+// API directly. The reversible rungs stay frictionless on purpose.
+func requireReasonForDestructive(action, reason string) error {
+	switch action {
+	case "quarantine", "sever":
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("a reason is required to %s (this action is %s)", action,
+				map[string]string{"quarantine": "disruptive", "sever": "irreversible"}[action])
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 	g := s.gatewayOrErr(w)
 	if g == nil {
@@ -181,6 +201,10 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 	}
 	action, err := parseAction(body.Action)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := requireReasonForDestructive(body.Action, body.Reason); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -310,15 +334,47 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		ExecID string `json:"exec_id"`
+		PID    uint32 `json:"pid"`
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	actor := s.auth.Username()
+
+	// Targeted release. Without this branch the only thing thaw could do was
+	// unfreeze the whole quarantine TIER without moving anyone out of it or
+	// updating any circuit state — so a per-process "release" reported success
+	// and left the process quarantined forever. ActNone moves the pid into the
+	// limit-free pristine cgroup and drives the circuit to pristine, which is
+	// what the caller is actually asking for. Matches the control plane, where
+	// thaw has always been per-process.
+	if body.ExecID != "" {
+		d, err := g.Manual(r.Context(), choke.ManualRequest{
+			ExecID: body.ExecID,
+			PID:    body.PID,
+			Action: circuit.ActNone,
+			Reason: body.Reason,
+			Actor:  actor,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"thawed": "ok",
+			"scope":  "process",
+			"state":  d.To.String(),
+		})
+		return
+	}
+
+	// No target: the legacy tier-wide unfreeze. Kept because chokectl and the
+	// "Thaw quarantine" control both rely on it.
 	if err := g.ThawQuarantine(actor, body.Reason); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"thawed": "ok"})
+	writeJSON(w, map[string]string{"thawed": "ok", "scope": "tier"})
 }
 
 // POST /api/choke/mode — runtime swap between detect-only and enforcing.

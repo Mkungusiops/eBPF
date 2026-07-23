@@ -51,6 +51,10 @@ export interface SocAlert {
   args?: string;
   mitreId?: string;
   tactic?: string;
+  // Owning agent/host. Only the multi-tenant control plane reports it (the
+  // single-tenant engine IS the host), but the enforcement panel must show it:
+  // acting on the right process on the WRONG host is the nightmare case.
+  agent?: string;
   raw: unknown;
 }
 
@@ -69,6 +73,7 @@ export interface SocEvent {
   destIp?: string;
   destPort?: number;
   proto?: string;
+  agent?: string;
   raw: unknown;
 }
 

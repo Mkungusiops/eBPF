@@ -2,6 +2,7 @@ package controlplane
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -110,10 +111,33 @@ func (s *Server) agentForExec(tenant, execID string, pid uint32) []string {
 	return all
 }
 
+// requireReasonForDestructive rejects an unjustified quarantine/sever.
+//
+// Those two rungs are the ones an audit asks about: quarantine freezes a
+// process and sever SIGKILLs it (terminal — thaw cannot bring it back). A
+// reason that is merely OPTIONAL becomes an empty reason under time pressure,
+// leaving the audit chain recording that something drastic happened with no
+// statement of why. Enforced server-side so it cannot be skipped by calling the
+// API directly. The reversible rungs stay frictionless on purpose.
+func requireReasonForDestructive(action, reason string) error {
+	switch action {
+	case "quarantine", "sever":
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("a reason is required to %s (this action is %s)", action,
+				map[string]string{"quarantine": "disruptive", "sever": "irreversible"}[action])
+		}
+	}
+	return nil
+}
+
 // dispatchChoke builds a Jail/Thaw command, dispatches it to the owning agent
 // via the signed command channel, waits briefly for the ack, and writes the
 // outcome. tier: throttle|tarpit|quarantine|sever (jail) or "thaw".
 func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid uint32, action, reason string) {
+	if err := requireReasonForDestructive(action, reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	var cmd *ebpfsocv1.Command
 	switch action {
 	case "throttle", "tarpit", "quarantine", "sever":

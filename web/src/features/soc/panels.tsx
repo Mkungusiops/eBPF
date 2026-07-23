@@ -3,9 +3,10 @@
 // kprobe board, fleet console, notification center, risk gauge) that the modal
 // shells host. Each body is data-driven off the same snapshot the route already
 // fetches, so nothing here introduces new network calls beyond explicit probes.
-import { useCallback, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Trash2, Volume2 } from "lucide-react";
-import { cx, EmptyState } from "./components";
+import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
+import { Activity, AlertTriangle, Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Shield, ShieldCheck, Target, Trash2, Volume2 } from "lucide-react";
+import { cx, EmptyState, Sparkline } from "./components";
+import { fetchPolicyStats } from "./api";
 import type {
   Severity,
   SocAlert,
@@ -74,6 +75,13 @@ function formatBytes(n?: number): string {
 
 function fmtNum(n: number): string {
   return n.toLocaleString();
+}
+
+function formatTime(iso?: string): string {
+  if (!iso) return "—";
+  const t = Date.parse(iso);
+  if (Number.isNaN(t)) return "—";
+  return new Date(t).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 /* ----------------------------------------------------------- shared widgets */
@@ -282,99 +290,285 @@ export function techniqueName(raw?: string): string | undefined {
   return undefined;
 }
 
+// Known detection-policy names → the ATT&CK technique they cover. The engine
+// does not (yet) stamp `mitre` onto every policy or alert — the real agents ship
+// raw policy names — so the console derives the mapping from the stable policy
+// names it already knows. This is what lets the Navigator show real coverage
+// instead of an all-gaps matrix. Honest: each of these policies genuinely
+// detects its mapped technique.
+const POLICY_MITRE: Record<string, string> = {
+  "sensitive-file-access": "T1003", // reads /etc/shadow, /etc/passwd
+  "override-credential-read": "T1555", // credential store access
+  "privilege-escalation": "T1548", // sudo / setuid abuse
+  "reverse-shell": "T1059", // shell -c / interpreter
+  "sever-pipe-to-shell": "T1059",
+  "shell-egress-throttle": "T1071", // shell talking out (C2)
+  "network-tools-tarpit": "T1071", // nc/socat/ncat egress
+  "outbound-connections": "T1071", // tcp_connect from shells/LOLBins
+  "container-escape": "T1068", // exploit for priv-esc / escape
+  "agent-loop-cap": "T1059"
+};
+
+// Keyword fallback when neither a mitre tag nor a known policy name is present —
+// reads the technique straight off what the alert describes.
+function techniqueFromText(text?: string): string | undefined {
+  if (!text) return undefined;
+  const t = text.toLowerCase();
+  if (/\/etc\/shadow|\/etc\/passwd|credential|\.ssh|password/.test(t)) return "T1003";
+  if (/sudo|sudoers|privilege|escalat|setuid|elevation/.test(t)) return "T1548";
+  if (/reverse shell|\/bin\/sh -c|interpreter|scripting/.test(t)) return "T1059";
+  if (/outbound|connection|\bnc\b|ncat|socat|\bcurl\b|\bwget\b|c2|beacon/.test(t)) return "T1071";
+  if (/container|escape|exploit/.test(t)) return "T1068";
+  return undefined;
+}
+
+export function techniqueForPolicy(policy: SocPolicy): string | undefined {
+  return techniqueId(policy.mitre) || POLICY_MITRE[policy.name];
+}
+
+export function techniqueForAlert(alert: SocAlert, techByPolicy: Map<string, string>): string | undefined {
+  return (
+    techniqueId(alert.mitreId) ||
+    (alert.policyName ? techByPolicy.get(alert.policyName) ?? POLICY_MITRE[alert.policyName] : undefined) ||
+    techniqueFromText([alert.title, alert.description, alert.args].filter(Boolean).join(" "))
+  );
+}
+
 /* ------------------------------------------------------------ MITRE Navigator */
+
+// The coverage model, computed once and shared by the Navigator UI and the PDF
+// so the two never disagree. Three distinct states per technique — the honest
+// picture the flat "observed only" view was missing:
+//   observed — a detection actually fired (count > 0)
+//   covered  — a policy maps to it, but it has not fired (capability, dormant)
+//   gap      — NO policy maps to it: a blind spot an attacker could use unseen
+export type MitreCoverageModel = ReturnType<typeof buildMitreCoverageModel>;
+
+export function buildMitreCoverageModel(
+  mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>,
+  alerts: SocAlert[],
+  policies: SocPolicy[]
+) {
+  // technique id -> policies that provide detection coverage for it (using the
+  // policy's mitre tag when present, else the known policy-name mapping)
+  const policiesByTech = new Map<string, SocPolicy[]>();
+  const techByPolicy = new Map<string, string>();
+  for (const policy of policies) {
+    const id = techniqueForPolicy(policy);
+    if (!id) continue;
+    techByPolicy.set(policy.name, id);
+    const list = policiesByTech.get(id) ?? [];
+    list.push(policy);
+    policiesByTech.set(id, list);
+  }
+
+  // technique id -> the alerts that fired it, and the hit count derived from
+  // them. Alerts are the ground truth for "observed"; mitreRows only add hits
+  // for techniques a policy tagged directly.
+  const alertsByTech = new Map<string, SocAlert[]>();
+  const observed = new Map<string, number>();
+  for (const alert of alerts) {
+    const id = techniqueForAlert(alert, techByPolicy);
+    if (!id) continue;
+    const list = alertsByTech.get(id) ?? [];
+    list.push(alert);
+    alertsByTech.set(id, list);
+    observed.set(id, (observed.get(id) || 0) + 1);
+  }
+  for (const row of mitreRows) {
+    const id = techniqueId(row.label) || techniqueId(row.id);
+    if (id && !observed.has(id)) observed.set(id, row.value);
+  }
+
+  const total = ALL_TECHNIQUE_IDS.size;
+  const covered = [...ALL_TECHNIQUE_IDS].filter((id) => policiesByTech.has(id));
+  const observedIds = [...ALL_TECHNIQUE_IDS].filter((id) => (observed.get(id) || 0) > 0);
+  const gaps = [...ALL_TECHNIQUE_IDS].filter((id) => !policiesByTech.has(id));
+  const hitTotal = observedIds.reduce((sum, id) => sum + (observed.get(id) || 0), 0);
+
+  const stateOf = (id: string): "observed" | "covered" | "gap" =>
+    (observed.get(id) || 0) > 0 ? "observed" : policiesByTech.has(id) ? "covered" : "gap";
+
+  return {
+    policiesByTech,
+    alertsByTech,
+    observed,
+    stateOf,
+    total,
+    coveredCount: covered.length,
+    observedCount: observedIds.length,
+    gapCount: gaps.length,
+    gapIds: gaps,
+    hitTotal,
+    coveragePct: Math.round((covered.length / total) * 100)
+  };
+}
+
+type MitreFilter = "all" | "observed" | "covered" | "gaps";
 
 export function MitreNavigatorBody({
   mitreRows,
   alerts,
+  policies,
   onExport
 }: {
   mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>;
   alerts: SocAlert[];
+  policies: SocPolicy[];
   onExport: () => void;
 }) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [filter, setFilter] = useState<MitreFilter>("all");
 
-  const observed = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const row of mitreRows) {
-      const id = techniqueId(row.label) || techniqueId(row.id);
-      if (id) counts.set(id, (counts.get(id) || 0) + row.value);
-    }
-    for (const alert of alerts) {
-      const id = techniqueId(alert.mitreId);
-      if (id && !mitreRows.length) counts.set(id, (counts.get(id) || 0) + 1);
-    }
-    return counts;
-  }, [mitreRows, alerts]);
+  const model = useMemo(() => buildMitreCoverageModel(mitreRows, alerts, policies), [mitreRows, alerts, policies]);
 
-  const totalTechniques = ALL_TECHNIQUE_IDS.size;
-  const observedInMatrix = [...observed.keys()].filter((id) => ALL_TECHNIQUE_IDS.has(id));
-  const observedCount = observedInMatrix.length;
-  const hitTotal = [...observed.entries()]
-    .filter(([id]) => ALL_TECHNIQUE_IDS.has(id))
-    .reduce((sum, [, n]) => sum + n, 0);
-  const coverage = Math.round((observedCount / totalTechniques) * 100);
+  const matches = (id: string) => {
+    if (filter === "all") return true;
+    const s = model.stateOf(id);
+    if (filter === "observed") return s === "observed";
+    if (filter === "covered") return s === "covered" || s === "observed";
+    return s === "gap";
+  };
+
+  const detail = selected
+    ? {
+        id: selected,
+        name: MITRE_MATRIX.flatMap((t) => t.techniques).find((t) => t.id === selected)?.name ?? "",
+        tactic: MITRE_MATRIX.find((t) => t.techniques.some((x) => x.id === selected))?.name ?? "",
+        state: model.stateOf(selected),
+        count: model.observed.get(selected) || 0,
+        policies: model.policiesByTech.get(selected) ?? [],
+        firing: (model.alertsByTech.get(selected) ?? []).slice(0, 8)
+      }
+    : null;
 
   return (
-    <div className="soc-mitre">
+    <div className={cx("soc-mitre", detail && "has-detail")}>
       <div className="soc-mitre-head">
         <div className="soc-mitre-stats">
-          <div className="soc-mitre-stat">
-            <span className="soc-stat-label">Coverage</span>
-            <strong>{coverage}%</strong>
-            <em>
-              {observedCount} / {totalTechniques} techniques
-            </em>
-          </div>
-          <div className="soc-mitre-stat tone-danger">
-            <span className="soc-stat-label">Observed</span>
-            <strong>{fmtNum(hitTotal)}</strong>
-            <em>technique hits</em>
-          </div>
+          <button
+            type="button"
+            className={cx("soc-mitre-stat", filter === "covered" && "is-active")}
+            onClick={() => setFilter(filter === "covered" ? "all" : "covered")}
+          >
+            <span className="soc-stat-label"><ShieldCheck size={12} aria-hidden="true" /> Coverage</span>
+            <strong>{model.coveragePct}%</strong>
+            <em>{model.coveredCount} / {model.total} techniques</em>
+          </button>
+          <button
+            type="button"
+            className={cx("soc-mitre-stat tone-observed", filter === "observed" && "is-active")}
+            onClick={() => setFilter(filter === "observed" ? "all" : "observed")}
+          >
+            <span className="soc-stat-label"><Target size={12} aria-hidden="true" /> Observed</span>
+            <strong>{model.observedCount}</strong>
+            <em>{fmtNum(model.hitTotal)} technique hits</em>
+          </button>
+          <button
+            type="button"
+            className={cx("soc-mitre-stat tone-gap", filter === "gaps" && "is-active")}
+            onClick={() => setFilter(filter === "gaps" ? "all" : "gaps")}
+          >
+            <span className="soc-stat-label"><AlertTriangle size={12} aria-hidden="true" /> Blind spots</span>
+            <strong>{model.gapCount}</strong>
+            <em>no detection policy</em>
+          </button>
         </div>
         <button type="button" className="soc-ghost-button" onClick={onExport}>
           <FileDown size={14} aria-hidden="true" /> Export coverage PDF
         </button>
       </div>
 
-      <div className="soc-mitre-grid scrollbar">
-        {MITRE_MATRIX.map((tactic) => {
-          const hitsInCol = tactic.techniques.filter((t) => observed.has(t.id)).length;
-          return (
-            <div key={tactic.id} className="soc-mitre-col">
-              <header>
-                <span className="soc-mitre-tactic">{tactic.name}</span>
-                <span className="soc-mitre-fraction">
-                  {hitsInCol}/{tactic.techniques.length}
-                </span>
-                <i style={{ width: `${(hitsInCol / tactic.techniques.length) * 100}%` }} />
-              </header>
-              <div className="soc-mitre-cells">
-                {tactic.techniques.map((tech) => {
-                  const count = observed.get(tech.id) || 0;
-                  const active = count > 0;
-                  const isSelected = selected === tech.id;
-                  return (
-                    <button
-                      key={tech.id}
-                      type="button"
-                      className={cx("soc-mitre-cell", active && "is-observed", isSelected && "is-selected")}
-                      onClick={() => setSelected(isSelected ? null : tech.id)}
-                      title={`${tech.id} ${tech.name}${active ? ` · ${count} hits` : ""}`}
-                    >
-                      <span className="soc-mitre-id">
-                        {tech.id}
-                        {active ? <em>×{count}</em> : null}
-                      </span>
-                      <span className="soc-mitre-name">{tech.name}</span>
-                    </button>
-                  );
-                })}
+      <div className="soc-mitre-main">
+        <div className="soc-mitre-grid scrollbar">
+          {MITRE_MATRIX.map((tactic) => {
+            const covered = tactic.techniques.filter((t) => model.stateOf(t.id) !== "gap").length;
+            return (
+              <div key={tactic.id} className="soc-mitre-col">
+                <header>
+                  <span className="soc-mitre-tactic">{tactic.name}</span>
+                  <span className="soc-mitre-fraction">{covered}/{tactic.techniques.length}</span>
+                  <i style={{ width: `${(covered / tactic.techniques.length) * 100}%` }} />
+                </header>
+                <div className="soc-mitre-cells">
+                  {tactic.techniques.map((tech) => {
+                    const state = model.stateOf(tech.id);
+                    const count = model.observed.get(tech.id) || 0;
+                    const isSelected = selected === tech.id;
+                    const dimmed = !matches(tech.id);
+                    return (
+                      <button
+                        key={tech.id}
+                        type="button"
+                        className={cx(
+                          "soc-mitre-cell",
+                          `is-${state}`,
+                          isSelected && "is-selected",
+                          dimmed && "is-dimmed"
+                        )}
+                        onClick={() => setSelected(isSelected ? null : tech.id)}
+                        title={`${tech.id} ${tech.name} · ${state}${count ? ` · ${count} hits` : ""}`}
+                      >
+                        <span className="soc-mitre-id">
+                          {tech.id}
+                          {count ? <em>×{count}</em> : null}
+                        </span>
+                        <span className="soc-mitre-name">{tech.name}</span>
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
+
+        {detail ? (
+          <aside className="soc-mitre-detail" data-panel="mitre-technique-detail">
+            <header>
+              <div>
+                <span className="soc-mitre-detail-tactic">{detail.tactic}</span>
+                <h3>{detail.id} · {detail.name}</h3>
+              </div>
+              <button type="button" className="soc-close-button" onClick={() => setSelected(null)} aria-label="Close">×</button>
+            </header>
+
+            <span className={cx("soc-mitre-state-badge", `is-${detail.state}`)}>
+              {detail.state === "observed" ? <><Target size={12} /> Observed · {detail.count} hits</>
+                : detail.state === "covered" ? <><Shield size={12} /> Covered · dormant</>
+                : <><AlertTriangle size={12} /> Blind spot · no detection</>}
+            </span>
+
+            <section>
+              <span className="soc-stat-label">Detection policies</span>
+              {detail.policies.length ? (
+                detail.policies.map((p) => (
+                  <div key={p.name} className="soc-mitre-policy">
+                    <strong>{p.name}</strong>
+                    {p.description ? <span>{p.description}</span> : null}
+                  </div>
+                ))
+              ) : (
+                <p className="soc-mitre-gap-note">
+                  No policy maps to this technique — an adversary using it would go undetected.
+                  Author a TracingPolicy tagged <code>{detail.id}</code> to close the gap.
+                </p>
+              )}
+            </section>
+
+            {detail.firing.length ? (
+              <section>
+                <span className="soc-stat-label">Recent detections ({detail.firing.length})</span>
+                {detail.firing.map((a) => (
+                  <div key={a.id} className={cx("soc-mitre-firing", `sev-${a.severity}`)}>
+                    <span className="soc-mitre-firing-title">{a.title}</span>
+                    <span className="soc-mitre-firing-meta">score {a.score} · {formatTime(a.timestamp)}</span>
+                  </div>
+                ))}
+              </section>
+            ) : null}
+          </aside>
+        ) : null}
       </div>
     </div>
   );
@@ -646,13 +840,66 @@ export function HoneypotsBody({ honeypots, now }: { honeypots: SocHoneypot[]; no
 type KprobeBand = "all" | "hot" | "warm" | "calm" | "idle" | "over";
 type KprobeSort = "rate" | "posts" | "name" | "mem";
 
-export function KprobeBody({ policyStats }: { policyStats: SocPolicyStat[] }) {
+// Per-probe rate history, module-level so it survives the modal opening and
+// closing — the sparklines rebuild from what the console has already sampled
+// rather than resetting to a flat line each time you reopen the panel.
+// Neither the engine nor the control plane reports a per-policy RATE — only the
+// cumulative `posts` counter — so the rate is derived here from the delta of
+// that counter between snapshot samples. Each sample is {t, posts}; the rate is
+// (Δposts / Δtime) and the sparkline is the Δposts series. Module-level so it
+// survives the modal opening and closing.
+interface KprobeSample { t: number; posts: number }
+const KPROBE_HISTORY = new Map<string, KprobeSample[]>();
+const KPROBE_HISTORY_LEN = 30;
+
+// posts delta between the two most recent samples, as a per-minute rate.
+function kprobeRateFromHistory(name: string): number {
+  const h = KPROBE_HISTORY.get(name);
+  if (!h || h.length < 2) return 0;
+  const a = h[h.length - 2];
+  const b = h[h.length - 1];
+  const dt = b.t - a.t;
+  // Ignore a stale pair spanning a long gap (e.g. reopening after minutes) — the
+  // next poll produces a tight pair and a real rate.
+  if (dt <= 0 || dt > 60_000) return 0;
+  return Math.max(0, ((b.posts - a.posts) / dt) * 60_000);
+}
+
+// The per-interval posts deltas — the shape the sparkline draws.
+function kprobeDeltaSeries(name: string): number[] {
+  const h = KPROBE_HISTORY.get(name) ?? [];
+  const out: number[] = [];
+  for (let i = 1; i < h.length; i++) out.push(Math.max(0, h[i].posts - h[i - 1].posts));
+  return out;
+}
+
+export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyStat[] }) {
   const [threshold, setThreshold] = useLocalState<number>("soc.kprobeThreshold", 99);
   const [query, setQuery] = useState("");
   const [band, setBand] = useState<KprobeBand>("all");
   const [sort, setSort] = useState<KprobeSort>("rate");
 
-  const rate = (s: SocPolicyStat) => s.ratePerMin ?? 0;
+  // Self-poll the live stats on a fast cadence so the derived rate and sparklines
+  // actually MOVE. The shared snapshot only refreshes every 30s — far too slow to
+  // watch a probe heat up — so this panel fetches /api/policy-stats every 3s while
+  // it is open, and each poll advances the posts counter that the rate is derived
+  // from. Falls back to the snapshot prop until the first live poll lands.
+  const [live, setLive] = useState<SocPolicyStat[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const tick = async () => {
+      const stats = await fetchPolicyStats(controller.signal);
+      if (!cancelled && stats.length) setLive(stats);
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 3000);
+    return () => { cancelled = true; controller.abort(); window.clearInterval(id); };
+  }, []);
+  const policyStats = live ?? propStats;
+
+  // Prefer a reported rate; otherwise derive it from the posts counter.
+  const rate = (s: SocPolicyStat) => s.ratePerMin ?? kprobeRateFromHistory(s.name);
   const bandOf = (s: SocPolicyStat): Exclude<KprobeBand, "all"> => {
     const r = rate(s);
     if (r > threshold) return "over";
@@ -665,6 +912,35 @@ export function KprobeBody({ policyStats }: { policyStats: SocPolicyStat[] }) {
   const totalPosts = policyStats.reduce((sum, s) => sum + s.posts, 0);
   const hottest = policyStats.reduce<SocPolicyStat | null>((best, s) => (!best || rate(s) > rate(best) ? s : best), null);
   const enabled = policyStats.filter((s) => (s.status || "").toLowerCase() !== "disabled").length;
+  const totalMem = policyStats.reduce((sum, s) => sum + (s.memoryBytes || 0), 0);
+
+  // Record a {t, posts} sample once per DATA update (keyed on total posts, which
+  // only moves when the snapshot refreshes — not on filter/search re-renders).
+  useEffect(() => {
+    const now = Date.now();
+    for (const s of policyStats) {
+      const h = KPROBE_HISTORY.get(s.name) ?? [];
+      const last = h[h.length - 1];
+      if (!last || s.posts !== last.posts || now - last.t > 4_000) {
+        h.push({ t: now, posts: s.posts });
+        if (h.length > KPROBE_HISTORY_LEN) h.shift();
+        KPROBE_HISTORY.set(s.name, h);
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [totalPosts]);
+
+  // A probe is spiking if its latest per-interval delta is well above its own
+  // recent baseline — a sudden jump matters even below the absolute threshold.
+  const spikeOf = (s: SocPolicyStat): boolean => {
+    const series = kprobeDeltaSeries(s.name);
+    if (series.length < 4) return false;
+    const latest = series[series.length - 1];
+    const prior = series.slice(0, -1);
+    const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
+    return latest > Math.max(avg * 1.8, 3) && latest > avg + 2;
+  };
+  const spiking = policyStats.filter(spikeOf).length;
 
   const counts = useMemo(() => {
     const acc: Record<KprobeBand, number> = { all: policyStats.length, hot: 0, warm: 0, calm: 0, idle: 0, over: 0 };
@@ -694,13 +970,19 @@ export function KprobeBody({ policyStats }: { policyStats: SocPolicyStat[] }) {
     <div className="soc-kprobes">
       <StatGrid>
         <StatCard label="Policies" value={`${enabled}`} sub={`${policyStats.length} loaded`} />
-        <StatCard label="Total posts" value={fmtNum(totalPosts)} sub="since engine start" />
+        <StatCard
+          label="Spiking now"
+          value={`${spiking}`}
+          sub={spiking ? "above own baseline" : "all steady"}
+          tone={spiking ? "danger" : undefined}
+        />
         <StatCard
           label="Hottest"
-          value={hottest && rate(hottest) ? `${fmtNum(rate(hottest))}/min` : "—"}
+          value={hottest && rate(hottest) ? `${fmtNum(Math.round(rate(hottest)))}/min` : "—"}
           sub={hottest && rate(hottest) ? hottest.name : "0/min"}
           tone={hottest && rate(hottest) > threshold ? "danger" : undefined}
         />
+        <StatCard label="Kernel mem" value={formatBytes(totalMem)} sub={`BPF maps · ${fmtNum(totalPosts)} posts`} />
         <StatCard
           label="Threshold"
           value={
@@ -745,16 +1027,28 @@ export function KprobeBody({ policyStats }: { policyStats: SocPolicyStat[] }) {
         <div className="soc-kprobe-list">
           {rows.map((s) => {
             const b = bandOf(s);
+            const history = kprobeDeltaSeries(s.name);
+            const spiking = spikeOf(s);
             return (
-              <article key={s.name} className={cx("soc-kprobe-card", `band-${b}`)}>
+              <article key={s.name} className={cx("soc-kprobe-card", `band-${b}`, spiking && "is-spiking")}>
                 <div className="soc-kprobe-head">
                   <strong>{s.name}</strong>
-                  <span className={cx("soc-kprobe-band", `band-${b}`)}>{b}</span>
+                  {spiking ? (
+                    <span className="soc-kprobe-spike"><Activity size={11} aria-hidden="true" /> spiking</span>
+                  ) : (
+                    <span className={cx("soc-kprobe-band", `band-${b}`)}>{b}</span>
+                  )}
                 </div>
-                <Meter value={rate(s)} max={maxRate} tone={b === "over" || b === "hot" ? "danger" : b === "warm" ? "warn" : "good"} />
+                {history.length > 1 ? (
+                  <div className="soc-kprobe-spark">
+                    <Sparkline values={history} tone={spiking || b === "over" ? "danger" : b === "hot" ? "warn" : "accent"} />
+                  </div>
+                ) : (
+                  <Meter value={rate(s)} max={maxRate} tone={b === "over" || b === "hot" ? "danger" : b === "warm" ? "warn" : "good"} />
+                )}
                 <div className="soc-kprobe-meta">
                   <span>
-                    rate <b>{rate(s) ? `${fmtNum(rate(s))}/min` : "—"}</b>
+                    rate <b>{rate(s) ? `${fmtNum(Math.round(rate(s)))}/min` : "—"}</b>
                   </span>
                   <span>
                     posts <b>{fmtNum(s.posts)}</b>

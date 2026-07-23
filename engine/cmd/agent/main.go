@@ -343,6 +343,13 @@ func main() {
 			log.Printf("[cgroupv2] setup failed (%v) — graduated enforcement will fall through to telemetry only", err)
 		} else {
 			log.Printf("[cgroupv2] choke tiers ready under %s", *cgroupRoot)
+			// A limit this kernel refused means enforcement is real but
+			// weaker than configured. Say so — the alternative is an
+			// operator believing a CPU cap is in force when it is not.
+			if d := cgBackend.Mgr.Degraded(); len(d) > 0 {
+				log.Printf("[cgroupv2] DEGRADED — kernel refused %d limit(s): %s",
+					len(d), strings.Join(d, "; "))
+			}
 		}
 	} else {
 		log.Printf("[cgroupv2] not available at %s — graduated enforcement disabled (sever still works via SIGKILL)", *cgroupRoot)
@@ -930,12 +937,36 @@ func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
 			parts = append(parts, s)
 			continue
 		}
+		// Network arguments (tcp_connect's `sock`, or a `sockaddr`). Without
+		// this the destination IP is dropped: an outbound-connections event
+		// carries only its policy name, no peer, so the correlation graph can
+		// never draw an IP node for it. Rendering the remote endpoint as
+		// "daddr:dport" puts it into Args, where the console's IOC/peer
+		// extraction picks it up.
+		if s := a.GetSockArg(); s != nil && s.GetDaddr() != "" {
+			parts = append(parts, joinHostPort(s.GetDaddr(), s.GetDport()))
+			continue
+		}
+		if sa := a.GetSockaddrArg(); sa != nil && sa.GetAddr() != "" {
+			parts = append(parts, joinHostPort(sa.GetAddr(), sa.GetPort()))
+			continue
+		}
 		if v := a.GetIntArg(); v != 0 {
 			parts = append(parts, fmt.Sprintf("%d", v))
 			continue
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// joinHostPort renders a remote endpoint as ip:port, or just the ip when the
+// port is unknown. Kept simple (no net.JoinHostPort) so an IPv6 daddr is left
+// as-is rather than bracketed — the console's IP regex matches the bare form.
+func joinHostPort(addr string, port uint32) string {
+	if port == 0 {
+		return addr
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
 }
 
 func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {
@@ -1129,12 +1160,40 @@ func (a gatewayApplier) SetThresholds(throttleAt, tarpitAt, quarantineAt, severA
 	return nil
 }
 
-func (a gatewayApplier) Jail(string, uint32, string) error {
-	return fmt.Errorf("jail: not yet supported via the command channel (Phase 1)")
+// Jail applies a remote enforcement tier to one process. It routes through the
+// gateway's Manual path — the same one the agent's local HTTP API uses — so a
+// console-dispatched choke behaves exactly like a local operator override,
+// including bypassing detect-only mode (a manual override is a deliberate
+// decision, not an automatic one) and writing the audit row.
+func (a gatewayApplier) Jail(execID string, pid uint32, tier string) error {
+	var action circuit.Action
+	switch tier {
+	case "throttle":
+		action = circuit.ActThrottle
+	case "tarpit":
+		action = circuit.ActTarpit
+	case "quarantine":
+		action = circuit.ActQuarantine
+	case "sever":
+		action = circuit.ActSever
+	default:
+		return fmt.Errorf("jail: unknown tier %q", tier)
+	}
+	_, err := a.gw.Manual(context.Background(), choke.ManualRequest{
+		ExecID: execID, PID: pid, Action: action,
+		Reason: "remote jail (" + tier + ")", Actor: "control-plane",
+	})
+	return err
 }
 
-func (a gatewayApplier) Thaw(string, uint32) error {
-	return fmt.Errorf("thaw: not yet supported via the command channel (Phase 1)")
+// Thaw releases one process back to pristine — ActNone through the same Manual
+// path, matching the per-process release the local API performs.
+func (a gatewayApplier) Thaw(execID string, pid uint32) error {
+	_, err := a.gw.Manual(context.Background(), choke.ManualRequest{
+		ExecID: execID, PID: pid, Action: circuit.ActNone,
+		Reason: "remote thaw", Actor: "control-plane",
+	})
+	return err
 }
 
 func (a gatewayApplier) ApplyPreset(name string) error {

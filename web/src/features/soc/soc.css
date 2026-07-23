@@ -2319,7 +2319,6 @@ button.soc-metric:hover {
   font-style: normal;
 }
 
-
 .soc-popover {
   position: fixed;
   top: 72px;
@@ -2450,6 +2449,44 @@ button.soc-metric:hover {
   border-radius: 999px;
 }
 
+/* ── Active watchlist ──────────────────────────────────────────────────────*/
+.soc-watch { display: grid; gap: 14px; }
+.soc-watch-add { display: grid; grid-template-columns: 90px minmax(0, 1fr) auto; gap: 8px; }
+.soc-watch-add select, .soc-watch-add input { height: 34px; padding: 0 9px; background: var(--soc-panel-soft); color: var(--soc-text); border: 1px solid var(--soc-line); border-radius: 7px; }
+.soc-watch-add button { height: 34px; padding: 0 16px; font-weight: 600; color: var(--soc-text); background: var(--soc-panel-strong); border: 1px solid var(--soc-line); border-radius: 7px; cursor: pointer; }
+.soc-watch-add button:hover { border-color: var(--soc-accent); }
+
+.soc-watch-triggered { display: grid; gap: 7px; padding: 10px 12px; border-radius: 8px; background: color-mix(in srgb, var(--soc-danger) 8%, var(--soc-panel-soft)); border: 1px solid color-mix(in srgb, var(--soc-danger) 26%, var(--soc-line)); }
+.soc-watch-triggered .soc-stat-label { display: inline-flex; align-items: center; gap: 5px; color: var(--soc-danger); }
+.soc-watch-triggered-row { display: flex; gap: 7px; flex-wrap: wrap; }
+.soc-watch-pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 6px 3px 10px; font-size: 11px; border-radius: 999px; background: var(--soc-panel); border: 1px solid var(--soc-line); color: var(--soc-text); }
+.soc-watch-pill b { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 999px; font-size: 10px; background: var(--soc-danger); color: #fff; }
+.soc-watch-pill.sev-high b { background: #ff8a4c; }
+.soc-watch-pill.sev-medium b { background: #e1b53e; color: #0b0f17; }
+
+.soc-watch-list { display: grid; gap: 6px; }
+.soc-watch-item {
+  display: grid; grid-template-columns: 44px minmax(0, 1fr) auto 24px; align-items: center; gap: 10px;
+  padding: 9px 11px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line);
+  border-left: 3px solid var(--soc-line); border-radius: 7px;
+}
+.soc-watch-item.is-hot { border-left-color: var(--soc-muted); }
+.soc-watch-item.is-hot.sev-critical { border-left-color: var(--soc-danger); }
+.soc-watch-item.is-hot.sev-high { border-left-color: #ff8a4c; }
+.soc-watch-item.is-hot.sev-medium { border-left-color: #e1b53e; }
+.soc-watch-kind { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--soc-dim); }
+.soc-watch-term { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; color: var(--soc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soc-watch-meta { display: inline-flex; align-items: center; gap: 9px; font-size: 11px; }
+.soc-watch-count { color: var(--soc-text); font-weight: 700; }
+.soc-watch-meta em { color: var(--soc-muted); font-style: normal; }
+.soc-watch-meta i { font-style: normal; font-size: 10px; text-transform: uppercase; padding: 1px 6px; border-radius: 999px; }
+.soc-watch-meta i.sev-critical { color: var(--soc-danger); background: color-mix(in srgb, var(--soc-danger) 14%, transparent); }
+.soc-watch-meta i.sev-high { color: #ff8a4c; background: color-mix(in srgb, #ff8a4c 14%, transparent); }
+.soc-watch-meta i.sev-medium { color: #e1b53e; background: color-mix(in srgb, #e1b53e 14%, transparent); }
+.soc-watch-quiet { color: var(--soc-dim) !important; }
+.soc-watch-remove { width: 22px; height: 22px; display: grid; place-items: center; color: var(--soc-muted); background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer; font-size: 15px; line-height: 1; }
+.soc-watch-remove:hover { color: var(--soc-danger); border-color: color-mix(in srgb, var(--soc-danger) 40%, transparent); }
+
 .soc-simulator label {
   display: grid;
   grid-template-columns: 100px 1fr;
@@ -2461,6 +2498,183 @@ button.soc-metric:hover {
   height: 34px;
   padding: 0 8px;
 }
+
+/* ── Export studio ─────────────────────────────────────────────────────────*/
+.soc-export { display: grid; gap: 16px; }
+.soc-export-presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.soc-export-preset { padding: 5px 12px; font-size: 11px; font-weight: 600; color: var(--soc-muted); background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 999px; cursor: pointer; }
+.soc-export-preset:hover { color: var(--soc-text); border-color: var(--soc-accent); }
+.soc-export-preset.is-active { color: var(--soc-text); border-color: var(--soc-accent); background: color-mix(in srgb, var(--soc-accent) 14%, var(--soc-panel-soft)); }
+
+.soc-export-cols { display: grid; grid-template-columns: minmax(0, 1.3fr) minmax(0, 0.9fr); gap: 16px; }
+@media (max-width: 720px) { .soc-export-cols { grid-template-columns: minmax(0, 1fr); } }
+.soc-export-build { display: grid; gap: 14px; align-content: start; }
+.soc-export-row { display: grid; gap: 6px; }
+.soc-export-format { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.soc-export-fmt { display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; font-size: 12px; font-weight: 600; color: var(--soc-muted); background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 7px; cursor: pointer; }
+.soc-export-fmt:hover { color: var(--soc-text); border-color: var(--soc-accent); }
+.soc-export-fmt.is-active { color: var(--soc-text); border-color: var(--soc-accent); background: color-mix(in srgb, var(--soc-accent) 12%, var(--soc-panel-soft)); }
+
+.soc-export-sections { display: grid; gap: 6px; }
+.soc-export-section { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 9px 11px; text-align: left; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 7px; cursor: pointer; }
+.soc-export-section:hover { border-color: var(--soc-accent); }
+.soc-export-section.is-on { border-color: color-mix(in srgb, var(--soc-accent) 55%, var(--soc-line)); background: color-mix(in srgb, var(--soc-accent) 8%, var(--soc-panel-soft)); }
+.soc-export-check { display: grid; place-items: center; width: 18px; height: 18px; border-radius: 5px; border: 1px solid var(--soc-line); color: #fff; }
+.soc-export-section.is-on .soc-export-check { background: var(--soc-accent); border-color: var(--soc-accent); }
+.soc-export-section-label { font-size: 12.5px; color: var(--soc-text); }
+.soc-export-section-count { display: grid; justify-items: end; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; color: var(--soc-text); }
+.soc-export-section-count em { font-family: inherit; font-style: normal; font-size: 10px; color: var(--soc-muted); }
+
+.soc-export-preview { display: grid; align-content: start; gap: 10px; padding: 14px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 9px; }
+.soc-export-preview-file { display: flex; align-items: center; gap: 12px; color: var(--soc-accent); }
+.soc-export-preview-file strong { display: block; font-size: 12.5px; color: var(--soc-text); font-family: "JetBrains Mono", ui-monospace, monospace; }
+.soc-export-preview-file em { font-style: normal; font-size: 11px; color: var(--soc-muted); }
+.soc-export-preview-list { list-style: none; margin: 0; padding: 8px 0; display: grid; gap: 5px; border-top: 1px solid var(--soc-line); border-bottom: 1px solid var(--soc-line); }
+.soc-export-preview-list li { font-size: 12px; color: var(--soc-muted); }
+.soc-export-preview-list li b { color: var(--soc-text); font-family: "JetBrains Mono", ui-monospace, monospace; margin-right: 4px; }
+.soc-export-preview-empty { color: var(--soc-danger) !important; }
+.soc-export-preview-meta { font-size: 10.5px; color: var(--soc-dim); line-height: 1.6; }
+
+.soc-export-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.soc-export-run { display: inline-flex; align-items: center; gap: 7px; padding: 9px 18px; font-size: 13px; font-weight: 700; color: #fff; background: var(--soc-accent); border: none; border-radius: 8px; cursor: pointer; }
+.soc-export-run:hover { filter: brightness(1.08); }
+.soc-export-run:disabled { opacity: 0.4; cursor: not-allowed; }
+.soc-export-copy { display: inline-flex; align-items: center; gap: 6px; padding: 9px 14px; font-size: 12px; font-weight: 600; color: var(--soc-text); background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 8px; cursor: pointer; }
+.soc-export-copy:hover { border-color: var(--soc-accent); }
+
+/* ── Rule simulator (threshold studio) ─────────────────────────────────────*/
+.soc-sim { display: grid; gap: 14px; }
+
+.soc-sim-presets { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.soc-sim-preset {
+  padding: 5px 12px; font-size: 11px; font-weight: 600;
+  color: var(--soc-muted); background: var(--soc-panel-soft);
+  border: 1px solid var(--soc-line); border-radius: 999px; cursor: pointer;
+}
+.soc-sim-preset:hover { color: var(--soc-text); border-color: var(--soc-accent); }
+.soc-sim-preset.is-active { color: var(--soc-text); border-color: var(--soc-accent); background: color-mix(in srgb, var(--soc-accent) 14%, var(--soc-panel-soft)); }
+
+.soc-sim-chart {
+  position: relative;
+  padding: 8px 0 0;
+  border-bottom: 1px solid var(--soc-line);
+}
+.soc-sim-bars { display: flex; align-items: flex-end; gap: 2px; height: 100%; }
+.soc-sim-bar { flex: 1; min-height: 2px; border-radius: 2px 2px 0 0; transition: height 120ms ease, background 120ms ease; }
+
+.soc-sim-marker { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed color-mix(in srgb, var(--soc-text) 35%, transparent); z-index: 2; }
+.soc-sim-marker-flag {
+  position: absolute; top: -2px; left: 0; transform: translateX(-50%);
+  padding: 1px 5px; border-radius: 4px; font-size: 9px; font-weight: 700; color: #0b0f17;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+.soc-sim-axis { display: flex; justify-content: space-between; color: var(--soc-dim); font-size: 10px; }
+.soc-sim-axis span:nth-child(2) { text-transform: uppercase; letter-spacing: 0.08em; }
+
+.soc-sim-sliders { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }
+@media (max-width: 620px) { .soc-sim-sliders { grid-template-columns: minmax(0, 1fr); } }
+.soc-sim-slider { display: grid; gap: 5px; }
+.soc-sim-slider-head { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--soc-muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.soc-sim-slider-head i { width: 9px; height: 9px; border-radius: 2px; }
+.soc-sim-slider-head strong { color: var(--soc-text); font-family: "JetBrains Mono", ui-monospace, monospace; }
+.soc-sim-slider input { width: 100%; }
+
+.soc-sim-compare { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+@media (max-width: 620px) { .soc-sim-compare { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.soc-sim-cell {
+  display: grid; gap: 3px; padding: 9px 10px;
+  background: var(--soc-panel-soft); border: 1px solid var(--soc-line);
+  border-top: 2px solid var(--soc-line); border-radius: 7px;
+}
+.soc-sim-cell-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--soc-dim); }
+.soc-sim-cell-vals { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; color: var(--soc-text); }
+.soc-sim-cell-vals em { color: var(--soc-muted); font-style: normal; }
+.soc-sim-delta { font-size: 10px; font-weight: 700; }
+.soc-sim-delta.up { color: var(--soc-danger); }
+.soc-sim-delta.down { color: var(--soc-good, #36c795); }
+.soc-sim-delta.flat { color: var(--soc-dim); }
+
+.soc-sim-flips { display: grid; gap: 6px; }
+.soc-sim-flip {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 7px 10px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 6px;
+}
+.soc-sim-flip-title { font-size: 11.5px; color: var(--soc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soc-sim-flip-move { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; flex-shrink: 0; }
+.soc-sim-flip-move b { font-weight: 700; text-transform: uppercase; font-size: 10px; }
+.soc-sim-flip-move em { color: var(--soc-muted); font-style: normal; font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+/* ── Time Machine ──────────────────────────────────────────────────────────*/
+.soc-tm { display: grid; gap: 14px; }
+.soc-tm-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.soc-tm-modes { display: inline-flex; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 8px; overflow: hidden; }
+.soc-tm-mode { padding: 6px 14px; font-size: 11px; font-weight: 600; color: var(--soc-muted); background: transparent; border: none; cursor: pointer; }
+.soc-tm-mode.is-active { color: var(--soc-text); background: var(--soc-panel-strong); }
+.soc-tm-play { display: inline-flex; align-items: center; gap: 6px; padding: 6px 14px; font-size: 12px; font-weight: 600; color: var(--soc-text); background: var(--soc-panel-strong); border: 1px solid var(--soc-line); border-radius: 8px; cursor: pointer; }
+.soc-tm-play:hover { border-color: var(--soc-accent); }
+.soc-tm-diff-hint { font-size: 11px; color: var(--soc-muted); }
+.soc-tm-clock { margin-left: auto; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 15px; color: var(--soc-text); }
+
+.soc-tm-track { position: relative; height: 62px; padding-top: 6px; }
+.soc-tm-density { display: flex; align-items: flex-end; gap: 1px; height: 44px; }
+.soc-tm-density span { flex: 1; min-height: 1px; border-radius: 1px 1px 0 0; background: color-mix(in srgb, var(--soc-accent) 55%, var(--soc-line)); }
+.soc-tm-head { position: absolute; top: 6px; bottom: 18px; width: 2px; margin-left: -1px; background: #fff; z-index: 3; pointer-events: none; box-shadow: 0 0 6px rgba(255,255,255,0.5); }
+.soc-tm-head.is-a { background: var(--soc-info); box-shadow: 0 0 6px color-mix(in srgb, var(--soc-info) 60%, transparent); }
+.soc-tm-head.is-b { background: #ff8a4c; box-shadow: 0 0 6px rgba(255,138,76,0.6); }
+.soc-tm-bm-tick { position: absolute; top: 0; width: 10px; height: 10px; margin-left: -5px; padding: 0; border-radius: 999px; background: var(--soc-accent); border: 2px solid var(--soc-bg, #0b0f17); cursor: pointer; z-index: 4; }
+.soc-tm-bm-tick:hover { transform: scale(1.25); }
+.soc-tm-range { position: absolute; left: 0; right: 0; bottom: 0; width: 100%; margin: 0; z-index: 5; accent-color: var(--soc-accent); }
+.soc-tm-axis { display: flex; justify-content: space-between; color: var(--soc-dim); font-size: 10px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+.soc-tm-state { display: grid; grid-template-columns: minmax(160px, 0.8fr) minmax(0, 1.4fr); gap: 12px; }
+@media (max-width: 620px) { .soc-tm-state { grid-template-columns: minmax(0, 1fr); } }
+.soc-tm-risk { display: grid; gap: 2px; align-content: center; padding: 12px 16px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-left: 3px solid var(--soc-line); border-radius: 8px; }
+.soc-tm-risk[data-tone="critical"] { border-left-color: var(--soc-danger); }
+.soc-tm-risk[data-tone="high"] { border-left-color: #ff8a4c; }
+.soc-tm-risk[data-tone="elevated"] { border-left-color: #e1b53e; }
+.soc-tm-risk[data-tone="low"] { border-left-color: var(--soc-good, #36c795); }
+.soc-tm-risk strong { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 26px; color: var(--soc-text); }
+.soc-tm-risk strong i { font-size: 13px; color: var(--soc-muted); font-style: normal; }
+.soc-tm-risk em { color: var(--soc-muted); font-style: normal; font-size: 11px; }
+.soc-tm-sevs { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 8px; }
+.soc-tm-sev { display: grid; gap: 2px; padding: 8px 6px; text-align: center; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-top: 2px solid var(--soc-line); border-radius: 7px; }
+.soc-tm-sev span { font-size: 9px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--soc-dim); }
+.soc-tm-sev strong { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 16px; color: var(--soc-text); }
+
+.soc-tm-cols { display: grid; grid-template-columns: minmax(0, 0.7fr) minmax(0, 1.3fr); gap: 12px; }
+@media (max-width: 620px) { .soc-tm-cols { grid-template-columns: minmax(0, 1fr); } }
+.soc-tm-col { display: grid; gap: 6px; align-content: start; }
+.soc-tm-tech { display: flex; align-items: baseline; gap: 8px; padding: 8px 10px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 6px; }
+.soc-tm-tech strong { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 12px; color: var(--soc-text); }
+.soc-tm-tech em { color: var(--soc-muted); font-style: normal; font-size: 11px; }
+.soc-tm-alert { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 6px 10px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-left: 3px solid var(--soc-line); border-radius: 6px; }
+.soc-tm-alert.sev-critical { border-left-color: var(--soc-danger); }
+.soc-tm-alert.sev-high { border-left-color: #ff8a4c; }
+.soc-tm-alert.sev-medium { border-left-color: #e1b53e; }
+.soc-tm-alert span { font-size: 11.5px; color: var(--soc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soc-tm-alert em { color: var(--soc-muted); font-style: normal; font-size: 10px; font-family: "JetBrains Mono", ui-monospace, monospace; flex-shrink: 0; }
+
+.soc-tm-diffbox { display: grid; gap: 12px; padding: 14px; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 9px; }
+.soc-tm-diff-head { display: flex; align-items: center; gap: 12px; font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 13px; color: var(--soc-text); }
+.soc-tm-diff-head b { color: var(--soc-accent); margin-right: 4px; }
+.soc-tm-diff-arrow { color: var(--soc-muted); }
+.soc-tm-diff-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.soc-tm-diff-metrics > div { display: grid; gap: 2px; }
+.soc-tm-diff-metrics strong { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 18px; color: var(--soc-text); }
+
+.soc-tm-bookmarks { display: grid; gap: 8px; padding-top: 4px; border-top: 1px solid var(--soc-line); }
+.soc-tm-bm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.soc-tm-bm-head .soc-stat-label { display: inline-flex; align-items: center; gap: 5px; }
+.soc-tm-bm-add { display: inline-flex; align-items: center; gap: 5px; padding: 5px 11px; font-size: 11px; font-weight: 600; color: var(--soc-text); background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 999px; cursor: pointer; }
+.soc-tm-bm-add:hover { border-color: var(--soc-accent); }
+.soc-tm-bm-list { display: grid; gap: 6px; }
+.soc-tm-bm { display: flex; align-items: center; gap: 8px; }
+.soc-tm-bm-jump { flex: 1; display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 7px 11px; text-align: left; background: var(--soc-panel-soft); border: 1px solid var(--soc-line); border-radius: 6px; cursor: pointer; }
+.soc-tm-bm-jump:hover { border-color: var(--soc-accent); }
+.soc-tm-bm-jump b { font-size: 12px; color: var(--soc-text); font-weight: 600; }
+.soc-tm-bm-jump em { color: var(--soc-muted); font-style: normal; font-size: 10px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.soc-tm-bm-del { width: 24px; height: 24px; display: grid; place-items: center; color: var(--soc-muted); background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer; font-size: 15px; }
+.soc-tm-bm-del:hover { color: var(--soc-danger); border-color: color-mix(in srgb, var(--soc-danger) 40%, transparent); }
 
 .soc-help-grid {
   display: grid;
@@ -2657,6 +2871,7 @@ button.soc-metric:hover {
 /* Context-node labels (policy/file/peer) sit quieter so process binaries lead. */
 .soc-correlation-graph .node-policy text,
 .soc-correlation-graph .node-file text,
+.soc-correlation-graph .node-device text,
 .soc-correlation-graph .node-peer text {
   fill: var(--soc-muted);
   font-size: 9px;
@@ -2696,6 +2911,14 @@ button.soc-metric:hover {
 .soc-correlation-graph .node-peer circle,
 .soc-graph-legend .node-peer i {
   fill: #18b67a;
+}
+
+/* Device nodes: a LAN host this process connected to. Cyan sets them apart from
+ * external peers (green) so "talked to something on our network" reads at a
+ * glance. These are the same entities the Devices page inventories. */
+.soc-correlation-graph .node-device circle,
+.soc-graph-legend .node-device i {
+  fill: #22d3ee;
 }
 
 .soc-correlation-graph .node-file circle,
@@ -3086,20 +3309,34 @@ button.soc-metric:hover {
   flex-wrap: wrap;
 }
 
-.soc-mitre-stats { display: flex; gap: 12px; }
+.soc-mitre-stats { display: flex; gap: 12px; flex-wrap: wrap; }
 
+/* Stats are now filter toggles — click "Blind spots" to isolate the gaps. */
 .soc-mitre-stat {
   display: grid;
   gap: 2px;
   padding: 9px 16px;
+  text-align: left;
   background: var(--soc-panel-soft);
   border: 1px solid var(--soc-line);
   border-radius: 8px;
+  cursor: pointer;
+  transition: border-color 120ms ease, background 120ms ease;
 }
-
+.soc-mitre-stat:hover { border-color: var(--soc-accent); }
+.soc-mitre-stat.is-active { border-color: var(--soc-accent); background: color-mix(in srgb, var(--soc-accent) 12%, var(--soc-panel-soft)); }
+.soc-mitre-stat .soc-stat-label { display: inline-flex; align-items: center; gap: 5px; }
 .soc-mitre-stat strong { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 20px; }
-.soc-mitre-stat.tone-danger strong { color: var(--soc-danger); }
+.soc-mitre-stat.tone-observed strong { color: var(--soc-danger); }
+.soc-mitre-stat.tone-gap strong { color: #e1b53e; }
 .soc-mitre-stat em { color: var(--soc-muted); font-style: normal; font-size: 11px; }
+
+/* Grid + detail live side by side; the detail column appears only on select. */
+.soc-mitre-main { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; min-height: 0; }
+.soc-mitre.has-detail .soc-mitre-main { grid-template-columns: minmax(0, 1fr) 300px; }
+@media (max-width: 900px) {
+  .soc-mitre.has-detail .soc-mitre-main { grid-template-columns: minmax(0, 1fr); }
+}
 
 .soc-mitre-grid {
   display: grid;
@@ -3150,18 +3387,30 @@ button.soc-metric:hover {
   border: 1px solid var(--soc-line);
   border-radius: 7px;
   cursor: pointer;
-  transition: border-color 120ms ease, transform 120ms ease;
+  transition: border-color 120ms ease, transform 120ms ease, opacity 120ms ease;
 }
 
 .soc-mitre-cell:hover { transform: translateY(-1px); }
 
+/* Three states: observed (fired, red), covered (capability, blue outline),
+   gap (blind spot, faint dashed). */
 .soc-mitre-cell.is-observed {
   color: var(--soc-text);
   background: rgba(240, 85, 107, 0.16);
-  border-color: rgba(240, 85, 107, 0.5);
+  border-color: rgba(240, 85, 107, 0.55);
 }
-
-.soc-mitre-cell.is-selected { border-color: #fff; }
+.soc-mitre-cell.is-covered {
+  color: var(--soc-text);
+  border-color: color-mix(in srgb, var(--soc-info) 55%, var(--soc-line));
+  background: color-mix(in srgb, var(--soc-info) 8%, var(--soc-panel-soft));
+}
+.soc-mitre-cell.is-gap {
+  border-style: dashed;
+  border-color: color-mix(in srgb, #e1b53e 40%, var(--soc-line));
+  opacity: 0.72;
+}
+.soc-mitre-cell.is-dimmed { opacity: 0.16; filter: grayscale(0.6); }
+.soc-mitre-cell.is-selected { border-color: #fff; box-shadow: 0 0 0 1px #fff inset; opacity: 1; }
 
 .soc-mitre-id {
   display: flex;
@@ -3175,6 +3424,49 @@ button.soc-metric:hover {
 .soc-mitre-cell.is-observed .soc-mitre-id { color: var(--soc-text); }
 .soc-mitre-id em { color: var(--soc-danger); font-style: normal; font-weight: 700; }
 .soc-mitre-name { font-size: 11px; line-height: 1.25; }
+
+/* Technique detail drawer */
+.soc-mitre-detail {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+  background: var(--soc-panel-soft);
+  border: 1px solid var(--soc-line);
+  border-radius: 10px;
+  max-height: 62vh;
+  overflow: auto;
+}
+.soc-mitre-detail > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.soc-mitre-detail-tactic { color: var(--soc-dim); font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.soc-mitre-detail h3 { margin: 3px 0 0; font-size: 14px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.soc-mitre-detail section { display: grid; gap: 6px; }
+
+.soc-mitre-state-badge {
+  display: inline-flex; align-items: center; gap: 6px;
+  width: fit-content; padding: 4px 10px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; border: 1px solid transparent;
+}
+.soc-mitre-state-badge.is-observed { color: var(--soc-danger); background: rgba(240,85,107,0.14); border-color: rgba(240,85,107,0.4); }
+.soc-mitre-state-badge.is-covered { color: var(--soc-info); background: color-mix(in srgb, var(--soc-info) 12%, transparent); border-color: color-mix(in srgb, var(--soc-info) 40%, transparent); }
+.soc-mitre-state-badge.is-gap { color: #e1b53e; background: color-mix(in srgb, #e1b53e 12%, transparent); border-color: color-mix(in srgb, #e1b53e 40%, transparent); }
+
+.soc-mitre-policy { display: grid; gap: 2px; padding: 8px 10px; background: var(--soc-panel); border: 1px solid var(--soc-line); border-radius: 6px; }
+.soc-mitre-policy strong { font-size: 12px; font-family: "JetBrains Mono", ui-monospace, monospace; }
+.soc-mitre-policy span { color: var(--soc-muted); font-size: 11px; line-height: 1.4; }
+
+.soc-mitre-gap-note { margin: 0; color: var(--soc-muted); font-size: 11.5px; line-height: 1.5; }
+.soc-mitre-gap-note code { color: #e1b53e; }
+
+.soc-mitre-firing {
+  display: grid; gap: 2px; padding: 7px 10px; border-radius: 6px;
+  background: var(--soc-panel); border-left: 3px solid var(--soc-line);
+}
+.soc-mitre-firing.sev-critical { border-left-color: var(--soc-danger); }
+.soc-mitre-firing.sev-high { border-left-color: #ff8a4c; }
+.soc-mitre-firing.sev-medium { border-left-color: #e1b53e; }
+.soc-mitre-firing-title { font-size: 11.5px; color: var(--soc-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.soc-mitre-firing-meta { font-size: 10px; color: var(--soc-muted); }
 
 /* --- Policies --- */
 .soc-policies { display: grid; gap: 12px; }
@@ -3299,9 +3591,23 @@ button.soc-metric:hover {
 }
 
 .soc-kprobe-card.band-over, .soc-kprobe-card.band-hot { border-color: rgba(240, 85, 107, 0.35); }
+.soc-kprobe-card.is-spiking { border-color: rgba(240, 85, 107, 0.65); box-shadow: 0 0 0 1px rgba(240, 85, 107, 0.25); }
 
 .soc-kprobe-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .soc-kprobe-head strong { color: var(--soc-text); font-size: 12px; }
+
+.soc-kprobe-spike {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 1px 8px; border-radius: 999px; font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--soc-danger); background: rgba(240, 85, 107, 0.14); border: 1px solid rgba(240, 85, 107, 0.45);
+  animation: soc-kprobe-pulse 1.4s ease-in-out infinite;
+}
+@keyframes soc-kprobe-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.55; } }
+
+/* Sparkline trend inside a probe card — taller than the inline stat sparkline. */
+.soc-kprobe-spark { height: 32px; }
+.soc-kprobe-spark .soc-sparkline { height: 100%; }
 
 .soc-kprobe-band {
   padding: 1px 8px;
@@ -3842,7 +4148,149 @@ button.soc-metric:hover {
 .soc-graph-neighbour.node-policy i { background: #a78bfa; }
 .soc-graph-neighbour.node-file i { background: #e1b53e; }
 .soc-graph-neighbour.node-peer i { background: #18b67a; }
+.soc-graph-neighbour.node-device i { background: #22d3ee; }
 .soc-graph-neighbour.node-process i { background: var(--soc-accent); }
+
+/* The active process in the rail list — the one the action modal is targeting.
+   Keeps the source of the modal visible while it is open. */
+.soc-graph-proc.is-active {
+  border-color: var(--soc-accent);
+  background: color-mix(in srgb, var(--soc-accent) 14%, var(--soc-panel));
+}
+
+/* ── Process action modal ──────────────────────────────────────────────────
+   Click node → the rail lists the processes → click one → this. It replaces the
+   old level-2 rail panel, which had no room for the identity fields plus a
+   five-rung ladder and clipped on the right. Layers above the fullscreen graph
+   modal (z-index 60), so it sits at 72. */
+.soc-proc-modal-back {
+  position: fixed;
+  inset: 0;
+  z-index: 72;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at 68% 16%, color-mix(in srgb, var(--soc-accent) 16%, transparent), transparent 32%),
+    rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(10px) saturate(120%);
+  animation: soc-proc-modal-fade 0.14s ease;
+}
+.soc-proc-modal-back.is-open { display: flex; }
+
+@keyframes soc-proc-modal-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.soc-proc-modal {
+  width: min(720px, 100%);
+  max-height: min(84vh, 720px);
+  overflow: auto;
+  border: 1px solid color-mix(in srgb, var(--soc-accent) 22%, var(--soc-line));
+  border-radius: 14px;
+  padding: 20px 22px 22px;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--soc-accent) 8%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, var(--soc-panel-strong) 84%, transparent), var(--soc-panel)),
+    var(--soc-panel);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.soc-proc-modal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 18px;
+}
+.soc-proc-modal-title .soc-eyebrow {
+  display: block;
+  margin-bottom: 4px;
+}
+.soc-proc-modal-title h2 {
+  margin: 0;
+  font-family: var(--soc-mono, "JetBrains Mono", ui-monospace, monospace);
+  font-size: 18px;
+  font-weight: 700;
+  word-break: break-all;
+}
+.soc-proc-modal-title h2.cls-attack { color: var(--soc-danger); }
+.soc-proc-modal-title h2.cls-threat { color: #ff8a4c; }
+.soc-proc-modal-title h2.cls-baseline { color: var(--soc-text); }
+
+/* Two columns on desktop: identity left, action right. Stacks below 620px so a
+   narrow window never reintroduces the clipping this whole change removed. */
+.soc-proc-modal-body {
+  display: grid;
+  grid-template-columns: minmax(0, 0.85fr) minmax(0, 1fr);
+  gap: 22px;
+}
+@media (max-width: 620px) {
+  .soc-proc-modal-body { grid-template-columns: minmax(0, 1fr); gap: 16px; }
+}
+
+.soc-proc-modal-identity { display: grid; align-content: start; gap: 12px; }
+.soc-proc-modal-identity dl { display: grid; gap: 9px; margin: 0; }
+.soc-proc-modal-identity dl > div {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.soc-proc-modal-identity dt {
+  color: var(--soc-dim);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.soc-proc-modal-identity dd {
+  margin: 0;
+  color: var(--soc-text);
+  font-family: var(--soc-mono, "JetBrains Mono", ui-monospace, monospace);
+  font-size: 12.5px;
+  text-align: right;
+}
+.soc-proc-modal-identity dd.cls-attack { color: var(--soc-danger); }
+.soc-proc-modal-identity dd.cls-threat { color: #ff8a4c; }
+
+/* Long identifiers (host, exec_id) stack: the label on its own line, then the
+   value in FULL below it — wrapping instead of truncating so an operator reads
+   the whole thing at a glance. */
+.soc-proc-modal-identity dl > div.is-full {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 3px;
+}
+.soc-proc-modal-identity dl > div.is-full dd {
+  text-align: left;
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;         /* break inside the base64 exec_id / agent id */
+  overflow-wrap: anywhere;
+  color: var(--soc-text);
+  background: color-mix(in srgb, var(--soc-line) 22%, transparent);
+  border-radius: 5px;
+  padding: 5px 7px;
+}
+
+.soc-proc-modal-policies { display: grid; gap: 5px; }
+
+/* On desktop, divide identity from action with a hairline. */
+.soc-proc-modal-action {
+  display: grid;
+  align-content: start;
+}
+@media (min-width: 621px) {
+  .soc-proc-modal-action {
+    padding-left: 22px;
+    border-left: 1px solid var(--soc-line);
+  }
+}
+/* The shared ladder already has its own top margin; drop it inside the modal
+   where the column heading does that spacing job. */
+.soc-proc-modal-action .enf-ladder { margin-top: 0; }
 
 @media (max-width: 980px) {
   .soc-stat-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -4356,3 +4804,87 @@ button.soc-metric:hover {
     align-items: flex-start;
   }
 }
+
+/* ── Correlation-graph selection panel: node → processes → one process ──────
+ * Level 1 lists the real processes behind whichever node was clicked; level 2
+ * is the single process an operator can then act on. Styled off the existing
+ * neighbour chips so the panel reads as one component, not a bolted-on drawer. */
+.soc-graph-procs {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 12px;
+}
+.soc-graph-proc {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--soc-panel);
+  border: 1px solid var(--soc-line);
+  border-radius: 6px;
+  color: var(--soc-text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.soc-graph-proc:hover {
+  border-color: var(--soc-accent);
+  background: color-mix(in srgb, var(--soc-accent) 8%, var(--soc-panel));
+}
+.soc-graph-proc-bin {
+  font-family: var(--soc-mono, ui-monospace, monospace);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.soc-graph-proc-meta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--soc-muted);
+  flex-shrink: 0;
+}
+/* Score badge — same attack/threat/baseline language as the graph dots, so the
+ * colour means the same thing everywhere in the panel. */
+.soc-graph-proc-meta em {
+  font-style: normal;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+}
+
+/* Disabled rungs stay VISIBLE (with a title explaining why) instead of being
+ * hidden — an operator should see the whole ladder, not a shifting set. */
+/* Terminal action is styled apart from the reversible rungs on purpose. */
+
+/* Process list tools — a binary node can front 50+ processes. */
+.soc-proc-tools { display: flex; gap: 6px; }
+.soc-proc-tools input {
+  flex: 1; min-width: 0; padding: 5px 8px; font-size: 11px;
+  background: var(--soc-panel); color: var(--soc-text);
+  border: 1px solid var(--soc-line); border-radius: 6px;
+}
+.soc-proc-tools input:focus { outline: none; border-color: var(--soc-accent); }
+.soc-proc-toggle {
+  padding: 5px 8px; font-size: 10.5px; white-space: nowrap;
+  background: var(--soc-panel); color: var(--soc-muted);
+  border: 1px solid var(--soc-line); border-radius: 6px; cursor: pointer;
+}
+.soc-proc-toggle.is-on { color: var(--soc-accent); border-color: var(--soc-accent); }
+/* Contain the list rather than truncating it: everything stays reachable. */
+.soc-graph-procs { max-height: 320px; overflow-y: auto; }
+
+/* Live rung badge on a row. */
+.soc-graph-proc-meta b {
+  font-weight: 600; font-size: 9px; text-transform: uppercase;
+  padding: 1px 5px; border-radius: 999px; border: 1px solid currentColor;
+}
+.soc-rung-throttled { color: #e0a53b; }
+.soc-rung-tarpit { color: #e0a53b; }
+.soc-rung-quarantined { color: #f2576b; }
+.soc-rung-severed { color: #f2576b; }

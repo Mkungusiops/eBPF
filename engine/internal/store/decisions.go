@@ -32,6 +32,11 @@ type Decision struct {
 	DryRun    bool      `json:"dry_run"`
 	Backend   string    `json:"backend"`
 	Outcome   string    `json:"outcome"` // "ok" or error message
+	// Actor is the operator who ORDERED the action ("" for score-driven,
+	// autonomous enforcement). Distinct from OriginUser, which attributes the
+	// enforced PROCESS to an SSH session — a different question entirely, and an
+	// easy one to confuse during an audit.
+	Actor string `json:"actor,omitempty"`
 
 	// Origin attributes the originating remote client (the operator's
 	// view of "who triggered this"). Populated by the origin tracker;
@@ -73,6 +78,10 @@ func (d *Decision) deviceTail() string {
 	return "|" + d.DeviceMAC + "|" + d.DeviceID
 }
 
+func (d *Decision) hasActor() bool { return d.Actor != "" }
+
+func (d *Decision) actorTail() string { return "|" + d.Actor }
+
 // canonical builds a stable string representation used for hashing. Field
 // order matters; do not reorder without bumping a schema version.
 //
@@ -111,6 +120,12 @@ func (d *Decision) canonical() string {
 	}
 	if d.hasDevice() {
 		s += d.deviceTail()
+	}
+	// Actor trailer is appended last, after origin/device, for the same reason
+	// they are conditional: a row written before operator attribution existed
+	// keeps its original canonical form and therefore its original hash.
+	if d.hasActor() {
+		s += d.actorTail()
 	}
 	return s
 }
@@ -174,19 +189,31 @@ func (d *Decision) canonicalCandidates() []string {
 	// change never retroactively invalidates the audit log. Tamper-evidence
 	// is preserved — an attacker still can't forge a hash without inverting
 	// sha256.
-	out := make([]string, 0, 8)
+	actorTail := d.actorTail()
+
+	out := make([]string, 0, 16)
 	for _, ts := range []string{tsMicro, tsNano} {
 		b := body(ts)
+		stems := make([]string, 0, 4)
 		if d.hasOrigin() && d.hasDevice() {
-			out = append(out, b+originTail+deviceTail)
+			stems = append(stems, b+originTail+deviceTail)
 		}
 		if d.hasOrigin() {
-			out = append(out, b+originTail)
+			stems = append(stems, b+originTail)
 		}
 		if d.hasDevice() {
-			out = append(out, b+deviceTail)
+			stems = append(stems, b+deviceTail)
 		}
-		out = append(out, b)
+		stems = append(stems, b)
+		// Era 4: operator attribution. Emit each stem both with and without the
+		// actor trailer so a row written before this column existed still
+		// verifies, while new operator-ordered rows are covered by the hash.
+		for _, stem := range stems {
+			if d.hasActor() {
+				out = append(out, stem+actorTail)
+			}
+			out = append(out, stem)
+		}
 	}
 	return out
 }
@@ -263,6 +290,7 @@ func (ds *decisionStore) migrate() error {
 		{"origin_fp", "TEXT"},
 		{"device_mac", "TEXT"},
 		{"device_id", "TEXT"},
+		{"actor", "TEXT"},
 	} {
 		if err := ds.addColumnIfMissing("decisions", col.name, col.def); err != nil {
 			return fmt.Errorf("add %s: %w", col.name, err)
@@ -344,15 +372,15 @@ func (ds *decisionStore) InsertDecision(d *Decision) (int64, error) {
 		(timestamp, exec_id, pid, "binary", action, from_state, to_state, score,
 		 reason, dry_run, backend, outcome,
 		 origin_kind, origin_ip, origin_port, origin_user, origin_fp,
-		 device_mac, device_id,
+		 device_mac, device_id, actor,
 		 prev_hash, hash)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	args := []interface{}{
 		d.Timestamp, d.ExecID, d.PID, d.Binary, d.Action, d.FromState, d.ToState,
 		d.Score, d.Reason, boolToInt(d.DryRun), d.Backend, d.Outcome,
 		nullableString(d.OriginKind), nullableString(d.OriginIP), nullableUint16(d.OriginPort),
 		nullableString(d.OriginUser), nullableString(d.OriginFingerprint),
-		nullableString(d.DeviceMAC), nullableString(d.DeviceID),
+		nullableString(d.DeviceMAC), nullableString(d.DeviceID), nullableString(d.Actor),
 		d.PrevHash, d.Hash,
 	}
 	var id int64
@@ -382,7 +410,7 @@ func (ds *decisionStore) RecentDecisions(limit int) ([]Decision, error) {
 		SELECT id, timestamp, exec_id, pid, "binary", action, from_state, to_state,
 		       score, reason, dry_run, backend, outcome,
 		       origin_kind, origin_ip, origin_port, origin_user, origin_fp,
-		       device_mac, device_id,
+		       device_mac, device_id, actor,
 		       prev_hash, hash
 		FROM decisions ORDER BY id DESC LIMIT ?`), limit)
 	if err != nil {
@@ -408,14 +436,17 @@ func scanDecisionRow(rows *sql.Rows) (Decision, error) {
 	var dr int
 	var oKind, oIP, oUser, oFP sql.NullString
 	var oPort sql.NullInt64
-	var devMAC, devID sql.NullString
+	var devMAC, devID, actor sql.NullString
 	if err := rows.Scan(&d.ID, &d.Timestamp, &d.ExecID, &d.PID, &d.Binary,
 		&d.Action, &d.FromState, &d.ToState, &d.Score, &d.Reason,
 		&dr, &d.Backend, &d.Outcome,
 		&oKind, &oIP, &oPort, &oUser, &oFP,
-		&devMAC, &devID,
+		&devMAC, &devID, &actor,
 		&d.PrevHash, &d.Hash); err != nil {
 		return Decision{}, err
+	}
+	if actor.Valid {
+		d.Actor = actor.String
 	}
 	d.DryRun = dr != 0
 	if oKind.Valid {
@@ -459,7 +490,7 @@ func (ds *decisionStore) VerifyDecisionChain() (VerifyChainResult, error) {
 		SELECT id, timestamp, exec_id, pid, "binary", action, from_state, to_state,
 		       score, reason, dry_run, backend, outcome,
 		       origin_kind, origin_ip, origin_port, origin_user, origin_fp,
-		       device_mac, device_id,
+		       device_mac, device_id, actor,
 		       prev_hash, hash
 		FROM decisions ORDER BY id ASC`)
 	if err != nil {

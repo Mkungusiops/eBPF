@@ -295,6 +295,13 @@ func main() {
 			log.Printf("[cgroupv2] setup failed (%v) — graduated enforcement will fall through to telemetry only", err)
 		} else {
 			log.Printf("[cgroupv2] choke tiers ready under %s", *cgroupRoot)
+			// A limit this kernel refused means enforcement is real but
+			// weaker than configured. Say so — the alternative is an
+			// operator believing a CPU cap is in force when it is not.
+			if d := cgBackend.Mgr.Degraded(); len(d) > 0 {
+				log.Printf("[cgroupv2] DEGRADED — kernel refused %d limit(s): %s",
+					len(d), strings.Join(d, "; "))
+			}
 		}
 	} else {
 		log.Printf("[cgroupv2] not available at %s — graduated enforcement disabled (sever still works via SIGKILL)", *cgroupRoot)
@@ -930,12 +937,36 @@ func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
 			parts = append(parts, s)
 			continue
 		}
+		// Network arguments (tcp_connect's `sock`, or a `sockaddr`). Without
+		// this the destination IP is dropped: an outbound-connections event
+		// carries only its policy name, no peer, so the correlation graph can
+		// never draw an IP node for it. Rendering the remote endpoint as
+		// "daddr:dport" puts it into Args, where the console's IOC/peer
+		// extraction picks it up.
+		if s := a.GetSockArg(); s != nil && s.GetDaddr() != "" {
+			parts = append(parts, joinHostPort(s.GetDaddr(), s.GetDport()))
+			continue
+		}
+		if sa := a.GetSockaddrArg(); sa != nil && sa.GetAddr() != "" {
+			parts = append(parts, joinHostPort(sa.GetAddr(), sa.GetPort()))
+			continue
+		}
 		if v := a.GetIntArg(); v != 0 {
 			parts = append(parts, fmt.Sprintf("%d", v))
 			continue
 		}
 	}
 	return strings.Join(parts, " ")
+}
+
+// joinHostPort renders a remote endpoint as ip:port, or just the ip when the
+// port is unknown. Kept simple (no net.JoinHostPort) so an IPv6 daddr is left
+// as-is rather than bracketed — the console's IP regex matches the bare form.
+func joinHostPort(addr string, port uint32) string {
+	if port == 0 {
+		return addr
+	}
+	return fmt.Sprintf("%s:%d", addr, port)
 }
 
 func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {

@@ -240,10 +240,10 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
   },
   {
     id: "export-confirm-modal",
-    title: "Export view",
+    title: "Export studio",
     risk: "H",
     mode: "live",
-    description: "Export confirmation renders PDF and CSV snapshots.",
+    description: "Assemble an incident report, shift handoff, or threat-intel bundle — pick sections, format (PDF/CSV/JSON), and preview before export.",
     api: ["/api/alerts", "/api/events"]
   },
   {

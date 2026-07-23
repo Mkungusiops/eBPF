@@ -71,3 +71,30 @@ func TestThrottlerWithoutBackendReportsUnsupported(t *testing.T) {
 		t.Fatalf("expected ErrUnsupported with nil backend, got %v", err)
 	}
 }
+
+// Release must clear the kernel token bucket. Moving the pid into the pristine
+// cgroup lifts the cgroup limits, but the BPF bucket is a separate data plane:
+// if it survives, a "released" process is still silently rate-limited.
+func TestThrottlerReleaseClearsBucket(t *testing.T) {
+	be := bpfmap.NewNoopBackend()
+	if err := be.Open(); err != nil {
+		t.Fatal(err)
+	}
+	tr := &Throttler{Backend: be}
+	const pid = uint32(4242)
+
+	if err := tr.Apply(context.Background(), Target{PID: pid}, circuit.ActThrottle, ""); err != nil {
+		t.Fatalf("throttle: %v", err)
+	}
+	if snap, _ := be.Snapshot(); snap[pid].Flags == 0 {
+		t.Fatalf("precondition: throttle should have written a bucket for pid %d", pid)
+	}
+
+	if err := tr.Apply(context.Background(), Target{PID: pid}, circuit.ActNone, ""); err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	snap, _ := be.Snapshot()
+	if _, still := snap[pid]; still {
+		t.Errorf("release left a bucket for pid %d — the process is still throttled in the data plane", pid)
+	}
+}

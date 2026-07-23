@@ -9,6 +9,9 @@
 #   TENANTS="acme globex" ./multi-tenant-orbstack.sh
 #
 export MACHINE="${1:-${MACHINE:-ebpf-soc}}"
+# Real per-tenant agent VMs (Tetragon-observed telemetry), not sim-agents. Set
+# DATA_MODE=sim to fall back to the fast, VM-less synthetic seeders.
+export DATA_MODE="${DATA_MODE:-real}"
 D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$D/lib.sh"
 source "$D/driver-orbstack.sh"

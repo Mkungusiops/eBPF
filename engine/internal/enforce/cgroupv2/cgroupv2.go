@@ -41,6 +41,11 @@ const (
 	NameThrottled   = "choke-throttled"
 	NameTarpit      = "choke-tarpit"
 	NameQuarantined = "choke-quarantined"
+	// Where released processes land. A cgroup with controllers enabled in
+	// subtree_control cannot itself hold processes, so a released process
+	// cannot simply be written back to the choke root — it needs a real,
+	// limit-free sibling of the choke tiers.
+	NamePristine = "choke-pristine"
 )
 
 // Limits is the resource budget for a single tier. CPUMax follows
@@ -90,6 +95,8 @@ type Manager struct {
 	mu   sync.Mutex
 	limits map[circuit.Action]Limits
 	paths  map[circuit.Action]string
+	// Limits this kernel refused during Setup. See Degraded().
+	degraded []string
 }
 
 // NewManager builds an unconfigured manager. Call Setup() before Apply.
@@ -101,6 +108,11 @@ func NewManager(root string) *Manager {
 		root:   root,
 		limits: DefaultLimits(),
 		paths: map[circuit.Action]string{
+			// ActNone is the release tier: no limits are registered for it in
+			// DefaultLimits, so Setup creates it bare and a process moved here
+			// runs unconstrained. Having a path for ActNone is what makes
+			// MoveTo(pid, ActNone) a real per-process release.
+			circuit.ActNone:       filepath.Join(root, NamePristine),
 			circuit.ActThrottle:   filepath.Join(root, NameThrottled),
 			circuit.ActTarpit:     filepath.Join(root, NameTarpit),
 			circuit.ActQuarantine: filepath.Join(root, NameQuarantined),
@@ -137,34 +149,51 @@ func (m *Manager) Setup() error {
 	if !IsCgroupV2(m.root) {
 		return fmt.Errorf("cgroup v2 not detected at %s (no cgroup.controllers file)", m.root)
 	}
+	// Setup is idempotent, so the degraded set is rebuilt per run rather than
+	// accumulating duplicates across restarts/reconfigures.
+	m.degraded = nil
 	// Enable controllers in the parent's subtree so child cgroups can
 	// use them. Best-effort — they may already be enabled, in which case
 	// the kernel returns -EBUSY/-EINVAL and we ignore.
 	_ = os.WriteFile(filepath.Join(m.root, "cgroup.subtree_control"),
 		[]byte("+cpu +memory +io +pids"), 0o644)
 
+	// Creating the tier cgroups is what enforcement actually depends on:
+	// MoveTo needs the directory, and quarantine needs cgroup.freeze. The
+	// per-tier resource limits are refinements on top of that.
+	//
+	// Every limit is therefore best-effort and the failures are collected
+	// rather than returned. A kernel without CFS bandwidth control (OrbStack,
+	// several managed VM images) rejects cpu.max with EINVAL — and treating
+	// that as fatal used to abort Setup on the first tier, leave the remaining
+	// tiers uncreated, and drop the whole engine to detect-only. Losing a CPU
+	// cap is a degraded control; losing enforcement entirely is a different
+	// product. Only a mkdir failure is fatal now.
 	for a, path := range m.paths {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", path, err)
 		}
 		l := m.limits[a]
-		if err := writeIfNotEmpty(filepath.Join(path, "cpu.max"), l.CPUMax); err != nil {
-			return err
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "pids.max"), l.PidsMax); err != nil {
-			return err
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "io.weight"), l.IOWeight); err != nil {
-			// io.weight is only available when the io controller is
-			// enabled with weight tracking; failure is non-fatal.
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "memory.high"), l.MemoryHigh); err != nil {
-			// memory.high may be unavailable in unprivileged containers;
-			// non-fatal.
+		for _, knob := range []struct{ file, value string }{
+			{"cpu.max", l.CPUMax},
+			{"pids.max", l.PidsMax},
+			{"io.weight", l.IOWeight},
+			{"memory.high", l.MemoryHigh},
+		} {
+			if err := writeIfNotEmpty(filepath.Join(path, knob.file), knob.value); err != nil {
+				m.degraded = append(m.degraded,
+					fmt.Sprintf("%s/%s: %v", filepath.Base(path), knob.file, err))
+			}
 		}
 	}
 	return nil
 }
+
+// Degraded lists the per-tier limits this kernel refused, in "tier/knob: err"
+// form. Empty means every configured limit applied. Callers should surface it
+// at startup so a partially-capable box is visible rather than silently weaker
+// than the operator believes.
+func (m *Manager) Degraded() []string { return m.degraded }
 
 func writeIfNotEmpty(path, value string) error {
 	if value == "" {

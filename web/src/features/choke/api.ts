@@ -121,6 +121,18 @@ export function thawQuarantine(reason: string): Promise<unknown> {
   return postJSON("/api/choke/thaw", { reason });
 }
 
+/**
+ * Release ONE process back to pristine.
+ *
+ * Distinct from thawQuarantine above: without an exec_id the engine unfreezes
+ * the whole quarantine tier and moves nobody out of it, so a per-process
+ * "release" reported success and left the process quarantined. Passing the
+ * target makes it a real per-process release.
+ */
+export function releaseProcess(execId: string, pid: number | undefined, reason: string): Promise<unknown> {
+  return postJSON("/api/choke/thaw", { exec_id: execId, pid, reason });
+}
+
 export function toggleKillSwitch(on: boolean): Promise<unknown> {
   return postJSON("/api/choke/kill-switch", { on });
 }

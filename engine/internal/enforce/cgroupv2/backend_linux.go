@@ -28,7 +28,11 @@ func NewBackend(root string) *Backend {
 func (b *Backend) Name() string { return "cgroupv2" }
 
 func (b *Backend) Apply(_ context.Context, t enforce.Target, a circuit.Action, _ string) error {
-	if a == circuit.ActSever || a == circuit.ActNone {
+	// Sever is a SIGKILL and belongs to the severer enforcer, not to cgroups.
+	// ActNone IS handled here: it is the per-process release, moving the pid
+	// into the limit-free pristine tier. Moving a task out of the frozen
+	// quarantine cgroup also thaws it, so release works from every rung.
+	if a == circuit.ActSever {
 		return enforce.ErrUnsupported
 	}
 	if err := b.Mgr.MoveTo(t.PID, a); err != nil {

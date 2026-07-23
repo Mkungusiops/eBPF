@@ -109,10 +109,16 @@ test.describe("Devices route", () => {
     await page.getByRole("button", { name: "Refresh" }).click();
     await expect.poll(() => api.readCount("/api/choke/device-state")).toBeGreaterThan(stateReadsBeforeRefresh);
 
-    await page.getByLabel("Toggle theme").click();
+    // Theme follows the OS only — there is no in-app toggle (src/lib/theme.ts).
+    // The route marks light explicitly and treats dark as the default, so dark
+    // is the ABSENCE of theme-light here; the document classes carry both.
+    await page.emulateMedia({ colorScheme: "light" });
     await expect(page.locator("main.devices-route")).toHaveClass(/theme-light/);
-    await page.reload();
-    await expect(page.locator("main.devices-route")).toHaveClass(/theme-light/);
+    await expect(page.locator("html")).toHaveClass(/theme-light/);
+
+    await page.emulateMedia({ colorScheme: "dark" });
+    await expect(page.locator("main.devices-route")).not.toHaveClass(/theme-light/);
+    await expect(page.locator("html")).toHaveClass(/theme-dark/);
 
     expectNoCdnRequests(diagnostics.requestUrls);
     expectNoReleaseBlockingBrowserErrors(diagnostics);

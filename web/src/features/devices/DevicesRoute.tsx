@@ -20,6 +20,8 @@ import {
   isDisabledError,
   type DevicesApi
 } from "./api";
+import { EnforcementLadder } from "../common/EnforcementLadder";
+import { ACTION_FOR_RUNG, DEVICE_TERMINAL, type Rung } from "../common/enforcement";
 import "./devices.css";
 import type {
   DeviceAction,
@@ -343,6 +345,45 @@ export function DevicesRoute({
     }
   }, [api, loadDevices, pushToast, reason, selected]);
 
+  // Per-device enforcement for the shared ladder. The bulk bar above acts on a
+  // checkbox selection; this acts on the one device the operator opened. A
+  // device sever is a reversible drop rule, so release works from every rung —
+  // unlike a process sever, which is a SIGKILL (see DEVICE_TERMINAL).
+  const applyToDevice = useCallback(
+    async (mac: string, rung: Rung, why: string) => {
+      try {
+        if (rung === "pristine") {
+          const response = await api.thawDevices({ macs: [mac], reason: why || "operator thaw" });
+          const failure = response.results.find((result) => !result.ok);
+          return failure
+            ? { ok: false, detail: failure.error || "release rejected" }
+            : { ok: true, detail: "release accepted" };
+        }
+        const response = await api.jailDevices({
+          macs: [mac],
+          action: ACTION_FOR_RUNG[rung] as DeviceAction,
+          reason: why
+        });
+        const failure = response.results.find((result) => !result.ok);
+        return failure
+          ? { ok: false, detail: failure.error || `${ACTION_FOR_RUNG[rung]} rejected` }
+          : { ok: true, detail: `${ACTION_FOR_RUNG[rung]} accepted` };
+      } catch (caught) {
+        handleActionError(caught, pushToast, setDisabledMessage);
+        return { ok: false, detail: (caught as Error).message || "action failed" };
+      }
+    },
+    [api, pushToast]
+  );
+
+  const readDeviceState = useCallback(
+    async (mac: string) => {
+      const list = await api.fetchDevices();
+      return list.find((device) => device.mac === mac)?.state;
+    },
+    [api]
+  );
+
   const counts = normalizeCounts(state?.counts);
   const allSelected = devices.length > 0 && devices.every((device) => selected.has(device.mac));
   const modeDisabled = Boolean(disabledMessage || state?.dry_run);
@@ -569,6 +610,9 @@ export function DevicesRoute({
                         disabled={Boolean(disabledMessage)}
                         onSelect={toggleSelected}
                         onToggleFlows={toggleFlows}
+                        onApply={applyToDevice}
+                        onReadState={readDeviceState}
+                        onSettled={() => void loadDevices({ quiet: true })}
                       />
                     );
                   })}
@@ -682,7 +726,10 @@ function DeviceRow({
   now,
   disabled,
   onSelect,
-  onToggleFlows
+  onToggleFlows,
+  onApply,
+  onReadState,
+  onSettled
 }: {
   device: DeviceEntry;
   open: boolean;
@@ -692,6 +739,9 @@ function DeviceRow({
   disabled: boolean;
   onSelect: (mac: string, checked: boolean) => void;
   onToggleFlows: (mac: string) => void;
+  onApply: (mac: string, rung: Rung, reason: string) => Promise<{ ok: boolean; detail: string }>;
+  onReadState: (mac: string) => Promise<string | undefined>;
+  onSettled: () => void;
 }) {
   const stateClass = isDeviceStateName(device.state)
     ? device.state
@@ -743,6 +793,21 @@ function DeviceRow({
         <tr className="devices-flow-row" id={`flows-${macSlug(device.mac)}`}>
           <td colSpan={8}>
             <FlowList state={flowState} />
+            {/* Evidence and control in one place: the flows say what this
+                device is doing, the ladder does something about it. Same
+                component as the correlation graph and Choke Gateway. */}
+            <EnforcementLadder
+              target={{
+                id: device.mac,
+                label: device.hostname || device.mac,
+                host: device.last_ip || undefined
+              }}
+              state={device.state || "pristine"}
+              policy={DEVICE_TERMINAL}
+              apply={(rung, why) => onApply(device.mac, rung, why)}
+              readState={() => onReadState(device.mac)}
+              onSettled={onSettled}
+            />
           </td>
         </tr>
       ) : null}

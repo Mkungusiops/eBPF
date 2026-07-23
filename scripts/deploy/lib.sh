@@ -37,6 +37,12 @@ KC_PORT="${KC_PORT:-8085}"
 PG_PASS="${PG_PASS:-}"                       # generated if empty
 CP_ADMIN_TOKEN="${CP_ADMIN_TOKEN:-}"        # generated if empty
 TENANTS="${TENANTS:-adanian-internal acme-corp}"
+# DATA_MODE governs where each tenant's telemetry comes from:
+#   real — one REAL agent VM per tenant (Tetragon-observed kernel events); the
+#          honest, multi-host story. Set by multi-tenant-orbstack.sh.
+#   sim  — one sim-agent per tenant fabricating telemetry (fast, no VMs). The
+#          legacy default, kept for environments that can't spin up agent VMs.
+DATA_MODE="${DATA_MODE:-sim}"
 PASSWORD_POLICY="length(14) and upperCase(1) and lowerCase(1) and digits(3) and specialChars(3)"
 
 # ─── build (local, linux/amd64, static) ─────────────────────────────────────
@@ -172,16 +178,31 @@ provision_engine() {
     # Load the TracingPolicies. Without these Tetragon only emits bare execve
     # events: no setuid/sensitive-file/network kprobes, so the scorer never sees
     # the signals it grades and /api/policy-stats has nothing to report.
+    # Load each policy with retries and FAIL LOUDLY if any never lands. Tetragon
+    # can still be attaching sensors when the socket first appears, so an add
+    # issued immediately after can bounce — that is transient, not fatal. What is
+    # not acceptable is swallowing it: a missing TracingPolicy is a silent
+    # detection blind spot, and the operator would never know the platform is
+    # watching less than they think.
     log "applying TracingPolicies (detection + enforcement)"
-    RUN "applied=0
+    RUN "applied=0; failed=''
       for p in /var/lib/ebpf-engine/policies/*.yaml /var/lib/ebpf-engine/policies/enforce/*.yaml; do
         [ -f \"\$p\" ] || continue
-        docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || continue
-        if docker exec tetragon tetra tracingpolicy add \"/tmp/\$(basename \"\$p\")\" >/dev/null 2>&1; then
-          applied=\$((applied+1))
-        fi
+        name=\$(basename \"\$p\")
+        docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || { failed=\"\$failed \$name(copy)\"; continue; }
+        ok=0
+        for attempt in 1 2 3; do
+          err=\$(docker exec tetragon tetra tracingpolicy add \"/tmp/\$name\" 2>&1)
+          case \"\$err\" in
+            *'already exists'*) ok=1; break ;;
+          esac
+          if [ -z \"\$err\" ]; then ok=1; break; fi
+          sleep 2
+        done
+        if [ \"\$ok\" = 1 ]; then applied=\$((applied+1)); else failed=\"\$failed \$name\"; fi
       done
       echo \"  \$applied TracingPolicy file(s) loaded\"
+      if [ -n \"\$failed\" ]; then echo \"  WARNING: policies that FAILED to load:\$failed\"; fi
       docker exec tetragon tetra tracingpolicy list 2>/dev/null | head -12 || true"
   fi
 
@@ -438,8 +459,14 @@ CP_PG_DSN=postgres://postgres:$PG_PASS@127.0.0.1:5432/ebpf_soc?sslmode=disable
 CP_OIDC_CLIENT_SECRET=$CP_SECRET
 CP_ADMIN_TOKEN=$CP_ADMIN_TOKEN
 EOF"
+  # gRPC binds 0.0.0.0 (not loopback) so real per-tenant agents on their OWN
+  # OrbStack VMs can enroll + uplink real Tetragon telemetry. The cert SAN stays
+  # `localhost`; agents pin the CA and pass -controlplane-servername localhost so
+  # verification passes regardless of the IP they dial. Enrollment is
+  # bootstrap-token-gated and the command channel is mTLS, so exposing 9443 on
+  # the local OrbStack bridge is safe.
   _systemd_unit ebpf-soc-controlplane "ebpf-soc control plane (multi-tenant)" \
-    "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 127.0.0.1:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub" \
+    "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 0.0.0.0:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub" \
     "postgresql.service ebpf-keycloak.service" /etc/ebpf-soc/controlplane.env
   # MUST be restart, not `enable --now`: the latter is a no-op when the service is
   # already running, so a redeploy would leave the control plane holding the OLD
@@ -480,20 +507,51 @@ NGINX
     ln -sf /etc/nginx/sites-available/console /etc/nginx/sites-enabled/console
     nginx -t && systemctl restart nginx && systemctl enable nginx >/dev/null 2>&1"
 
-  # sim-agents (data seeders) — one per tenant
-  log "starting a sim-agent per tenant"
-  for t in $TENANTS; do
-    local label; label="sim-$(echo $t | cut -d- -f1)"
-    RUN "mkdir -p /var/lib/ebpf-$label"
-    _systemd_unit "ebpf-$label" "ebpf-soc sim-agent ($t)" \
-      "/usr/local/bin/ebpf-simagent -cp-http http://127.0.0.1:$CP_HTTP_PORT -cp-grpc 127.0.0.1:9443 -server-name localhost -admin-token $CP_ADMIN_TOKEN -tenant $t -state-dir /var/lib/ebpf-$label -label $label -fleet-pubkey /var/lib/ebpf-soc/fleet.pub" \
-      "ebpf-soc-controlplane.service"
-    # restart, not `enable --now`: the unit's ExecStart embeds CP_ADMIN_TOKEN,
-    # which is regenerated every deploy. Without a restart the running sim-agent
-    # keeps presenting the old token and its uplink is rejected.
-    RUN "systemctl enable ebpf-$label >/dev/null 2>&1; systemctl restart ebpf-$label"
-  done
-  RUN "sleep 8"
+  if [[ "$DATA_MODE" == real ]]; then
+    # REAL agents — one per tenant, each on its OWN OrbStack VM running Tetragon
+    # + the real engine, enrolled to the control plane. This is the "real data,
+    # not demo data" path: the console shows telemetry the agents actually
+    # observed, tenant-isolated because each tenant's events come from its own
+    # host. Provisioning is delegated to provision-agent-orbstack.sh, which is
+    # idempotent (a re-deploy reuses each VM's persisted mTLS identity).
+    log "provisioning a REAL agent VM per tenant (DATA_MODE=real)"
+    # The provisioner pushes these from the mac to each agent VM, so pull them
+    # off the control-plane box first.
+    RUN "cat /var/lib/ebpf-soc/ca.pem"   > "$BUILD_DIR/ca-bundle.pem" 2>/dev/null || true
+    RUN "cat /var/lib/ebpf-soc/fleet.pub" > "$BUILD_DIR/fleet.pub"     2>/dev/null || true
+    # Any legacy sim-agents from an earlier sim-mode deploy must not keep feeding
+    # fabricated data alongside the real agents.
+    for t in $TENANTS; do
+      local label; label="sim-$(echo $t | cut -d- -f1)"
+      RUN "systemctl disable --now ebpf-$label >/dev/null 2>&1 || true"
+    done
+    local prov="$DEPLOY_LIB_DIR/provision-agent-orbstack.sh"
+    if [[ -x "$prov" && -f "$BUILD_DIR/ca-bundle.pem" && -f "$BUILD_DIR/fleet.pub" && -f "$BUILD_DIR/agent" ]]; then
+      for t in $TENANTS; do
+        "$prov" "$t" "$TARGET_HOST" "$CP_ADMIN_TOKEN" \
+          "$BUILD_DIR/ca-bundle.pem" "$BUILD_DIR/fleet.pub" "$BUILD_DIR/agent" \
+          || warn "agent provisioning for $t reported an error — see output above"
+      done
+    else
+      warn "DATA_MODE=real but the provisioner or its inputs are missing — skipping agent VMs"
+    fi
+    RUN "sleep 4"
+  else
+    # sim-agents (data seeders) — one per tenant
+    log "starting a sim-agent per tenant"
+    for t in $TENANTS; do
+      local label; label="sim-$(echo $t | cut -d- -f1)"
+      RUN "mkdir -p /var/lib/ebpf-$label"
+      _systemd_unit "ebpf-$label" "ebpf-soc sim-agent ($t)" \
+        "/usr/local/bin/ebpf-simagent -cp-http http://127.0.0.1:$CP_HTTP_PORT -cp-grpc 127.0.0.1:9443 -server-name localhost -admin-token $CP_ADMIN_TOKEN -tenant $t -state-dir /var/lib/ebpf-$label -label $label -fleet-pubkey /var/lib/ebpf-soc/fleet.pub" \
+        "ebpf-soc-controlplane.service"
+      # restart, not `enable --now`: the unit's ExecStart embeds CP_ADMIN_TOKEN,
+      # which is regenerated every deploy. Without a restart the running sim-agent
+      # keeps presenting the old token and its uplink is rejected.
+      RUN "systemctl enable ebpf-$label >/dev/null 2>&1; systemctl restart ebpf-$label"
+    done
+    RUN "sleep 8"
+  fi
 
   local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost/" || true)"
   echo

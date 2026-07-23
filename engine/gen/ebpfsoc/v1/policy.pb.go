@@ -130,7 +130,7 @@ func (x *PolicyBundle) GetNotModified() bool {
 
 func (x *PolicyBundle) GetVersion() string {
 	if x != nil {
-		return x.Version
+		return x.Version 
 	}
 	return ""
 }
@@ -204,7 +204,7 @@ var file_ebpfsoc_v1_policy_proto_depIdxs = []int32{
 	1, // [1:2] is the sub-list for method output_type
 	0, // [0:1] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for extension extended
 	0, // [0:0] is the sub-list for field type_name
 }
 

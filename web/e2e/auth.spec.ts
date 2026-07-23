@@ -70,19 +70,22 @@ test.describe("auth", () => {
     await expect(page.locator("body")).toHaveClass(/theme-light/);
   });
 
-  test("/login can toggle and persist the shared platform theme", async ({ page }) => {
-    await page.addInitScript(() => {
-      window.localStorage.setItem("soc.theme", JSON.stringify("light"));
-    });
-
+  // Theme follows the OS and only the OS: there is no in-app toggle and no
+  // stored preference (see src/lib/theme.ts). This replaces the old
+  // toggle-and-persist test, which asserted a control that no longer exists.
+  test("/login follows the OS colour scheme, including a live change", async ({ page }) => {
+    await page.emulateMedia({ colorScheme: "light" });
     await page.goto("/login");
-    await page.getByRole("button", { name: "Switch to dark theme" }).click();
+    await expect(page.locator("html")).toHaveClass(/theme-light/);
+    await expect(page.locator("body")).toHaveClass(/theme-light/);
 
+    // Flipping the OS appearance while the page is open must re-render it.
+    await page.emulateMedia({ colorScheme: "dark" });
     await expect(page.locator("html")).toHaveClass(/theme-dark/);
     await expect(page.locator("body")).toHaveClass(/theme-dark/);
-    await expect
-      .poll(() => page.evaluate(() => window.localStorage.getItem("soc.theme")))
-      .toBe(JSON.stringify("dark"));
+
+    // And no preference is persisted — the OS is the sole authority.
+    expect(await page.evaluate(() => window.localStorage.getItem("soc.theme"))).toBeNull();
   });
 
   test("/login advertises install metadata for Safari and manifest browsers", async ({ page }) => {

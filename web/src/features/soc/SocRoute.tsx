@@ -19,7 +19,11 @@ import {
   Maximize2,
   Menu,
   Minimize2,
+  Braces,
+  Check,
+  Copy,
   Network,
+  Plus,
   Radio,
   RefreshCw,
   Search,
@@ -50,6 +54,9 @@ import {
   runSocAttack
 } from "./api";
 import { useStream } from "../../lib/stream";
+import { applyChokeAction, fetchChokeCircuits, type ChokeAction, type ChokeCircuit } from "./api";
+import { EnforcementLadder } from "../common/EnforcementLadder";
+import { ACTION_FOR_RUNG, PROCESS_TERMINAL, ladderIndex, type Rung } from "../common/enforcement";
 import { useOSTheme } from "../../lib/theme";
 import type { StreamFrame } from "../../lib/types";
 import {
@@ -73,11 +80,14 @@ import {
   FleetBody,
   HoneypotsBody,
   KprobeBody,
+  MITRE_MATRIX,
   MitreNavigatorBody,
   NotificationsBody,
   PoliciesBody,
   RiskGauge,
-  SearchField
+  SearchField,
+  buildMitreCoverageModel,
+  techniqueForAlert
 } from "./panels";
 import { SOC_PANEL_INVENTORY, SOC_STORAGE_KEYS } from "./panelInventory";
 import type {
@@ -87,8 +97,10 @@ import type {
   SocDecision,
   SocEvent,
   SocPanelInventoryItem,
+  SocPolicy,
   SocProcessDetail,
   SocSnapshot,
+  SocWhoami,
   StreamState
 } from "./types";
 import "./soc.css";
@@ -1929,7 +1941,12 @@ function SocModals({
       </ModalShell>
 
       <ModalShell panel={PANELS["mitre-navigator-modal"]} open={openSurface === "mitre"} onClose={closeModal} wide>
-        <MitreNavigatorBody mitreRows={mitreRows} alerts={rangeAlerts} onExport={() => void downloadMitrePdf(mitreRows)} />
+        <MitreNavigatorBody
+          mitreRows={mitreRows}
+          alerts={rangeAlerts}
+          policies={snapshot.policies}
+          onExport={() => void downloadMitrePdf(mitreRows, rangeAlerts, snapshot.policies, snapshot.whoami)}
+        />
       </ModalShell>
 
       <ModalShell panel={PANELS["fleet-modal"]} open={openSurface === "fleet"} onClose={closeModal} wide>
@@ -1937,7 +1954,7 @@ function SocModals({
       </ModalShell>
 
       <ModalShell panel={PANELS["watchlist-modal"]} open={openSurface === "watchlist"} onClose={closeModal}>
-        <WatchlistBody watchlist={watchlist} setWatchlist={setWatchlist} />
+        <WatchlistBody watchlist={watchlist} setWatchlist={setWatchlist} alerts={rangeAlerts} events={rangeEvents} />
       </ModalShell>
 
       <ModalShell panel={PANELS["honeypots-modal"]} open={openSurface === "honeypots"} onClose={closeModal} wide>
@@ -1949,10 +1966,7 @@ function SocModals({
       </ModalShell>
 
       <ModalShell panel={PANELS["time-machine-modal"]} open={openSurface === "time-machine"} onClose={closeModal}>
-        <InlineNotice tone="info" title="Snapshot shell">
-          The live buffer currently holds {rangeAlerts.length} alerts and {rangeEvents.length} events.
-        </InlineNotice>
-        <EmptyState title="No bookmarks loaded" detail="Expected localStorage key: soc.tmBookmarks." />
+        <TimeMachineBody alerts={rangeAlerts} events={rangeEvents} open={openSurface === "time-machine"} />
       </ModalShell>
 
       <ModalShell panel={PANELS["command-palette"]} open={openSurface === "command"} onClose={closeModal}>
@@ -2019,17 +2033,16 @@ function SocModals({
       </ModalShell>
 
       <ModalShell panel={PANELS["export-confirm-modal"]} open={openSurface === "export"} onClose={closeModal}>
-        <InlineNotice tone="info" title="Export confirmation">
-          The current snapshot includes {filteredAlerts.length} visible alerts and {rangeEvents.length} events.
-        </InlineNotice>
-        <div className="soc-drill-actions">
-          <button type="button" onClick={() => downloadCsv(filteredAlerts)}>
-            Download alert CSV
-          </button>
-          <button type="button" onClick={() => void downloadAlertPdf(filteredAlerts, rangeEvents, snapshot)}>
-            Download PDF
-          </button>
-        </div>
+        <ExportStudioBody
+          filteredAlerts={filteredAlerts}
+          rangeAlerts={rangeAlerts}
+          events={rangeEvents}
+          decisions={snapshot.decisions}
+          policies={snapshot.policies}
+          mitreRows={mitreRows}
+          whoami={snapshot.whoami}
+          version={snapshot.version}
+        />
       </ModalShell>
     </>
   );
@@ -2097,12 +2110,32 @@ function AttackRunnerList({
 
 type GraphClass = "attack" | "threat" | "baseline";
 
+// One real process behind a graph node. A process node is keyed by BINARY, so
+// "/usr/bin/nc" may stand for many live processes; enforcement needs the
+// specific exec_id/pid, which is why these are carried rather than aggregated
+// away. Only process nodes populate this — the panel resolves a policy/file/peer
+// node to processes by walking its edges, so there is one source of truth.
+//
+// The ladder itself (rungs, ordering, the "only climbs" rule, the copy) lives in
+// features/common/enforcement so the graph, Choke Gateway and Devices cannot
+// drift apart.
+export interface ProcessInstance {
+  execId: string;
+  pid?: number;
+  binary: string;
+  score: number;
+  agent?: string;
+  policies: string[];
+  lastSeen: string;
+}
+
 interface GraphNode extends SimulationNodeDatum {
   id: string;
   label: string;
   fullLabel?: string;
-  group: "process" | "policy" | "peer" | "file";
+  group: "process" | "policy" | "peer" | "file" | "device";
   weight: number;
+  processes?: ProcessInstance[];
   // Max alert score touching this process — drives node colour (attack/threat/
   // baseline). Only meaningful for process nodes; context nodes inherit neutral.
   score?: number;
@@ -2228,7 +2261,7 @@ function renderForceGraph(
   // Switch the active force configuration. Force = organic spread; Radial =
   // concentric rings keyed by node group; Decay = tight, fast-settling cluster
   // (high velocity decay) that reads as a "cooling" snapshot.
-  const GROUP_RING: Record<GraphNode["group"], number> = { process: 0.34, policy: 0.6, file: 0.82, peer: 0.95 };
+  const GROUP_RING: Record<GraphNode["group"], number> = { process: 0.34, policy: 0.6, file: 0.82, device: 0.9, peer: 0.95 };
   const applyLayout = (next: GraphLayout) => {
     layout = next;
     const minDim = Math.min(width, height);
@@ -2554,6 +2587,139 @@ const GRAPH_CLASSES: Array<{ key: GraphClass; label: string }> = [
   { key: "baseline", label: "BASELINE" }
 ];
 
+/**
+ * The process action surface, as a modal.
+ *
+ * It used to live in the 280px selection rail, where the identity fields and a
+ * five-rung ladder had no room and clipped on the right edge. The flow is now
+ * click node → the rail lists the processes behind it → click one → this modal.
+ * A modal gives the ladder room to breathe and puts the identity of the target
+ * (binary, pid, host, exec_id) squarely in front of the operator before they
+ * act — which for an irreversible action is exactly where it belongs.
+ *
+ * The rail keeps showing the process list underneath, so closing the modal
+ * returns to the list with the rung the operator just set already reflected.
+ */
+function ProcessActionModal({
+  drill,
+  state,
+  nodeLabel,
+  apply,
+  readState,
+  onClose
+}: {
+  drill: ProcessInstance;
+  state: string;
+  nodeLabel: string;
+  apply: (rung: Rung, reason: string) => Promise<{ ok: boolean; detail: string }>;
+  readState: () => Promise<string | undefined>;
+  onClose: () => void;
+}) {
+  // Esc closes — but ONLY this modal. The graph itself is also a modal that
+  // closes on Escape via a window listener, so without stopping the event here
+  // one Escape would close both, dumping the operator out of the graph. Running
+  // in the capture phase and halting propagation means this modal consumes the
+  // Escape before the graph's bubble-phase listener ever sees it.
+  useEffect(() => {
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.stopImmediatePropagation();
+      onClose();
+    };
+    window.addEventListener("keydown", onKey, { capture: true });
+    return () => window.removeEventListener("keydown", onKey, { capture: true });
+  }, [onClose]);
+
+  const cls = drill.score >= 25 ? "attack" : drill.score >= 10 ? "threat" : "baseline";
+
+  return (
+    <div
+      className="soc-proc-modal-back is-open"
+      data-panel="process-action-modal"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div className="soc-proc-modal" role="dialog" aria-modal="true" aria-label={`Enforce on ${drill.binary}`}>
+        <header className="soc-proc-modal-head">
+          <div className="soc-proc-modal-title">
+            <span className="soc-eyebrow">Process · via {shortGraphLabel(nodeLabel, 28)}</span>
+            <h2 className={`cls-${cls}`}>{drill.binary}</h2>
+          </div>
+          <button type="button" className="soc-close-button" onClick={onClose} aria-label="Close">
+            <X size={16} aria-hidden="true" />
+          </button>
+        </header>
+
+        <div className="soc-proc-modal-body">
+          {/* Left: who the target is. Identity in full, so nothing is guessed. */}
+          <section className="soc-proc-modal-identity">
+            <span className="soc-stat-label">Identity</span>
+            <dl>
+              <div>
+                <dt>pid</dt>
+                <dd>{drill.pid ?? "—"}</dd>
+              </div>
+              <div>
+                <dt>score</dt>
+                <dd className={`cls-${cls}`}>{Math.round(drill.score)}</dd>
+              </div>
+              {/* Host is multi-tenant only — in single-tenant the engine IS the
+                  host, so there is nothing to disambiguate. Long identifiers
+                  (host, exec_id) are shown IN FULL on their own line rather than
+                  truncated: an operator triaging or copying a target needs the
+                  whole value at a glance, not a "…" they have to hover to read. */}
+              {drill.agent ? (
+                <div className="is-full">
+                  <dt>host</dt>
+                  <dd>{drill.agent}</dd>
+                </div>
+              ) : null}
+              <div className="is-full">
+                <dt>exec_id</dt>
+                <dd>{drill.execId}</dd>
+              </div>
+              <div>
+                <dt>last seen</dt>
+                <dd>{formatTime(drill.lastSeen)}</dd>
+              </div>
+            </dl>
+
+            {drill.policies.length ? (
+              <div className="soc-proc-modal-policies">
+                <span className="soc-stat-label">Policies fired</span>
+                {drill.policies.map((policy) => (
+                  <span key={policy} className="soc-graph-neighbour node-policy">
+                    <i />
+                    {policy}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </section>
+
+          {/* Right: the same shared ladder as Choke Gateway and Devices, now
+              with the width it needs. */}
+          <section className="soc-proc-modal-action">
+            <EnforcementLadder
+              target={{
+                id: drill.execId,
+                label: drill.binary,
+                pid: drill.pid,
+                host: drill.agent ? shortGraphLabel(drill.agent, 18) : undefined
+              }}
+              state={state}
+              apply={apply}
+              readState={readState}
+              policy={PROCESS_TERMINAL}
+            />
+          </section>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function CorrelationGraph({
   active,
   alerts,
@@ -2661,6 +2827,22 @@ function CorrelationGraph({
     return () => window.clearTimeout(timer);
   }, [active, live, phase, liveSignature, buildFiltered]);
 
+  // Recover from a premature "empty" verdict.
+  //
+  // The graph is built once, and the live updater above only runs once it is
+  // "ready". So if the surface is opened before the alert buffer has landed,
+  // the build finds nothing, latches "empty", and stays empty forever — no
+  // amount of incoming data brings it back, because nothing re-triggers the
+  // build. Opening the graph a few seconds later showed 61 nodes; opening it
+  // immediately showed none, permanently. Watch for data arriving and rebuild.
+  useEffect(() => {
+    if (!active || phase !== "empty") return undefined;
+    const timer = window.setTimeout(() => {
+      if (buildFiltered().nodes.length > 0) setRefreshKey((key) => key + 1);
+    }, 700);
+    return () => window.clearTimeout(timer);
+  }, [active, phase, liveSignature, buildFiltered]);
+
   // Filter / layout / search push to the running handle without a rebuild.
   useEffect(() => {
     if (phase !== "ready") return;
@@ -2695,6 +2877,67 @@ function CorrelationGraph({
       return next.size ? next : prev;
     });
 
+  // The drilled-into process (level 2 of the panel). Cleared whenever the
+  // selected node changes so you never act on a process from a previous node.
+  const [drill, setDrill] = useState<ProcessInstance | null>(null);
+  useEffect(() => {
+    setDrill(null);
+  }, [selected?.id]);
+
+  // Live ladder state, keyed by exec_id. Refreshed while the panel is open so a
+  // rung that was just applied (or applied autonomously by the scorer) is
+  // reflected rather than the operator acting on a stale picture.
+  const [circuits, setCircuits] = useState<Map<string, ChokeCircuit>>(new Map());
+  // Q1: a binary node can stand for 50+ processes, most of them identical at a
+  // glance. Rather than an arbitrary cap that hides work, the list scrolls and
+  // is filterable, and "contained only" answers the question an operator
+  // actually has during triage: what is already held, and what is not?
+  const [procFilter, setProcFilter] = useState("");
+  const [containedOnly, setContainedOnly] = useState(false);
+
+  const refreshCircuits = useCallback(async () => {
+    const list = await fetchChokeCircuits();
+    setCircuits(new Map(list.map((c) => [c.execId, c])));
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    void refreshCircuits();
+    const timer = window.setInterval(() => void refreshCircuits(), 5000);
+    return () => window.clearInterval(timer);
+  }, [active, refreshCircuits]);
+
+  useEffect(() => {
+    setProcFilter("");
+    setContainedOnly(false);
+  }, [selected?.id]);
+
+  const drillState = drill ? circuits.get(drill.execId)?.state ?? "pristine" : "pristine";
+
+  // Transport for the shared ladder. The component owns the interaction (reason,
+  // confirm, dispatch-vs-confirmed polling); the page owns how a process is
+  // addressed and read back.
+  const applyToProcess = useCallback(
+    async (rung: Rung, why: string) => {
+      if (!drill) return { ok: false, detail: "no process selected" };
+      return applyChokeAction(
+        ACTION_FOR_RUNG[rung] as ChokeAction,
+        { execId: drill.execId, pid: drill.pid, binary: drill.binary },
+        why
+      );
+    },
+    [drill]
+  );
+
+  const readProcessState = useCallback(async () => {
+    if (!drill) return undefined;
+    const list = await fetchChokeCircuits();
+    setCircuits(new Map(list.map((c) => [c.execId, c])));
+    // Undefined (rather than "pristine") when the circuit is gone — the ladder
+    // reads absence as "released", which is exactly what it means here.
+    return list.find((c) => c.execId === drill.execId)?.state;
+  }, [drill]);
+
   const neighbours = useMemo(() => {
     if (!selected) return [];
     const ids = new Set<string>();
@@ -2706,11 +2949,41 @@ function CorrelationGraph({
     }
     return lastDataRef.current.nodes.filter((node) => ids.has(node.id));
   }, [selected]);
+
+  // Every node answers the same question: "which processes are behind this?"
+  // A process node answers with its own instances; a policy/file/peer node is
+  // evidence, so it answers with the processes it is wired to. Resolving via
+  // edges (rather than copying instances onto context nodes) keeps one source
+  // of truth and stops the same process appearing with stale data on five dots.
+  const nodeProcesses = useMemo<ProcessInstance[]>(() => {
+    if (!selected) return [];
+    const source = selected.group === "process" ? [selected] : neighbours.filter((n) => n.group === "process");
+    const byExec = new Map<string, ProcessInstance>();
+    for (const node of source) {
+      for (const proc of node.processes ?? []) {
+        const existing = byExec.get(proc.execId);
+        if (!existing || proc.score > existing.score) byExec.set(proc.execId, proc);
+      }
+    }
+    return [...byExec.values()].sort((a, b) => b.score - a.score);
+  }, [selected, neighbours]);
+
+  const visibleProcesses = useMemo(() => {
+    const q = procFilter.trim().toLowerCase();
+    return nodeProcesses.filter((proc) => {
+      if (containedOnly) {
+        const state = circuits.get(proc.execId)?.state;
+        if (!state || state === "pristine") return false;
+      }
+      if (!q) return true;
+      return String(proc.pid ?? "").includes(q) || proc.execId.toLowerCase().includes(q);
+    });
+  }, [nodeProcesses, procFilter, containedOnly, circuits]);
   const graphCounts = useMemo(() => countSeverities(alerts), [alerts]);
   const policyCount = useMemo(() => new Set(events.map((event) => event.policyName).filter(Boolean)).size, [events]);
   const policyEventCount = useMemo(() => events.filter((event) => event.policyName).length, [events]);
   const indicatorCount = useMemo(
-    () => new Set(events.map((event) => event.path || event.destIp || event.remoteIp).filter(Boolean)).size,
+    () => new Set(events.map((event) => event.path || peerFromEvent(event)).filter(Boolean)).size,
     [events]
   );
   const criticalPathCount = graphCounts.critical + graphCounts.high;
@@ -2890,12 +3163,16 @@ function CorrelationGraph({
           <span className="cls-baseline"><i />baseline</span>
           <span className="node-policy"><i />policy</span>
           <span className="node-file"><i />file</span>
+          <span className="node-device"><i />device</span>
           <span className="node-peer"><i />peer</span>
         </div>
       </div>
 
       <aside className="soc-graph-selection">
         <span className="soc-stat-label">Selection</span>
+
+        {/* The node: what it is, and the processes behind it. Picking a process
+            opens the action modal (below) rather than a cramped second panel. */}
         {selected ? (
           <div className="soc-graph-detail">
             <strong className={selected.group === "process" && selected.cls ? `cls-${selected.cls}` : undefined}>
@@ -2923,6 +3200,69 @@ function CorrelationGraph({
                 <dd>{neighbours.length}</dd>
               </div>
             </dl>
+
+            <div className="soc-graph-procs">
+              <span className="soc-stat-label">
+                Processes ({visibleProcesses.length}
+                {visibleProcesses.length !== nodeProcesses.length ? ` of ${nodeProcesses.length}` : ""})
+                {selected.group !== "process" ? " · via this node" : ""}
+              </span>
+              {nodeProcesses.length > 6 ? (
+                <div className="soc-proc-tools">
+                  <input
+                    value={procFilter}
+                    onChange={(event) => setProcFilter(event.target.value)}
+                    placeholder="Filter by pid or exec_id"
+                    aria-label="Filter processes"
+                  />
+                  <button
+                    type="button"
+                    className={cx("soc-proc-toggle", containedOnly && "is-on")}
+                    onClick={() => setContainedOnly((v) => !v)}
+                    title="Show only processes already on a rung above pristine"
+                  >
+                    Contained
+                  </button>
+                </div>
+              ) : null}
+              {visibleProcesses.length ? (
+                visibleProcesses.map((proc) => (
+                  <button
+                    key={proc.execId}
+                    type="button"
+                    className={cx("soc-graph-proc", drill?.execId === proc.execId && "is-active")}
+                    onClick={() => setDrill(proc)}
+                    title={`${proc.binary} · exec_id ${proc.execId}`}
+                  >
+                    <span className="soc-graph-proc-bin">{shortGraphLabel(proc.binary, 22)}</span>
+                    <span className="soc-graph-proc-meta">
+                      {proc.pid ? `pid ${proc.pid}` : "pid —"}
+                      {/* Live rung, so the list shows what is already contained
+                          rather than making the operator open each one. */}
+                      {(() => {
+                        const st = circuits.get(proc.execId)?.state;
+                        return st && st !== "pristine" ? <b className={`soc-rung-${st}`}>{st}</b> : null;
+                      })()}
+                      <em className={proc.score >= 25 ? "cls-attack" : proc.score >= 10 ? "cls-threat" : "cls-baseline"}>
+                        {Math.round(proc.score)}
+                      </em>
+                    </span>
+                  </button>
+                ))
+              ) : (
+                // Q2: distinguish "your filter hid them" from "this node has
+                // nothing you can act on" — same empty box, very different
+                // meaning, and conflating them wastes an operator's time.
+                <p className="soc-graph-selection-empty">
+                  {nodeProcesses.length
+                    ? "No process matches this filter."
+                    : selected.group === "process"
+                      ? "No live process resolved — these records carry no exec_id, so there is nothing to enforce against."
+                      : "Nothing actionable here. This node is evidence; open a process it connects to."}
+                </p>
+              )}
+            </div>
+
             {neighbours.length ? (
               <div className="soc-graph-neighbours">
                 <span className="soc-stat-label">Connected</span>
@@ -2941,88 +3281,1003 @@ function CorrelationGraph({
               </div>
             ) : null}
           </div>
-        ) : (
-          <p className="soc-graph-selection-empty">Click a node to inspect its lineage, classification, and correlations.</p>
-        )}
+        ) : null}
+
+        {!selected ? (
+          <p className="soc-graph-selection-empty">
+            Click a node to see the processes behind it, then pick one to inspect and act.
+          </p>
+        ) : null}
       </aside>
+
+      {/* Click node → list → click a process → this modal. Rendered last so it
+          layers over the whole shell; the rail list stays visible underneath. */}
+      {drill ? (
+        <ProcessActionModal
+          drill={drill}
+          state={drillState}
+          nodeLabel={selected?.fullLabel || selected?.label || drill.binary}
+          apply={applyToProcess}
+          readState={readProcessState}
+          onClose={() => setDrill(null)}
+        />
+      ) : null}
     </div>
   );
 }
 
+type WatchKind = keyof typeof DEFAULT_WATCHLIST;
+interface WatchHit {
+  kind: WatchKind;
+  term: string;
+  hits: number;
+  lastSeen?: string;
+  severity?: Severity;
+}
+
+/**
+ * An ACTIVE watchlist. The old one was a notepad — terms sat in localStorage and
+ * never did anything. Now every watched path / IP / binary is matched against
+ * the live alert + event stream: each shows a hit count, when it last fired, and
+ * the worst severity it drew. Triggered watches surface at the top so an
+ * operator sees "the thing I'm watching for is happening right now."
+ */
 function WatchlistBody({
   watchlist,
-  setWatchlist
+  setWatchlist,
+  alerts,
+  events
 }: {
   watchlist: typeof DEFAULT_WATCHLIST;
   setWatchlist: React.Dispatch<React.SetStateAction<typeof DEFAULT_WATCHLIST>>;
+  alerts: SocAlert[];
+  events: SocEvent[];
 }) {
-  const [kind, setKind] = useState<keyof typeof DEFAULT_WATCHLIST>("paths");
+  const [kind, setKind] = useState<WatchKind>("paths");
   const [value, setValue] = useState("");
+
+  const results = useMemo<WatchHit[]>(() => {
+    const eventHay = events.map((e) => ({
+      hay: [e.process, e.path, e.args, peerFromEvent(e)].filter(Boolean).join(" ").toLowerCase(),
+      ts: e.timestamp
+    }));
+    const alertHay = alerts.map((a) => ({
+      hay: [a.title, a.description, a.args].filter(Boolean).join(" ").toLowerCase(),
+      ts: a.timestamp,
+      sev: a.severity
+    }));
+    const sevRank: Record<Severity, number> = { critical: 5, high: 4, medium: 3, low: 2, info: 1 };
+
+    const out: WatchHit[] = [];
+    for (const k of ["paths", "ips", "binaries"] as WatchKind[]) {
+      for (const term of watchlist[k]) {
+        const needle = term.toLowerCase();
+        let hits = 0;
+        let lastSeen: string | undefined;
+        let severity: Severity | undefined;
+        const note = (ts?: string, sev?: Severity) => {
+          hits += 1;
+          if (ts && (!lastSeen || Date.parse(ts) > Date.parse(lastSeen))) lastSeen = ts;
+          if (sev && (!severity || sevRank[sev] > sevRank[severity])) severity = sev;
+        };
+        for (const e of eventHay) if (e.hay.includes(needle)) note(e.ts);
+        for (const a of alertHay) if (a.hay.includes(needle)) note(a.ts, a.sev);
+        out.push({ kind: k, term, hits, lastSeen, severity });
+      }
+    }
+    return out.sort((a, b) => b.hits - a.hits);
+  }, [watchlist, alerts, events]);
+
+  const triggered = results.filter((r) => r.hits > 0);
+  const now = Date.now();
+  const ago = (iso?: string) => {
+    if (!iso) return "never";
+    const s = Math.max(0, Math.round((now - Date.parse(iso)) / 1000));
+    return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`;
+  };
+  const remove = (k: WatchKind, term: string) =>
+    setWatchlist((cur) => ({ ...cur, [k]: cur[k].filter((t) => t !== term) }));
+
   return (
-    <div className="soc-watchlist">
-      <div className="soc-control-row">
-        <select value={kind} onChange={(event) => setKind(event.target.value as keyof typeof DEFAULT_WATCHLIST)}>
-          <option value="paths">paths</option>
-          <option value="ips">ips</option>
-          <option value="binaries">binaries</option>
+    <div className="soc-watch">
+      <div className="soc-watch-add">
+        <select value={kind} onChange={(e) => setKind(e.target.value as WatchKind)}>
+          <option value="paths">path</option>
+          <option value="ips">ip</option>
+          <option value="binaries">binary</option>
         </select>
-        <input value={value} onChange={(event) => setValue(event.target.value)} placeholder="Add watch term" />
+        <input
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") { const t = value.trim(); if (t && !watchlist[kind].includes(t)) { setWatchlist((c) => ({ ...c, [kind]: [...c[kind], t] })); setValue(""); } } }}
+          placeholder={kind === "ips" ? "e.g. 185.220.101.1" : kind === "binaries" ? "e.g. /usr/bin/nc" : "e.g. /etc/shadow"}
+        />
         <button
           type="button"
-          onClick={() => {
-            const trimmed = value.trim();
-            if (!trimmed) return;
-            setWatchlist((current) => ({ ...current, [kind]: [...current[kind], trimmed] }));
-            setValue("");
-          }}
+          onClick={() => { const t = value.trim(); if (t && !watchlist[kind].includes(t)) { setWatchlist((c) => ({ ...c, [kind]: [...c[kind], t] })); setValue(""); } }}
         >
-          Add
+          Watch
         </button>
       </div>
-      {(["paths", "ips", "binaries"] as const).map((group) => (
-        <div key={group}>
-          <strong>{group}</strong>
-          {watchlist[group].length ? (
-            watchlist[group].map((item) => <code key={`${group}-${item}`}>{item}</code>)
-          ) : (
-            <span>none</span>
-          )}
+
+      {triggered.length ? (
+        <div className="soc-watch-triggered">
+          <span className="soc-stat-label"><Radio size={12} aria-hidden="true" /> Triggered now · {triggered.length}</span>
+          <div className="soc-watch-triggered-row">
+            {triggered.slice(0, 6).map((r) => (
+              <span key={`${r.kind}-${r.term}`} className={cx("soc-watch-pill", r.severity && `sev-${r.severity}`)}>
+                {r.term}<b>{r.hits}</b>
+              </span>
+            ))}
+          </div>
         </div>
-      ))}
+      ) : null}
+
+      {results.length === 0 ? (
+        <p className="soc-graph-selection-empty">
+          Nothing watched yet. Add a path, IP, or binary above and it will be matched live against every alert and event in range.
+        </p>
+      ) : (
+        <div className="soc-watch-list">
+          {results.map((r) => (
+            <div key={`${r.kind}-${r.term}`} className={cx("soc-watch-item", r.hits > 0 && "is-hot", r.severity && `sev-${r.severity}`)}>
+              <span className="soc-watch-kind">{r.kind === "paths" ? "path" : r.kind === "ips" ? "ip" : "bin"}</span>
+              <span className="soc-watch-term" title={r.term}>{r.term}</span>
+              <span className="soc-watch-meta">
+                {r.hits > 0 ? (
+                  <>
+                    <b className="soc-watch-count">{r.hits} hit{r.hits === 1 ? "" : "s"}</b>
+                    <em>{ago(r.lastSeen)}</em>
+                    {r.severity ? <i className={`sev-${r.severity}`}>{r.severity}</i> : null}
+                  </>
+                ) : (
+                  <em className="soc-watch-quiet">no hits in range</em>
+                )}
+              </span>
+              <button type="button" className="soc-watch-remove" onClick={() => remove(r.kind, r.term)} aria-label={`Remove ${r.term}`}>×</button>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function SimulatorBody({ alerts }: { alerts: SocAlert[] }) {
-  const [low, setLow] = useState(5);
-  const [medium, setMedium] = useState(10);
-  const [high, setHigh] = useState(20);
-  const [critical, setCritical] = useState(40);
-  const simulated = alerts.reduce(
-    (acc, alert) => {
-      const severity = classifyScore(alert.score, low, medium, high, critical);
-      acc[severity] += 1;
-      return acc;
-    },
-    { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>
+const EMPTY_TECH_MAP = new Map<string, string>();
+
+function mitreTechniqueLabel(id: string): string {
+  for (const tactic of MITRE_MATRIX) {
+    const hit = tactic.techniques.find((t) => t.id === id);
+    if (hit) return hit.name;
+  }
+  return "technique";
+}
+
+interface TmBookmark { id: string; label: string; t: number }
+
+/**
+ * Time Machine — a real timeline scrubber over the buffered telemetry. It was a
+ * stub ("no bookmarks loaded"). Now the operator drags a playhead across an
+ * alert-density track and the whole posture (severity mix, risk, top technique,
+ * event rate, and what was firing) re-renders AS IT WAS at that instant. Play to
+ * watch an incident unfold, bookmark a moment ("intrusion start"), or switch to
+ * Diff to see exactly what changed between two points in time.
+ */
+function TimeMachineBody({ alerts, events, open }: { alerts: SocAlert[]; events: SocEvent[]; open: boolean }) {
+  const stamped = useMemo(
+    () => alerts.map((a) => ({ a, t: Date.parse(a.timestamp) })).filter((x) => !Number.isNaN(x.t)).sort((x, y) => x.t - y.t),
+    [alerts]
   );
+  const eventTimes = useMemo(
+    () => events.map((e) => Date.parse(e.timestamp)).filter((t) => !Number.isNaN(t)).sort((x, y) => x - y),
+    [events]
+  );
+
+  const tMin = stamped.length ? stamped[0].t : Date.now() - 3_600_000;
+  const tMax = stamped.length ? stamped[stamped.length - 1].t : Date.now();
+  const span = Math.max(1, tMax - tMin);
+
+  const [t, setT] = useState(tMax);
+  const [playing, setPlaying] = useState(false);
+  const [mode, setMode] = useState<"scrub" | "diff">("scrub");
+  const [diffA, setDiffA] = useState<number | null>(null);
+  const [bookmarks, setBookmarks] = useLocalJsonState<TmBookmark[]>("soc.tmBookmarks", []);
+
+  // Reset the playhead to "now" whenever the panel opens or the buffer grows.
+  useEffect(() => { if (open) setT(tMax); }, [open, tMax]);
+
+  // Play: advance the head across the span in ~5s, then stop at the end.
+  useEffect(() => {
+    if (!playing) return undefined;
+    const step = span / 100;
+    const id = window.setInterval(() => {
+      setT((cur) => {
+        const next = cur + step;
+        if (next >= tMax) { setPlaying(false); return tMax; }
+        return next;
+      });
+    }, 50);
+    return () => window.clearInterval(id);
+  }, [playing, span, tMax]);
+
+  const sevRank: Severity[] = ["critical", "high", "medium", "low", "info"];
+  const stateAt = (at: number) => {
+    const upTo = stamped.filter((x) => x.t <= at);
+    const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>;
+    const techniques = new Map<string, number>();
+    for (const { a } of upTo) {
+      counts[a.severity] += 1;
+      // Resolve the technique the same way the Navigator does (mitre tag, then
+      // known policy name, then alert-text keywords) so the timeline shows the
+      // real top technique instead of "none" on untagged real-agent data.
+      const id = techniqueForAlert(a, EMPTY_TECH_MAP);
+      if (id) techniques.set(`${id} ${mitreTechniqueLabel(id)}`, (techniques.get(`${id} ${mitreTechniqueLabel(id)}`) || 0) + 1);
+    }
+    const risk = Math.min(100, counts.critical * 8 + counts.high * 3 + counts.medium);
+    const rate = eventTimes.filter((et) => et > at - 60_000 && et <= at).length / 60;
+    const topTech = [...techniques.entries()].sort((a, b) => b[1] - a[1])[0];
+    return { total: upTo.length, counts, risk, rate, topTech, recent: upTo.slice(-6).reverse().map((x) => x.a) };
+  };
+
+  const now = stateAt(t);
+
+  // Alert-density track: 60 bins of alert volume across the span.
+  const bins = 60;
+  const density = useMemo(() => {
+    const acc = new Array(bins).fill(0);
+    for (const { t: at } of stamped) acc[Math.min(bins - 1, Math.floor(((at - tMin) / span) * bins))] += 1;
+    return acc;
+  }, [stamped, tMin, span]);
+  const maxDensity = Math.max(1, ...density);
+
+  const fmtClock = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const pctOf = (ms: number) => `${((ms - tMin) / span) * 100}%`;
+
+  // Diff: A is pinned, B is the current head.
+  const diff = mode === "diff" && diffA != null ? (() => {
+    const a = Math.min(diffA, t), b = Math.max(diffA, t);
+    const sa = stateAt(a), sb = stateAt(b);
+    const between = stamped.filter((x) => x.t > a && x.t <= b).map((x) => x.a);
+    const newTechs = new Set<string>();
+    const seenBefore = new Set(stamped.filter((x) => x.t <= a).map((x) => x.a.mitreId?.match(/T\d{4}/)?.[0]).filter(Boolean) as string[]);
+    for (const al of between) { const id = al.mitreId?.match(/T\d{4}/)?.[0]; if (id && !seenBefore.has(id)) newTechs.add(id); }
+    return { a, b, sa, sb, added: between.length, newTechs: [...newTechs] };
+  })() : null;
+
+  if (!stamped.length) {
+    return <EmptyState title="No telemetry in the buffer yet" detail="Alerts will populate the timeline as the engine emits them." />;
+  }
+
   return (
-    <div className="soc-simulator">
-      {[
-        ["low", low, setLow],
-        ["medium", medium, setMedium],
-        ["high", high, setHigh],
-        ["critical", critical, setCritical]
-      ].map(([label, value, setter]) => (
-        <label key={label as string}>
-          <span>{label as string}</span>
-          <input type="number" value={value as number} onChange={(event) => (setter as (value: number) => void)(Number(event.target.value))} />
-        </label>
-      ))}
-      <div className="soc-profile-grid">
-        {SEVERITIES.map((severity) => (
-          <MetricTile key={severity} label={severity} value={simulated[severity]} tone={severity} />
+    <div className="soc-tm">
+      <div className="soc-tm-controls">
+        <div className="soc-tm-modes">
+          <button type="button" className={cx("soc-tm-mode", mode === "scrub" && "is-active")} onClick={() => { setMode("scrub"); setDiffA(null); }}>Scrub</button>
+          <button type="button" className={cx("soc-tm-mode", mode === "diff" && "is-active")} onClick={() => { setMode("diff"); setDiffA((v) => v ?? t); }}>Diff</button>
+        </div>
+        {mode === "scrub" ? (
+          <button type="button" className="soc-tm-play" onClick={() => { if (t >= tMax) setT(tMin); setPlaying((p) => !p); }}>
+            {playing ? <><Minimize2 size={13} /> Pause</> : <><Zap size={13} /> Play incident</>}
+          </button>
+        ) : (
+          <span className="soc-tm-diff-hint">A pinned at {diffA != null ? fmtClock(diffA) : "—"} · drag for B</span>
+        )}
+        <span className="soc-tm-clock">{fmtClock(t)}</span>
+      </div>
+
+      {/* Density track + playhead. */}
+      <div className="soc-tm-track">
+        <div className="soc-tm-density">
+          {density.map((d, i) => <span key={i} style={{ height: `${(d / maxDensity) * 100}%` }} />)}
+        </div>
+        {bookmarks.map((bm) => (
+          <button
+            key={bm.id}
+            type="button"
+            className="soc-tm-bm-tick"
+            style={{ left: pctOf(bm.t) }}
+            title={`${bm.label} · ${fmtClock(bm.t)}`}
+            onClick={() => { setT(bm.t); setPlaying(false); }}
+          />
         ))}
+        {mode === "diff" && diffA != null ? <div className="soc-tm-head is-a" style={{ left: pctOf(diffA) }} /> : null}
+        <div className={cx("soc-tm-head", mode === "diff" && "is-b")} style={{ left: pctOf(t) }} />
+        <input
+          type="range"
+          className="soc-tm-range"
+          min={tMin}
+          max={tMax}
+          value={t}
+          onChange={(e) => { setPlaying(false); setT(Number(e.target.value)); }}
+        />
+      </div>
+      <div className="soc-tm-axis"><span>{fmtClock(tMin)}</span><span>{fmtClock(tMax)}</span></div>
+
+      {mode === "scrub" ? (
+        <>
+          <div className="soc-tm-state">
+            <div className="soc-tm-risk" data-tone={now.risk >= 80 ? "critical" : now.risk >= 45 ? "high" : now.risk >= 18 ? "elevated" : "low"}>
+              <span className="soc-stat-label">Posture at {fmtClock(t)}</span>
+              <strong>{now.risk}<i>/100</i></strong>
+              <em>{now.total} alerts · {now.rate.toFixed(1)}/s events</em>
+            </div>
+            <div className="soc-tm-sevs">
+              {sevRank.map((s) => (
+                <div key={s} className="soc-tm-sev" style={{ borderTopColor: SIM_SEVERITY_COLOR[s] }}>
+                  <span>{s}</span>
+                  <strong>{now.counts[s]}</strong>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="soc-tm-cols">
+            <div className="soc-tm-col">
+              <span className="soc-stat-label">Top technique then</span>
+              {now.topTech ? (
+                <div className="soc-tm-tech"><strong>{now.topTech[0]}</strong><em>×{now.topTech[1]}</em></div>
+              ) : <p className="soc-graph-selection-empty">none yet</p>}
+            </div>
+            <div className="soc-tm-col">
+              <span className="soc-stat-label">Firing at this moment</span>
+              {now.recent.length ? now.recent.map((a) => (
+                <div key={a.id} className={cx("soc-tm-alert", `sev-${a.severity}`)}>
+                  <span>{a.title}</span><em>{fmtClock(Date.parse(a.timestamp))}</em>
+                </div>
+              )) : <p className="soc-graph-selection-empty">quiet</p>}
+            </div>
+          </div>
+        </>
+      ) : diff ? (
+        <div className="soc-tm-diffbox">
+          <div className="soc-tm-diff-head">
+            <span><b>A</b> {fmtClock(diff.a)}</span>
+            <span className="soc-tm-diff-arrow">→</span>
+            <span><b>B</b> {fmtClock(diff.b)}</span>
+          </div>
+          <div className="soc-tm-diff-metrics">
+            <div><span className="soc-stat-label">Alerts added</span><strong>+{diff.added}</strong></div>
+            <div><span className="soc-stat-label">Risk</span><strong>{diff.sa.risk} → {diff.sb.risk}</strong></div>
+            <div><span className="soc-stat-label">New techniques</span><strong>{diff.newTechs.length}</strong></div>
+          </div>
+          {sevRank.some((s) => diff.sb.counts[s] - diff.sa.counts[s] !== 0) ? (
+            <div className="soc-tm-sevs">
+              {sevRank.map((s) => {
+                const d = diff.sb.counts[s] - diff.sa.counts[s];
+                return (
+                  <div key={s} className="soc-tm-sev" style={{ borderTopColor: SIM_SEVERITY_COLOR[s] }}>
+                    <span>{s}</span><strong>{d > 0 ? `+${d}` : d}</strong>
+                  </div>
+                );
+              })}
+            </div>
+          ) : null}
+          {diff.newTechs.length ? (
+            <div className="soc-tm-col">
+              <span className="soc-stat-label">First seen in this window</span>
+              {diff.newTechs.map((id) => (
+                <div key={id} className="soc-tm-tech"><strong>{id}</strong><em>{mitreTechniqueLabel(id)}</em></div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      {/* Bookmarks */}
+      <div className="soc-tm-bookmarks">
+        <div className="soc-tm-bm-head">
+          <span className="soc-stat-label"><Clock size={12} aria-hidden="true" /> Bookmarks</span>
+          <button
+            type="button"
+            className="soc-tm-bm-add"
+            onClick={() => {
+              const label = window.prompt("Bookmark this moment as:", `Marker ${fmtClock(t)}`)?.trim();
+              if (label) setBookmarks((b) => [...b, { id: `${Date.now()}`, label, t }].sort((x, y) => x.t - y.t));
+            }}
+          >
+            <Plus size={12} /> Mark {fmtClock(t)}
+          </button>
+        </div>
+        {bookmarks.length ? (
+          <div className="soc-tm-bm-list">
+            {bookmarks.map((bm) => (
+              <div key={bm.id} className="soc-tm-bm">
+                <button type="button" className="soc-tm-bm-jump" onClick={() => { setT(bm.t); setPlaying(false); }}>
+                  <b>{bm.label}</b><em>{fmtClock(bm.t)}</em>
+                </button>
+                <button type="button" className="soc-tm-bm-del" onClick={() => setBookmarks((b) => b.filter((x) => x.id !== bm.id))} aria-label="Remove bookmark">×</button>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="soc-graph-selection-empty">Drag to a moment and mark it — jump back anytime.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+const SIM_SEVERITY_COLOR: Record<Severity, string> = {
+  critical: "#f0556b",
+  high: "#ff8a4c",
+  medium: "#e1b53e",
+  low: "#2f81f7",
+  info: "#7f8aa3"
+};
+
+type SimThresholds = { low: number; medium: number; high: number; critical: number };
+const SIM_PRESETS: Record<string, SimThresholds> = {
+  Aggressive: { low: 3, medium: 7, high: 14, critical: 28 },
+  Balanced: { low: 5, medium: 10, high: 20, critical: 40 },
+  Quiet: { low: 10, medium: 25, high: 50, critical: 90 }
+};
+
+/* ─────────────────────────────────────────────────────────── Export studio */
+
+type ExportFormat = "pdf" | "csv" | "json";
+type ExportSection = "summary" | "alerts" | "events" | "decisions" | "iocs" | "mitre";
+const EXPORT_SECTIONS: ExportSection[] = ["summary", "alerts", "events", "decisions", "iocs", "mitre"];
+
+interface ExportModel {
+  meta: { generated: string; host: string; user: string; sha: string; scope: string; rangeFrom: string; rangeTo: string };
+  summary: { risk: number; total: number; counts: Record<Severity, number>; events: number; decisions: number; iocs: number; coveragePct: number };
+  alerts: Array<{ severity: string; score: number; title: string; process: string; policy: string; timestamp: string }>;
+  events: Array<{ type: string; process: string; policy: string; detail: string; timestamp: string }>;
+  decisions: Array<{ action: string; state: string; target: string; reason: string; ok: boolean; timestamp: string }>;
+  iocs: { ips: Array<[string, number]>; files: Array<[string, number]>; binaries: Array<[string, number]> };
+  mitre: {
+    coveragePct: number; coveredCount: number; total: number; observedCount: number; gapCount: number;
+    observed: Array<{ id: string; name: string; hits: number; policy: string }>;
+    gaps: Array<{ id: string; name: string; tactic: string }>;
+    tactics: Array<{ name: string; covered: number; observed: number; total: number }>;
+  };
+}
+
+const EXPORT_PRESETS: Array<{ key: string; label: string; hint: string; format: ExportFormat; sections: ExportSection[] }> = [
+  { key: "incident", label: "Incident report", hint: "IR / board-ready PDF", format: "pdf", sections: ["summary", "alerts", "iocs", "decisions", "mitre"] },
+  { key: "handoff", label: "Shift handoff", hint: "What happened this shift", format: "pdf", sections: ["summary", "alerts", "decisions"] },
+  { key: "intel", label: "Threat intel", hint: "IOCs to share / ingest", format: "json", sections: ["iocs"] },
+  { key: "raw", label: "Raw bundle", hint: "Machine-readable telemetry", format: "json", sections: ["alerts", "events", "decisions"] }
+];
+
+function buildExportModel(
+  scopeLabel: string,
+  scopeAlerts: SocAlert[],
+  events: SocEvent[],
+  decisions: SocDecision[],
+  policies: SocPolicy[],
+  mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>,
+  whoami: SocWhoami,
+  version: SocSnapshot["version"]
+): ExportModel {
+  const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>;
+  for (const a of scopeAlerts) counts[a.severity] += 1;
+  const risk = Math.min(100, counts.critical * 8 + counts.high * 3 + counts.medium);
+
+  const iocsRaw = extractIocs(scopeAlerts, events);
+  const bins = new Map<string, number>();
+  for (const e of events) { if (e.process) bins.set(e.process, (bins.get(e.process) || 0) + 1); }
+  const ips = iocsRaw.peers.filter(([v]) => /\d+\.\d+\.\d+\.\d+/.test(v));
+  const files = iocsRaw.files;
+  const binaries = [...bins.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40);
+
+  const model = buildMitreCoverageModel(mitreRows, scopeAlerts, policies);
+  const nameOf = (id: string) => {
+    for (const t of MITRE_MATRIX) { const h = t.techniques.find((x) => x.id === id); if (h) return h.name; }
+    return "";
+  };
+  const observed = [...model.observed.entries()].filter(([, n]) => n > 0).sort((a, b) => b[1] - a[1]).map(([id, hits]) => ({
+    id, name: nameOf(id), hits, policy: (model.policiesByTech.get(id) ?? []).map((p) => p.name).join(", ") || "—"
+  }));
+  const gaps = model.gapIds.map((id) => ({ id, name: nameOf(id), tactic: MITRE_MATRIX.find((t) => t.techniques.some((x) => x.id === id))?.name ?? "" }));
+  const tactics = MITRE_MATRIX.map((t) => ({
+    name: t.name,
+    covered: t.techniques.filter((x) => model.stateOf(x.id) !== "gap").length,
+    observed: t.techniques.filter((x) => model.stateOf(x.id) === "observed").length,
+    total: t.techniques.length
+  }));
+
+  const times = scopeAlerts.map((a) => Date.parse(a.timestamp)).filter((n) => !Number.isNaN(n));
+  const rangeFrom = times.length ? new Date(Math.min(...times)).toLocaleString() : "—";
+  const rangeTo = times.length ? new Date(Math.max(...times)).toLocaleString() : "—";
+
+  return {
+    meta: { generated: new Date().toLocaleString(), host: whoami.host || "—", user: whoami.user || "—", sha: version.sha || "n/a", scope: scopeLabel, rangeFrom, rangeTo },
+    summary: { risk, total: scopeAlerts.length, counts, events: events.length, decisions: decisions.length, iocs: ips.length + files.length + binaries.length, coveragePct: model.coveragePct },
+    alerts: scopeAlerts.map((a) => ({ severity: a.severity, score: a.score, title: a.title, process: a.process || "", policy: a.policyName || "", timestamp: a.timestamp })),
+    events: events.slice(0, 500).map((e) => ({ type: e.eventType, process: e.process || "", policy: e.policyName || "", detail: e.path || e.args || peerFromEvent(e) || "", timestamp: e.timestamp })),
+    decisions: decisions.map((d) => ({ action: d.action, state: d.state || "", target: d.target || "", reason: d.reason || "", ok: d.ok !== false, timestamp: d.timestamp })),
+    iocs: { ips, files, binaries },
+    mitre: { coveragePct: model.coveragePct, coveredCount: model.coveredCount, total: model.total, observedCount: model.observedCount, gapCount: model.gapCount, observed, gaps, tactics }
+  };
+}
+
+function triggerDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportJson(model: ExportModel, sections: Set<ExportSection>) {
+  const out: Record<string, unknown> = { meta: model.meta };
+  for (const s of EXPORT_SECTIONS) if (sections.has(s)) out[s] = model[s];
+  triggerDownload(new Blob([JSON.stringify(out, null, 2)], { type: "application/json" }), "soc-export.json");
+}
+
+function csvBlock(title: string, header: string[], rows: Array<Array<string | number>>): string {
+  const esc = (v: string | number) => `"${String(v).replaceAll('"', '""')}"`;
+  return `# ${title}\n${[header, ...rows].map((r) => r.map(esc).join(",")).join("\n")}\n`;
+}
+
+function exportCsv(model: ExportModel, sections: Set<ExportSection>) {
+  const blocks: string[] = [];
+  if (sections.has("summary")) {
+    const c = model.summary.counts;
+    blocks.push(csvBlock("SUMMARY", ["metric", "value"], [
+      ["generated", model.meta.generated], ["host", model.meta.host], ["scope", model.meta.scope],
+      ["risk", model.summary.risk], ["alerts", model.summary.total],
+      ["critical", c.critical], ["high", c.high], ["medium", c.medium], ["low", c.low], ["info", c.info],
+      ["mitre_coverage_pct", model.summary.coveragePct]
+    ]));
+  }
+  if (sections.has("alerts")) blocks.push(csvBlock("ALERTS", ["severity", "score", "title", "process", "policy", "timestamp"], model.alerts.map((a) => [a.severity, a.score, a.title, a.process, a.policy, a.timestamp])));
+  if (sections.has("events")) blocks.push(csvBlock("EVENTS", ["type", "process", "policy", "detail", "timestamp"], model.events.map((e) => [e.type, e.process, e.policy, e.detail, e.timestamp])));
+  if (sections.has("decisions")) blocks.push(csvBlock("DECISIONS", ["action", "state", "target", "reason", "ok", "timestamp"], model.decisions.map((d) => [d.action, d.state, d.target, d.reason, String(d.ok), d.timestamp])));
+  if (sections.has("iocs")) blocks.push(csvBlock("IOCS", ["type", "value", "count"], [
+    ...model.iocs.ips.map(([v, n]) => ["ip", v, n] as Array<string | number>),
+    ...model.iocs.files.map(([v, n]) => ["file", v, n] as Array<string | number>),
+    ...model.iocs.binaries.map(([v, n]) => ["binary", v, n] as Array<string | number>)
+  ]));
+  if (sections.has("mitre")) blocks.push(csvBlock("MITRE_OBSERVED", ["technique", "name", "hits", "detected_by"], model.mitre.observed.map((m) => [m.id, m.name, m.hits, m.policy])));
+  triggerDownload(new Blob([blocks.join("\n")], { type: "text/csv;charset=utf-8" }), "soc-export.csv");
+}
+
+async function exportPdf(model: ExportModel, sections: Set<ExportSection>) {
+  const { jsPDF, autoTable } = await loadPdfTools();
+  const doc = new jsPDF({ orientation: "portrait", unit: "pt" });
+  const W = doc.internal.pageSize.getWidth();
+  const M = 40;
+  const NAVY: [number, number, number] = [20, 31, 48];
+  const RED: [number, number, number] = [240, 85, 107];
+  const BLUE: [number, number, number] = [47, 129, 247];
+  const AMBER: [number, number, number] = [225, 181, 62];
+  const GREY: [number, number, number] = [140, 148, 158];
+
+  doc.setFillColor(...NAVY);
+  doc.rect(0, 0, W, 76, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("eBPF SOC — Incident Report", M, 34);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  doc.text(`${model.meta.host} · ${model.meta.user}   ·   ${model.meta.scope}   ·   Generated ${model.meta.generated}`, M, 52);
+  doc.text(`Window: ${model.meta.rangeFrom} → ${model.meta.rangeTo}   ·   build ${model.meta.sha}`, M, 65);
+
+  let y = 96;
+  if (sections.has("summary")) {
+    const tiles: Array<[string, string, [number, number, number]]> = [
+      [`${model.summary.risk}`, "Risk score / 100", model.summary.risk >= 45 ? RED : BLUE],
+      [`${model.summary.total}`, `Alerts · ${model.summary.counts.critical} crit`, RED],
+      [`${model.summary.coveragePct}%`, "ATT&CK coverage", BLUE],
+      [`${model.summary.iocs}`, "IOCs extracted", AMBER]
+    ];
+    const tileW = (W - M * 2 - 30) / 4;
+    tiles.forEach(([big, small, color], i) => {
+      const x = M + i * (tileW + 10);
+      doc.setDrawColor(225); doc.setFillColor(248, 249, 251);
+      doc.roundedRect(x, y, tileW, 50, 5, 5, "FD");
+      doc.setTextColor(...color); doc.setFont("helvetica", "bold"); doc.setFontSize(20);
+      doc.text(big, x + 10, y + 26);
+      doc.setTextColor(90, 98, 110); doc.setFont("helvetica", "normal"); doc.setFontSize(7.5);
+      doc.text(small, x + 10, y + 40);
+    });
+    y += 74;
+  }
+
+  const finalY = () => {
+    // @ts-expect-error autoTable augments doc at runtime
+    return (doc.lastAutoTable?.finalY ?? y) as number;
+  };
+  const heading = (text: string, color: [number, number, number] = NAVY) => {
+    if (finalY() > doc.internal.pageSize.getHeight() - 90) doc.addPage();
+    const at = Math.max(y, finalY() + 22);
+    doc.setTextColor(...color); doc.setFont("helvetica", "bold"); doc.setFontSize(12);
+    doc.text(text, M, at);
+    return at + 8;
+  };
+
+  if (sections.has("mitre")) {
+    let ty = heading("Coverage by tactic");
+    doc.setFontSize(8); doc.setFont("helvetica", "normal");
+    for (const t of model.mitre.tactics) {
+      const frac = t.covered / t.total;
+      doc.setTextColor(60, 68, 80); doc.text(t.name, M, ty + 8);
+      const barX = M + 150, barW = W - M - barX - 46;
+      doc.setFillColor(235, 237, 240); doc.roundedRect(barX, ty, barW, 9, 2, 2, "F");
+      if (frac > 0) { doc.setFillColor(...(t.observed > 0 ? RED : BLUE)); doc.roundedRect(barX, ty, Math.max(3, barW * frac), 9, 2, 2, "F"); }
+      doc.setTextColor(...GREY); doc.text(`${t.covered}/${t.total}`, barX + barW + 8, ty + 8);
+      ty += 16;
+    }
+    y = ty + 4;
+  }
+
+  if (sections.has("alerts")) {
+    autoTable(doc, {
+      startY: heading("Alerts"),
+      head: [["Sev", "Score", "Title", "Process", "Policy", "Time"]],
+      body: (model.alerts.length ? model.alerts.slice(0, 200) : [{ severity: "—", score: 0, title: "No alerts in scope", process: "", policy: "", timestamp: "" }]).map((a) => [a.severity, String(a.score), a.title, a.process, a.policy, a.timestamp]),
+      styles: { fontSize: 7.5, cellPadding: 4, textColor: [40, 48, 60] }, headStyles: { fillColor: NAVY, textColor: [255, 255, 255] },
+      columnStyles: { 1: { halign: "right", cellWidth: 34 } }, margin: { left: M, right: M }
+    });
+  }
+  if (sections.has("iocs")) {
+    const rows = [
+      ...model.iocs.ips.map(([v, n]) => ["ip", v, String(n)]),
+      ...model.iocs.files.slice(0, 20).map(([v, n]) => ["file", v, String(n)]),
+      ...model.iocs.binaries.slice(0, 20).map(([v, n]) => ["binary", v, String(n)])
+    ];
+    autoTable(doc, {
+      startY: heading("Indicators of compromise", AMBER),
+      head: [["Type", "Indicator", "Hits"]],
+      body: rows.length ? rows : [["—", "none observed", "0"]],
+      styles: { fontSize: 8, cellPadding: 4 }, headStyles: { fillColor: AMBER, textColor: NAVY },
+      columnStyles: { 2: { halign: "right", cellWidth: 40 } }, margin: { left: M, right: M }
+    });
+  }
+  if (sections.has("decisions")) {
+    autoTable(doc, {
+      startY: heading("Enforcement decisions"),
+      head: [["Action", "State", "Target", "Reason", "Time"]],
+      body: (model.decisions.length ? model.decisions.slice(0, 120) : [{ action: "—", state: "", target: "no decisions logged", reason: "", ok: true, timestamp: "" }]).map((d) => [d.action, d.state, d.target, d.reason, d.timestamp]),
+      styles: { fontSize: 7.5, cellPadding: 4 }, headStyles: { fillColor: NAVY, textColor: [255, 255, 255] }, margin: { left: M, right: M }
+    });
+  }
+  if (sections.has("events")) {
+    autoTable(doc, {
+      startY: heading("Events"),
+      head: [["Type", "Process", "Policy", "Detail", "Time"]],
+      body: model.events.slice(0, 150).map((e) => [e.type, e.process, e.policy, e.detail, e.timestamp]),
+      styles: { fontSize: 7, cellPadding: 3 }, headStyles: { fillColor: NAVY, textColor: [255, 255, 255] }, margin: { left: M, right: M }
+    });
+  }
+
+  const pages = doc.getNumberOfPages();
+  for (let p = 1; p <= pages; p++) {
+    doc.setPage(p);
+    doc.setTextColor(...GREY); doc.setFontSize(8);
+    doc.text("eBPF SOC · incident report", M, doc.internal.pageSize.getHeight() - 20);
+    doc.text(`Page ${p} of ${pages}`, W - M - 60, doc.internal.pageSize.getHeight() - 20);
+  }
+  doc.save("soc-incident-report.pdf");
+}
+
+/**
+ * Export studio — assemble a report instead of blindly downloading a flat alert
+ * dump. The operator picks the SECTIONS (summary, alerts, events, decisions,
+ * IOCs, ATT&CK coverage), the FORMAT (a board-ready PDF, a per-section CSV, or a
+ * machine-readable JSON bundle), and a SCOPE (what's on screen vs the whole
+ * window), sees a live preview of exactly what the file will contain, and can
+ * copy the IOCs or a Markdown summary straight into a ticket. Presets snap it to
+ * an incident report, a shift handoff, a threat-intel bundle, or raw telemetry.
+ */
+function ExportStudioBody({
+  filteredAlerts,
+  rangeAlerts,
+  events,
+  decisions,
+  policies,
+  mitreRows,
+  whoami,
+  version
+}: {
+  filteredAlerts: AlertGroup[];
+  rangeAlerts: SocAlert[];
+  events: SocEvent[];
+  decisions: SocDecision[];
+  policies: SocPolicy[];
+  mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>;
+  whoami: SocWhoami;
+  version: SocSnapshot["version"];
+}) {
+  const [format, setFormat] = useState<ExportFormat>("pdf");
+  const [scope, setScope] = useState<"filtered" | "range">("filtered");
+  const [sections, setSections] = useState<Set<ExportSection>>(() => new Set<ExportSection>(["summary", "alerts", "iocs", "mitre"]));
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const scopeAlerts = scope === "filtered" ? filteredAlerts : rangeAlerts;
+  const model = useMemo(
+    () => buildExportModel(scope === "filtered" ? "filtered (on screen)" : "full range", scopeAlerts, events, decisions, policies, mitreRows, whoami, version),
+    [scope, scopeAlerts, events, decisions, policies, mitreRows, whoami, version]
+  );
+
+  const sectionMeta: Array<{ key: ExportSection; label: string; count: number; note: string }> = [
+    { key: "summary", label: "Executive summary", count: 1, note: `risk ${model.summary.risk} · ${model.summary.coveragePct}% coverage` },
+    { key: "alerts", label: "Alerts", count: model.summary.total, note: `${model.summary.counts.critical} critical` },
+    { key: "events", label: "Events", count: model.events.length, note: "raw telemetry" },
+    { key: "decisions", label: "Enforcement decisions", count: model.decisions.length, note: "audit trail" },
+    { key: "iocs", label: "Indicators (IOCs)", count: model.summary.iocs, note: `${model.iocs.ips.length} ip · ${model.iocs.files.length} file · ${model.iocs.binaries.length} bin` },
+    { key: "mitre", label: "ATT&CK coverage", count: model.mitre.observedCount, note: `${model.mitre.gapCount} blind spots` }
+  ];
+
+  const toggle = (s: ExportSection) => setSections((prev) => { const next = new Set(prev); next.has(s) ? next.delete(s) : next.add(s); return next; });
+  const activePreset = EXPORT_PRESETS.find((p) => p.format === format && p.sections.length === sections.size && p.sections.every((s) => sections.has(s)));
+
+  const runExport = () => {
+    if (!sections.size) return;
+    if (format === "json") exportJson(model, sections);
+    else if (format === "csv") exportCsv(model, sections);
+    else void exportPdf(model, sections);
+  };
+
+  const copy = async (kind: "iocs" | "summary") => {
+    let text = "";
+    if (kind === "iocs") {
+      text = [
+        ...model.iocs.ips.map(([v]) => v),
+        ...model.iocs.files.map(([v]) => v),
+        ...model.iocs.binaries.map(([v]) => v)
+      ].join("\n");
+    } else {
+      const c = model.summary.counts;
+      text = [
+        `## eBPF SOC summary — ${model.meta.generated}`,
+        `- Host: ${model.meta.host} · Scope: ${model.meta.scope}`,
+        `- Risk: **${model.summary.risk}/100**`,
+        `- Alerts: ${model.summary.total} (${c.critical} critical, ${c.high} high, ${c.medium} medium)`,
+        `- ATT&CK coverage: ${model.summary.coveragePct}% · ${model.mitre.gapCount} blind spots`,
+        `- IOCs: ${model.iocs.ips.length} IP, ${model.iocs.files.length} file, ${model.iocs.binaries.length} binary`,
+        model.mitre.observed.length ? `- Top technique: ${model.mitre.observed[0].id} ${model.mitre.observed[0].name} (${model.mitre.observed[0].hits} hits)` : ""
+      ].filter(Boolean).join("\n");
+    }
+    try { await navigator.clipboard.writeText(text); setCopied(kind); window.setTimeout(() => setCopied(null), 1500); } catch { /* clipboard unavailable */ }
+  };
+
+  return (
+    <div className="soc-export">
+      <div className="soc-export-presets">
+        <span className="soc-stat-label">Template</span>
+        {EXPORT_PRESETS.map((p) => (
+          <button
+            key={p.key}
+            type="button"
+            className={cx("soc-export-preset", activePreset?.key === p.key && "is-active")}
+            onClick={() => { setFormat(p.format); setSections(new Set(p.sections)); }}
+            title={p.hint}
+          >
+            {p.label}
+          </button>
+        ))}
+      </div>
+
+      <div className="soc-export-cols">
+        <div className="soc-export-build">
+          <div className="soc-export-row">
+            <span className="soc-stat-label">Format</span>
+            <div className="soc-export-format">
+              {([["pdf", "PDF report", FileText], ["csv", "CSV", Download], ["json", "JSON", Braces]] as const).map(([f, label, Icon]) => (
+                <button key={f} type="button" className={cx("soc-export-fmt", format === f && "is-active")} onClick={() => setFormat(f)}>
+                  <Icon size={13} aria-hidden="true" /> {label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="soc-export-row">
+            <span className="soc-stat-label">Scope</span>
+            <div className="soc-export-format">
+              <button type="button" className={cx("soc-export-fmt", scope === "filtered" && "is-active")} onClick={() => setScope("filtered")}>On screen ({filteredAlerts.length})</button>
+              <button type="button" className={cx("soc-export-fmt", scope === "range" && "is-active")} onClick={() => setScope("range")}>Full range ({rangeAlerts.length})</button>
+            </div>
+          </div>
+
+          <div className="soc-export-sections">
+            <span className="soc-stat-label">Include</span>
+            {sectionMeta.map((s) => (
+              <button key={s.key} type="button" className={cx("soc-export-section", sections.has(s.key) && "is-on")} onClick={() => toggle(s.key)}>
+                <span className="soc-export-check">{sections.has(s.key) ? <Check size={12} /> : null}</span>
+                <span className="soc-export-section-label">{s.label}</span>
+                <span className="soc-export-section-count">{s.count}<em>{s.note}</em></span>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="soc-export-preview">
+          <span className="soc-stat-label">Preview</span>
+          <div className="soc-export-preview-file">
+            <FileText size={26} aria-hidden="true" />
+            <div>
+              <strong>soc-{format === "pdf" ? "incident-report.pdf" : format === "csv" ? "export.csv" : "export.json"}</strong>
+              <em>{sections.size} section{sections.size === 1 ? "" : "s"} · {model.meta.scope}</em>
+            </div>
+          </div>
+          <ul className="soc-export-preview-list">
+            {sectionMeta.filter((s) => sections.has(s.key)).map((s) => (
+              <li key={s.key}><b>{s.count}</b> {s.label.toLowerCase()}</li>
+            ))}
+            {!sections.size ? <li className="soc-export-preview-empty">Select at least one section</li> : null}
+          </ul>
+          <div className="soc-export-preview-meta">
+            {model.meta.host} · {model.meta.user}<br />
+            {model.meta.rangeFrom} → {model.meta.rangeTo}
+          </div>
+        </div>
+      </div>
+
+      <div className="soc-export-actions">
+        <button type="button" className="soc-export-run" disabled={!sections.size} onClick={runExport}>
+          <Download size={14} aria-hidden="true" /> Export {format.toUpperCase()}
+        </button>
+        <button type="button" className="soc-export-copy" onClick={() => void copy("iocs")}>
+          {copied === "iocs" ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy IOCs</>}
+        </button>
+        <button type="button" className="soc-export-copy" onClick={() => void copy("summary")}>
+          {copied === "summary" ? <><Check size={13} /> Copied</> : <><Copy size={13} /> Copy summary</>}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Threshold studio: a live what-if for the score → severity thresholds. Rather
+ * than typing four numbers blind, the operator sees the score DISTRIBUTION with
+ * the thresholds drawn on it, watches each band recolour as they drag, and gets
+ * the two things that actually matter for a tuning decision: how the severity
+ * mix shifts (before → after) and exactly which alerts flip.
+ */
+function SimulatorBody({ alerts }: { alerts: SocAlert[] }) {
+  const [th, setTh] = useLocalJsonState<SimThresholds>("soc.simThresholds", SIM_PRESETS.Balanced);
+  const set = (key: keyof SimThresholds, value: number) =>
+    setTh((prev) => {
+      const next = { ...prev, [key]: Math.max(0, value) };
+      // Keep the ladder monotonic so the bands never cross.
+      if (key === "low") next.medium = Math.max(next.medium, next.low + 1);
+      if (key === "medium") { next.low = Math.min(next.low, next.medium - 1); next.high = Math.max(next.high, next.medium + 1); }
+      if (key === "high") { next.medium = Math.min(next.medium, next.high - 1); next.critical = Math.max(next.critical, next.high + 1); }
+      if (key === "critical") next.high = Math.min(next.high, next.critical - 1);
+      return next;
+    });
+
+  const maxScore = Math.max(60, ...alerts.map((a) => a.score));
+  const axisMax = Math.ceil(maxScore / 10) * 10;
+
+  const sim = (score: number) => classifyScore(score, th.low, th.medium, th.high, th.critical);
+
+  // Actual (engine-assigned severity) vs simulated (re-bucketed by the sliders).
+  const actual = { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>;
+  const simulated = { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>;
+  const flips: Array<{ alert: SocAlert; from: Severity; to: Severity }> = [];
+  for (const a of alerts) {
+    const to = sim(a.score);
+    actual[a.severity] += 1;
+    simulated[to] += 1;
+    if (a.severity !== to) flips.push({ alert: a, from: a.severity, to });
+  }
+
+  // Score histogram: 20 bins across the axis, each coloured by the band its
+  // score range now falls in.
+  const bins = 20;
+  const binW = axisMax / bins;
+  const hist = Array.from({ length: bins }, (_, i) => ({ from: i * binW, to: (i + 1) * binW, count: 0 }));
+  for (const a of alerts) {
+    const idx = Math.min(bins - 1, Math.floor(a.score / binW));
+    hist[idx].count += 1;
+  }
+  const maxBin = Math.max(1, ...hist.map((b) => b.count));
+
+  const H = 120;
+  const pct = (score: number) => `${(score / axisMax) * 100}%`;
+  const markers: Array<[keyof SimThresholds, Severity]> = [
+    ["low", "low"],
+    ["medium", "medium"],
+    ["high", "high"],
+    ["critical", "critical"]
+  ];
+
+  return (
+    <div className="soc-sim">
+      <div className="soc-sim-presets">
+        <span className="soc-stat-label">Preset</span>
+        {Object.keys(SIM_PRESETS).map((name) => {
+          const p = SIM_PRESETS[name];
+          const active = p.low === th.low && p.medium === th.medium && p.high === th.high && p.critical === th.critical;
+          return (
+            <button key={name} type="button" className={cx("soc-sim-preset", active && "is-active")} onClick={() => setTh(p)}>
+              {name}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Distribution with the thresholds drawn on it. */}
+      <div className="soc-sim-chart" style={{ height: `${H}px` }}>
+        {markers.map(([key, sev]) => (
+          <div key={key} className="soc-sim-marker" style={{ left: pct(th[key]) }}>
+            <span className="soc-sim-marker-flag" style={{ background: SIM_SEVERITY_COLOR[sev] }}>{th[key]}</span>
+          </div>
+        ))}
+        <div className="soc-sim-bars">
+          {hist.map((b, i) => {
+            const mid = (b.from + b.to) / 2;
+            return (
+              <div
+                key={i}
+                className="soc-sim-bar"
+                title={`score ${Math.round(b.from)}–${Math.round(b.to)} · ${b.count} alerts · ${sim(mid)}`}
+                style={{ height: `${(b.count / maxBin) * 100}%`, background: SIM_SEVERITY_COLOR[sim(mid)] }}
+              />
+            );
+          })}
+        </div>
+      </div>
+      <div className="soc-sim-axis">
+        <span>0</span><span>score</span><span>{axisMax}</span>
+      </div>
+
+      {/* Sliders — dragging one recolours the chart live. */}
+      <div className="soc-sim-sliders">
+        {markers.map(([key, sev]) => (
+          <label key={key} className="soc-sim-slider">
+            <span className="soc-sim-slider-head">
+              <i style={{ background: SIM_SEVERITY_COLOR[sev] }} />
+              {key} ≥ <strong>{th[key]}</strong>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={axisMax}
+              value={th[key]}
+              onChange={(e) => set(key, Number(e.target.value))}
+              style={{ accentColor: SIM_SEVERITY_COLOR[sev] }}
+            />
+          </label>
+        ))}
+      </div>
+
+      {/* Before → after and the flips: the decision inputs. */}
+      <div className="soc-sim-compare">
+        {SEVERITIES.map((s) => {
+          const delta = simulated[s] - actual[s];
+          return (
+            <div key={s} className="soc-sim-cell" style={{ borderTopColor: SIM_SEVERITY_COLOR[s] }}>
+              <span className="soc-sim-cell-label">{s}</span>
+              <span className="soc-sim-cell-vals">
+                <em>{actual[s]}</em> → <strong>{simulated[s]}</strong>
+              </span>
+              {delta !== 0 ? (
+                <span className={cx("soc-sim-delta", delta > 0 ? "up" : "down")}>
+                  {delta > 0 ? "▲" : "▼"} {Math.abs(delta)}
+                </span>
+              ) : (
+                <span className="soc-sim-delta flat">—</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <div className="soc-sim-flips">
+        <span className="soc-stat-label">
+          {flips.length} of {alerts.length} alerts change severity
+          {flips.length ? ` · ${simulated.info - actual.info > 0 ? `${simulated.info - actual.info} newly suppressed` : "signal preserved"}` : ""}
+        </span>
+        {flips.slice(0, 8).map(({ alert, from, to }) => (
+          <div key={alert.id} className="soc-sim-flip">
+            <span className="soc-sim-flip-title">{alert.title}</span>
+            <span className="soc-sim-flip-move">
+              <b style={{ color: SIM_SEVERITY_COLOR[from] }}>{from}</b>
+              →
+              <b style={{ color: SIM_SEVERITY_COLOR[to] }}>{to}</b>
+              <em>score {alert.score}</em>
+            </span>
+          </div>
+        ))}
+        {flips.length === 0 ? <p className="soc-graph-selection-empty">These thresholds match the engine's current severities exactly.</p> : null}
       </div>
     </div>
   );
@@ -3543,6 +4798,32 @@ function mitreCoverage(
   return [...rows.values()].sort((a, b) => b.value - a.value).slice(0, 12);
 }
 
+// The remote endpoint an event connected to, as "ip" or "ip:port".
+//
+// destIp/remoteIp are populated only on the synthetic (sim-agent) path. A REAL
+// agent's tcp_connect event carries the destination in `args` — the engine now
+// renders the sock daddr:dport there (see extractKprobeArgs). So fall back to the
+// first IPv4 in args; without this, real outbound connections produce no peer
+// node in the correlation graph.
+const IPV4_ENDPOINT_RE = /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b/;
+function peerFromEvent(event: SocEvent): string | undefined {
+  if (event.destIp) return event.destPort ? `${event.destIp}:${event.destPort}` : event.destIp;
+  if (event.remoteIp) return event.remoteIp;
+  const match = event.args?.match(IPV4_ENDPOINT_RE);
+  return match ? match[0] : undefined;
+}
+
+// A private/LAN destination is a DEVICE (a host on the local network — the same
+// entities the Devices page inventories), whereas a public IP is an external
+// peer (a would-be C2). Rendering the two differently answers "did this process
+// talk to something on our network, or reach out to the internet?" — and it is
+// what wires devices into the correlation graph, which otherwise only knew about
+// processes. RFC1918 ranges: 10/8, 172.16/12, 192.168/16.
+function isDevicePeer(peer: string): boolean {
+  const ip = peer.split(":")[0];
+  return /^10\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
+}
+
 function extractIocs(alerts: SocAlert[], events: SocEvent[]) {
   const files = new Map<string, number>();
   const peers = new Map<string, number>();
@@ -3552,8 +4833,7 @@ function extractIocs(alerts: SocAlert[], events: SocEvent[]) {
   };
   for (const event of events) {
     add(files, event.path);
-    add(peers, event.destIp);
-    add(peers, event.remoteIp);
+    add(peers, peerFromEvent(event));
   }
   for (const alert of alerts) {
     for (const match of `${alert.description} ${alert.args || ""}`.matchAll(/(\/(?:[\w.-]+\/?){2,})/g)) add(files, match[1]);
@@ -3568,7 +4848,7 @@ function extractIocs(alerts: SocAlert[], events: SocEvent[]) {
 function aggregateNetwork(events: SocEvent[]) {
   const rows = new Map<string, { peer: string; count: number; procs: Set<string> }>();
   for (const event of events) {
-    const peer = event.destIp ? `${event.destIp}${event.destPort ? `:${event.destPort}` : ""}` : event.remoteIp;
+    const peer = peerFromEvent(event);
     if (!peer) continue;
     const row = rows.get(peer) || { peer, count: 0, procs: new Set<string>() };
     row.count += 1;
@@ -3580,7 +4860,7 @@ function aggregateNetwork(events: SocEvent[]) {
     .sort((a, b) => b.count - a.count);
 }
 
-function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): CorrelationGraphData {
+export function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): CorrelationGraphData {
   // On this engine alerts carry only an opaque exec_id (the command lives in the
   // title chain) while the binary, policy, and accessed-file context live on the
   // correlated events. Resolve a readable binary label per exec_id from events,
@@ -3606,13 +4886,19 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
     policies: Set<string>;
     files: Set<string>;
     peers: Set<string>;
+    // exec_id -> the live process behind this binary node
+    instances: Map<string, ProcessInstance>;
   };
   const procs = new Map<string, ProcAgg>();
   const ensureProc = (label: string, weight: number, score = 0) => {
     const key = `process:${label}`;
     let agg = procs.get(key);
     if (!agg) {
-      agg = { key, label, weight, score, policies: new Set(), files: new Set(), peers: new Set() };
+      agg = {
+        key, label, weight, score,
+        policies: new Set(), files: new Set(), peers: new Set(),
+        instances: new Map(),
+      };
       procs.set(key, agg);
     } else {
       agg.weight += weight;
@@ -3621,13 +4907,47 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
     return agg;
   };
 
+  // Record the concrete process behind a node. Keyed by exec_id (stable across
+  // PID reuse); keeps the highest score seen and unions the policies that fired.
+  const noteInstance = (
+    agg: ProcAgg,
+    execId: string | undefined,
+    pid: number | undefined,
+    binary: string,
+    score: number,
+    agent: string | undefined,
+    policy: string | undefined,
+    at: string
+  ) => {
+    if (!execId) return; // without an exec_id there is nothing to enforce against
+    const existing = agg.instances.get(execId);
+    if (existing) {
+      if (score > existing.score) existing.score = score;
+      if (pid && !existing.pid) existing.pid = pid;
+      if (agent && !existing.agent) existing.agent = agent;
+      if (policy && !existing.policies.includes(policy)) existing.policies.push(policy);
+      if (at > existing.lastSeen) existing.lastSeen = at;
+      return;
+    }
+    agg.instances.set(execId, {
+      execId,
+      pid,
+      binary,
+      score,
+      agent,
+      policies: policy ? [policy] : [],
+      lastSeen: at,
+    });
+  };
+
   // Process lineage edges (runc → sh → pg_isready) parsed from the alert title.
   const chainLinks = new Set<string>();
 
   for (const alert of alerts) {
     const chain = processChainFromAlert(alert);
     const leafLabel = labelFor(alert.execId, chain.at(-1) || alert.process);
-    ensureProc(leafLabel, Math.max(1, alert.score / 18), alert.score);
+    const leafAgg = ensureProc(leafLabel, Math.max(1, alert.score / 18), alert.score);
+    noteInstance(leafAgg, alert.execId, alert.pid, leafLabel, alert.score, alert.agent, alert.policyName, alert.timestamp);
     let prev: string | undefined;
     chain.forEach((token, index) => {
       const label = index === chain.length - 1 ? leafLabel : token;
@@ -3638,12 +4958,14 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
   }
 
   for (const event of events) {
-    const agg = ensureProc(labelFor(event.execId, event.process), 0.3);
+    const evLabel = labelFor(event.execId, event.process);
+    const agg = ensureProc(evLabel, 0.3);
+    noteInstance(agg, event.execId, event.pid, evLabel, 0, event.agent, event.policyName, event.timestamp);
     if (event.policyName) agg.policies.add(event.policyName);
     const file = event.path || (event.policyName ? extractFilePath(event.args) : undefined);
     if (file) agg.files.add(file);
-    const peer = event.destIp || event.remoteIp;
-    if (peer) agg.peers.add(event.destPort ? `${peer}:${event.destPort}` : peer);
+    const peer = peerFromEvent(event);
+    if (peer) agg.peers.add(peer);
   }
 
   // Keep the heaviest processes so the graph stays legible, then attach each
@@ -3683,6 +5005,14 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
 
   for (const proc of topProcs) {
     addNode(proc.key, proc.label, "process", Math.max(2, proc.weight), proc.score);
+    // Attach the concrete processes this binary node stands for, worst first —
+    // the enforcement panel acts on these, not on the node itself.
+    const node = nodes.get(proc.key);
+    if (node) {
+      node.processes = [...proc.instances.values()].sort(
+        (a, b) => b.score - a.score || (b.lastSeen > a.lastSeen ? 1 : -1)
+      );
+    }
     for (const policy of proc.policies) {
       const id = `policy:${policy}`;
       addNode(id, policy, "policy", 1.5);
@@ -3694,8 +5024,11 @@ function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): Correlat
       addLink(proc.key, id, 1);
     }
     for (const peer of [...proc.peers].slice(0, 4)) {
-      const id = `peer:${peer}`;
-      addNode(id, peer, "peer", 1);
+      // A LAN destination becomes a device node (this process talked to a host
+      // on our network); a public one stays a peer (reached out to the internet).
+      const device = isDevicePeer(peer);
+      const id = device ? `device:${peer}` : `peer:${peer}`;
+      addNode(id, peer, device ? "device" : "peer", 1);
       addLink(proc.key, id, 1);
     }
   }
@@ -3806,29 +5139,6 @@ function writeLocalJson<T>(key: string, value: T) {
   }
 }
 
-function downloadCsv(alerts: AlertGroup[]) {
-  const rows = [
-    ["id", "severity", "score", "title", "process", "policy", "timestamp"],
-    ...alerts.map((alert) => [
-      alert.id,
-      alert.severity,
-      String(alert.score),
-      alert.title,
-      alert.process || "",
-      alert.policyName || "",
-      alert.timestamp
-    ])
-  ];
-  const csv = rows.map((row) => row.map((cell) => `"${cell.replaceAll('"', '""')}"`).join(",")).join("\n");
-  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = "soc-alerts.csv";
-  link.click();
-  URL.revokeObjectURL(url);
-}
-
 async function loadPdfTools() {
   const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
     import("jspdf"),
@@ -3837,44 +5147,146 @@ async function loadPdfTools() {
   return { jsPDF, autoTable };
 }
 
-async function downloadAlertPdf(alerts: AlertGroup[], events: SocEvent[], snapshot: SocSnapshot) {
+// A board-ready MITRE ATT&CK posture report — not a flat dump of the two
+// techniques that happened to fire. It mirrors the in-app Navigator: an
+// executive summary (coverage vs the whole matrix), per-tactic coverage bars,
+// the full technique grid coloured by state, the observed techniques with the
+// policy that detected them, and — the actionable part — a blind-spot list.
+async function downloadMitrePdf(
+  rows: Array<{ label: string; value: number; meta?: string; id?: string }>,
+  alerts: SocAlert[],
+  policies: SocSnapshot["policies"],
+  whoami: SocSnapshot["whoami"]
+) {
   const { jsPDF, autoTable } = await loadPdfTools();
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt" });
-  doc.setFontSize(15);
-  doc.text("eBPF SOC Alert Export", 40, 38);
-  doc.setFontSize(9);
-  doc.text(`Host: ${snapshot.whoami.host}  User: ${snapshot.whoami.user}  SHA: ${snapshot.version.sha || "n/a"}`, 40, 55);
-  doc.text(`Generated: ${new Date().toISOString()}  Alerts: ${alerts.length}  Events buffered: ${events.length}`, 40, 70);
-  autoTable(doc, {
-    startY: 92,
-    head: [["Severity", "Score", "Title", "Process", "Policy", "Time"]],
-    body: alerts.slice(0, 120).map((alert) => [
-      alert.severity,
-      String(alert.score),
-      alert.title,
-      alert.process || "",
-      alert.policyName || "",
-      alert.timestamp
-    ]),
-    styles: { fontSize: 8, cellPadding: 4 },
-    headStyles: { fillColor: [20, 31, 48] }
-  });
-  doc.save("soc-alert-export.pdf");
-}
-
-async function downloadMitrePdf(rows: Array<{ label: string; value: number; meta?: string; id?: string }>) {
-  const { jsPDF, autoTable } = await loadPdfTools();
+  const model = buildMitreCoverageModel(rows, alerts, policies);
   const doc = new jsPDF({ orientation: "portrait", unit: "pt" });
-  doc.setFontSize(15);
-  doc.text("MITRE Coverage", 40, 40);
+  const W = doc.internal.pageSize.getWidth();
+  const M = 40;
+  const NAVY: [number, number, number] = [20, 31, 48];
+  const RED: [number, number, number] = [240, 85, 107];
+  const BLUE: [number, number, number] = [47, 129, 247];
+  const AMBER: [number, number, number] = [225, 181, 62];
+  const GREY: [number, number, number] = [140, 148, 158];
+
+  // ── Branded header band ──────────────────────────────────────────────────
+  doc.setFillColor(...NAVY);
+  doc.rect(0, 0, W, 74, "F");
+  doc.setTextColor(255, 255, 255);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("eBPF SOC — MITRE ATT&CK Coverage", M, 34);
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  doc.text(`Generated: ${new Date().toISOString()}`, 40, 56);
-  autoTable(doc, {
-    startY: 82,
-    head: [["Technique", "Count", "Tactic / Metadata"]],
-    body: rows.map((row) => [row.label, String(row.value), row.meta || "observed"]),
-    styles: { fontSize: 9, cellPadding: 5 },
-    headStyles: { fillColor: [20, 31, 48] }
+  const scope = whoami?.host ? `${whoami.host}${whoami.user ? ` · ${whoami.user}` : ""}` : (whoami?.user ?? "");
+  doc.text(
+    `${scope ? scope + "   ·   " : ""}Generated ${new Date().toLocaleString()}`,
+    M,
+    52
+  );
+  doc.text("Detection posture across the ATT&CK matrix — observed, covered, and blind spots.", M, 65);
+
+  // ── Executive summary tiles ──────────────────────────────────────────────
+  const tiles: Array<[string, string, [number, number, number]]> = [
+    [`${model.coveragePct}%`, `Coverage · ${model.coveredCount}/${model.total} techniques`, BLUE],
+    [`${model.observedCount}`, `Observed · ${model.hitTotal.toLocaleString()} hits`, RED],
+    [`${model.gapCount}`, "Blind spots · no policy", AMBER]
+  ];
+  const tileW = (W - M * 2 - 20) / 3;
+  tiles.forEach(([big, small, color], i) => {
+    const x = M + i * (tileW + 10);
+    doc.setDrawColor(225);
+    doc.setFillColor(248, 249, 251);
+    doc.roundedRect(x, 92, tileW, 54, 5, 5, "FD");
+    doc.setTextColor(...color);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(22);
+    doc.text(big, x + 12, 122);
+    doc.setTextColor(90, 98, 110);
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(8.5);
+    doc.text(small, x + 12, 138);
   });
+
+  // ── Per-tactic coverage bars ─────────────────────────────────────────────
+  let y = 176;
+  doc.setTextColor(...NAVY);
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("Coverage by tactic", M, y);
+  y += 14;
+  doc.setFontSize(8);
+  doc.setFont("helvetica", "normal");
+  for (const tactic of MITRE_MATRIX) {
+    const covered = tactic.techniques.filter((t) => model.stateOf(t.id) !== "gap").length;
+    const observed = tactic.techniques.filter((t) => model.stateOf(t.id) === "observed").length;
+    const frac = covered / tactic.techniques.length;
+    doc.setTextColor(60, 68, 80);
+    doc.text(tactic.name, M, y + 8);
+    const barX = M + 150;
+    const barW = W - M - barX - 46;
+    doc.setFillColor(235, 237, 240);
+    doc.roundedRect(barX, y, barW, 9, 2, 2, "F");
+    if (frac > 0) {
+      doc.setFillColor(...(observed > 0 ? RED : BLUE));
+      doc.roundedRect(barX, y, Math.max(3, barW * frac), 9, 2, 2, "F");
+    }
+    doc.setTextColor(...GREY);
+    doc.text(`${covered}/${tactic.techniques.length}`, barX + barW + 8, y + 8);
+    y += 16;
+  }
+
+  // ── Observed techniques (what fired + the detecting policy) ───────────────
+  const observedRows = [...model.observed.entries()]
+    .filter(([id]) => (model.observed.get(id) || 0) > 0)
+    .sort((a, b) => b[1] - a[1])
+    .map(([id, count]) => {
+      const name = MITRE_MATRIX.flatMap((t) => t.techniques).find((t) => t.id === id)?.name ?? "";
+      const pols = (model.policiesByTech.get(id) ?? []).map((p) => p.name).join(", ") || "—";
+      return [`${id}  ${name}`, String(count), pols];
+    });
+  autoTable(doc, {
+    startY: y + 8,
+    head: [["Observed technique", "Hits", "Detected by"]],
+    body: observedRows.length ? observedRows : [["No techniques observed in this range", "0", "—"]],
+    styles: { fontSize: 8.5, cellPadding: 5, textColor: [40, 48, 60] },
+    headStyles: { fillColor: NAVY, textColor: [255, 255, 255] },
+    columnStyles: { 1: { halign: "right", cellWidth: 44 } },
+    margin: { left: M, right: M }
+  });
+
+  // ── Blind spots (actionable gap analysis) ────────────────────────────────
+  const gapRows = model.gapIds.map((id) => {
+    const tactic = MITRE_MATRIX.find((t) => t.techniques.some((x) => x.id === id));
+    const name = tactic?.techniques.find((x) => x.id === id)?.name ?? "";
+    return [`${id}  ${name}`, tactic?.name ?? ""];
+  });
+  if (gapRows.length) {
+    // @ts-expect-error autoTable augments doc with lastAutoTable at runtime
+    const afterY = (doc.lastAutoTable?.finalY ?? y) + 22;
+    doc.setTextColor(...AMBER);
+    doc.setFont("helvetica", "bold");
+    doc.setFontSize(12);
+    doc.text(`Blind spots — ${gapRows.length} techniques with no detection policy`, M, afterY);
+    autoTable(doc, {
+      startY: afterY + 8,
+      head: [["Uncovered technique", "Tactic"]],
+      body: gapRows,
+      styles: { fontSize: 8.5, cellPadding: 5, textColor: [90, 74, 30] },
+      headStyles: { fillColor: AMBER, textColor: NAVY },
+      margin: { left: M, right: M }
+    });
+  }
+
+  // ── Footer page numbers ──────────────────────────────────────────────────
+  const pages = doc.getNumberOfPages();
+  for (let p = 1; p <= pages; p++) {
+    doc.setPage(p);
+    doc.setTextColor(...GREY);
+    doc.setFontSize(8);
+    doc.text(`eBPF SOC · ATT&CK coverage report`, M, doc.internal.pageSize.getHeight() - 20);
+    doc.text(`Page ${p} of ${pages}`, W - M - 60, doc.internal.pageSize.getHeight() - 20);
+  }
+
   doc.save("mitre-coverage.pdf");
 }

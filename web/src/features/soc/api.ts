@@ -126,6 +126,15 @@ export async function fetchProcessDetail(execId: string, signal?: AbortSignal): 
   return { ...result, data: normalizeProcessDetail(execId, result.data) };
 }
 
+// Live policy-stats fetch — the Kprobe panel self-polls this on a fast cadence
+// (the shared snapshot only refreshes every 30s, far too slow to see a per-probe
+// rate move). Returns the normalized stats, or the fallback on error.
+export async function fetchPolicyStats(signal?: AbortSignal): Promise<SocPolicyStat[]> {
+  const result = await socApiGet<unknown>(ENDPOINTS.policyStats, [], signal);
+  if (!result.ok) return [];
+  return unwrapList(result.data, ["stats", "policies", "items", "data"]).map(normalizePolicyStat);
+}
+
 export function runSocAttack(id: string): Promise<unknown> {
   const form = new URLSearchParams();
   form.set("id", id);
@@ -191,6 +200,7 @@ export function normalizeAlert(value: unknown, index = 0): SocAlert {
     args: asOptionalString(pick(record, "args", "Args", "arguments", "Arguments")),
     mitreId: asOptionalString(pick(record, "mitre_id", "mitreId", "MITRE", "technique", "Technique")),
     tactic: asOptionalString(pick(record, "tactic", "Tactic")),
+    agent: asOptionalString(pick(record, "agent", "Agent", "agent_id", "agentId", "host", "Host")),
     raw: value
   };
 }
@@ -218,6 +228,7 @@ export function normalizeEvent(value: unknown, index = 0): SocEvent {
     remoteIp: asOptionalString(pick(record, "remote_ip", "remoteIp", "RemoteIP", "source_ip", "SourceIP")),
     destIp: asOptionalString(pick(record, "dest_ip", "destIp", "DestIP", "destination_ip", "DestinationIP")),
     destPort: asOptionalNumber(pick(record, "dest_port", "destPort", "DestPort", "port", "Port")),
+    agent: asOptionalString(pick(record, "agent", "Agent", "agent_id", "agentId", "host", "Host")),
     proto: asOptionalString(pick(record, "proto", "Proto", "protocol", "Protocol")),
     raw: value
   };
@@ -274,8 +285,8 @@ function normalizePolicyStat(value: unknown): SocPolicyStat {
     name: asOptionalString(pick(record, "name", "Name", "policy", "Policy")) || "policy",
     posts: asNumber(pick(record, "posts", "Posts", "npost", "NPost", "count", "Count"), 0),
     ratePerMin: asOptionalNumber(pick(record, "rate_per_min", "ratePerMin", "RatePerMin", "rate")),
-    memoryBytes: asOptionalNumber(pick(record, "memory_bytes", "memoryBytes", "MemoryBytes")),
-    status: asOptionalString(pick(record, "status", "Status"))
+    memoryBytes: asMemoryBytes(pick(record, "memory_bytes", "memoryBytes", "MemoryBytes", "kernel_memory", "KernelMemory", "memory")),
+    status: asOptionalString(pick(record, "status", "Status", "state", "State"))
   };
 }
 
@@ -376,6 +387,18 @@ function asOptionalNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
+// Tetragon reports a policy's BPF-map footprint as a formatted string ("4.37 MB",
+// "512 KB"), not a raw byte count, so the kprobe panel's memory column and total
+// gauge were blank. Parse the string (or accept a raw number) into bytes.
+function asMemoryBytes(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value !== "string") return undefined;
+  const match = /([\d.]+)\s*([KMGT]?)i?B/i.exec(value.trim());
+  if (!match) return asOptionalNumber(value);
+  const scale: Record<string, number> = { "": 1, K: 1024, M: 1024 ** 2, G: 1024 ** 3, T: 1024 ** 4 };
+  return Number.parseFloat(match[1]) * (scale[match[2].toUpperCase()] ?? 1);
+}
+
 function asOptionalBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -420,4 +443,79 @@ function normalizeTimestamp(value: unknown): string {
   const date = new Date(raw);
   if (Number.isNaN(date.getTime())) return new Date().toISOString();
   return date.toISOString();
+}
+
+// ── Choke Gateway: live ladder state + enforcement ─────────────────────────
+// These hit identical paths on BOTH deployments. The single-tenant engine
+// enforces in-kernel locally; the multi-tenant control plane dispatches a
+// fleet-signed command to the owning agent and waits for its ack. Neither needs
+// a tenant param: the engine has none, and the control plane defaults to the
+// operator's primary tenant (see authorizeRead).
+
+/** Where a process sits on the ladder, keyed by exec_id. */
+export interface ChokeCircuit {
+  execId: string;
+  pid?: number;
+  binary: string;
+  state: string; // pristine | throttled | tarpit | quarantined | severed
+  score: number;
+  lastSeen?: string;
+}
+
+export async function fetchChokeCircuits(signal?: AbortSignal): Promise<ChokeCircuit[]> {
+  const result = await socApiGet<unknown>("/api/choke/circuits", [], signal);
+  if (!result.ok) return [];
+  return unwrapList(result.data, ["circuits", "items", "data"]).map((value) => {
+    const record = asRecord(value);
+    return {
+      execId: asOptionalString(pick(record, "exec_id", "execId", "ExecID")) || "",
+      pid: asOptionalNumber(pick(record, "pid", "PID")),
+      binary: asOptionalString(pick(record, "binary", "Binary", "exe", "comm")) || "",
+      state: asOptionalString(pick(record, "state", "State")) || "pristine",
+      score: asNumber(pick(record, "score", "Score"), 0),
+      lastSeen: asOptionalString(pick(record, "last_seen", "lastSeen"))
+    };
+  }).filter((c) => c.execId);
+}
+
+/** The rungs an operator can move a process to. "pristine" releases (thaw). */
+export type ChokeAction = "throttle" | "tarpit" | "quarantine" | "sever" | "pristine";
+
+export interface ChokeActionResult {
+  ok: boolean;
+  detail: string;
+}
+
+/**
+ * Apply an enforcement action to one process.
+ *
+ * "pristine" maps to the thaw endpoint — the ladder is monotonic, so returning
+ * to pristine is a release, not a downward step. Everything else is a jail at
+ * that tier. The reason is mandatory server-side for quarantine/sever; it is
+ * sent for every action so the audit records intent uniformly.
+ */
+export async function applyChokeAction(
+  action: ChokeAction,
+  target: { execId: string; pid?: number; binary?: string },
+  reason: string
+): Promise<ChokeActionResult> {
+  const path = action === "pristine" ? "/api/choke/thaw" : "/api/choke/manual";
+  const body =
+    action === "pristine"
+      ? { exec_id: target.execId, pid: target.pid, reason }
+      : { exec_id: target.execId, pid: target.pid, binary: target.binary, action, reason };
+  try {
+    const data = await postJSON<unknown>(path, body);
+    const record = asRecord(data);
+    // The control plane answers {ok,detail} after waiting for the agent ack — a
+    // dispatch that no agent picked up returns ok:false and must NOT read as
+    // success. The engine answers with the decision it just applied.
+    const ok = record.ok === undefined ? true : Boolean(record.ok);
+    const detail =
+      asOptionalString(pick(record, "detail", "Detail", "outcome", "Outcome", "error", "Error")) ||
+      (ok ? `${action} applied` : `${action} was not applied`);
+    return { ok, detail };
+  } catch (error) {
+    return { ok: false, detail: (error as Error).message || `${action} failed` };
+  }
 }

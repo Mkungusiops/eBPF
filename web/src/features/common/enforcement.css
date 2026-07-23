@@ -1,0 +1,140 @@
+/* Enforcement ladder — shared across the correlation graph, Choke Gateway and
+ * Devices.
+ *
+ * Each of those pages ships its own palette under a different token prefix
+ * (--soc-*, bare, --devices-*). Rather than force one vocabulary on all three,
+ * the component adopts whichever is defined via nested var() fallbacks. The
+ * ladder therefore looks native on every surface while staying a single
+ * implementation — the last fallback is only reached if a page defines nothing.
+ */
+.enf-ladder {
+  --enf-panel: var(--soc-panel, var(--panel, var(--devices-panel, #12161d)));
+  --enf-line: var(--soc-line, var(--border, var(--devices-border, #262c36)));
+  --enf-text: var(--soc-text, var(--text, var(--devices-text, #e6edf3)));
+  --enf-muted: var(--soc-muted, var(--muted, var(--devices-muted, #8b949e)));
+  --enf-dim: var(--soc-dim, var(--dim, var(--devices-dim, #6a737d)));
+  --enf-accent: var(--soc-accent, var(--accent, var(--devices-accent, #2f81f7)));
+  --enf-good: var(--soc-good, var(--ok, var(--devices-good, #36c795)));
+  --enf-danger: var(--soc-danger, var(--danger, var(--devices-danger, #f2576b)));
+
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.enf-ladder-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--enf-muted);
+}
+
+.enf-ladder-rungs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.enf-ladder-rung {
+  flex: 1;
+  text-align: center;
+  padding: 4px 2px;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--enf-dim);
+  border-bottom: 2px solid var(--enf-line);
+}
+.enf-ladder-rung.is-passed {
+  color: var(--enf-muted);
+  border-bottom-color: var(--enf-muted);
+}
+.enf-ladder-rung.is-current {
+  color: var(--enf-text);
+  font-weight: 700;
+  border-bottom-color: var(--enf-accent);
+}
+.enf-ladder-rung.is-terminal.is-current {
+  border-bottom-color: var(--enf-danger);
+  color: var(--enf-danger);
+}
+
+.enf-ladder-reason {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 11px;
+  background: var(--enf-panel);
+  color: var(--enf-text);
+  border: 1px solid var(--enf-line);
+  border-radius: 6px;
+}
+.enf-ladder-reason:focus {
+  outline: none;
+  border-color: var(--enf-accent);
+}
+
+.enf-ladder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.enf-ladder-btn {
+  flex: 1 1 auto;
+  padding: 6px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--enf-panel);
+  color: var(--enf-text);
+  border: 1px solid var(--enf-line);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+.enf-ladder-btn:hover:not(:disabled) {
+  border-color: var(--enf-accent);
+}
+/* Disabled rungs stay VISIBLE (with a title explaining why) instead of being
+ * hidden — an operator should see the whole ladder, not a shifting set. */
+.enf-ladder-btn:disabled {
+  opacity: 0.38;
+  cursor: not-allowed;
+}
+.enf-ladder-btn.is-release {
+  color: var(--enf-good);
+}
+.enf-ladder-btn.is-release:hover:not(:disabled) {
+  border-color: var(--enf-good);
+}
+/* The terminal action is styled apart from the reversible rungs on purpose. */
+.enf-ladder-btn.is-terminal {
+  color: var(--enf-danger);
+}
+.enf-ladder-btn.is-terminal:hover:not(:disabled) {
+  border-color: var(--enf-danger);
+  background: color-mix(in srgb, var(--enf-danger) 10%, var(--enf-panel));
+}
+
+.enf-ladder-warn {
+  margin: 0;
+  padding: 6px 8px;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--enf-danger);
+  background: color-mix(in srgb, var(--enf-danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--enf-danger) 30%, transparent);
+  border-radius: 6px;
+}
+
+.enf-ladder-result {
+  margin: 0;
+  font-size: 10.5px;
+}
+.enf-ladder-result.is-ok {
+  color: var(--enf-good);
+}
+.enf-ladder-result.is-bad {
+  color: var(--enf-danger);
+}
