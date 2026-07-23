@@ -86,7 +86,7 @@
   padding: 12px 10px;
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 9px;
   color: var(--soc-muted);
   background: rgba(17, 18, 18, 0.94);
   border-right: 1px solid var(--soc-line);
@@ -126,18 +126,31 @@
 
 .soc-sidebar-toggle,
 .soc-sidebar-item {
+  position: relative;
   width: 100%;
-  min-height: 38px;
+  min-height: 32px;
   display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 9px 10px;
+  gap: 10px;
+  padding: 6px 10px;
   color: inherit;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 7px;
+  border-radius: 6px;
   text-decoration: none;
   white-space: nowrap;
+}
+
+.soc-sidebar-item > svg {
+  flex: 0 0 auto;
+  opacity: 0.72;
+  transition: opacity 0.14s ease, color 0.14s ease;
+}
+
+.soc-sidebar-item span {
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.003em;
 }
 
 .soc-sidebar-toggle:hover,
@@ -145,6 +158,50 @@
   color: var(--soc-text);
   background: var(--soc-panel-soft);
   border-color: var(--soc-line);
+}
+
+.soc-sidebar-item:hover > svg {
+  opacity: 1;
+}
+
+/* Active route (Dashboard on the SOC page): accent text + a left accent bar —
+   the quiet, unmistakable "you are here" cue enterprise consoles use. */
+.soc-sidebar-item.is-active {
+  color: var(--soc-text);
+  background: color-mix(in srgb, var(--soc-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--soc-accent) 26%, transparent);
+}
+
+.soc-sidebar-item.is-active > svg {
+  opacity: 1;
+  color: var(--soc-accent);
+}
+
+/* A single accent rail on every item: invisible at rest, a short bar on hover,
+   full height when active. The kind of quiet micro-interaction enterprise nav
+   leans on. */
+.soc-sidebar-item::before {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 2.5px;
+  height: 0;
+  transform: translateY(-50%);
+  border-radius: 999px;
+  background: var(--soc-accent);
+  opacity: 0;
+  transition: height 0.16s ease, opacity 0.16s ease;
+}
+
+.soc-sidebar-item:hover::before {
+  height: 15px;
+  opacity: 0.5;
+}
+
+.soc-sidebar-item.is-active::before {
+  height: 18px;
+  opacity: 1;
 }
 
 .soc-sidebar-item span,
@@ -180,10 +237,69 @@
 .soc-sidebar-foot {
   padding: 0 10px;
   color: var(--soc-dim);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Collapsible group header: the label becomes a full-width toggle with a caret
+   that rotates. Items live in .soc-sidebar-group-items so collapse can hide
+   them via CSS (only in the expanded sidebar). */
+.soc-sidebar-group-items {
+  display: grid;
+  gap: 4px;
+}
+
+button.soc-sidebar-group-toggle {
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  margin-top: 2px;
+  padding: 3px 10px 3px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--soc-dim);
+  cursor: pointer;
+  transition: color 0.14s ease;
+  /* `.soc-route button { font: inherit }` (higher specificity) resets the
+     header font to the inherited ~15px — restore the small label size + weight
+     here so section headers stay quiet dividers, not "huge" text. */
   font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
+}
+
+/* The header is a label, so it inherits display:none in the icon rail and only
+   shows (as a flex toggle) once the sidebar is expanded. */
+.soc-route.sidebar-open button.soc-sidebar-group-toggle {
+  display: flex;
+}
+
+button.soc-sidebar-group-toggle:hover {
+  color: var(--soc-text);
+}
+
+.soc-sidebar-caret {
+  flex: 0 0 auto;
+  width: 12px;
+  height: 12px;
+  opacity: 0.45;
+  transition: transform 0.16s ease, opacity 0.14s ease;
+}
+
+button.soc-sidebar-group-toggle:hover .soc-sidebar-caret {
+  opacity: 0.8;
+}
+
+.soc-sidebar-section.is-collapsed .soc-sidebar-caret {
+  transform: rotate(-90deg);
+}
+
+/* Collapse only hides items in the EXPANDED sidebar; the icon-only rail always
+   shows every icon (the header/caret are hidden there anyway). */
+.soc-route.sidebar-open .soc-sidebar-section.is-collapsed .soc-sidebar-group-items {
+  display: none;
 }
 
 .soc-sidebar-spacer {
@@ -191,8 +307,12 @@
 }
 
 .soc-sidebar-foot {
+  padding-top: 6px;
   padding-bottom: 8px;
   font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  opacity: 0.42;
 }
 
 .soc-topbar {
@@ -2269,6 +2389,66 @@ button.soc-metric:hover {
   border-radius: 7px;
   font-size: 14px;
   line-height: 1.55;
+}
+
+/* Dual narratives — one plain-English (leads, green), one technical (muted) —
+   shared by the alert triage drill and the correlation-graph process drill so
+   the two-audience read is identical everywhere. */
+.soc-narrative {
+  padding: 12px 14px;
+  border: 1px solid var(--soc-line-strong);
+  border-radius: 7px;
+  color: var(--soc-text);
+  background: var(--soc-panel-soft);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.soc-narrative + .soc-narrative {
+  margin-top: 10px;
+}
+
+.soc-narrative p {
+  margin: 0;
+}
+
+.soc-narrative-plain {
+  background:
+    linear-gradient(135deg, rgba(74, 222, 128, 0.12), transparent 58%),
+    var(--soc-panel-soft);
+  border-color: rgba(74, 222, 128, 0.42);
+}
+
+.soc-narrative-tech {
+  color: var(--soc-dim);
+  font-size: 12.5px;
+}
+
+.soc-narrative-tag {
+  display: inline-flex;
+  margin-bottom: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: rgba(127, 140, 165, 0.16);
+  color: var(--soc-dim);
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.soc-narrative-plain .soc-narrative-tag {
+  background: rgba(74, 222, 128, 0.2);
+  color: #7ee0a2;
+}
+
+/* Graph modal: narratives sit full-width below the identity/ladder body. */
+.soc-proc-modal-narrative {
+  margin-top: 18px;
+  padding-top: 16px;
+  border-top: 1px solid var(--soc-line);
+  display: grid;
+  gap: 8px;
 }
 
 .soc-notes {

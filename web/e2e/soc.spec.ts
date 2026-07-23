@@ -33,7 +33,8 @@ test.describe("SOC route", () => {
       .poll(() => affectedCopy.evaluate((node) => node.scrollWidth <= node.clientWidth))
       .toBe(true);
 
-    await page.getByRole("button", { name: "Command palette" }).click();
+    // The command palette is a ⌘K / Ctrl+K shortcut, not a sidebar item.
+    await page.keyboard.press("Control+k");
     await expect(page.locator('[data-panel="command-palette"]')).toBeVisible();
 
     expectNoCdnRequests(diagnostics.requestUrls);

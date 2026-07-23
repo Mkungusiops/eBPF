@@ -3,8 +3,8 @@ import {
   AlertTriangle,
   Bell,
   BookOpen,
+  ChevronDown,
   Clock,
-  Command,
   Cpu,
   Database,
   Download,
@@ -15,6 +15,7 @@ import {
   Gauge,
   GitBranch,
   HelpCircle,
+  LayoutDashboard,
   ListChecks,
   Maximize2,
   Menu,
@@ -501,23 +502,34 @@ export function SocRoute() {
         >
           <Menu size={18} />
         </button>
-        <SidebarSection title="Tools">
-          <SidebarButton icon={FileText} label="Policies" onClick={() => openSurfaceByName("policies")} />
-          <SidebarButton icon={Zap} label="Attacks" onClick={() => openSurfaceByName("attacks")} />
-          <SidebarButton icon={Gauge} label="MITRE Navigator" onClick={() => openSurfaceByName("mitre")} />
-          <SidebarButton icon={GitBranch} label="Correlation Graph" onClick={() => openSurfaceByName("graph")} />
-          <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => openSurfaceByName("simulator")} />
-          <SidebarButton icon={Database} label="Honeypots" onClick={() => openSurfaceByName("honeypots")} />
-          <SidebarButton icon={Cpu} label="Kprobe Perf" onClick={() => openSurfaceByName("kprobes")} />
-          <SidebarLink icon={ShieldAlert} label="Choke Gateway" href="/choke" />
-          <SidebarLink icon={Wifi} label="Devices" href="/devices" />
-          <SidebarButton icon={Network} label="Fleet" onClick={() => openSurfaceByName("fleet")} />
+        {/* Production information architecture: jobs-to-be-done, not a flat panel
+            dump. The two choke gateways — the platform's UVP — are elevated into
+            their own "Respond" group at the top. Demo/diagnostic tools are kept
+            but relocated under Manage; the Command Palette is a ⌘K shortcut, not a
+            nav destination. Items map only to surfaces that actually exist. */}
+        <SidebarSection title="Overview">
+          <SidebarLink icon={LayoutDashboard} label="Dashboard" href="/" />
         </SidebarSection>
-        <SidebarSection title="Workflow">
-          <SidebarButton icon={Command} label="Command Palette" onClick={() => openSurfaceByName("command")} />
-          <SidebarButton icon={Eye} label="Watchlist" onClick={() => openSurfaceByName("watchlist")} badge={watchCount(watchlist)} />
+        <SidebarSection title="Respond">
+          <SidebarLink icon={ShieldAlert} label="Choke Gateway" href="/choke" />
+          <SidebarLink icon={Wifi} label="Device Choke" href="/devices" />
+        </SidebarSection>
+        <SidebarSection title="Detect & Investigate">
+          <SidebarButton icon={Gauge} label="MITRE Coverage" onClick={() => openSurfaceByName("mitre")} />
+          <SidebarButton icon={GitBranch} label="Correlation Graph" onClick={() => openSurfaceByName("graph")} />
           <SidebarButton icon={Clock} label="Time Machine" onClick={() => openSurfaceByName("time-machine")} />
-          <SidebarButton icon={Download} label="Export view" onClick={() => openSurfaceByName("export")} />
+        </SidebarSection>
+        <SidebarSection title="Intelligence">
+          <SidebarButton icon={Eye} label="Watchlist" onClick={() => openSurfaceByName("watchlist")} badge={watchCount(watchlist)} />
+          <SidebarButton icon={Database} label="Honeypots" onClick={() => openSurfaceByName("honeypots")} />
+        </SidebarSection>
+        <SidebarSection title="Manage">
+          <SidebarButton icon={FileText} label="Policies" onClick={() => openSurfaceByName("policies")} />
+          <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => openSurfaceByName("simulator")} />
+          <SidebarButton icon={Zap} label="Attack Sim" onClick={() => openSurfaceByName("attacks")} />
+          <SidebarButton icon={Network} label="Fleet" onClick={() => openSurfaceByName("fleet")} />
+          <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => openSurfaceByName("kprobes")} />
+          <SidebarButton icon={Download} label="Reports" onClick={() => openSurfaceByName("export")} />
         </SidebarSection>
         <SidebarSection title="Settings">
           <SidebarButton
@@ -1018,11 +1030,47 @@ function useLocalJsonState<T>(key: string, fallback: T): [T, React.Dispatch<Reac
   return [value, setValue];
 }
 
-function SidebarSection({ title, children }: { title: string; children: React.ReactNode }) {
+function SidebarSection({
+  title,
+  children,
+  collapsible = true,
+  defaultOpen = true
+}: {
+  title: string;
+  children: React.ReactNode;
+  collapsible?: boolean;
+  defaultOpen?: boolean;
+}) {
+  const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  // v2: the nav IA was reshaped, so old persisted collapse state is discarded —
+  // everyone starts from the intended expanded default rather than inheriting a
+  // stale all-collapsed rail that hides the whole menu.
+  const [open, setOpen] = useLocalJsonState<boolean>(`soc.nav.v2.${slug}`, defaultOpen);
+  // Overview / Account stay pinned (Dashboard and Sign out must always be one
+  // click away); the functional tool groups collapse so a long production nav
+  // stays scannable.
+  if (!collapsible) {
+    return (
+      <div className="soc-sidebar-section">
+        <div className="soc-sidebar-label">{title}</div>
+        {children}
+      </div>
+    );
+  }
   return (
-    <div className="soc-sidebar-section">
-      <div className="soc-sidebar-label">{title}</div>
-      {children}
+    <div className={cx("soc-sidebar-section", !open && "is-collapsed")}>
+      <button
+        type="button"
+        className="soc-sidebar-label soc-sidebar-group-toggle"
+        onClick={() => setOpen((value) => !value)}
+        aria-expanded={open}
+      >
+        <span>{title}</span>
+        <ChevronDown size={13} className="soc-sidebar-caret" aria-hidden="true" />
+      </button>
+      {/* Always rendered; collapse hides items via CSS only in the expanded
+          sidebar, so the icon-only rail keeps every icon reachable. */}
+      <div className="soc-sidebar-group-items">{children}</div>
     </div>
   );
 }
@@ -1040,7 +1088,7 @@ function SidebarButton({
 }) {
   return (
     <button type="button" className="soc-sidebar-item" onClick={onClick} title={label}>
-      <Icon size={18} />
+      <Icon size={16} strokeWidth={1.75} />
       <span>{label}</span>
       {badge ? <em>{badge}</em> : null}
     </button>
@@ -1048,9 +1096,13 @@ function SidebarButton({
 }
 
 function SidebarLink({ icon: Icon, label, href }: { icon: typeof Activity; label: string; href: string }) {
+  // Highlight the link that matches the page we're on (Dashboard on the SOC
+  // route). The overlay-opening buttons aren't routes, so only real links can
+  // be "active" — the standard enterprise-nav cue.
+  const active = typeof window !== "undefined" && window.location.pathname === href;
   return (
-    <a className="soc-sidebar-item" href={href} title={label}>
-      <Icon size={18} />
+    <a className={cx("soc-sidebar-item", active && "is-active")} href={href} title={label} aria-current={active ? "page" : undefined}>
+      <Icon size={16} strokeWidth={1.75} />
       <span>{label}</span>
     </a>
   );
@@ -1694,6 +1746,20 @@ function NetworkList({ rows }: { rows: Array<{ peer: string; count: number; proc
   );
 }
 
+function baseName(path?: string): string {
+  if (!path) return "process";
+  const idx = path.lastIndexOf("/");
+  return idx >= 0 ? path.slice(idx + 1) || path : path;
+}
+
+const SEVERITY_WORD: Record<string, string> = {
+  critical: "critical",
+  high: "high",
+  medium: "medium",
+  low: "low",
+  info: "informational"
+};
+
 function DrillPanel({
   alert,
   ack,
@@ -1728,6 +1794,22 @@ function DrillPanel({
   const narrative = `${chain.length || 1}-process chain starting from ${firstProcess} descended into ${lastProcess} and triggered ${eventCount} kernel event${events.length === 1 ? "" : "s"}. ${
     alert.mitreId ? `Mapped to MITRE ${alert.mitreId}${alert.tactic ? ` ${alert.tactic}` : ""}. ` : ""
   }Aggregate suspicion score: ${alert.score}.`;
+  // Plain-English companion — same facts, no jargon, for an analyst scanning
+  // fast or a lead briefing leadership: what fired, how bad, what it means,
+  // what to do. The technical line above stays for the responder.
+  const sevWord = SEVERITY_WORD[alert.severity] || String(alert.severity);
+  const plainName = baseName(lastProcess);
+  const startName = baseName(firstProcess);
+  const plainRisk = alert.score >= 120 ? "high" : alert.score >= 50 ? "elevated" : "low";
+  const behaviour = alert.tactic || (alert.mitreId ? `technique ${alert.mitreId}` : "");
+  const isSevere = alert.severity === "critical" || alert.severity === "high";
+  const plainNarrative = `A ${sevWord} alert fired: ${plainName}${
+    startName && startName !== plainName ? `, launched from ${startName},` : ""
+  } behaved in a way the sensor scored as ${plainRisk} risk (${alert.score}).${
+    behaviour ? ` It matches the attacker behaviour “${behaviour}”${alert.tactic && alert.mitreId ? ` (MITRE ${alert.mitreId})` : ""}.` : ""
+  }${events.length ? ` ${events.length} kernel event${events.length === 1 ? "" : "s"} are tied to it.` : ""} ${
+    isSevere ? "Contain the process while you investigate." : "Review before acting."
+  }`;
   const canTarget = Boolean(alert.pid || alert.process);
   const canSubmit = canTarget && reason.trim().length > 2 && !busy;
 
@@ -1779,7 +1861,14 @@ function DrillPanel({
       {processDetailError ? <InlineNotice tone="warn" title="Process detail unavailable">{processDetailError}</InlineNotice> : null}
       <section className="soc-drill-section">
         <h3>Narrative</h3>
-        <div className="soc-drill-narrative">{narrative}</div>
+        <div className="soc-narrative soc-narrative-plain">
+          <span className="soc-narrative-tag">In plain English</span>
+          <p>{plainNarrative}</p>
+        </div>
+        <div className="soc-narrative soc-narrative-tech">
+          <span className="soc-narrative-tag">Technical</span>
+          <p>{narrative}</p>
+        </div>
       </section>
       <section className="soc-drill-section">
         <h3>Choke response</h3>
@@ -2632,6 +2721,23 @@ function ProcessActionModal({
 
   const cls = drill.score >= 25 ? "attack" : drill.score >= 10 ? "threat" : "baseline";
 
+  // Two narratives, tuned to the graph's lighter model and score scale (attack
+  // ≥25, threat ≥10) and kept compact to fit the modal: a plain-English read
+  // and a dense technical line. Same dual-narrative language as the Choke drill
+  // and the alert triage panel, so it reads identically everywhere.
+  const gRisk = drill.score >= 25 ? "high" : drill.score >= 10 ? "elevated" : "low";
+  const gPolicies = drill.policies.length ? drill.policies.join(", ") : "";
+  const gPlain = `${baseName(drill.binary)}${drill.agent ? ` on ${drill.agent}` : ""} drew ${gRisk} attention (score ${Math.round(
+    drill.score
+  )}).${
+    drill.policies.length
+      ? ` It tripped ${drill.policies.length} detection${drill.policies.length === 1 ? "" : "s"}: ${gPolicies}.`
+      : ""
+  } ${drill.score >= 25 ? "Consider containing it with the ladder on the right." : "Watch it; no action needed yet."}`;
+  const gTech = `${drill.binary}${drill.pid ? ` · pid ${drill.pid}` : ""} · score ${Math.round(drill.score)}${
+    drill.policies.length ? ` · policies: ${gPolicies}` : ""
+  }.`;
+
   return (
     <div
       className="soc-proc-modal-back is-open"
@@ -2715,6 +2821,18 @@ function ProcessActionModal({
             />
           </section>
         </div>
+
+        {/* Two narratives, compact for the graph modal. */}
+        <section className="soc-proc-modal-narrative">
+          <div className="soc-narrative soc-narrative-plain">
+            <span className="soc-narrative-tag">In plain English</span>
+            <p>{gPlain}</p>
+          </div>
+          <div className="soc-narrative soc-narrative-tech">
+            <span className="soc-narrative-tag">Technical</span>
+            <p>{gTech}</p>
+          </div>
+        </section>
       </div>
     </div>
   );
