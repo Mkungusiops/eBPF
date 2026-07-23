@@ -2752,3 +2752,233 @@
   width: min(460px, 96vw);
   gap: 10px;
 }
+
+/* ── Assurance lens ─────────────────────────────────────────────────── */
+.choke-assurance {
+  padding: 0 22px 22px;
+}
+
+.choke-assur-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.choke-assur-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(127, 140, 165, 0.05);
+}
+
+.choke-assur-card.span2 {
+  grid-column: span 2;
+}
+
+.choke-assur-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.choke-assur-card h3 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.choke-assur-score {
+  font-size: 34px;
+  font-weight: 750;
+  color: var(--text);
+  line-height: 1;
+}
+
+.choke-assur-score small {
+  font-size: 15px;
+  color: var(--muted);
+}
+
+.choke-assur-card.tone-good .choke-assur-score {
+  color: #6fe0a2;
+}
+.choke-assur-card.tone-warn .choke-assur-score {
+  color: #f5c67a;
+}
+.choke-assur-card.tone-bad .choke-assur-score {
+  color: #ff6b83;
+}
+
+.choke-assur-drivers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.choke-assur-driver {
+  display: grid;
+  gap: 3px;
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(127, 140, 165, 0.08);
+  border-left: 3px solid var(--muted);
+}
+
+.choke-assur-driver.good {
+  border-left-color: #4ade80;
+}
+.choke-assur-driver.warn {
+  border-left-color: #f5b13d;
+}
+
+.choke-assur-driver span {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.choke-assur-driver strong {
+  font-size: 15px;
+  color: var(--text);
+}
+
+.choke-assur-note {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.choke-assur-bigstat {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.choke-assur-bigstat strong {
+  font-size: 32px;
+  color: var(--text);
+  line-height: 1;
+}
+
+.choke-assur-bigstat span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.choke-assur-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(127, 140, 165, 0.18);
+  overflow: hidden;
+}
+
+.choke-assur-bar span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #4ade80, #6e8bff);
+}
+
+.choke-assur-kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 5px 12px;
+  font-size: 12px;
+}
+
+.choke-assur-kv span {
+  color: var(--muted);
+}
+
+.choke-assur-kv strong {
+  color: var(--text);
+  text-align: right;
+}
+
+.choke-assur-kv strong.danger {
+  color: #ff6b83;
+}
+
+.choke-assur-audit {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.choke-assur-audit.ok {
+  color: #6fe0a2;
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.choke-assur-audit.bad {
+  color: #ff6b83;
+  background: rgba(244, 85, 110, 0.14);
+}
+
+.choke-assur-hash {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--muted);
+  word-break: break-all;
+}
+
+.choke-assur-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.choke-assur-top {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.choke-assur-top li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.choke-assur-top li span {
+  color: var(--muted);
+  min-width: 0;
+}
+
+.choke-assur-export p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .choke-assur-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .choke-assur-drivers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .choke-assur-grid,
+  .choke-assur-drivers {
+    grid-template-columns: 1fr;
+  }
+  .choke-assur-card.span2 {
+    grid-column: span 1;
+  }
+}

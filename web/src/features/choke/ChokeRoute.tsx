@@ -92,7 +92,14 @@ import {
   writeJsonStorage,
 } from "./utils";
 import { EnforcementLadder } from "../common/EnforcementLadder";
-import { ACTION_FOR_RUNG, PROCESS_TERMINAL } from "../common/enforcement";
+import { ACTION_FOR_RUNG, LADDER, PROCESS_TERMINAL, type Rung } from "../common/enforcement";
+import {
+  ContainmentCommandHeader,
+  ContainmentLadder,
+  computePosture,
+  type CommandMetrics,
+  type ViewMode
+} from "../common/ContainmentCommand";
 import "./ChokeRoute.css";
 
 const PROC_RENDER_CAP = 300;
@@ -199,6 +206,10 @@ export function ChokeRoute(): React.ReactElement {
   const [tapeFilterExec, setTapeFilterExec] = useState<string | null>(null);
   const [autoScrollTape, setAutoScrollTape] = useState(true);
   const [density, setDensity] = useState<"normal" | "compact">("normal");
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    readJsonStorage<ViewMode>("choke.viewMode", "command") === "assurance" ? "assurance" : "command"
+  );
+  useEffect(() => writeJsonStorage("choke.viewMode", viewMode), [viewMode]);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [popover, setPopover] = useState<PopoverName>(null);
@@ -567,6 +578,49 @@ export function ChokeRoute(): React.ReactElement {
   );
   const staleSeconds = streamInfo.lastMessageAt ? Math.floor((now - streamInfo.lastMessageAt) / 1000) : 0;
   const disabled = loadState.kind === "disabled";
+
+  // ── Containment Command metrics (shared hero + ladder) ──────────────────
+  // Contained = anything on a rung above pristine. Active threats = uncontained
+  // processes already scoring at/over the first enforcement threshold — the
+  // ones an operator should be acting on right now.
+  const containedCount = LADDER.filter((r) => r !== "pristine").reduce((sum, r) => sum + (stateCounts[r] || 0), 0);
+  const activeThreats = useMemo(
+    () =>
+      circuits.filter(
+        (c) => (!c.state || c.state === "pristine") && (c.score || 0) >= (thresholds.throttle_at || 20)
+      ).length,
+    [circuits, thresholds.throttle_at]
+  );
+  const enforceMode: "detect-only" | "enforcing" = chokeState?.mode === "enforcing" ? "enforcing" : "detect-only";
+  const auditOk = chokeState?.audit?.ok !== false;
+  const commandMetrics: CommandMetrics = {
+    subject: "processes",
+    mode: enforceMode,
+    activeThreats,
+    contained: containedCount,
+    tracked: chokeState?.tracked || circuits.length,
+    auditOk,
+    auditRows: chokeState?.audit?.total || 0,
+    killSwitched: Boolean(chokeState?.kill_switched),
+    headline: `${(currentWindowDecisions.length / Math.max(1, windowMin)).toFixed(1)} /min`,
+    headlineLabel: "Decision rate",
+    posture: computePosture({
+      mode: enforceMode,
+      activeThreats,
+      contained: containedCount,
+      auditOk,
+      killSwitched: Boolean(chokeState?.kill_switched)
+    })
+  };
+  const activeRung = stateFilters.size === 1 ? (Array.from(stateFilters)[0] as string) : null;
+  const toggleRungFilter = useCallback((rung: Rung) => {
+    setStateFilters((prev) =>
+      prev.size === 1 && prev.has(rung)
+        ? new Set<string>(["throttled", "tarpit", "quarantined", "severed"])
+        : new Set<string>([rung])
+    );
+  }, []);
+
   const userLabel = String(whoami?.username || whoami?.user || "operator");
   const hostState = hostPings[0]?.ok === false ? "down" : hostPings[0] && hostPings[0].rtt_ms > 800 ? "slow" : "ok";
 
@@ -796,6 +850,64 @@ export function ChokeRoute(): React.ReactElement {
     }
   }
 
+  // Assurance-lens export: a board-ready printable report, or a machine-readable
+  // evidence bundle (the audit head hash + posture + containment ladder) for
+  // audit / cyber-insurance. Both are built from the same live data as the view.
+  function exportAssuranceReport(kind: "report" | "bundle"): void {
+    const when = new Date();
+    const stamp = when.toISOString().replace(/[:.]/g, "-");
+    const headHash = String(chokeState?.audit?.head_hash || chokeState?.audit?.head || "");
+    if (kind === "bundle") {
+      const bundle = {
+        generated_at: when.toISOString(),
+        generated_by: userLabel,
+        subject: "processes",
+        posture: commandMetrics.posture,
+        mode: commandMetrics.mode,
+        kill_switch: commandMetrics.killSwitched ? "engaged" : "standby",
+        active_threats: commandMetrics.activeThreats,
+        contained: commandMetrics.contained,
+        tracked: commandMetrics.tracked,
+        audit: { intact: commandMetrics.auditOk, records: commandMetrics.auditRows, head_hash: headHash || null },
+        containment_ladder: LADDER.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r]: stateCounts[r] || 0 }), {}),
+        thresholds,
+        window_minutes: windowMin,
+        decisions_in_window: currentWindowDecisions.length,
+        top_binaries: topBinaries.map((b) => ({ binary: b.key, decisions: b.count }))
+      };
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `containment-evidence-${stamp}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      pushToast("evidence bundle downloaded", "ok");
+      return;
+    }
+    const html = buildAssuranceReportHtml({
+      metrics: commandMetrics,
+      stateCounts,
+      thresholds,
+      decisionsInWindow: currentWindowDecisions.length,
+      windowLabel: formatWindow(windowMin),
+      topBinaries,
+      headHash,
+      user: userLabel,
+      when
+    });
+    const win = window.open("", "_blank");
+    if (!win) {
+      pushToast("popup blocked — allow popups to print the report", "err");
+      return;
+    }
+    win.document.write(html);
+    win.document.close();
+    pushToast("board report opened — Print → Save as PDF", "ok");
+  }
+
   async function handleAuditVerify(): Promise<void> {
     try {
       const response = await verifyChain();
@@ -914,9 +1026,9 @@ export function ChokeRoute(): React.ReactElement {
             <button className="choke-action-button" type="button" onClick={() => setJailOpen(true)} disabled={disabled}>
               Jail Process
             </button>
-            <button className="choke-action-button danger" type="button" onClick={openKillSwitchConfirm} disabled={disabled}>
-              {chokeState?.kill_switched ? "Disengage Kill" : "Kill-Switch"}
-            </button>
+            {/* Kill-switch + enforcement mode now live in the Containment Command
+                header's control cluster — a single home for the consequential
+                controls. The Ctrl+Shift+K shortcut and command palette still work. */}
           </div>
         </div>
       </header>
@@ -1022,6 +1134,34 @@ export function ChokeRoute(): React.ReactElement {
         </section>
       ) : null}
 
+      {/* Containment Command — the shared hero. The UVP made visual: graduated,
+          reversible, audited containment, with the Command⇄Assurance lens. */}
+      <ContainmentCommandHeader
+        metrics={commandMetrics}
+        viewMode={viewMode}
+        onViewMode={setViewMode}
+        onToggleMode={() => openModeConfirm(enforceMode !== "enforcing")}
+        onKillSwitch={openKillSwitchConfirm}
+        disabled={disabled}
+      />
+      <ContainmentLadder counts={stateCounts} activeRung={activeRung} onRungClick={toggleRungFilter} subject="processes" />
+
+      {viewMode === "assurance" ? (
+        <AssuranceView
+          metrics={commandMetrics}
+          stateCounts={stateCounts}
+          thresholds={thresholds}
+          decisions={currentWindowDecisions}
+          windowMin={windowMin}
+          topBinaries={topBinaries}
+          velocityBuckets={velocityBuckets}
+          auditHash={chokeState?.audit?.head_hash}
+          onVerifyAudit={() => void handleAuditVerify()}
+          onCopyAudit={() => void copyAuditHead()}
+          onExport={exportAssuranceReport}
+        />
+      ) : (
+      <>
       <section className="choke-ti-ribbon" data-panel="threat-intelligence-ribbon">
         <MiniPanel title="Decision Velocity" meta={`${currentWindowDecisions.length} in ${formatWindow(windowMin)}`}>
           <div className="choke-velocity">
@@ -1216,6 +1356,8 @@ export function ChokeRoute(): React.ReactElement {
           </div>
         </Panel>
       </section>
+      </>
+      )}
 
       <ProcessDrill
         drill={drill}
@@ -1277,6 +1419,266 @@ export function ChokeRoute(): React.ReactElement {
       </footer>
     </div>
   );
+}
+
+function DriverPill({ label, value, good }: { label: string; value: string; good: boolean }) {
+  return (
+    <div className={`choke-assur-driver ${good ? "good" : "warn"}`}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+// The Assurance lens: the same live containment data, read for a CISO/board —
+// posture with a transparent breakdown, control effectiveness, audit-chain
+// integrity, enforcement + reversibility, and one-click board-ready evidence.
+function AssuranceView({
+  metrics,
+  stateCounts,
+  thresholds,
+  decisions,
+  windowMin,
+  topBinaries,
+  velocityBuckets,
+  auditHash,
+  onVerifyAudit,
+  onCopyAudit,
+  onExport
+}: {
+  metrics: CommandMetrics;
+  stateCounts: Record<string, number>;
+  thresholds: Thresholds;
+  decisions: Decision[];
+  windowMin: number;
+  topBinaries: Array<{ key: string; count: number }>;
+  velocityBuckets: number[];
+  auditHash?: string;
+  onVerifyAudit: () => void;
+  onCopyAudit: () => void;
+  onExport: (kind: "report" | "bundle") => void;
+}) {
+  const needing = metrics.activeThreats + metrics.contained;
+  const coverage = needing === 0 ? 100 : Math.round((metrics.contained / needing) * 100);
+  const postureTone = metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
+  const enforcing = metrics.mode === "enforcing";
+  const hashShort = auditHash ? `${auditHash.slice(0, 24)}…` : "—";
+  return (
+    <section className="choke-assurance" data-panel="assurance-view">
+      <div className="choke-assur-grid">
+        <article className={`choke-assur-card span2 tone-${postureTone}`}>
+          <header>
+            <h3>Security posture</h3>
+            <span className="choke-assur-score">
+              {metrics.posture}
+              <small>/100</small>
+            </span>
+          </header>
+          <div className="choke-assur-drivers">
+            <DriverPill label="Containment coverage" value={`${coverage}%`} good={coverage >= 80} />
+            <DriverPill label="Enforcement" value={enforcing ? "Enforcing" : "Detect-only"} good={enforcing} />
+            <DriverPill label="Audit chain" value={metrics.auditOk ? "Intact" : "Broken"} good={metrics.auditOk} />
+            <DriverPill label="Kill-switch" value={metrics.killSwitched ? "Engaged" : "Standby"} good={!metrics.killSwitched} />
+          </div>
+          <p className="choke-assur-note">
+            Posture is containment coverage adjusted for enforcement mode, audit-chain integrity and kill-switch state.
+            {enforcing ? "" : " Switch to Enforcing to apply decisions to the kernel and lift this score."}
+          </p>
+        </article>
+
+        <article className="choke-assur-card">
+          <header>
+            <h3>Control effectiveness</h3>
+          </header>
+          <div className="choke-assur-bigstat">
+            <strong>{coverage}%</strong>
+            <span>threats contained</span>
+          </div>
+          <div className="choke-assur-bar">
+            <span style={{ width: `${coverage}%` }} />
+          </div>
+          <div className="choke-assur-kv">
+            <span>Contained</span>
+            <strong>{metrics.contained}</strong>
+            <span>Active threats</span>
+            <strong className={metrics.activeThreats ? "danger" : ""}>{metrics.activeThreats}</strong>
+          </div>
+        </article>
+
+        <article className="choke-assur-card">
+          <header>
+            <h3>Audit integrity</h3>
+          </header>
+          <div className={`choke-assur-audit ${metrics.auditOk ? "ok" : "bad"}`}>
+            {metrics.auditOk ? "Chain intact" : "CHAIN BROKEN"}
+          </div>
+          <div className="choke-assur-kv">
+            <span>Records</span>
+            <strong>{metrics.auditRows.toLocaleString()}</strong>
+          </div>
+          <code className="choke-assur-hash" title={auditHash || ""}>
+            {hashShort}
+          </code>
+          <div className="choke-assur-actions">
+            <button type="button" className="choke-action-button" onClick={onVerifyAudit}>
+              Verify chain
+            </button>
+            <button type="button" className="choke-action-button" onClick={onCopyAudit}>
+              Copy head
+            </button>
+          </div>
+        </article>
+
+        <article className="choke-assur-card">
+          <header>
+            <h3>Enforcement &amp; reversibility</h3>
+          </header>
+          <div className="choke-assur-kv wide">
+            <span>Mode</span>
+            <strong>{enforcing ? "Enforcing" : "Detect-only"}</strong>
+            <span>Throttle ≥</span>
+            <strong>{thresholds.throttle_at}</strong>
+            <span>Tarpit ≥</span>
+            <strong>{thresholds.tarpit_at}</strong>
+            <span>Quarantine ≥</span>
+            <strong>{thresholds.quarantine_at}</strong>
+            <span>Sever ≥</span>
+            <strong>{thresholds.sever_at}</strong>
+            <span>Auto-revert</span>
+            <strong>available</strong>
+          </div>
+        </article>
+
+        <article className="choke-assur-card">
+          <header>
+            <h3>Containment activity · {formatWindow(windowMin)}</h3>
+          </header>
+          <div className="choke-assur-bigstat">
+            <strong>{decisions.length}</strong>
+            <span>decisions</span>
+          </div>
+          <Sparkline bars={velocityBuckets} tone="accent" />
+          <ul className="choke-assur-top">
+            {topBinaries.length === 0 ? (
+              <li className="choke-muted">no decisions in window</li>
+            ) : (
+              topBinaries.map((b) => (
+                <li key={b.key}>
+                  <span className="truncate">{basename(b.key)}</span>
+                  <strong>{b.count}</strong>
+                </li>
+              ))
+            )}
+          </ul>
+        </article>
+
+        <article className="choke-assur-card span2 choke-assur-export">
+          <header>
+            <h3>Board-ready evidence</h3>
+          </header>
+          <p>
+            Export a point-in-time containment summary for leadership, audit, or cyber-insurance — every figure is
+            backed by the tamper-evident decision chain.
+          </p>
+          <div className="choke-assur-actions">
+            <button type="button" className="choke-action-button ok" onClick={() => onExport("report")}>
+              Board report
+            </button>
+            <button type="button" className="choke-action-button" onClick={() => onExport("bundle")}>
+              Evidence bundle (JSON)
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function buildAssuranceReportHtml(args: {
+  metrics: CommandMetrics;
+  stateCounts: Record<string, number>;
+  thresholds: Thresholds;
+  decisionsInWindow: number;
+  windowLabel: string;
+  topBinaries: Array<{ key: string; count: number }>;
+  headHash: string;
+  user: string;
+  when: Date;
+}): string {
+  const { metrics: m, stateCounts, thresholds, decisionsInWindow, windowLabel, topBinaries, headHash, user, when } = args;
+  const esc = (s: string) =>
+    String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+  const needing = m.activeThreats + m.contained;
+  const coverage = needing === 0 ? 100 : Math.round((m.contained / needing) * 100);
+  const tone = m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
+  const rung = (r: string) => stateCounts[r] || 0;
+  const topRows =
+    topBinaries.length === 0
+      ? `<tr><td colspan="2" style="color:#888">no decisions in window</td></tr>`
+      : topBinaries.map((b) => `<tr><td>${esc(b.key)}</td><td style="text-align:right">${b.count}</td></tr>`).join("");
+  return `<!doctype html><html><head><meta charset="utf-8">
+<title>Containment Assurance Report</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 13px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; color: #1a2230; margin: 0; padding: 40px; background: #fff; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2230; padding-bottom: 14px; }
+  .head h1 { margin: 0; font-size: 22px; letter-spacing: -0.01em; }
+  .head .sub { color: #667085; font-size: 12px; margin-top: 4px; }
+  .posture { text-align: center; }
+  .posture .num { font-size: 44px; font-weight: 800; color: ${tone}; line-height: 1; }
+  .posture .lbl { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #667085; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0; }
+  .tile { border: 1px solid #e3e7ee; border-radius: 8px; padding: 14px; }
+  .tile .v { font-size: 24px; font-weight: 700; }
+  .tile .l { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: #667085; margin-top: 4px; }
+  h2 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #667085; border-bottom: 1px solid #e3e7ee; padding-bottom: 6px; margin: 26px 0 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 7px 8px; border-bottom: 1px solid #eef1f5; text-align: left; }
+  .ladder { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .ladder .cell { border: 1px solid #e3e7ee; border-radius: 8px; padding: 12px; text-align: center; }
+  .ladder .cell .c { font-size: 22px; font-weight: 700; }
+  .ladder .cell .n { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #667085; }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; word-break: break-all; color: #344054; }
+  .foot { margin-top: 30px; padding-top: 12px; border-top: 1px solid #e3e7ee; color: #98a2b3; font-size: 11px; }
+  @media print { body { padding: 0; } }
+</style></head><body>
+<div class="head">
+  <div>
+    <h1>Containment Assurance Report</h1>
+    <div class="sub">Process enforcement · generated ${esc(when.toLocaleString())} · by ${esc(user)}</div>
+  </div>
+  <div class="posture"><div class="num">${m.posture}</div><div class="lbl">Posture / 100</div></div>
+</div>
+<div class="tiles">
+  <div class="tile"><div class="v" style="color:${m.activeThreats ? "#d23a4f" : "#2f9e5e"}">${m.activeThreats}</div><div class="l">Active threats</div></div>
+  <div class="tile"><div class="v">${m.contained}</div><div class="l">Contained</div></div>
+  <div class="tile"><div class="v">${coverage}%</div><div class="l">Threats contained</div></div>
+  <div class="tile"><div class="v" style="color:${m.auditOk ? "#2f9e5e" : "#d23a4f"}">${m.auditOk ? "Intact" : "BROKEN"}</div><div class="l">Audit chain</div></div>
+</div>
+<h2>Containment ladder</h2>
+<div class="ladder">
+  <div class="cell"><div class="c">${rung("pristine")}</div><div class="n">Pristine</div></div>
+  <div class="cell"><div class="c">${rung("throttled")}</div><div class="n">Throttled</div></div>
+  <div class="cell"><div class="c">${rung("tarpit")}</div><div class="n">Tarpit</div></div>
+  <div class="cell"><div class="c">${rung("quarantined")}</div><div class="n">Quarantined</div></div>
+  <div class="cell"><div class="c">${rung("severed")}</div><div class="n">Severed</div></div>
+</div>
+<h2>Enforcement posture</h2>
+<table>
+  <tr><td>Mode</td><td style="text-align:right">${m.mode === "enforcing" ? "Enforcing" : "Detect-only"}</td></tr>
+  <tr><td>Kill-switch</td><td style="text-align:right">${m.killSwitched ? "Engaged" : "Standby"}</td></tr>
+  <tr><td>Tracked processes</td><td style="text-align:right">${m.tracked.toLocaleString()}</td></tr>
+  <tr><td>Thresholds (throttle / tarpit / quarantine / sever)</td><td style="text-align:right">${thresholds.throttle_at} / ${thresholds.tarpit_at} / ${thresholds.quarantine_at} / ${thresholds.sever_at}</td></tr>
+  <tr><td>Decisions in window (${esc(windowLabel)})</td><td style="text-align:right">${decisionsInWindow}</td></tr>
+</table>
+<h2>Top enforced binaries (${esc(windowLabel)})</h2>
+<table><tr><th>Binary</th><th style="text-align:right">Decisions</th></tr>${topRows}</table>
+<h2>Evidence anchor</h2>
+<p>Audit chain records: <strong>${m.auditRows.toLocaleString()}</strong>. Tamper-evident head hash:</p>
+<p class="mono">${esc(headHash || "—")}</p>
+<div class="foot">This report is a point-in-time summary of live enforcement state. Every containment decision is recorded in a hash-chained, tamper-evident audit log; the head hash above anchors this report to that chain.</div>
+<script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+</body></html>`;
 }
 
 function Panel({ title, children, actions, dataPanel }: { title: string; children: ReactNode; actions?: ReactNode; dataPanel?: string }) {

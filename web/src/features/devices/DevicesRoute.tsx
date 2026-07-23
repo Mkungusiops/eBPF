@@ -4,11 +4,9 @@ import {
   ChevronDown,
   ChevronRight,
   Network,
-  Power,
   RefreshCcw,
   RotateCcw,
   ShieldAlert,
-  ShieldCheck,
   X
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +19,14 @@ import {
   type DevicesApi
 } from "./api";
 import { EnforcementLadder } from "../common/EnforcementLadder";
-import { ACTION_FOR_RUNG, DEVICE_TERMINAL, type Rung } from "../common/enforcement";
+import { ACTION_FOR_RUNG, DEVICE_TERMINAL, LADDER, type Rung } from "../common/enforcement";
+import {
+  ContainmentCommandHeader,
+  ContainmentLadder,
+  computePosture,
+  type CommandMetrics,
+  type ViewMode
+} from "../common/ContainmentCommand";
 import "./devices.css";
 import type {
   DeviceAction,
@@ -101,6 +106,19 @@ export function DevicesRoute({
   const [revertAfter, setRevertAfter] = useState("");
   const [toast, setToast] = useState<ToastState | null>(null);
   const [confirm, setConfirm] = useState<ConfirmOptions | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>(() =>
+    (typeof localStorage !== "undefined" && localStorage.getItem("devices.viewMode")) === "assurance"
+      ? "assurance"
+      : "command"
+  );
+  useEffect(() => {
+    try {
+      localStorage.setItem("devices.viewMode", viewMode);
+    } catch {
+      /* storage may be unavailable */
+    }
+  }, [viewMode]);
+  const [rungFilter, setRungFilter] = useState<string | null>(null);
   const expandedRef = useRef(expanded);
   const confirmResolverRef = useRef<((result: ConfirmResult | null) => void) | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -385,6 +403,94 @@ export function DevicesRoute({
   );
 
   const counts = normalizeCounts(state?.counts);
+
+  // ── Containment Command metrics (shared hero + ladder) ──────────────────
+  const countsByRung = counts as unknown as Record<string, number>;
+  const containedDevices = LADDER.filter((r) => r !== "pristine").reduce((sum, r) => sum + (countsByRung[r] || 0), 0);
+  const protectedCount = devices.filter((d) => d.protected).length;
+  const deviceMode: "detect-only" | "enforcing" = state?.enforcing ? "enforcing" : "detect-only";
+  const planeHealthy = !disabledMessage && (state?.data_plane ? state.data_plane !== "disabled" : Boolean(state));
+  const deviceMetrics: CommandMetrics = {
+    subject: "devices",
+    mode: deviceMode,
+    activeThreats: 0,
+    contained: containedDevices,
+    tracked: state?.tracked ?? state?.devices_known ?? devices.length,
+    auditOk: planeHealthy,
+    auditRows: 0,
+    integrityLabel: "Data plane",
+    integrityValue: planeHealthy ? "active" : "offline",
+    integritySub: `${state?.links_attached ?? 0} links · ${state?.frames_seen ?? 0} frames`,
+    killSwitched: Boolean(state?.kill_switched),
+    headline: `${protectedCount}`,
+    headlineLabel: "Protected assets",
+    posture: computePosture({
+      mode: deviceMode,
+      activeThreats: 0,
+      contained: containedDevices,
+      auditOk: planeHealthy,
+      killSwitched: Boolean(state?.kill_switched)
+    })
+  };
+  const visibleDevices = rungFilter ? devices.filter((d) => (d.state || "pristine") === rungFilter) : devices;
+  const toggleRungFilter = (rung: Rung) => setRungFilter((prev) => (prev === rung ? null : rung));
+
+  const exportDeviceAssurance = (kind: "report" | "bundle") => {
+    const when = new Date();
+    const stamp = when.toISOString().replace(/[:.]/g, "-");
+    if (kind === "bundle") {
+      const bundle = {
+        generated_at: when.toISOString(),
+        subject: "devices",
+        posture: deviceMetrics.posture,
+        mode: deviceMetrics.mode,
+        kill_switch: deviceMetrics.killSwitched ? "engaged" : "standby",
+        data_plane: planeHealthy ? "active" : "offline",
+        links_attached: state?.links_attached ?? 0,
+        frames_seen: state?.frames_seen ?? 0,
+        contained: deviceMetrics.contained,
+        tracked: deviceMetrics.tracked,
+        protected_assets: protectedCount,
+        containment_ladder: LADDER.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r]: countsByRung[r] || 0 }), {}),
+        devices: devices.map((d) => ({
+          mac: d.mac,
+          ip: d.last_ip || null,
+          hostname: d.hostname || null,
+          vendor: d.vendor || null,
+          state: d.state,
+          protected: Boolean(d.protected)
+        }))
+      };
+      const blob = new Blob([JSON.stringify(bundle, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `device-containment-evidence-${stamp}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      URL.revokeObjectURL(url);
+      setToast({ message: "evidence bundle downloaded", tone: "ok" });
+      return;
+    }
+    const html = buildDeviceAssuranceHtml({
+      metrics: deviceMetrics,
+      counts: countsByRung,
+      links: state?.links_attached ?? 0,
+      frames: state?.frames_seen ?? 0,
+      protectedCount,
+      devices,
+      when
+    });
+    const win = window.open("", "_blank");
+    if (!win) {
+      setToast({ message: "popup blocked — allow popups to print the report", tone: "error" });
+      return;
+    }
+    win.document.write(html);
+    win.document.close();
+    setToast({ message: "board report opened — Print → Save as PDF", tone: "ok" });
+  };
   const allSelected = devices.length > 0 && devices.every((device) => selected.has(device.mac));
   const modeDisabled = Boolean(disabledMessage || state?.dry_run);
   const bridgeWarning = isBridgeMasterWarning(state);
@@ -448,51 +554,41 @@ export function DevicesRoute({
           </section>
         ) : null}
 
-        <section className="devices-grid devices-counts" aria-label="Device state counts">
-          {DEVICE_STATE_ORDER.map((key) => (
-            <div key={key} className={`devices-count devices-count--${key}`}>
-              <div className="devices-count-value">{counts[key]}</div>
-              <div className="devices-count-label">{key}</div>
-            </div>
-          ))}
+        {/* Containment Command — identical hero + ladder to the Choke Gateway,
+            so the network plane and the process plane read as one product. */}
+        <section className="devices-grid">
+          <ContainmentCommandHeader
+            metrics={deviceMetrics}
+            viewMode={viewMode}
+            onViewMode={setViewMode}
+            onToggleMode={modeDisabled ? undefined : toggleMode}
+            onKillSwitch={disabledMessage || !state ? undefined : toggleKillSwitch}
+            disabled={Boolean(disabledMessage)}
+          />
+        </section>
+        <section className="devices-grid">
+          <ContainmentLadder counts={countsByRung} activeRung={rungFilter} onRungClick={toggleRungFilter} subject="devices" />
         </section>
 
-        <section className="devices-grid">
-          <div className="devices-panel devices-panel--padded">
-            <div className="devices-panel-header">
+        {viewMode === "assurance" ? (
+          <DevicesAssuranceView metrics={deviceMetrics} counts={countsByRung} state={state} protectedCount={protectedCount} onExport={exportDeviceAssurance} />
+        ) : (
+        <>
+        {/* Enforcement mode + kill-switch now live in the Containment Command
+            header's control cluster — the single home for the plane controls. */}
+        {state?.dry_run ? (
+          <section className="devices-grid">
+            <div className="devices-banner devices-banner--warn">
+              <AlertTriangle size={19} aria-hidden="true" />
               <div>
-                <h2 className="devices-panel-title">Enforcement mode</h2>
-                <p className="devices-panel-copy">
-                  Detect-only audits would-be chokes. Kill-switch bypasses device enforcement globally.
-                </p>
+                <strong>Dry-run boot flag is set.</strong>
+                <div className="devices-panel-copy">
+                  Enforcement is forced off at boot regardless of mode; chokes are audited but never applied.
+                </div>
               </div>
-              <ModeBadge state={state} />
             </div>
-            <div className="devices-mode-actions">
-              <button
-                type="button"
-                className="devices-button devices-button--primary"
-                disabled={modeDisabled}
-                onClick={toggleMode}
-              >
-                <ShieldCheck size={15} aria-hidden="true" />
-                {state?.enforcing ? "Switch to detect-only" : "Switch to enforcing"}
-              </button>
-              <button
-                type="button"
-                className="devices-button devices-button--danger"
-                disabled={Boolean(disabledMessage || !state)}
-                onClick={toggleKillSwitch}
-              >
-                <Power size={15} aria-hidden="true" />
-                {state?.kill_switched ? "Disengage kill-switch" : "Engage kill-switch"}
-              </button>
-              {state?.dry_run ? (
-                <span className="devices-pill devices-pill--warn">dry-run boot flag</span>
-              ) : null}
-            </div>
-          </div>
-        </section>
+          </section>
+        ) : null}
 
         <section className="devices-grid">
           <div className="devices-panel devices-panel--padded">
@@ -597,7 +693,7 @@ export function DevicesRoute({
                   </tr>
                 </thead>
                 <tbody>
-                  {devices.map((device) => {
+                  {visibleDevices.map((device) => {
                     const open = expanded.has(device.mac);
                     return (
                       <DeviceRow
@@ -619,9 +715,13 @@ export function DevicesRoute({
                 </tbody>
               </table>
             </div>
-            {devices.length === 0 ? (
+            {visibleDevices.length === 0 ? (
               <div className="devices-empty">
-                {loading ? "Loading device state..." : "No devices observed yet. Generate LAN traffic to populate the table."}
+                {loading
+                  ? "Loading device state..."
+                  : rungFilter
+                    ? `No ${rungFilter} devices. Clear the ladder filter to see all.`
+                    : "No devices observed yet. Generate LAN traffic to populate the table."}
               </div>
             ) : null}
           </div>
@@ -631,11 +731,219 @@ export function DevicesRoute({
           Identity is the MAC, stable across DHCP and IP changes. Quarantine still allows DHCP/DNS so a device can recover. Protected MACs refuse quarantine and sever actions.
           {lastUpdatedAt ? ` Last refreshed ${formatAgo(new Date(lastUpdatedAt), now())} ago.` : ""}
         </p>
+        </>
+        )}
       </div>
 
       <ConfirmModal options={confirm} onClose={closeConfirm} />
     </main>
   );
+}
+
+// Assurance lens for the network plane — the device equivalent of the Choke
+// Gateway's, read for a CISO/board: posture with a transparent breakdown,
+// network reach, reversible data-plane integrity, and board-ready evidence.
+function DevicesAssuranceView({
+  metrics,
+  counts,
+  state,
+  protectedCount,
+  onExport
+}: {
+  metrics: CommandMetrics;
+  counts: Record<string, number>;
+  state: DeviceDataPlaneState | null;
+  protectedCount: number;
+  onExport: (kind: "report" | "bundle") => void;
+}) {
+  const needing = metrics.activeThreats + metrics.contained;
+  const coverage = needing === 0 ? 100 : Math.round((metrics.contained / needing) * 100);
+  const postureTone = metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
+  const enforcing = metrics.mode === "enforcing";
+  const planeOk = metrics.auditOk;
+  return (
+    <section className="devices-grid">
+      <div className="cc-assur-grid">
+        <article className={`cc-assur-card span2 tone-${postureTone}`}>
+          <header>
+            <h3>Network posture</h3>
+            <span className="cc-assur-score">
+              {metrics.posture}
+              <small>/100</small>
+            </span>
+          </header>
+          <div className="cc-assur-drivers">
+            <div className={`cc-assur-driver ${coverage >= 80 ? "good" : "warn"}`}>
+              <span>Containment coverage</span>
+              <strong>{coverage}%</strong>
+            </div>
+            <div className={`cc-assur-driver ${enforcing ? "good" : "warn"}`}>
+              <span>Enforcement</span>
+              <strong>{enforcing ? "Enforcing" : "Detect-only"}</strong>
+            </div>
+            <div className={`cc-assur-driver ${planeOk ? "good" : "warn"}`}>
+              <span>Data plane</span>
+              <strong>{planeOk ? "Active" : "Offline"}</strong>
+            </div>
+            <div className={`cc-assur-driver ${metrics.killSwitched ? "warn" : "good"}`}>
+              <span>Kill-switch</span>
+              <strong>{metrics.killSwitched ? "Engaged" : "Standby"}</strong>
+            </div>
+          </div>
+          <p className="cc-assur-note">
+            Network-plane posture reflects how much of the tracked device population is contained, adjusted for
+            enforcement mode and data-plane health.
+            {enforcing ? "" : " Switch to Enforcing to apply drop/throttle rules at the link layer."}
+          </p>
+        </article>
+
+        <article className="cc-assur-card">
+          <header>
+            <h3>Network reach</h3>
+          </header>
+          <div className="cc-assur-kv wide">
+            <span>Devices tracked</span>
+            <strong>{metrics.tracked.toLocaleString()}</strong>
+            <span>Links attached</span>
+            <strong>{state?.links_attached ?? 0}</strong>
+            <span>Frames seen</span>
+            <strong>{(state?.frames_seen ?? 0).toLocaleString()}</strong>
+            <span>Protected assets</span>
+            <strong>{protectedCount}</strong>
+          </div>
+        </article>
+
+        <article className="cc-assur-card">
+          <header>
+            <h3>Data-plane integrity</h3>
+          </header>
+          <div className={`cc-assur-audit ${planeOk ? "ok" : "bad"}`}>{planeOk ? "Plane active" : "PLANE OFFLINE"}</div>
+          <p className="cc-assur-note">
+            Every device choke is a reversible drop/throttle rule — sever cuts a device off the network, thaw restores
+            it. Quarantine still permits DHCP/DNS so a device can always recover.
+          </p>
+        </article>
+
+        <article className="cc-assur-card">
+          <header>
+            <h3>Containment ladder</h3>
+          </header>
+          <ul className="cc-assur-top">
+            {LADDER.map((r) => (
+              <li key={r}>
+                <span>{r}</span>
+                <strong>{counts[r] || 0}</strong>
+              </li>
+            ))}
+          </ul>
+        </article>
+
+        <article className="cc-assur-card span2 cc-assur-export">
+          <header>
+            <h3>Board-ready evidence</h3>
+          </header>
+          <p>
+            Export a point-in-time network-containment summary — device inventory, ladder state and data-plane
+            health — for leadership, audit, or cyber-insurance.
+          </p>
+          <div className="cc-assur-actions">
+            <button type="button" className="devices-button devices-button--primary" onClick={() => onExport("report")}>
+              Board report
+            </button>
+            <button type="button" className="devices-button" onClick={() => onExport("bundle")}>
+              Evidence bundle (JSON)
+            </button>
+          </div>
+        </article>
+      </div>
+    </section>
+  );
+}
+
+function buildDeviceAssuranceHtml(args: {
+  metrics: CommandMetrics;
+  counts: Record<string, number>;
+  links: number;
+  frames: number;
+  protectedCount: number;
+  devices: DeviceEntry[];
+  when: Date;
+}): string {
+  const { metrics: m, counts, links, frames, protectedCount, devices, when } = args;
+  const esc = (s: string) =>
+    String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
+  const needing = m.activeThreats + m.contained;
+  const coverage = needing === 0 ? 100 : Math.round((m.contained / needing) * 100);
+  const tone = m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
+  const rung = (r: string) => counts[r] || 0;
+  const deviceRows =
+    devices.length === 0
+      ? `<tr><td colspan="4" style="color:#888">no devices observed</td></tr>`
+      : devices
+          .map(
+            (d) =>
+              `<tr><td class="mono">${esc(d.mac)}</td><td>${esc(d.last_ip || "—")}</td><td>${esc(d.hostname || d.vendor || "—")}</td><td style="text-align:right">${esc(String(d.state))}${d.protected ? " · protected" : ""}</td></tr>`
+          )
+          .join("");
+  return `<!doctype html><html><head><meta charset="utf-8">
+<title>Network Containment Assurance Report</title>
+<style>
+  * { box-sizing: border-box; }
+  body { font: 13px/1.5 -apple-system, Segoe UI, Roboto, sans-serif; color: #1a2230; margin: 0; padding: 40px; background: #fff; }
+  .head { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 3px solid #1a2230; padding-bottom: 14px; }
+  .head h1 { margin: 0; font-size: 22px; }
+  .head .sub { color: #667085; font-size: 12px; margin-top: 4px; }
+  .posture { text-align: center; }
+  .posture .num { font-size: 44px; font-weight: 800; color: ${tone}; line-height: 1; }
+  .posture .lbl { font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase; color: #667085; }
+  .tiles { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin: 22px 0; }
+  .tile { border: 1px solid #e3e7ee; border-radius: 8px; padding: 14px; }
+  .tile .v { font-size: 24px; font-weight: 700; }
+  .tile .l { font-size: 10px; letter-spacing: 0.09em; text-transform: uppercase; color: #667085; margin-top: 4px; }
+  h2 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: #667085; border-bottom: 1px solid #e3e7ee; padding-bottom: 6px; margin: 26px 0 12px; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { padding: 7px 8px; border-bottom: 1px solid #eef1f5; text-align: left; }
+  .ladder { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+  .ladder .cell { border: 1px solid #e3e7ee; border-radius: 8px; padding: 12px; text-align: center; }
+  .ladder .cell .c { font-size: 22px; font-weight: 700; }
+  .ladder .cell .n { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #667085; }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size: 11px; }
+  .foot { margin-top: 30px; padding-top: 12px; border-top: 1px solid #e3e7ee; color: #98a2b3; font-size: 11px; }
+  @media print { body { padding: 0; } }
+</style></head><body>
+<div class="head">
+  <div>
+    <h1>Network Containment Assurance Report</h1>
+    <div class="sub">Device enforcement plane · generated ${esc(when.toLocaleString())}</div>
+  </div>
+  <div class="posture"><div class="num">${m.posture}</div><div class="lbl">Posture / 100</div></div>
+</div>
+<div class="tiles">
+  <div class="tile"><div class="v">${m.tracked.toLocaleString()}</div><div class="l">Devices tracked</div></div>
+  <div class="tile"><div class="v">${m.contained}</div><div class="l">Contained</div></div>
+  <div class="tile"><div class="v">${coverage}%</div><div class="l">Coverage</div></div>
+  <div class="tile"><div class="v">${protectedCount}</div><div class="l">Protected assets</div></div>
+</div>
+<h2>Containment ladder</h2>
+<div class="ladder">
+  <div class="cell"><div class="c">${rung("pristine")}</div><div class="n">Pristine</div></div>
+  <div class="cell"><div class="c">${rung("throttled")}</div><div class="n">Throttled</div></div>
+  <div class="cell"><div class="c">${rung("tarpit")}</div><div class="n">Tarpit</div></div>
+  <div class="cell"><div class="c">${rung("quarantined")}</div><div class="n">Quarantined</div></div>
+  <div class="cell"><div class="c">${rung("severed")}</div><div class="n">Severed</div></div>
+</div>
+<h2>Data plane</h2>
+<table>
+  <tr><td>Mode</td><td style="text-align:right">${m.mode === "enforcing" ? "Enforcing" : "Detect-only"}</td></tr>
+  <tr><td>Kill-switch</td><td style="text-align:right">${m.killSwitched ? "Engaged" : "Standby"}</td></tr>
+  <tr><td>Links attached</td><td style="text-align:right">${links}</td></tr>
+  <tr><td>Frames forwarded</td><td style="text-align:right">${frames.toLocaleString()}</td></tr>
+</table>
+<h2>Device inventory</h2>
+<table><tr><th>MAC</th><th>IP</th><th>Host / vendor</th><th style="text-align:right">State</th></tr>${deviceRows}</table>
+<div class="foot">This report is a point-in-time summary of live network-enforcement state. Device identity is the MAC address, stable across DHCP and IP changes. Every choke is a reversible, audited drop/throttle rule.</div>
+<script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>
+</body></html>`;
 }
 
 function PlaneStateStrip({
