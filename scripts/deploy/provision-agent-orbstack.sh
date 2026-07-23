@@ -100,16 +100,25 @@ cat "$FLEET_PUB" | push - /etc/ebpf-soc/fleet.pub
 ok "agent stack shipped"
 
 log "applying TracingPolicies to Tetragon"
+# Also drop each policy into Tetragon's default --tracing-policy-dir
+# (/etc/tetragon/tetragon.tp.d) so they auto-load on every restart. A runtime
+# `tetra tracingpolicy add` is in-memory only — if Tetragon restarts (VM reboot,
+# Docker/OrbStack relaunch) the policies vanish and detection silently drops to
+# bare execve: events keep flowing but alerts stop firing. The tp.d copy is the
+# durable source of truth; the runtime add just makes them live immediately.
 n=$(m '
   n=0
+  docker exec tetragon mkdir -p /etc/tetragon/tetragon.tp.d >/dev/null 2>&1 || true
   for p in /opt/ebpf-soc/policies/*.yaml /opt/ebpf-soc/policies/enforce/*.yaml; do
     [ -f "$p" ] || continue
     case "$p" in */._*) continue;; esac
+    base=$(basename "$p")
     docker cp "$p" tetragon:/tmp/ >/dev/null 2>&1
-    docker exec tetragon tetra tracingpolicy add "/tmp/$(basename "$p")" >/dev/null 2>&1 && n=$((n+1))
+    docker cp "$p" "tetragon:/etc/tetragon/tetragon.tp.d/$base" >/dev/null 2>&1 || true
+    docker exec tetragon tetra tracingpolicy add "/tmp/$base" >/dev/null 2>&1 && n=$((n+1))
   done
   echo $n')
-ok "applied $n TracingPolicies"
+ok "applied $n TracingPolicies (durable via tp.d)"
 
 # ── 4. Agent config (secrets in a 0600 file, never on the cmdline) ─────────
 # Policy-compliant console password: 14+, upper, lower, 3 digits, 3 special.

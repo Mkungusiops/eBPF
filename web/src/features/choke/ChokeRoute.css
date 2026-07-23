@@ -991,10 +991,10 @@
 .choke-process-head,
 .choke-process-row {
   display: grid;
-  grid-template-columns: 54px 118px 78px minmax(116px, 1.1fr) minmax(84px, 0.8fr) minmax(150px, 1.35fr) 92px 190px;
+  grid-template-columns: 54px 118px 78px minmax(116px, 1.1fr) minmax(84px, 0.8fr) minmax(230px, 1.9fr) 92px 190px;
   gap: 8px;
   align-items: center;
-  min-width: 930px;
+  min-width: 1010px;
 }
 
 .choke-process-head {
@@ -1528,6 +1528,137 @@
   color: var(--text);
   font-size: 14px;
   line-height: 1.55;
+}
+
+.choke-drill-narrative p {
+  margin: 0;
+}
+
+/* Two narratives, two audiences. The plain-English one leads and is visually
+   the "hero" (accent tint, prominent) so a non-technical reader lands on it
+   first; the technical one sits below in the muted analyst style. */
+.choke-narrative-plain {
+  background:
+    linear-gradient(135deg, rgba(74, 222, 128, 0.12), transparent 58%),
+    rgba(20, 30, 24, 0.32);
+  border-color: rgba(74, 222, 128, 0.42);
+}
+
+.choke-narrative-tech {
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.choke-narrative-tag {
+  display: inline-flex;
+  margin-bottom: 6px;
+  border-radius: 999px;
+  padding: 2px 9px;
+  background: rgba(127, 140, 165, 0.16);
+  color: var(--muted);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+}
+
+.choke-narrative-plain .choke-narrative-tag {
+  background: rgba(74, 222, 128, 0.2);
+  color: #7ee0a2;
+}
+
+/* Full exec_id, never truncated. Monospace, wraps on any character so the whole
+   value is always visible (the earlier short/ellipsised form hid the part that
+   makes an exec_id unique). Used in the drill hero, indicators, tracked-process
+   table, and decision tape. */
+.choke-execid-mono {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+  white-space: normal;
+}
+
+/* Drill hero: exec_id as a full, click-to-copy chip. */
+.choke-execid-full {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  margin-top: 2px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: rgba(127, 140, 165, 0.08);
+  padding: 7px 10px;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.choke-execid-full:hover {
+  border-color: var(--accent);
+}
+
+.choke-execid-full .choke-execid-label {
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.choke-execid-full code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-all;
+}
+
+/* Indicators exec row must let the full value wrap (base rule forces nowrap). */
+.choke-drill-row-exec {
+  align-items: start;
+}
+
+.choke-drill-row-exec strong {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+}
+
+/* Tracked-process table exec cell: full id stacked over its badges. */
+.choke-exec-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  padding: 2px 0;
+}
+
+.choke-exec-badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+/* Decision-tape exec cell: full id on its own line above the reason. */
+.choke-tape-main {
+  flex-wrap: wrap;
+  row-gap: 3px;
+}
+
+.choke-tape-main .choke-execid-mono {
+  flex: 1 1 100%;
+  min-width: 0;
+  color: var(--text);
+}
+
+.choke-tape-main span {
+  flex: 1 1 100%;
 }
 
 .choke-drill-body h3,

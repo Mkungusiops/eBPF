@@ -1719,11 +1719,13 @@ function ProcessTable({
               <button type="button" className="choke-link-text" data-choke-col="pid" onClick={() => onCopy(String(entry.pid || ""))}>{entry.pid || "-"}</button>
               <button type="button" className="choke-link-text truncate" data-choke-col="binary" title={entry.binary} onClick={() => entry.binary && onFilterBinary(entry.binary)}>{entry.binary || "(unknown)"}</button>
               <span className="truncate" data-choke-col="origin">{originLabel(entry) || "-"}</span>
-              <button type="button" className="choke-link-text truncate" data-choke-col="exec" title={entry.exec_id} onClick={() => onDrill(entry.exec_id)}>
-                {shortExec(entry.exec_id)}
-                {entry.annotation?.note ? <em>note</em> : null}
-                {entry.revert_pending ? <em>revert</em> : null}
-                {(alertCounts.get(entry.exec_id) || 0) > 0 ? <em>{alertCounts.get(entry.exec_id)} alerts</em> : null}
+              <button type="button" className="choke-link-text choke-exec-cell" data-choke-col="exec" title={entry.exec_id} onClick={() => onDrill(entry.exec_id)}>
+                <span className="choke-execid-mono">{entry.exec_id || "-"}</span>
+                <span className="choke-exec-badges">
+                  {entry.annotation?.note ? <em>note</em> : null}
+                  {entry.revert_pending ? <em>revert</em> : null}
+                  {(alertCounts.get(entry.exec_id) || 0) > 0 ? <em>{alertCounts.get(entry.exec_id)} alerts</em> : null}
+                </span>
               </button>
               <span className="choke-score" data-choke-col="score">
                 <strong>{entry.score || 0}</strong><span><span style={{ width: `${Math.min(100, entry.score || 0)}%` }} /></span>
@@ -1785,7 +1787,7 @@ function DecisionTape({
               <span>{formatTime(decision.timestamp)}</span>
               <StateBadge state={decision.to_state || decision.action} />
               <button type="button" className="choke-tape-main" onClick={() => decision.exec_id && onDrill(decision.exec_id)}>
-                <strong>{shortExec(decision.exec_id)}</strong>
+                <strong className="choke-execid-mono">{decision.exec_id || "-"}</strong>
                 <span>{decision.reason || decision.binary || "-"}</span>
                 {decision.pid ? <em>pid {decision.pid}</em> : null}
                 {count > 0 ? <em>+{count}</em> : null}
@@ -1941,9 +1943,31 @@ function ProcessDrill({
   const events = drill.kind === "ready" ? drill.payload.events || [] : [];
   const firstProcess = chain[0]?.binary || entry.binary || "process";
   const lastProcess = chain[chain.length - 1]?.binary || entry.binary || "process";
+  const fullExecId = entry.exec_id || drill.execId;
+  const score = entry.score || 0;
+  // Two narratives for two audiences. The technical one is unchanged (analyst
+  // language: chain depth, exec_id, kernel-event counts). The plain-English one
+  // translates the same facts into what a non-technical stakeholder — an exec,
+  // an IR lead briefing leadership — needs: what ran, how dangerous, what we
+  // did, and that it is on the audit record. Same data, no jargon.
+  const startName = basename(firstProcess);
+  const endName = basename(lastProcess);
+  const riskWord = score >= 120 ? "high" : score >= 50 ? "elevated" : "low";
+  const stateWord = entry.state || "pristine";
+  const CONTAINMENT_PHRASE: Record<string, string> = {
+    pristine: "It is being watched, but no containment has been applied yet.",
+    throttled: "It was slowed down (throttled) so it can do less while analysts review it.",
+    tarpit: "It was placed in a tarpit — its actions are deliberately delayed to stall it.",
+    quarantined: "It was frozen (quarantined) and can do nothing until an operator releases it.",
+    severed: "It was shut down (killed) and blocked from restarting."
+  };
   const narrative =
     drill.kind === "ready"
-      ? `${chain.length || 1}-process chain starting from ${firstProcess} currently resolves to ${lastProcess}. ${decisions.length} audited decision${decisions.length === 1 ? "" : "s"} and ${events.length} kernel event${events.length === 1 ? "" : "s"} are linked to this exec_id. Aggregate suspicion score: ${entry.score || 0}.`
+      ? `${chain.length || 1}-process chain starting from ${firstProcess} currently resolves to ${lastProcess}. ${decisions.length} audited decision${decisions.length === 1 ? "" : "s"} and ${events.length} kernel event${events.length === 1 ? "" : "s"} are linked to this exec_id. Aggregate suspicion score: ${score}.`
+      : "";
+  const plainNarrative =
+    drill.kind === "ready"
+      ? `A program called ${endName}${startName && startName !== endName ? ` (launched from ${startName})` : ""} drew attention on this host. It tripped ${events.length} kernel-level security signal${events.length === 1 ? "" : "s"}, giving it a ${riskWord} suspicion score of ${score}. ${CONTAINMENT_PHRASE[stateWord] || CONTAINMENT_PHRASE.pristine} Every step it took and every response is recorded in the tamper-evident audit trail (${decisions.length} logged decision${decisions.length === 1 ? "" : "s"}).`
       : "";
   return (
     <aside className="choke-slideover" data-panel="process-drill-in-slide-over" role="dialog" aria-modal="true">
@@ -1959,6 +1983,10 @@ function ProcessDrill({
             <StateBadge state={entry.state} />
             <strong>{entry.binary || "(unknown process)"}</strong>
             <span>pid {entry.pid || "-"} · uid {entry.uid || "-"} · {formatTime(entry.last_seen || entry.start_time)} · {originLabel(entry) || "local origin"}</span>
+            <button type="button" className="choke-execid-full" title="Click to copy full exec_id" onClick={() => onCopy(fullExecId)}>
+              <span className="choke-execid-label">exec_id</span>
+              <code>{fullExecId || "-"}</code>
+            </button>
           </div>
           <div className="choke-drill-stats">
             <div><span>Score</span><strong>{entry.score || 0}</strong></div>
@@ -2014,7 +2042,14 @@ function ProcessDrill({
           </section>
           <section>
             <h3>Narrative</h3>
-            <div className="choke-drill-narrative">{narrative}</div>
+            <div className="choke-drill-narrative choke-narrative-plain">
+              <span className="choke-narrative-tag">In plain English</span>
+              <p>{plainNarrative}</p>
+            </div>
+            <div className="choke-drill-narrative choke-narrative-tech">
+              <span className="choke-narrative-tag">Technical</span>
+              <p>{narrative}</p>
+            </div>
           </section>
           <section>
             <h3>Operator note</h3>
@@ -2039,9 +2074,9 @@ function ProcessDrill({
               <strong>{entry.binary || "(unknown)"}</strong>
               <em>{entry.state || "pristine"}</em>
             </div>
-            <div className="choke-drill-row">
+            <div className="choke-drill-row choke-drill-row-exec">
               <span>exec</span>
-              <strong>{shortExec(entry.exec_id || drill.execId)}</strong>
+              <strong className="choke-execid-mono">{fullExecId || "-"}</strong>
               <em>{entry.revert_pending ? "revert pending" : "active"}</em>
             </div>
           </section>

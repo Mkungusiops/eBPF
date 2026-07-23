@@ -184,12 +184,22 @@ provision_engine() {
     # not acceptable is swallowing it: a missing TracingPolicy is a silent
     # detection blind spot, and the operator would never know the platform is
     # watching less than they think.
+    #
+    # We ALSO drop each policy into Tetragon's default --tracing-policy-dir
+    # (/etc/tetragon/tetragon.tp.d) so they auto-load on every restart. A runtime
+    # `tetra tracingpolicy add` is in-memory only: if Tetragon restarts (host
+    # reboot, Docker daemon restart, OrbStack relaunch) the policies vanish and
+    # detection silently drops to bare execve — events keep flowing but alerts
+    # stop. The tp.d copy is the durable source of truth; the runtime add just
+    # makes them live immediately without waiting for a restart.
     log "applying TracingPolicies (detection + enforcement)"
     RUN "applied=0; failed=''
+      docker exec tetragon mkdir -p /etc/tetragon/tetragon.tp.d >/dev/null 2>&1 || true
       for p in /var/lib/ebpf-engine/policies/*.yaml /var/lib/ebpf-engine/policies/enforce/*.yaml; do
         [ -f \"\$p\" ] || continue
         name=\$(basename \"\$p\")
         docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || { failed=\"\$failed \$name(copy)\"; continue; }
+        docker cp \"\$p\" \"tetragon:/etc/tetragon/tetragon.tp.d/\$name\" >/dev/null 2>&1 || true
         ok=0
         for attempt in 1 2 3; do
           err=\$(docker exec tetragon tetra tracingpolicy add \"/tmp/\$name\" 2>&1)
