@@ -46,13 +46,13 @@ type Broadcaster interface {
 
 // Gateway is the userspace choke point. One instance per engine.
 type Gateway struct {
-	circuit *circuit.Circuit
-	store   *store.Store
-	bcast   Broadcaster
-	tokens  *tokens.Manager
+	circuit  *circuit.Circuit
+	store    *store.Store
+	bcast    Broadcaster
+	tokens   *tokens.Manager
 	policies *policy.Set
-	tree    *tree.Tree
-	bpfmap  bpfmap.Backend
+	tree     *tree.Tree
+	bpfmap   bpfmap.Backend
 
 	// enfMu guards enforcer + mode together. Both are swapped atomically by
 	// SetEnforcing so /api/choke/mode flips don't race the act() path.
@@ -132,13 +132,13 @@ type knownProc struct {
 // rest fall back to safe defaults (logger enforcer, default thresholds,
 // empty policy set).
 type Config struct {
-	Store     *store.Store
-	Enforcer  enforce.Enforcer
-	Broadcast Broadcaster
-	Tokens    *tokens.Manager
-	Policies  *policy.Set
-	Tree      *tree.Tree
-	BPFMap    bpfmap.Backend
+	Store      *store.Store
+	Enforcer   enforce.Enforcer
+	Broadcast  Broadcaster
+	Tokens     *tokens.Manager
+	Policies   *policy.Set
+	Tree       *tree.Tree
+	BPFMap     bpfmap.Backend
 	Thresholds circuit.Config
 	DryRun     bool
 	// Enforcing is true when the real enforcer chain is wired at boot. When
@@ -557,19 +557,19 @@ func (g *Gateway) SetThresholds(cfg circuit.Config) circuit.Config {
 // Entry is one row of the gateway snapshot — joined view of circuit state
 // + tree info + cached known-proc data.
 type Entry struct {
-	ExecID         string      `json:"exec_id"`
-	PID            uint32      `json:"pid"`
-	Binary         string      `json:"binary"`
-	State          string      `json:"state"`
-	Score          int         `json:"score"`
-	UID            uint32      `json:"uid"`
-	Args           string      `json:"args,omitempty"`
-	ParentID       string      `json:"parent_id,omitempty"`
-	StartTime      time.Time   `json:"start_time,omitempty"`
-	LastSeen       time.Time   `json:"last_seen,omitempty"`
-	Annotation     *Annotation `json:"annotation,omitempty"`
-	RevertPending  bool        `json:"revert_pending,omitempty"`
-	Origin         *OriginInfo `json:"origin,omitempty"`
+	ExecID        string      `json:"exec_id"`
+	PID           uint32      `json:"pid"`
+	Binary        string      `json:"binary"`
+	State         string      `json:"state"`
+	Score         int         `json:"score"`
+	UID           uint32      `json:"uid"`
+	Args          string      `json:"args,omitempty"`
+	ParentID      string      `json:"parent_id,omitempty"`
+	StartTime     time.Time   `json:"start_time,omitempty"`
+	LastSeen      time.Time   `json:"last_seen,omitempty"`
+	Annotation    *Annotation `json:"annotation,omitempty"`
+	RevertPending bool        `json:"revert_pending,omitempty"`
+	Origin        *OriginInfo `json:"origin,omitempty"`
 }
 
 // Snapshot returns one Entry per tracked exec_id, joined with whatever

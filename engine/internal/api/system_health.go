@@ -14,14 +14,14 @@ import (
 //
 // Set via Server.SetSystemInfo() from main.go after all wiring completes.
 type SystemInfo struct {
-	Version       string
-	StartedAt     time.Time
-	StoreBackend  string // "sqlite" | "postgres"
-	StoreTarget   string // file path or redacted DSN
-	BPFBackend    string // "cilium-ebpf" | "noop"
-	OTLPEndpoint  string // "" disabled | "stdout" | URL
-	LogFormat     string // "json" | "text"
-	LogLevel      string
+	Version      string
+	StartedAt    time.Time
+	StoreBackend string // "sqlite" | "postgres"
+	StoreTarget  string // file path or redacted DSN
+	BPFBackend   string // "cilium-ebpf" | "noop"
+	OTLPEndpoint string // "" disabled | "stdout" | URL
+	LogFormat    string // "json" | "text"
+	LogLevel     string
 
 	// Live accessors. Nil-safe — handler treats nil as "unknown".
 	BPFLinks          func() int
@@ -80,11 +80,11 @@ func (s *Server) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		},
 
 		"bpf": map[string]interface{}{
-			"backend":         info.BPFBackend,
-			"attached_links":  links,
-			"map_entries":     entries,
-			"expected_links":  4,
-			"healthy":         info.BPFBackend == "cilium-ebpf" && links == 4,
+			"backend":        info.BPFBackend,
+			"attached_links": links,
+			"map_entries":    entries,
+			"expected_links": 4,
+			"healthy":        info.BPFBackend == "cilium-ebpf" && links == 4,
 		},
 
 		"tetragon": map[string]interface{}{
@@ -92,17 +92,17 @@ func (s *Server) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 		},
 
 		"observability": map[string]interface{}{
-			"otlp_endpoint": info.OTLPEndpoint,
-			"log_format":    info.LogFormat,
-			"log_level":     info.LogLevel,
+			"otlp_endpoint":   info.OTLPEndpoint,
+			"log_format":      info.LogFormat,
+			"log_level":       info.LogLevel,
 			"metrics_enabled": info.OTLPEndpoint != "",
 		},
 
 		"auth": map[string]interface{}{
-			"hash":         "bcrypt",
-			"sessions":     "hmac-signed cookie",
-			"csrf":         "double-submit cookie",
-			"rate_limit":   "5/min per IP",
+			"hash":       "bcrypt",
+			"sessions":   "hmac-signed cookie",
+			"csrf":       "double-submit cookie",
+			"rate_limit": "5/min per IP",
 		},
 	}
 

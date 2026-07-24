@@ -16,10 +16,10 @@ func NewCiliumEBPFBackend(objPath, cgroupDir string) *CiliumEBPFBackend {
 	return &CiliumEBPFBackend{}
 }
 
-func (c *CiliumEBPFBackend) Open() error                        { return ErrUnsupported }
-func (c *CiliumEBPFBackend) Close() error                       { return nil }
-func (c *CiliumEBPFBackend) Update(uint32, PIDBucket) error     { return ErrUnsupported }
-func (c *CiliumEBPFBackend) Delete(uint32) error                { return ErrUnsupported }
+func (c *CiliumEBPFBackend) Open() error                    { return ErrUnsupported }
+func (c *CiliumEBPFBackend) Close() error                   { return nil }
+func (c *CiliumEBPFBackend) Update(uint32, PIDBucket) error { return ErrUnsupported }
+func (c *CiliumEBPFBackend) Delete(uint32) error            { return ErrUnsupported }
 func (c *CiliumEBPFBackend) Snapshot() (map[uint32]PIDBucket, error) {
 	return nil, ErrUnsupported
 }

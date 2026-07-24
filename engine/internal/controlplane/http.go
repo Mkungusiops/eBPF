@@ -681,8 +681,8 @@ func (s *Server) handleFleet(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range recs {
 		out = append(out, agentView{
 			AgentID: rec.AgentID, Version: rec.Version, Kernel: rec.Kernel,
-			Mode:      strings.TrimPrefix(rec.Mode.String(), "ENFORCEMENT_MODE_"),
-			LastSeen:  rec.LastSeen.UnixNano(), BufferDepth: rec.BufferDepth,
+			Mode:     strings.TrimPrefix(rec.Mode.String(), "ENFORCEMENT_MODE_"),
+			LastSeen: rec.LastSeen.UnixNano(), BufferDepth: rec.BufferDepth,
 			PolicyVersion: rec.AppliedPolicyVersion, ChokeCount: len(rec.Chokes), DeviceCount: len(rec.Devices),
 		})
 	}

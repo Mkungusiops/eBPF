@@ -31,8 +31,8 @@ type CiliumTCBackend struct {
 	objPath string
 	ifaces  []string
 
-	mu      sync.RWMutex
-	open    bool
+	mu       sync.RWMutex
+	open     bool
 	coll     *ebpf.Collection
 	links    []link.Link
 	devMap   *ebpf.Map

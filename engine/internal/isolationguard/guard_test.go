@@ -70,7 +70,9 @@ func TestNoRawTelemetryQueriesOutsideCentralStore(t *testing.T) {
 // "tenant-scoped": tenant is derived from the mTLS cert and enforced.
 // "bootstrap":     pre-identity (issues the first cert); carries no tenant data.
 // "cert-derived":  post-identity; the mTLS peer cert (never the request) names
-//                  the tenant/agent, so the call acts only on its own identity.
+//
+//	the tenant/agent, so the call acts only on its own identity.
+//
 // Adding an RPC to the proto without classifying it here fails the ratchet below.
 var rpcPosture = map[string]string{
 	"ebpfsoc.v1.EnrollmentService.Enroll":         "bootstrap",

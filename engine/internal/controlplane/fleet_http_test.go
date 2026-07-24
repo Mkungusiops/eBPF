@@ -67,9 +67,9 @@ func TestFleetChokeEndpoints(t *testing.T) {
 	mcc, _ := grpc.NewClient(glis.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(cfg)))
 	defer mcc.Close()
 	_, err = ebpfsocv1.NewHeartbeatServiceClient(mcc).Heartbeat(ctx, &ebpfsocv1.HeartbeatRequest{
-		AgentInfo:  &ebpfsocv1.AgentInfo{Hostname: "h1", AgentVersion: "0.2.0-agent"},
-		DataPlane:  &ebpfsocv1.DataPlaneState{Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY},
-		Chokes:     []*ebpfsocv1.ChokeSummary{{Binary: "/usr/bin/curl", State: "throttle", Score: 12, Pid: 42, ExecId: "x"}},
+		AgentInfo: &ebpfsocv1.AgentInfo{Hostname: "h1", AgentVersion: "0.2.0-agent"},
+		DataPlane: &ebpfsocv1.DataPlaneState{Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY},
+		Chokes:    []*ebpfsocv1.ChokeSummary{{Binary: "/usr/bin/curl", State: "throttle", Score: 12, Pid: 42, ExecId: "x"}},
 	})
 	if err != nil {
 		t.Fatalf("heartbeat: %v", err)

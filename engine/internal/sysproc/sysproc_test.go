@@ -7,8 +7,8 @@ func TestDescendantsBFS(t *testing.T) {
 		{PID: 1, PPID: 0},
 		{PID: 100, PPID: 1},
 		{PID: 200, PPID: 1},
-		{PID: 101, PPID: 100}, // child of 100
-		{PID: 102, PPID: 100}, // child of 100
+		{PID: 101, PPID: 100},  // child of 100
+		{PID: 102, PPID: 100},  // child of 100
 		{PID: 1010, PPID: 101}, // grandchild
 	}
 	got := Descendants(all, 100, false)

@@ -95,13 +95,13 @@ type session struct {
 }
 
 const (
-	defaultSessionTTL  = 24 * time.Hour
-	defaultRateLimit   = 5 // attempts per rolling minute per IP
-	defaultRateWindow  = time.Minute
+	defaultSessionTTL = 24 * time.Hour
+	defaultRateLimit  = 5 // attempts per rolling minute per IP
+	defaultRateWindow = time.Minute
 	// /var/lib not /etc so the systemd unit's ProtectSystem=strict lets
 	// the auto-bootstrap write 32 random bytes on first start. Operators
 	// can override via -secret or `secret_path:` in engine.yaml.
-	defaultSecretPath  = "/var/lib/ebpf-engine/secret"
+	defaultSecretPath = "/var/lib/ebpf-engine/secret"
 )
 
 // NewAuth builds an Auth from a credential pair plus a signing-secret path.
@@ -140,11 +140,11 @@ func NewAuth(user, passOrHash, secretPath string) (*Auth, error) {
 	}
 
 	return &Auth{
-		user:       user,
-		passHash:   hash,
-		cookie:     "soc_session",
-		csrfName:   "csrf_token",
-		secret:     secret,
+		user:           user,
+		passHash:       hash,
+		cookie:         "soc_session",
+		csrfName:       "csrf_token",
+		secret:         secret,
 		sessionTTL:     defaultSessionTTL,
 		loginRate:      make(map[string]*rateBucket),
 		loginRateLimit: defaultRateLimit,

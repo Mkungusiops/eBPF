@@ -44,8 +44,8 @@ var (
 		"reverse-shell":            {"T1059", "execution"},
 		"container-escape":         {"T1611", "privilege-escalation"},
 	}
-	sevs       = []string{"critical", "high", "medium", "low", "info"}
-	sevScore   = map[string]int32{"critical": 92, "high": 74, "medium": 45, "low": 18, "info": 5}
+	sevs     = []string{"critical", "high", "medium", "low", "info"}
+	sevScore = map[string]int32{"critical": 92, "high": 74, "medium": 45, "low": 18, "info": 5}
 	// Every template MUST consume both args (%s binary, %d score): the single
 	// Sprintf below always passes two. A template with only %s made Go append
 	// "%!(EXTRA int32=45)" to the alert title, which then rendered in the console.

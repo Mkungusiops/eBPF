@@ -91,8 +91,8 @@ func DefaultLimits() map[circuit.Action]Limits {
 
 // Manager owns the per-state cgroups. Concurrency-safe.
 type Manager struct {
-	root string
-	mu   sync.Mutex
+	root   string
+	mu     sync.Mutex
 	limits map[circuit.Action]Limits
 	paths  map[circuit.Action]string
 	// Limits this kernel refused during Setup. See Degraded().

@@ -55,7 +55,7 @@ func TestGatewayManualEscalateAndAudit(t *testing.T) {
 	d, err := g.Manual(context.Background(), ManualRequest{
 		ExecID: "X", PID: 1234, Binary: "/bin/yes",
 		Action: circuit.ActQuarantine, Reason: "operator gut check",
-		Actor:  "alice",
+		Actor: "alice",
 	})
 	if err != nil {
 		t.Fatalf("manual: %v", err)
@@ -141,9 +141,9 @@ func TestGatewayPreviewPolicyMatches(t *testing.T) {
 
 	p := policy.Policy{
 		APIVersion: policy.APIVersion, Kind: policy.Kind,
-		Metadata:   policy.Metadata{Name: "shells"},
-		Match:      policy.Match{Binaries: []string{"/bin/bash"}, States: []string{"throttled", "tarpit"}},
-		Buckets:    []policy.Bucket{{Dimension: "egress", RatePerSec: 1, Burst: 1}},
+		Metadata: policy.Metadata{Name: "shells"},
+		Match:    policy.Match{Binaries: []string{"/bin/bash"}, States: []string{"throttled", "tarpit"}},
+		Buckets:  []policy.Bucket{{Dimension: "egress", RatePerSec: 1, Burst: 1}},
 	}
 	matches, err := g.PreviewPolicy(p)
 	if err != nil {
@@ -204,7 +204,7 @@ func TestGatewayManualBypassesDetectOnly(t *testing.T) {
 	if _, err := g.Manual(context.Background(), ManualRequest{
 		ExecID: "M", PID: 4242, Binary: "/bin/yes",
 		Action: circuit.ActQuarantine, Reason: "operator override",
-		Actor:  "alice",
+		Actor: "alice",
 	}); err != nil {
 		t.Fatalf("manual: %v", err)
 	}
@@ -247,7 +247,7 @@ func TestGatewayManualRespectsDryRunInDetectOnly(t *testing.T) {
 	if _, err := g.Manual(context.Background(), ManualRequest{
 		ExecID: "D", PID: 7777, Binary: "/bin/yes",
 		Action: circuit.ActQuarantine, Reason: "shadow probe",
-		Actor:  "alice",
+		Actor: "alice",
 	}); err != nil {
 		t.Fatalf("manual: %v", err)
 	}

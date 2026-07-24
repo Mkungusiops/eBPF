@@ -41,7 +41,7 @@ func TestSetThresholdsPreservesMonotonicity(t *testing.T) {
 
 func TestForceAllowsBothDirections(t *testing.T) {
 	c := New(DefaultConfig())
-	c.Evaluate("A", 1, "/x", 30, "") // Quarantined
+	c.Evaluate("A", 1, "/x", 30, "")    // Quarantined
 	prev, ok := c.Force("A", Throttled) // de-escalate
 	if !ok || prev != Quarantined {
 		t.Errorf("force down: prev=%s ok=%v", prev, ok)

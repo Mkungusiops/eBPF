@@ -47,14 +47,14 @@ func (p *Provider) Shutdown(ctx context.Context) error {
 // Counters / gauges / histograms exported for the engine's call sites.
 // Nil-safe via the safe* helpers below: a nil instrument no-ops.
 var (
-	EventsTotal           metric.Int64Counter
-	AlertsTotal           metric.Int64Counter
-	GatewayTransitions    metric.Int64Counter
-	BPFEntries            metric.Int64UpDownCounter
-	BPFAttachedLinks      metric.Int64UpDownCounter
-	TetragonConnected     metric.Int64UpDownCounter
-	StoreInsertDuration   metric.Float64Histogram
-	HTTPRequestDuration   metric.Float64Histogram
+	EventsTotal         metric.Int64Counter
+	AlertsTotal         metric.Int64Counter
+	GatewayTransitions  metric.Int64Counter
+	BPFEntries          metric.Int64UpDownCounter
+	BPFAttachedLinks    metric.Int64UpDownCounter
+	TetragonConnected   metric.Int64UpDownCounter
+	StoreInsertDuration metric.Float64Histogram
+	HTTPRequestDuration metric.Float64Histogram
 )
 
 // Init wires up the global meter and creates every instrument. endpoint
@@ -194,10 +194,10 @@ func IncTransition(from, to string) {
 // into an Add(delta) call. UpDownCounter is intrinsically additive, so
 // we own the running total to expose set-style helpers.
 var (
-	gaugeMu              sync.Mutex
-	bpfEntriesValue      int64
-	bpfLinksValue        int64
-	tetragonConnVal      int64
+	gaugeMu         sync.Mutex
+	bpfEntriesValue int64
+	bpfLinksValue   int64
+	tetragonConnVal int64
 )
 
 // SetBPFEntries records the absolute count of entries currently in the

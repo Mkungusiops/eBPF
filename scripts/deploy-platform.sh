@@ -28,7 +28,11 @@
 #   /var/lib/ebpf-soc-controlplane/     0700   CA + fleet signing key (the trust root)
 #   /etc/systemd/system/ebpf-soc-controlplane.service
 
+# LOG_TAG is read by common.sh log() via ${LOG_TAG} (a sourced file shellcheck
+# can't follow without -x), so it only looks unused here.
+# shellcheck disable=SC2034
 LOG_TAG="deploy"
+# shellcheck source=/dev/null
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 STEPS=(ssh preflight config build stack migrate identity controlplane pki tenant smoke)
@@ -112,7 +116,8 @@ do_ssh() {
   # its own, and it keeps this automation's access separable from your personal
   # login key.
   if [[ -z "$key" ]]; then
-    local default_key="$HOME/.ssh/ebpf-soc-$(slugify "$host")"
+    local default_key
+    default_key="$HOME/.ssh/ebpf-soc-$(slugify "$host")"
     local choice
     choice="$(ask_choice 'SSH key to authenticate with:' \
       "generate a new deployment key ($default_key)" \
@@ -141,7 +146,8 @@ do_ssh() {
 
   # An ssh_config alias means every later command is just `ssh <alias>` — no
   # flag soup, and the operator can use the same alias by hand.
-  local alias="ebpf-soc-$(slugify "$host")"
+  local alias
+  alias="ebpf-soc-$(slugify "$host")"
   state_set SSH_ALIAS "$alias"
   install_ssh_alias "$alias" "$host" "$user" "$port" "$key"  
 
@@ -458,8 +464,9 @@ do_controlplane() {
   # Secrets travel in the EnvironmentFile, never in ExecStart: /proc/<pid>/cmdline
   # is world-readable, /proc/<pid>/environ is not. The binary reads CP_ADMIN_TOKEN,
   # CP_PG_DSN and CP_OIDC_CLIENT_SECRET from the environment for exactly this reason.
-  local dsn="postgres://soc:$(secret_get POSTGRES_PASSWORD)@127.0.0.1:5432/ebpf_soc?sslmode=disable"
-  local ch_dsn="clickhouse://soc:$(secret_get CLICKHOUSE_PASSWORD)@127.0.0.1:9000/ebpf_soc"
+  local dsn ch_dsn
+  dsn="postgres://soc:$(secret_get POSTGRES_PASSWORD)@127.0.0.1:5432/ebpf_soc?sslmode=disable"
+  ch_dsn="clickhouse://soc:$(secret_get CLICKHOUSE_PASSWORD)@127.0.0.1:9000/ebpf_soc"
   {
     printf 'CP_PG_DSN=%s\n' "$dsn"
     printf 'CP_CH_DSN=%s\n' "$ch_dsn"
@@ -474,6 +481,10 @@ do_controlplane() {
   # the fleet signing key, so enrolled agents keep trusting this control plane
   # across restarts; -ca-out / -fleet-pubkey-out re-export what agents pin.
   local store_args auth_args
+  # ${CP_CH_DSN}/${CP_PG_DSN} are intentionally literal: systemd expands them at
+  # runtime from the EnvironmentFile so the DSN (with its password) never lands
+  # in this script's process table or the unit's ExecStart on disk.
+  # shellcheck disable=SC2016
   if [[ "$store" == "clickhouse" ]]; then
     store_args='-store clickhouse -ch-dsn ${CP_CH_DSN}'
   else
@@ -620,6 +631,9 @@ summary() {
   if [[ "$auth" == "oidc" ]]; then
     printf '    ssh -L 8080:127.0.0.1:8080 %s     # Keycloak (operator / see secrets.env)\n' "$alias"
   else
+    # The $(grep ...) is copy-paste instructions printed for the operator, not
+    # something to expand here.
+    # shellcheck disable=SC2016
     printf '    curl -H "Authorization: Bearer $(grep ^CP_ADMIN_TOKEN "%s" | cut -d= -f2)" \\\n' "$SECRETS_FILE"
     printf '         http://127.0.0.1:9090/api/whoami\n'
   fi

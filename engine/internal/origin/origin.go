@@ -20,10 +20,10 @@ import (
 type Kind string
 
 const (
-	KindSSH    Kind = "ssh"
-	KindHTTP   Kind = "http"
-	KindLocal  Kind = "local"   // local daemon (cron, systemd timer, …)
-	KindUnknown Kind = ""        // not yet attributed — UI renders as "—"
+	KindSSH     Kind = "ssh"
+	KindHTTP    Kind = "http"
+	KindLocal   Kind = "local" // local daemon (cron, systemd timer, …)
+	KindUnknown Kind = ""      // not yet attributed — UI renders as "—"
 )
 
 // Origin describes the remote client that initiated the activity. All
@@ -34,8 +34,8 @@ type Origin struct {
 	Kind        Kind      `json:"kind,omitempty"`
 	RemoteIP    string    `json:"remote_ip,omitempty"`
 	RemotePort  uint16    `json:"remote_port,omitempty"`
-	User        string    `json:"user,omitempty"`         // login user (ssh)
-	Fingerprint string    `json:"fingerprint,omitempty"`  // ssh key fp, e.g. "ED25519 SHA256:abc..."
+	User        string    `json:"user,omitempty"`        // login user (ssh)
+	Fingerprint string    `json:"fingerprint,omitempty"` // ssh key fp, e.g. "ED25519 SHA256:abc..."
 	FirstSeen   time.Time `json:"first_seen,omitempty"`
 }
 
@@ -57,10 +57,10 @@ type AncestorsFn func(pid uint32) []uint32
 // evicted after TTL since LastSeen; default TTL is 30 min which covers
 // the lifetime of typical SSH sessions without unbounded growth.
 type Tracker struct {
-	mu      sync.RWMutex
-	byPID   map[uint32]entry
-	ttl     time.Duration
-	now     func() time.Time // override-able for tests
+	mu    sync.RWMutex
+	byPID map[uint32]entry
+	ttl   time.Duration
+	now   func() time.Time // override-able for tests
 }
 
 type entry struct {
