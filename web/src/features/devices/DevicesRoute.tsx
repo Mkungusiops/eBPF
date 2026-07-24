@@ -6,6 +6,7 @@ import {
   Network,
   RefreshCcw,
   RotateCcw,
+  Search,
   ShieldAlert,
   X
 } from "lucide-react";
@@ -119,6 +120,7 @@ export function DevicesRoute({
     }
   }, [viewMode]);
   const [rungFilter, setRungFilter] = useState<string | null>(null);
+  const [deviceSearch, setDeviceSearch] = useState("");
   const expandedRef = useRef(expanded);
   const confirmResolverRef = useRef<((result: ConfirmResult | null) => void) | null>(null);
   const toastTimerRef = useRef<number | null>(null);
@@ -432,7 +434,16 @@ export function DevicesRoute({
       killSwitched: Boolean(state?.kill_switched)
     })
   };
-  const visibleDevices = rungFilter ? devices.filter((d) => (d.state || "pristine") === rungFilter) : devices;
+  const deviceQuery = deviceSearch.trim().toLowerCase();
+  const visibleDevices = devices.filter((d) => {
+    if (rungFilter && (d.state || "pristine") !== rungFilter) return false;
+    if (!deviceQuery) return true;
+    return [d.mac, d.last_ip, d.hostname, d.vendor, d.source, d.state]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(deviceQuery);
+  });
   const toggleRungFilter = (rung: Rung) => setRungFilter((prev) => (prev === rung ? null : rung));
 
   const exportDeviceAssurance = (kind: "report" | "bundle") => {
@@ -500,15 +511,27 @@ export function DevicesRoute({
       {/* Uniform platform header: full-width sticky bar — back-to-SOC · brand · mode,
          then status + theme. Mirrors the Choke gateway header standard. */}
       <header className="devices-topbar">
-        <div className="devices-topbar-row" data-panel="topbar-row-1">
-          <a className="devices-back" href="/" title="Back to SOC dashboard">
-            <ArrowLeft size={15} aria-hidden="true" />
-            <span>SOC</span>
-          </a>
-          <span className="devices-brand-divider" aria-hidden="true" />
-          <h1 className="devices-brand-mark">Network Choke - Devices</h1>
-          <ModeBadge state={state} compact />
-          <div className="devices-topbar-spacer" />
+        {/* Same header standard as the Choke Gateway: brand cluster · search ·
+            status pills — so the two containment surfaces read as one product. */}
+        <div className="devices-topbar-row devices-topbar-primary" data-panel="topbar-row-1">
+          <div className="devices-brand">
+            <a className="devices-back" href="/" title="Back to SOC dashboard">
+              <ArrowLeft size={15} aria-hidden="true" />
+              <span>SOC</span>
+            </a>
+            <span className="devices-brand-divider" aria-hidden="true" />
+            <h1 className="devices-brand-mark">Device Choke</h1>
+            <ModeBadge state={state} compact />
+          </div>
+          <label className="devices-search">
+            <Search size={16} aria-hidden="true" />
+            <input
+              value={deviceSearch}
+              onChange={(event) => setDeviceSearch(event.target.value)}
+              placeholder="Search devices — MAC, IP, hostname, vendor…"
+              aria-label="Search devices"
+            />
+          </label>
           <PlaneStateStrip state={state} disabledMessage={disabledMessage} updatedAt={lastUpdatedAt} />
         </div>
       </header>
@@ -719,9 +742,11 @@ export function DevicesRoute({
               <div className="devices-empty">
                 {loading
                   ? "Loading device state..."
-                  : rungFilter
-                    ? `No ${rungFilter} devices. Clear the ladder filter to see all.`
-                    : "No devices observed yet. Generate LAN traffic to populate the table."}
+                  : deviceQuery
+                    ? `No devices match "${deviceSearch.trim()}". Clear the search to see all.`
+                    : rungFilter
+                      ? `No ${rungFilter} devices. Clear the ladder filter to see all.`
+                      : "No devices observed yet. Generate LAN traffic to populate the table."}
               </div>
             ) : null}
           </div>
@@ -957,36 +982,38 @@ function PlaneStateStrip({
 }) {
   if (disabledMessage) {
     return (
-      <div className="devices-plane-strip">
-        <span className="devices-pill devices-pill--danger">disabled</span>
+      <div className="devices-status-cluster">
+        <span className="devices-status-pill">
+          <span className="devices-status-dot down" />
+          plane <strong>disabled</strong>
+        </span>
       </div>
     );
   }
 
+  const planeActive = Boolean(state?.data_plane) && state?.data_plane !== "noop" && state?.data_plane !== "disabled";
   return (
-    <div className="devices-plane-strip" aria-label="Device data-plane state">
-      {/* Quiet secondary telemetry; hover/focus reveals what each term means. */}
-      <div className="devices-diag">
-        <span
-          tabIndex={0}
-          data-tip="Data-plane actuator: ‘noop’ = audit only, no kernel enforcement; ‘tc’ = live TC/eBPF dropping or rate-limiting by MAC."
-        >
-          plane <strong>{state?.data_plane ?? "-"}</strong>
-        </span>
-        <span
-          tabIndex={0}
-          data-tip="Network interfaces the device-choke BPF program is attached to. 0 = not attached (single-NIC box / no inline bridge)."
-        >
-          links <strong>{state?.links_attached ?? 0}</strong>
-        </span>
-        <span
-          tabIndex={0}
-          className={isBridgeMasterWarning(state) ? "is-warn" : undefined}
-          data-tip="Forwarded Ethernet frames the data plane has actually seen. Turns amber if links are up but frames stay 0 — a sign it’s attached to a bridge master instead of a slave."
-        >
-          frames <strong>{state?.frames_seen ?? 0}</strong>
-        </span>
-      </div>
+    <div className="devices-status-cluster" aria-label="Device data-plane state">
+      {/* Choke-style dot+label status pills — quiet at rest, boxed on hover. */}
+      <span
+        className="devices-status-pill"
+        title="Data-plane actuator: 'noop' = audit only, no kernel enforcement; 'tc' = live TC/eBPF dropping or rate-limiting by MAC."
+      >
+        <span className={`devices-status-dot${planeActive ? "" : " idle"}`} />
+        plane <strong>{state?.data_plane ?? "-"}</strong>
+      </span>
+      <span
+        className="devices-status-pill"
+        title="Network interfaces the device-choke BPF program is attached to. 0 = not attached (single-NIC box / no inline bridge)."
+      >
+        links <strong>{state?.links_attached ?? 0}</strong>
+      </span>
+      <span
+        className={`devices-status-pill${isBridgeMasterWarning(state) ? " is-warn" : ""}`}
+        title="Forwarded Ethernet frames the data plane has actually seen. Turns amber if links are up but frames stay 0 — a sign it is attached to a bridge master instead of a slave."
+      >
+        frames <strong>{state?.frames_seen ?? 0}</strong>
+      </span>
       <LiveBeacon updatedAt={updatedAt} />
     </div>
   );

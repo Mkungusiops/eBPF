@@ -166,10 +166,17 @@
 
 /* Active route (Dashboard on the SOC page): accent text + a left accent bar —
    the quiet, unmistakable "you are here" cue enterprise consoles use. */
+/* Refined "you are here": a faint wash + accent icon + the accent rail (below),
+   not a heavy bordered fill. The border stays transparent so the item reads as
+   selected, not boxed. */
 .soc-sidebar-item.is-active {
   color: var(--soc-text);
-  background: color-mix(in srgb, var(--soc-accent) 12%, transparent);
-  border-color: color-mix(in srgb, var(--soc-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--soc-accent) 7%, transparent);
+  border-color: transparent;
+}
+
+.soc-sidebar-item.is-active span {
+  font-weight: 600;
 }
 
 .soc-sidebar-item.is-active > svg {

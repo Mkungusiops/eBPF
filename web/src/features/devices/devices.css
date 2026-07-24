@@ -110,6 +110,122 @@
   white-space: nowrap;
 }
 
+/* Choke-Gateway header standard: brand · search · status-pills grid. */
+.devices-topbar-primary {
+  display: grid;
+  grid-template-columns: auto minmax(200px, 1fr) auto;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.devices-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.devices-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--devices-border);
+  border-radius: 6px;
+  background: rgb(10 13 20 / 0.3);
+  padding: 0 10px;
+}
+
+.devices-search svg {
+  flex: 0 0 auto;
+  color: var(--devices-muted);
+}
+
+.devices-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--devices-text);
+  padding: 9px 0;
+  outline: none;
+  font: inherit;
+}
+
+.devices-search:focus-within {
+  border-color: var(--devices-accent);
+  box-shadow: 0 0 0 3px rgb(107 138 253 / 0.16);
+}
+
+.devices-status-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* Quiet dot+label chrome; boxed pill only appears on hover — mirrors the Choke
+   Gateway status cluster. */
+.devices-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--devices-muted);
+  background: transparent;
+  font-size: 0.72rem;
+  text-transform: capitalize;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.devices-status-pill strong {
+  color: var(--devices-text);
+  font-weight: 700;
+}
+
+.devices-status-pill:hover {
+  color: var(--devices-text);
+  background: var(--devices-panel-soft);
+  border-color: var(--devices-border);
+}
+
+.devices-status-pill.is-warn strong {
+  color: var(--devices-warn);
+}
+
+.devices-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--devices-good);
+  box-shadow: 0 0 12px var(--devices-good);
+}
+
+.devices-status-dot.idle {
+  background: var(--devices-muted);
+  box-shadow: none;
+}
+
+.devices-status-dot.down {
+  background: var(--devices-danger);
+  box-shadow: 0 0 12px var(--devices-danger);
+}
+
+@media (max-width: 760px) {
+  .devices-topbar-primary {
+    grid-template-columns: 1fr;
+  }
+  .devices-status-cluster {
+    justify-content: flex-start;
+  }
+}
+
 .devices-plane-strip,
 .devices-mode-actions,
 .devices-bulk-row,

@@ -508,28 +508,31 @@ export function SocRoute() {
             but relocated under Manage; the Command Palette is a ⌘K shortcut, not a
             nav destination. Items map only to surfaces that actually exist. */}
         <SidebarSection title="Overview">
-          <SidebarLink icon={LayoutDashboard} label="Dashboard" href="/" />
+          {/* Dashboard is "here" only when no tool overlay is open (a KPI drill is
+              still a dashboard interaction). Opening any tool moves the highlight
+              to that tool and returns it here on close. */}
+          <SidebarLink icon={LayoutDashboard} label="Dashboard" href="/" active={openSurface === null || openSurface === "kpi"} />
         </SidebarSection>
         <SidebarSection title="Respond">
           <SidebarLink icon={ShieldAlert} label="Choke Gateway" href="/choke" />
           <SidebarLink icon={Wifi} label="Device Choke" href="/devices" />
         </SidebarSection>
         <SidebarSection title="Detect & Investigate">
-          <SidebarButton icon={Gauge} label="MITRE Coverage" onClick={() => openSurfaceByName("mitre")} />
-          <SidebarButton icon={GitBranch} label="Correlation Graph" onClick={() => openSurfaceByName("graph")} />
-          <SidebarButton icon={Clock} label="Time Machine" onClick={() => openSurfaceByName("time-machine")} />
+          <SidebarButton icon={Gauge} label="MITRE Coverage" onClick={() => openSurfaceByName("mitre")} active={openSurface === "mitre"} />
+          <SidebarButton icon={GitBranch} label="Correlation Graph" onClick={() => openSurfaceByName("graph")} active={openSurface === "graph"} />
+          <SidebarButton icon={Clock} label="Time Machine" onClick={() => openSurfaceByName("time-machine")} active={openSurface === "time-machine"} />
         </SidebarSection>
         <SidebarSection title="Intelligence">
-          <SidebarButton icon={Eye} label="Watchlist" onClick={() => openSurfaceByName("watchlist")} badge={watchCount(watchlist)} />
-          <SidebarButton icon={Database} label="Honeypots" onClick={() => openSurfaceByName("honeypots")} />
+          <SidebarButton icon={Eye} label="Watchlist" onClick={() => openSurfaceByName("watchlist")} badge={watchCount(watchlist)} active={openSurface === "watchlist"} />
+          <SidebarButton icon={Database} label="Honeypots" onClick={() => openSurfaceByName("honeypots")} active={openSurface === "honeypots"} />
         </SidebarSection>
         <SidebarSection title="Manage">
-          <SidebarButton icon={FileText} label="Policies" onClick={() => openSurfaceByName("policies")} />
-          <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => openSurfaceByName("simulator")} />
-          <SidebarButton icon={Zap} label="Attack Sim" onClick={() => openSurfaceByName("attacks")} />
-          <SidebarButton icon={Network} label="Fleet" onClick={() => openSurfaceByName("fleet")} />
-          <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => openSurfaceByName("kprobes")} />
-          <SidebarButton icon={Download} label="Reports" onClick={() => openSurfaceByName("export")} />
+          <SidebarButton icon={FileText} label="Policies" onClick={() => openSurfaceByName("policies")} active={openSurface === "policies"} />
+          <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => openSurfaceByName("simulator")} active={openSurface === "simulator"} />
+          <SidebarButton icon={Zap} label="Attack Sim" onClick={() => openSurfaceByName("attacks")} active={openSurface === "attacks"} />
+          <SidebarButton icon={Network} label="Fleet" onClick={() => openSurfaceByName("fleet")} active={openSurface === "fleet"} />
+          <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => openSurfaceByName("kprobes")} active={openSurface === "kprobes"} />
+          <SidebarButton icon={Download} label="Reports" onClick={() => openSurfaceByName("export")} active={openSurface === "export"} />
         </SidebarSection>
         <SidebarSection title="Settings">
           <SidebarButton
@@ -537,12 +540,13 @@ export function SocRoute() {
             label="Notifications"
             onClick={() => openSurfaceByName("notifications")}
             badge={notificationsActive && notifyChannels.inApp ? notifyHistory.filter((item) => !item.read).length : undefined}
+            active={openSurface === "notifications"}
           />
-          <SidebarButton icon={HelpCircle} label="Help" onClick={() => openSurfaceByName("help")} />
+          <SidebarButton icon={HelpCircle} label="Help" onClick={() => openSurfaceByName("help")} active={openSurface === "help"} />
         </SidebarSection>
         <div className="soc-sidebar-spacer" />
         <SidebarSection title="Account">
-          <SidebarButton icon={UserCircle} label={snapshot.whoami.user} onClick={() => openSurfaceByName("profile")} />
+          <SidebarButton icon={UserCircle} label={snapshot.whoami.user} onClick={() => openSurfaceByName("profile")} active={openSurface === "profile"} />
           <SidebarLink icon={X} label="Sign out" href="/api/logout" />
         </SidebarSection>
         <div className="soc-sidebar-foot">{SOC_PANEL_INVENTORY.length}/31 SOC panels</div>
@@ -1079,15 +1083,23 @@ function SidebarButton({
   icon: Icon,
   label,
   onClick,
-  badge
+  badge,
+  active
 }: {
   icon: typeof Activity;
   label: string;
   onClick: () => void;
   badge?: number;
+  active?: boolean;
 }) {
   return (
-    <button type="button" className="soc-sidebar-item" onClick={onClick} title={label}>
+    <button
+      type="button"
+      className={cx("soc-sidebar-item", active && "is-active")}
+      onClick={onClick}
+      title={label}
+      aria-current={active ? "true" : undefined}
+    >
       <Icon size={16} strokeWidth={1.75} />
       <span>{label}</span>
       {badge ? <em>{badge}</em> : null}
@@ -1095,11 +1107,20 @@ function SidebarButton({
   );
 }
 
-function SidebarLink({ icon: Icon, label, href }: { icon: typeof Activity; label: string; href: string }) {
-  // Highlight the link that matches the page we're on (Dashboard on the SOC
-  // route). The overlay-opening buttons aren't routes, so only real links can
-  // be "active" — the standard enterprise-nav cue.
-  const active = typeof window !== "undefined" && window.location.pathname === href;
+function SidebarLink({
+  icon: Icon,
+  label,
+  href,
+  active
+}: {
+  icon: typeof Activity;
+  label: string;
+  href: string;
+  active?: boolean;
+}) {
+  // "Active" is passed in from the current view — it tracks the open surface and
+  // returns to Dashboard when nothing is open, so the highlight moves with the
+  // operator instead of sitting permanently on one item.
   return (
     <a className={cx("soc-sidebar-item", active && "is-active")} href={href} title={label} aria-current={active ? "page" : undefined}>
       <Icon size={16} strokeWidth={1.75} />
