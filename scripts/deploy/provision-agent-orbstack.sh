@@ -136,8 +136,21 @@ n=$(m '
 ok "applied $n TracingPolicies (durable via tp.d)"
 
 # ── 4. Agent config (secrets in a 0600 file, never on the cmdline) ─────────
-# Policy-compliant console password: 14+, upper, lower, 3 digits, 3 special.
-CONSOLE_PASS="Agent7${SHORT}93kx!@#Z"
+# Generate once and PERSIST on the VM, rather than deriving from the tenant name.
+# This used to be `Agent7${SHORT}93kx!@#Z` — a formula in a committed script, so
+# anyone with the repo could compute every agent's console password from its
+# tenant id. The agent's API binds 127.0.0.1 so the blast radius is small, but a
+# security product should not ship guessable credentials. Matches
+# provision-agent-ssh.sh: reused across redeploys so an operator's note stays
+# valid; rotate by deleting the file.
+CONSOLE_PASS="$(m 'f=/etc/ebpf-soc/agent-console.env
+  if [ -s "$f" ]; then cut -d= -f2- "$f"; else
+    umask 077; mkdir -p /etc/ebpf-soc
+    # Policy-compliant: 14+ chars, upper, lower, >=3 digits, >=3 special.
+    p="A$(head -c 9 /dev/urandom | base64 | tr -dc A-Za-z | head -c 9)$(head -c 4 /dev/urandom | od -An -tu1 | tr -d " \n" | head -c 3)#%!"
+    printf "AGENT_CONSOLE_PASS=%s\n" "$p" > "$f"; printf "%s" "$p"
+  fi' | tr -d '\r')"
+[ -n "$CONSOLE_PASS" ] || die "could not establish the agent console password"
 cat <<EOF | push - /etc/ebpf-soc/agent.yaml
 tetragon: unix:///var/run/tetragon/tetragon.sock
 db: /var/lib/ebpf-soc-agent/events.db

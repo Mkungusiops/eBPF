@@ -21,6 +21,26 @@ export interface AuditChainStatus {
   tip?: string;
 }
 
+// KernelPosture is the host's OTHER enforcement authority: Tetragon
+// TracingPolicies, which enforce independently of `mode` above. A policy loaded
+// in Tetragon's `enforce` mode can kill regardless of what this console says the
+// mode is — with no audit row, no reversal, and no kill-switch coverage. Shipped
+// policies all declare `policy-mode: monitor`, so anything armed is hand-loaded
+// or deliberate. See docs/plan/threat-model.md EN-3.
+export interface KernelPosture {
+  // agents_reporting < agents_total means some agent did not answer. That is not
+  // a clean agent, it is an unknown one, so the UI must not read it as safe.
+  agents_reporting?: number;
+  agents_total?: number;
+  enforcing_agents?: string[];
+  // True when this console shows detect-only while a kernel authority is armed.
+  diverged?: boolean;
+  diverged_agents?: string[];
+  // Enforcing actions that have ACTUALLY fired. Non-zero is evidence, not risk:
+  // something was killed with no decision behind it and no audit row for it.
+  enforce_actions?: number;
+}
+
 export interface ChokeState {
   mode?: ChokeMode;
   dry_run?: boolean;
@@ -29,6 +49,7 @@ export interface ChokeState {
   counts?: Partial<Record<ChokeStateName, number>>;
   thresholds?: Thresholds;
   audit?: AuditChainStatus;
+  kernel?: KernelPosture;
 }
 
 export interface Annotation {

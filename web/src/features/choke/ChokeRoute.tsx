@@ -500,6 +500,19 @@ export function ChokeRoute(): React.ReactElement {
 
   const thresholds = normalizeThresholds(chokeState?.thresholds);
   const mode = chokeState?.kill_switched ? "kill-switched" : chokeState?.mode || "detect-only";
+
+  // The mode above is only the ENGINE's half of a host's posture. Tetragon
+  // policies enforce independently of it, so a host can be killing processes
+  // while this page says detect-only. Surfacing that is the whole point of
+  // reporting it — see docs/plan/threat-model.md EN-3.
+  const kernel = chokeState?.kernel;
+  const divergedAgents = kernel?.diverged_agents || [];
+  const kernelFired = kernel?.enforce_actions || 0;
+  // Only meaningful once at least one agent has answered; before that the
+  // absence of a divergence says nothing at all.
+  const agentsReporting = kernel?.agents_reporting ?? 0;
+  const agentsTotal = kernel?.agents_total ?? 0;
+  const agentsSilent = Math.max(0, agentsTotal - agentsReporting);
   const stateCounts = chokeState?.counts || countByState(circuits, thresholds);
   const parsedSearch = useMemo(() => parseSearch(globalSearch), [globalSearch]);
   const alertCounts = useMemo(() => summarizeAlerts(alerts), [alerts]);
@@ -1121,6 +1134,49 @@ export function ChokeRoute(): React.ReactElement {
           <button className="choke-inline-button" type="button" onClick={sharedStream.reconnect}>
             Force reconnect
           </button>
+        </Banner>
+      )}
+
+      {/* The mode control on this page governs the engine only. A Tetragon
+          policy loaded in enforce mode kills regardless of it — unaudited,
+          irreversible, and untouched by the kill-switch. If that is happening
+          while this page reads detect-only, the page is lying, and nothing else
+          it shows can be trusted to describe the host. */}
+      {kernel?.diverged && (
+        <Banner
+          dataPanel="kernel-divergence-banner"
+          tone="danger"
+          title="Kernel enforcement is armed outside this console"
+        >
+          This page reports <strong>{mode}</strong>, but{" "}
+          {divergedAgents.length === 1 ? "one agent has" : `${divergedAgents.length} agents have`} a Tetragon
+          policy loaded in enforce mode. Those kill without a choke decision, leave no audit row, and the
+          kill-switch does not reach them.
+          {divergedAgents.length > 0 && (
+            <> Affected: <code>{divergedAgents.join(", ")}</code>.</>
+          )}
+          {kernelFired > 0 && (
+            <>
+              {" "}
+              <strong>{kernelFired} enforcement {kernelFired === 1 ? "action has" : "actions have"} already
+              fired</strong> — there is no audit record of what was killed.
+            </>
+          )}
+        </Banner>
+      )}
+
+      {/* Silence is not safety. An agent that never reported its policies is
+          unknown, not clean, so it must not be quietly folded into a green
+          posture — the divergence check above simply cannot see it. */}
+      {!kernel?.diverged && agentsSilent > 0 && (
+        <Banner
+          dataPanel="kernel-posture-unknown-banner"
+          tone="warn"
+          title="Kernel posture unverified"
+        >
+          {agentsSilent} of {agentsTotal} agents did not report their Tetragon policies, so this console
+          cannot confirm whether kernel-level enforcement is armed on them. Usually an agent predating the
+          field, or one that cannot reach Tetragon.
         </Banner>
       )}
 

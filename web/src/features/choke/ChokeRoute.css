@@ -480,6 +480,31 @@
   background: rgba(244, 63, 94, 0.12);
 }
 
+/* The posture banners carry a full explanation rather than a status word: an
+   operator seeing this needs to know what is armed, on which agents, and why the
+   mode control on this page will not fix it. The other banners are one-liners,
+   so the flex centring they rely on is wrong here — align to the top and let the
+   prose take the remaining width instead of being vertically centred against a
+   short label. */
+.choke-banner[data-panel="kernel-divergence-banner"],
+.choke-banner[data-panel="kernel-posture-unknown-banner"] {
+  align-items: flex-start;
+}
+
+.choke-banner[data-panel="kernel-divergence-banner"] > span,
+.choke-banner[data-panel="kernel-posture-unknown-banner"] > span {
+  flex: 1;
+  line-height: 1.5;
+}
+
+.choke-banner[data-panel="kernel-divergence-banner"] code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(244, 63, 94, 0.16);
+  font-size: 0.92em;
+  word-break: break-all;
+}
+
 .choke-ti-ribbon {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));

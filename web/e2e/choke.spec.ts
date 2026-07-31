@@ -118,3 +118,101 @@ test.describe("Choke route", () => {
     expectNoReleaseBlockingBrowserErrors(diagnostics);
   });
 });
+
+// The mode control on this page governs the ENGINE only. Tetragon policies
+// enforce independently, so a host can be killing processes while the console
+// reads detect-only — threat-model EN-3, which cost this project an SSH lockout
+// and three hosts of broken package state. The control plane reports the
+// divergence; these pin that an operator actually SEES it, since a safety signal
+// that only exists in an API response is not a safety signal.
+test.describe("Choke route — kernel enforcement posture", () => {
+  const chokeState = (kernel: unknown) => ({
+    mode: "detect-only",
+    dry_run: false,
+    kill_switched: false,
+    tracked: 2,
+    counts: { pristine: 1, throttled: 1, tarpit: 0, quarantined: 1, severed: 0 },
+    thresholds: { throttle_at: 5, tarpit_at: 15, quarantine_at: 25, sever_at: 40 },
+    audit: { ok: true, total: 2 },
+    kernel
+  });
+
+  // Routes registered later win in Playwright, so this overrides the catch-all
+  // mock installed above it.
+  const withKernel = async (page: Parameters<typeof installMockApi>[0], kernel: unknown) => {
+    await installMockApi(page);
+    await page.route("**/api/choke/state", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(chokeState(kernel))
+      });
+    });
+  };
+
+  test("warns, and names the agents, when the kernel is armed behind a detect-only console", async ({ page }) => {
+    const diagnostics = attachBrowserDiagnostics(page);
+    await withKernel(page, {
+      agents_reporting: 2,
+      agents_total: 2,
+      enforcing_agents: ["agent-aaa111"],
+      diverged: true,
+      diverged_agents: ["agent-aaa111"],
+      enforce_actions: 3
+    });
+
+    await page.goto("/choke");
+
+    const banner = page.locator('[data-panel="kernel-divergence-banner"]');
+    await expect(banner).toBeVisible();
+    // The agent has to be named: "somewhere in your fleet" is not actionable.
+    await expect(banner).toContainText("agent-aaa111");
+    // Actions that already fired are evidence, not risk — say so plainly.
+    await expect(banner).toContainText("3 enforcement actions have already fired");
+
+    expectNoReleaseBlockingBrowserErrors(diagnostics);
+  });
+
+  test("stays quiet when every agent reports a monitor-mode kernel", async ({ page }) => {
+    const diagnostics = attachBrowserDiagnostics(page);
+    await withKernel(page, {
+      agents_reporting: 2,
+      agents_total: 2,
+      enforcing_agents: [],
+      diverged: false,
+      diverged_agents: [],
+      enforce_actions: 0
+    });
+
+    await page.goto("/choke");
+
+    await expect(page.locator('[data-panel="topbar-row-1"]')).toBeVisible();
+    await expect(page.locator('[data-panel="kernel-divergence-banner"]')).toHaveCount(0);
+    await expect(page.locator('[data-panel="kernel-posture-unknown-banner"]')).toHaveCount(0);
+
+    expectNoReleaseBlockingBrowserErrors(diagnostics);
+  });
+
+  test("flags unverified posture when an agent never reported its policies", async ({ page }) => {
+    const diagnostics = attachBrowserDiagnostics(page);
+    // Silence is not safety: the divergence check cannot see a host that did not
+    // answer, so a green posture would be a claim the data does not support.
+    await withKernel(page, {
+      agents_reporting: 1,
+      agents_total: 3,
+      enforcing_agents: [],
+      diverged: false,
+      diverged_agents: [],
+      enforce_actions: 0
+    });
+
+    await page.goto("/choke");
+
+    const banner = page.locator('[data-panel="kernel-posture-unknown-banner"]');
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("2 of 3 agents");
+    await expect(page.locator('[data-panel="kernel-divergence-banner"]')).toHaveCount(0);
+
+    expectNoReleaseBlockingBrowserErrors(diagnostics);
+  });
+});
