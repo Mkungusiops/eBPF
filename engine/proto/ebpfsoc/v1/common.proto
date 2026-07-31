@@ -44,7 +44,45 @@ message DataPlaneState {
   int32 process_links = 2;   // attached cgroup/connect links
   string device_plane = 3;   // "tc" | "noop"
   int32 device_links = 4;    // attached tc links
-  EnforcementMode mode = 5;
+  EnforcementMode mode = 5;  // PROCESS plane mode
+  // The two planes arm independently, so the device plane reports its own mode.
+  // Without this the console showed the process mode on the Devices surface and
+  // an armed device plane still read as detect-only.
+  EnforcementMode device_mode = 6;
+  // Tetragon TracingPolicies are a SECOND enforcement authority, independent of
+  // the modes above: a Sigkill in a loaded policy fires whatever the engine's
+  // mode says, with no audit row, no reversal and no kill-switch. Reporting only
+  // the fields above therefore lets the console show "detect-only" while the
+  // kernel is killing processes — threat-model EN-3, which cost this project a
+  // host lockout and three hosts of broken package state before it was modelled.
+  //
+  // With this, host posture is `engine mode ∪ kernel policy mode` rather than
+  // the engine's half of it. Empty is not "safe": it means the agent could not
+  // read Tetragon, which is itself worth surfacing.
+  repeated KernelPolicy kernel_policies = 7;
+}
+
+// KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —
+// not as a config file describes it. The distinction matters: a policy edited on
+// disk but never reloaded still runs its old version, and a policy deleted at
+// runtime returns on the next restart if its file remains.
+message KernelPolicy {
+  string name = 1;
+  // Tetragon's own classification, straight from the daemon: "monitor" (every
+  // enforcing action suppressed in-kernel) or "enforce" (they execute as
+  // written). Everything this repo ships declares monitor, so an `enforce` here
+  // is either hand-loaded or deliberately armed — in both cases the operator
+  // should see it.
+  string mode = 2;
+  bool enabled = 3;
+  // Enforcing actions that ACTUALLY fired (Sigkill/Signal/Override). Non-zero is
+  // proof of divergence, not a prediction of it: this policy has killed
+  // something without the engine's involvement.
+  uint64 enforce_actions = 4;
+  // Enforcing actions that WOULD have fired but were suppressed by monitor mode.
+  // Non-zero means the safety net is load-bearing — the policy is trying to kill
+  // and only the mode is stopping it.
+  uint64 suppressed_actions = 5;
 }
 
 // ProcessEvent mirrors internal/store.Event (process_exec / process_kprobe).

@@ -72,25 +72,31 @@ and streams structured events to userspace over gRPC. We pin to
 **`quay.io/cilium/tetragon:v1.6.1`** (the `:latest` tag is no longer
 published). It runs as a `--privileged --pid=host` container.
 
-Policies live in [policies/](../../policies) and split into two groups:
-
-**Detection policies** ([policies/](../../policies)) — `Post` action only,
-they feed the scorer:
+Policies live in [policies/](../../policies). All of them are **detection**
+policies — `Post` action, feeding the scorer:
 
 | Policy                  | Kprobe                     | Catches                                                             | MITRE          |
 |-------------------------|----------------------------|---------------------------------------------------------------------|----------------|
 | `outbound-connections`  | `tcp_connect`              | TCP connect from `bash`/`sh`/`nc`/`socat` (shells calling out)      | T1071 C2       |
 | `privilege-escalation`  | setuid hooks               | `setuid(0)`, sudo to root                                           | T1548 PrivEsc  |
 | `sensitive-file-access` | `security_file_permission` | Reads/writes of `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/`, **`/var/lib/ebpf-engine/honey/`** | T1003 CredAccess + honeypot |
+| `override-credential-read` | `security_file_permission` | Credential-path reads (`~/.ssh/`, `~/.aws/`, `~/.gnupg/`, …) by non-allowlisted binaries | T1003 CredAccess |
 
-**Enforce policies** ([policies/enforce/](../../policies/enforce)) —
-in-kernel Tetragon `Sigkill`/`Override`, applied only in enforcing
-deployments and **independent of the engine's own choke mode**:
+**Tetragon never enforces here — the engine does.** Every policy above declares
+`policy-mode: monitor`, under which Tetragon suppresses `Sigkill`/`Override` in
+the kernel while leaving `Post` untouched. That is deliberate: a Tetragon kill
+is independent of the engine's choke mode, so it fires whatever the console says,
+leaves no audit row, cannot be reversed, and is not covered by the kill-switch.
+Twice it cost us real damage — an SSH lockout, and `debconf` killed mid-configure
+on three hosts (`matchBinaries` matches the *executable*, so allow-listing an
+interpreted script has no effect). Enforcement therefore belongs to the choke
+gateway, which matches the process it actually scored and offers a reversible
+ladder. See [threat-model](../plan/threat-model.md) EN-1b/EN-1c/EN-1d/EN-3.
 
-| Policy                     | Action                                       |
-|----------------------------|----------------------------------------------|
-| `sever-pipe-to-shell`      | `Sigkill` on `curl \| sh`-style pipes        |
-| `override-credential-read` | `Sigkill` on credential-file reads by non-allowlisted binaries |
+Because the mode is declarative it survives a restart, and Tetragon reports it
+over gRPC — so the agent carries the host's real kernel posture on its heartbeat
+and the console flags any divergence rather than showing the engine's mode as if
+it were the whole story.
 
 The honeypot prefix is a directory the engine seeds with five decoy
 credential-style files on startup
@@ -308,8 +314,8 @@ plus writes `POST /api/choke/{manual,bulk-manual,jail,forget,thaw,annotate,kill-
 │   ├── network-watch.yaml                   # → outbound-connections
 │   ├── privilege-escalation.yaml
 │   ├── sensitive-files.yaml
-│   ├── choke/                               # ChokePolicy DSL (agent-loop-cap, shell-egress-throttle, network-tools-tarpit)
-│   └── enforce/                             # Tetragon Sigkill/Override (sever-pipe-to-shell, override-credential-read)
+│   ├── override-credential-read.yaml         # credential-path reads (detect-only)
+│   └── choke/                               # ChokePolicy DSL (agent-loop-cap, shell-egress-throttle, network-tools-tarpit)
 ├── attacks/                                 # 6 attack-simulation scripts
 ├── deploy/                                  # install.sh, ebpf-engine.service, engine.yaml.example, nginx conf
 └── engine/

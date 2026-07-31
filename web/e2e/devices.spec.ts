@@ -87,14 +87,25 @@ test.describe("Devices route", () => {
     await page.goto("/devices");
     await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 
-    await expect(page.getByRole("heading", { name: "Network Choke - Devices" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Enforcement mode" })).toBeVisible();
+    // The dual-mode redesign replaced the old "Network Choke - Devices" /
+    // "Enforcement mode" panel headings with the shared ContainmentCommand
+    // header: one brand mark, a Command/Assurance toggle, and the plane
+    // controls that now carry the detect-only/enforcing state.
+    await expect(page.getByRole("heading", { name: "Device Choke" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Containment Command" })).toBeVisible();
+    await expect(page.getByRole("group", { name: "Containment plane controls" })).toContainText(
+      /Detect-only|Enforcing/
+    );
     await expect(page.getByRole("heading", { name: "Bulk actions" })).toBeVisible();
     await expect(page.getByLabel("Device data-plane state")).toContainText("plane attached");
     await expect(page.getByLabel("Device data-plane state")).toContainText("links 2");
     await expect(page.getByLabel("Device data-plane state")).toContainText("frames 128");
-    await expect(page.locator(".devices-count--pristine .devices-count-value")).toHaveText("1");
-    await expect(page.locator(".devices-count--quarantined .devices-count-value")).toHaveText("1");
+    // Per-state populations moved from the standalone count chips onto the
+    // shared ContainmentLadder, which both choke surfaces now render.
+    const ladder = page.locator('[data-panel="containment-ladder"]');
+    // Rung labels are the ACTION names (LABEL_FOR_RUNG), not the state names.
+    await expect(ladder.locator(".cc-rung").filter({ hasText: /pristine/i })).toContainText("1");
+    await expect(ladder.locator(".cc-rung").filter({ hasText: /quarantine/i })).toContainText("1");
     await expect(page.getByRole("columnheader", { name: "Device", exact: true })).toBeVisible();
     await expect(page.getByRole("row", { name: /02:00:00:00:00:10.*fixture-laptop.*quarantined/i })).toBeVisible();
     await expect(page.getByRole("row", { name: /02:00:00:00:00:01.*protected-gateway.*pristine/i })).toBeVisible();
@@ -185,12 +196,18 @@ test.describe("Devices route", () => {
     await page.goto("/devices");
     await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 
-    await page.getByRole("button", { name: "Switch to detect-only" }).click();
+    // The mode control lives in the shared ContainmentCommand header now; its
+    // accessible name is the control's own content ("Enforcement <state>"),
+    // while the CONFIRM dialog keeps the intent-named button.
+    const modeControl = page.locator(".cc-ctl-mode");
+    await expect(modeControl).toContainText("Enforcing");
+
+    await modeControl.click();
     await expect(page.getByRole("dialog", { name: "Switch to detect-only" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     expect(api.callsFor("/api/choke/device-mode")).toEqual([]);
 
-    await page.getByRole("button", { name: "Switch to detect-only" }).click();
+    await modeControl.click();
     const dialog = page.getByRole("dialog", { name: "Switch to detect-only" });
     await dialog.getByLabel("Reason").fill("");
     await dialog.getByRole("button", { name: "Switch to detect-only" }).click();
@@ -207,7 +224,7 @@ test.describe("Devices route", () => {
       body: { enforcing: false, reason: "maintenance test" }
     });
     await expect(page.locator(".devices-toast")).toHaveText("mode -> detect-only");
-    await expect(page.getByRole("button", { name: "Switch to enforcing" })).toBeVisible();
+    await expect(modeControl).toContainText("Detect-only");
 
     expectNoCdnRequests(diagnostics.requestUrls);
     expectNoReleaseBlockingBrowserErrors(diagnostics);
@@ -220,12 +237,16 @@ test.describe("Devices route", () => {
     await page.goto("/devices");
     await expect(page.getByRole("button", { name: "Refresh" })).toBeEnabled();
 
-    await page.getByRole("button", { name: "Engage kill-switch" }).click();
+    // Kill-switch is the second ContainmentCommand plane control.
+    const killControl = page.locator(".cc-ctl-kill");
+    await expect(killControl).toContainText("Kill-switch");
+
+    await killControl.click();
     await expect(page.getByRole("dialog", { name: "Engage kill-switch" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
     expect(api.callsFor("/api/choke/device-kill-switch")).toEqual([]);
 
-    await page.getByRole("button", { name: "Engage kill-switch" }).click();
+    await killControl.click();
     await page
       .getByRole("dialog", { name: "Engage kill-switch" })
       .getByRole("button", { name: "Engage kill-switch" })
@@ -239,7 +260,7 @@ test.describe("Devices route", () => {
       body: { on: true }
     });
     await expect(page.locator(".devices-toast")).toHaveText("kill-switch engaged");
-    await expect(page.getByRole("button", { name: "Disengage kill-switch" })).toBeVisible();
+    await expect(killControl).toContainText("Engaged");
 
     expectNoCdnRequests(diagnostics.requestUrls);
     expectNoReleaseBlockingBrowserErrors(diagnostics);
@@ -281,7 +302,9 @@ test.describe("Devices route", () => {
 
     await expect(page.getByText("No devices observed yet. Generate LAN traffic to populate the table.")).toBeVisible();
     await expect(page.getByLabel("Select all devices")).toBeDisabled();
-    await expect(page.locator(".devices-count--pristine .devices-count-value")).toHaveText("0");
+    await expect(
+      page.locator('[data-panel="containment-ladder"] .cc-rung').filter({ hasText: /pristine/i })
+    ).toContainText("0");
 
     expectNoCdnRequests(diagnostics.requestUrls);
     expectNoReleaseBlockingBrowserErrors(diagnostics);

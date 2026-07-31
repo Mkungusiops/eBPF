@@ -28,7 +28,16 @@ type Dispatcher struct {
 	mu     sync.Mutex
 	queues map[string][]*ebpfsocv1.Command // agent_id → pending
 	acks   map[string]*ebpfsocv1.CommandAck
+	// waiters lets Enqueue wake an agent that is parked in Commands with an
+	// empty queue, so a command dispatched while the agent is idle goes out
+	// immediately instead of waiting for the agent's next reconnect.
+	waiters map[string][]chan struct{}
 }
+
+// IdlePollWindow bounds how long Commands parks an agent with nothing queued.
+// The agent reconnects when it elapses, so this is just a liveness ceiling —
+// commands are delivered by the waiter wake-up, not by this timer.
+const IdlePollWindow = 25 * time.Second
 
 func NewDispatcher(signer signing.Signer, signTTL time.Duration) *Dispatcher {
 	return &Dispatcher{
@@ -36,6 +45,42 @@ func NewDispatcher(signer signing.Signer, signTTL time.Duration) *Dispatcher {
 		signTTL: signTTL,
 		queues:  make(map[string][]*ebpfsocv1.Command),
 		acks:    make(map[string]*ebpfsocv1.CommandAck),
+		waiters: make(map[string][]chan struct{}),
+	}
+}
+
+// subscribe registers a wake-up channel for agentID, returning it plus the
+// function that removes it again.
+func (d *Dispatcher) subscribe(agentID string) (<-chan struct{}, func()) {
+	ch := make(chan struct{}, 1)
+	d.mu.Lock()
+	d.waiters[agentID] = append(d.waiters[agentID], ch)
+	d.mu.Unlock()
+	return ch, func() {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		w := d.waiters[agentID]
+		for i, c := range w {
+			if c == ch {
+				d.waiters[agentID] = append(w[:i], w[i+1:]...)
+				break
+			}
+		}
+		if len(d.waiters[agentID]) == 0 {
+			delete(d.waiters, agentID)
+		}
+	}
+}
+
+// wake signals every stream parked on agentID. Non-blocking: the channels are
+// buffered depth-1, so a pending wake-up is enough — the receiver re-drains the
+// whole queue anyway.
+func (d *Dispatcher) wake(agentID string) {
+	for _, ch := range d.waiters[agentID] {
+		select {
+		case ch <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -52,6 +97,7 @@ func (d *Dispatcher) Enqueue(agentID string, c *ebpfsocv1.Command) string {
 	c.Signature = d.signer.Sign(Canonical(c))
 	d.mu.Lock()
 	d.queues[agentID] = append(d.queues[agentID], c)
+	d.wake(agentID)
 	d.mu.Unlock()
 	return c.GetCommandId()
 }
@@ -79,15 +125,34 @@ func (d *Dispatcher) recordAck(a *ebpfsocv1.CommandAck) {
 }
 
 // Commands streams the agent's queued commands and records its acks. The agent
-// is identified by its mTLS certificate (never a request field). This minimal
-// Phase 1 form sends the currently-queued commands, then collects one ack per
-// command; a durable, long-lived push loop lands with the fleet service.
+// is identified by its mTLS certificate (never a request field).
+//
+// An agent that connects with nothing queued PARKS here (up to IdlePollWindow)
+// instead of being closed straight away. That is what makes dispatch prompt: the
+// previous form returned immediately, so an idle agent spent most of its life
+// between streams — a command enqueued in that gap waited for the agent's
+// reconnect backoff and routinely missed the caller's ack deadline, which made
+// the operator-visible "applied" flag a coin flip. Enqueue now wakes the parked
+// stream and the command goes out at once.
 func (d *Dispatcher) Commands(stream ebpfsocv1.CommandService_CommandsServer) error {
 	_, agent, err := mtls.PeerTenant(stream.Context())
 	if err != nil {
 		return status.Error(codes.Unauthenticated, err.Error())
 	}
+	wake, unsubscribe := d.subscribe(agent)
+	defer unsubscribe()
+
 	cmds := d.dequeue(agent)
+	if len(cmds) == 0 {
+		select {
+		case <-wake:
+			cmds = d.dequeue(agent)
+		case <-time.After(IdlePollWindow):
+			return nil // nothing to do; the agent redials
+		case <-stream.Context().Done():
+			return nil
+		}
+	}
 	for _, c := range cmds {
 		if err := stream.Send(c); err != nil {
 			return err

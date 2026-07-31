@@ -94,37 +94,55 @@ again cut `sudo`.
 
 ---
 
-## 4. Tetragon enforce policies are INDEPENDENT of the engine's mode
+## 4. Tetragon policies are INDEPENDENT of the engine's mode
 
-Separate from the engine, the **tetragon container** has its own TracingPolicies
-loaded in `mode=enforce`. Switching the *engine* to detect-only does **not**
-disable these:
+> **Resolved.** This section described a box whose Tetragon policies enforced
+> regardless of the engine's mode. That is no longer how the platform ships, and
+> the fix is described below — but the hazard is kept on record because any host
+> provisioned before this change still has the old policy set, and because the
+> independence itself has not gone away. It is only disarmed.
+
+Separate from the engine, the **tetragon container** loads its own
+TracingPolicies. A `Sigkill` in one fires whatever the engine's mode says, with
+no audit row, no reversal and no kill-switch — so switching the *engine* to
+detect-only did **not** disable them.
+
+### Operational side-effect: this broke `apt`
+`override-credential-read` SIGKILLed any non-allowlisted process reading a
+credential path. Package maintainer scripts run through `debconf` — a
+`#!/usr/bin/perl` script, and `matchBinaries` matches the *executable*, so
+allow-listing the script's own path had no effect. They were killed
+mid-configure, leaving packages **half-configured (`iF`/`iU`)** and blocking all
+further apt. Driven by `unattended-upgrades` on a timer, it degrades a fleet
+silently over days. The same policy also SIGKILLed the OpenSSH login path and
+locked an operator out of a host.
+
+### The fix, as shipped now
+Every policy in `policies/` declares `policy-mode: monitor`, under which Tetragon
+suppresses enforcing actions **in the kernel** while leaving `Post` untouched —
+verified on v1.6.1: a `Sigkill` policy returned exit 0 with the option and 137
+without, with identical `Post` delivery. It is declarative, so it survives a
+restart (`tetra tracingpolicy set-mode` does not). Enforcement lives in the
+engine's choke gateway, which is mode-aware, reversible and audited.
 
 ```bash
 sudo docker exec tetragon tetra tracingpolicy list
-#  override-credential-read   enforce   (action: Sigkill on credential-file read, matchBinaries NotIn <allowlist>)
-#  sever-pipe-to-shell        enforce   (action: Sigkill)
-#  outbound-connections       enforce   (Post only)
-#  privilege-escalation       enforce   (Post only)
-#  sensitive-file-access      enforce   (Post only)
+# every row should read MODE=monitor and NENFORCE=0
 ```
 
-### Operational side-effect: this breaks `apt`
-`override-credential-read` SIGKILLs any non-allowlisted process that reads the
-credential file. Package postinst scripts that read `/etc/shadow` (e.g.
-`libpam-systemd`) get killed → `dpkg` leaves them **half-configured (`iF`)**,
-which blocks all future apt operations. This is a standing condition on the box,
-not a one-off.
-
-**Clean fix (fully reversible)** — temporarily disable just that policy, finish
-the configure, re-enable:
+To repair a host still carrying the old set:
 
 ```bash
+# finish any half-configured packages first
 sudo docker exec tetragon tetra tracingpolicy disable override-credential-read
-sudo DEBIAN_FRONTEND=noninteractive dpkg --configure -a      # libpam-systemd -> ii
+sudo DEBIAN_FRONTEND=noninteractive dpkg --configure -a
 sudo docker exec tetragon tetra tracingpolicy enable  override-credential-read
-dpkg -l libpam-systemd                                       # verify: ii
+# then redeploy the policies so they carry the monitor declaration
+make policies-apply
 ```
+
+`scripts/e2e/host-posture.sh` asserts all of this per host, and the console
+reports it live via `kernel.diverged` on `/api/choke/state`.
 
 ---
 

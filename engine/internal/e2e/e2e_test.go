@@ -194,13 +194,16 @@ func TestTelemetryStampAndIsolation(t *testing.T) {
 
 type fakeApplier struct{ mode ebpfsocv1.EnforcementMode }
 
-func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode) error { f.mode = m; return nil }
-func (f *fakeApplier) Jail(string, uint32, string) error         { return nil }
-func (f *fakeApplier) Thaw(string, uint32) error                 { return nil }
-func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error      { return nil }
-func (f *fakeApplier) ApplyPreset(string) error                  { return nil }
-func (f *fakeApplier) KillSwitch(bool, string) error             { return nil }
-func (f *fakeApplier) SetProtectedList([]string, []string) error { return nil }
+func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode, _ ebpfsocv1.Plane) error {
+	f.mode = m
+	return nil
+}
+func (f *fakeApplier) Jail(string, uint32, string) error              { return nil }
+func (f *fakeApplier) Thaw(string, uint32) error                      { return nil }
+func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error           { return nil }
+func (f *fakeApplier) ApplyPreset(string) error                       { return nil }
+func (f *fakeApplier) KillSwitch(bool, string, ebpfsocv1.Plane) error { return nil }
+func (f *fakeApplier) SetProtectedList([]string, []string) error      { return nil }
 
 func TestCommandRoundTrip(t *testing.T) {
 	h := newHarness(t, ingest.NewMemSink())

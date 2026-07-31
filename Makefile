@@ -10,6 +10,10 @@
 #   make test            run all Go unit tests
 #   make vet             go vet
 #   make fake            run the engine in fake mode on :8080 (no Tetragon needed)
+#   make deploy-console  multi-tenant control plane onto an Ubuntu server (SSH)
+#   make deploy-engine   single-tenant engine + Tetragon onto an Ubuntu server
+#   make deploy-agent    one real per-tenant agent onto its own Ubuntu host
+#   make e2e             live end-to-end suite against a deployed rig
 #   make policies-apply  copy + apply all TracingPolicies into a running tetragon container
 #   make policies-list   list active policies in the tetragon container
 #   make tarball         bundle policies/, attacks/, the linux binary, and README into a tar.gz
@@ -44,6 +48,7 @@ TETRA_CT   ?= tetragon
 # is never used for a real deployment (see `make deploy`, which sets its own).
 FAKE_PASS  ?= fake-dev
 
+.PHONY: deploy-console deploy-engine deploy-agent e2e _require_ssh_host
 .PHONY: web build build-linux build-agent build-agent-linux build-controlplane build-controlplane-linux proto proto-tools proto-lint test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
 # Build and stage Vite's static output for go:embed. The redesigned UI is
@@ -144,11 +149,28 @@ vet:
 fake: build
 	$(BIN) -fake -db $(ROOT)/fake-events.db -pass $(FAKE_PASS)
 
+# All detection policies live flat in policies/. They used to be split across
+# policies/ and policies/enforce/, which caused two problems: this target globbed
+# only the first and quietly applied 3 of 5, and the directory name implied an
+# enforcement posture the files did not have (see threat-model EN-1d). Everything
+# here is detect-only, declared per policy via `policy-mode: monitor`.
+# policies/choke/ is deliberately NOT applied here — those are the engine's own
+# choke-ladder policies, passed to it with -choke-policies, not Tetragon's.
+#
+# `tetra tracingpolicy add` is CREATE-ONLY: a policy whose content changed keeps
+# running the version loaded when Tetragon started, so an edit appears to apply
+# and does nothing. Delete first, keyed by metadata.name (which is NOT the
+# filename: network-watch.yaml declares "outbound-connections").
 policies-apply:
 	@for p in $(ROOT)/policies/*.yaml; do \
-		echo "→ apply $$(basename $$p)"; \
-		docker cp "$$p" $(TETRA_CT):/tmp/ ; \
-		docker exec $(TETRA_CT) tetra tracingpolicy add /tmp/$$(basename $$p) || true ; \
+		[ -f "$$p" ] || continue; \
+		base=$$(basename $$p); \
+		pol=$$(awk '/^metadata:/{f=1;next} f&&/^[[:space:]]+name:/{gsub(/["'"'"'[:space:]]/,"",$$2);print $$2;exit}' "$$p"); \
+		[ -n "$$pol" ] || pol=$${base%.yaml}; \
+		echo "→ apply $$base (policy: $$pol)"; \
+		docker cp "$$p" $(TETRA_CT):/tmp/ >/dev/null; \
+		docker exec $(TETRA_CT) tetra tracingpolicy delete "$$pol" >/dev/null 2>&1 || true; \
+		docker exec $(TETRA_CT) tetra tracingpolicy add /tmp/$$base || true ; \
 	done
 	$(MAKE) policies-list
 
@@ -172,8 +194,72 @@ clean:
 	rm -f $(ROOT)/ebpf-poc-amd64.tar.gz $(ROOT)/ebpf-poc-arm64.tar.gz
 	find $(EMBED_DIR) -mindepth 1 ! -name .keep -exec rm -rf {} +
 
+# ═════════════════════════════════════════════════════════════════════════
+# Ubuntu server deploy — the CURRENT path.
+#
+# Thin wrappers over scripts/deploy/*, which is where the provisioning
+# actually lives (one shared lib.sh + a driver per target). See
+# docs/deployment/aws-multi-host.md for the full five-host topology and
+# scripts/deploy/README.md for the knobs.
+#
+#   make deploy-console SSH_HOST=cp TARGET_HOST=console.example.com TLS=1
+#   make deploy-engine  SSH_HOST=eng TARGET_HOST=engine.example.com TLS=1
+#   make deploy-agent   TENANT=acme-corp AGENT_HOST=agent-b CP_SSH=cp CP_IP=10.0.0.5
+#   make e2e
+# ═════════════════════════════════════════════════════════════════════════
+SSH_HOST    ?=
+TARGET_HOST ?=
+TLS         ?= 0
+TLS_EMAIL   ?=
+DATA_MODE   ?=
+# Shipped to agents so their device gateway enforces in-kernel rather than
+# running the noop backend. Built by `make devchoke` (needs Linux + clang).
+DEVCHOKE_OBJ ?= $(ENGINE_DIR)/internal/enforce/devbpf/bpf/devchoke.o
+DEPLOY_ENV = $(if $(TARGET_HOST),TARGET_HOST=$(TARGET_HOST),) $(if $(filter 1,$(TLS)),TLS=1,) \
+             $(if $(TLS_EMAIL),TLS_EMAIL=$(TLS_EMAIL),) $(if $(DATA_MODE),DATA_MODE=$(DATA_MODE),)
+
+_require_ssh_host:
+	@[ -n "$(SSH_HOST)" ] || { echo "SSH_HOST=user@host (or an ssh alias) required"; exit 1; }
+
+# Multi-tenant control plane: Postgres + Keycloak + control plane + nginx.
+# Use DATA_MODE=none when real agents are managed separately, or every redeploy
+# resurrects the sim-agents alongside them.
+deploy-console: _require_ssh_host
+	@SSH_HOST=$(SSH_HOST) $(DEPLOY_ENV) $(ROOT)/scripts/deploy/multi-tenant-ubuntu.sh
+
+# Single-tenant engine + Tetragon. DEVCHOKE=1 also attaches the tc device plane.
+deploy-engine: _require_ssh_host
+	@SSH_HOST=$(SSH_HOST) $(DEPLOY_ENV) $(ROOT)/scripts/deploy/single-tenant-ubuntu.sh
+
+# One REAL agent for one tenant, on its own host (its own kernel — that is what
+# makes tenant separation real). Trust material and the enrolment token are
+# pulled from the control plane rather than passed by hand.
+deploy-agent:
+	@[ -n "$(TENANT)" ]     || { echo "TENANT=<tenant-id> required";                exit 1; }
+	@[ -n "$(AGENT_HOST)" ] || { echo "AGENT_HOST=<ssh host> required";             exit 1; }
+	@[ -n "$(CP_SSH)" ]     || { echo "CP_SSH=<ssh host of the control plane> required"; exit 1; }
+	@[ -n "$(CP_IP)" ]      || { echo "CP_IP=<control-plane address agents dial> required"; exit 1; }
+	@set -e; \
+	mkdir -p $(ROOT)/.deploy-build/trust; \
+	echo "→ building the agent binary"; \
+	cd $(ENGINE_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(ROOT)/.deploy-build/agent ./cmd/agent; \
+	echo "→ pulling CA + fleet key + enrolment token from $(CP_SSH)"; \
+	ssh -o BatchMode=yes $(CP_SSH) 'sudo cat /var/lib/ebpf-soc/ca.pem'    > $(ROOT)/.deploy-build/trust/ca.pem; \
+	ssh -o BatchMode=yes $(CP_SSH) 'sudo cat /var/lib/ebpf-soc/fleet.pub' > $(ROOT)/.deploy-build/trust/fleet.pub; \
+	TOK=$$(ssh -o BatchMode=yes $(CP_SSH) "sudo sed -n 's/^CP_ADMIN_TOKEN=//p' /etc/ebpf-soc/controlplane.env" | tr -d '\r'); \
+	[ -n "$$TOK" ] || { echo "could not read CP_ADMIN_TOKEN from $(CP_SSH)"; exit 1; }; \
+	[ -s $(DEVCHOKE_OBJ) ] || echo "  (no devchoke.o at $(DEVCHOKE_OBJ) — device choke will be audit-only; run 'make devchoke' on Linux)"; \
+	CP_SSH=$(CP_SSH) $(ROOT)/scripts/deploy/provision-agent-ssh.sh \
+	  "$(TENANT)" "$(AGENT_HOST)" "$(CP_IP)" "$$TOK" \
+	  $(ROOT)/.deploy-build/trust/ca.pem $(ROOT)/.deploy-build/trust/fleet.pub \
+	  $(ROOT)/.deploy-build/agent $$([ -s $(DEVCHOKE_OBJ) ] && echo $(DEVCHOKE_OBJ))
+
+# Live end-to-end suite against a deployed rig (reads .deploy-build/e2e.env).
+e2e:
+	@$(ROOT)/scripts/e2e/all.sh
+
 # ─────────────────────────────────────────────────────────────────────────
-# Multipass deploy targets — drive the existing `ebpf` VM end-to-end.
+# LEGACY: Multipass deploy targets — drive the existing `ebpf` VM end-to-end.
 # Override VM=<name> to target a different VM. Override REMOTE_DIR=<path>
 # if you laid the bundle out somewhere other than /home/ubuntu/ebpf-poc.
 # ─────────────────────────────────────────────────────────────────────────
@@ -236,7 +322,7 @@ deploy: build-linux vm-up
 	@echo "→ ensuring tetragon + cgroup v2 are ready"
 	multipass exec $(VM) -- bash -lc "cd $(REMOTE_DIR) && TETRAGON_IMAGE=quay.io/cilium/tetragon:v1.6.1 bash scripts/setup.sh"
 	@echo "→ applying TracingPolicies (detection + enforcement)"
-	multipass exec $(VM) -- bash -lc "for p in $(REMOTE_DIR)/policies/*.yaml $(REMOTE_DIR)/policies/enforce/*.yaml; do [ -f \$$p ] || continue; sudo docker cp \$$p tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/\$$(basename \$$p) || true; done"
+	multipass exec $(VM) -- bash -lc "for p in $(REMOTE_DIR)/policies/*.yaml; do [ -f \$$p ] || continue; sudo docker cp \$$p tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/\$$(basename \$$p) || true; done"
 	@echo "→ (re)starting engine with choke gateway + enforcement"
 	-multipass exec $(VM) -- bash -lc "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64; exit 0"
 	multipass exec $(VM) -- sudo mkdir -p /var/lib/ebpf-engine
@@ -305,7 +391,7 @@ deploy-remote: build-linux
 	echo "→ ensuring tetragon + cgroup v2 are ready"; \
 	$(SSH) "cd $$REMOTE_DIR && TETRAGON_IMAGE=quay.io/cilium/tetragon:v1.6.1 bash scripts/setup.sh"; \
 	echo "→ applying TracingPolicies (detection + enforcement)"; \
-	$(SSH) "for p in $$REMOTE_DIR/policies/*.yaml $$REMOTE_DIR/policies/enforce/*.yaml; do [ -f \"\$$p\" ] || continue; sudo docker cp \"\$$p\" tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/\$$(basename \"\$$p\") || true; done"; \
+	$(SSH) "for p in $$REMOTE_DIR/policies/*.yaml; do [ -f \"\$$p\" ] || continue; sudo docker cp \"\$$p\" tetragon:/tmp/ && sudo docker exec tetragon tetra tracingpolicy add /tmp/\$$(basename \"\$$p\") || true; done"; \
 	echo "→ (re)starting engine with choke gateway + enforcement"; \
 	$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo systemctl reset-failed ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64 2>/dev/null; exit 0" || true; \
 	$(SSH) "sudo mkdir -p /var/lib/ebpf-engine"; \

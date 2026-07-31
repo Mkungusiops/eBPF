@@ -3,6 +3,14 @@ kind: TracingPolicy
 metadata:
   name: "outbound-connections"
 spec:
+  # Detect-only, enforced by Tetragon itself rather than by convention: `monitor`
+  # suppresses every enforcing action in the kernel and leaves `Post` untouched,
+  # and it is declarative so it survives a restart. Enforcement belongs to the
+  # engine's choke gateway, which is reversible and audited. Full rationale and
+  # the measurements are in override-credential-read.yaml; threat model EN-3.
+  options:
+    - name: "policy-mode"
+      value: "monitor"
   kprobes:
     - call: "tcp_connect"
       syscall: false

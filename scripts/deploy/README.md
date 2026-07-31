@@ -37,7 +37,29 @@ multi-      │ multi-tenant-orbstack  │ multi-tenant-ubuntu    │ multi-tena
 SSH_HOST=ubuntu@10.0.0.5 ./scripts/deploy/single-tenant-ubuntu.sh
 SSH_HOST=ubuntu@10.0.0.5 TARGET_HOST=console.example.com \
     ./scripts/deploy/multi-tenant-ubuntu.sh
+
+# With TLS (needs TARGET_HOST to be a real DNS name pointing here, and :80 open
+# to 0.0.0.0/0 — Let's Encrypt validates from arbitrary addresses):
+TLS=1 TLS_EMAIL=you@example.com SSH_HOST=... TARGET_HOST=console.example.com \
+    ./scripts/deploy/multi-tenant-ubuntu.sh
+
+# A REAL agent per tenant, on its own host (multi-host; see
+# ../../docs/deployment/aws-multi-host.md):
+CP_SSH=control-plane ./scripts/deploy/provision-agent-ssh.sh \
+    <tenant-id> <agent-ssh-host> <cp-ip> <cp-admin-token> \
+    ca.pem fleet.pub .deploy-build/agent [devchoke.o]
 ```
+
+Useful knobs:
+
+| Env | Effect |
+|-----|--------|
+| `TLS=1` | Obtain a cert first, serve `:443`, redirect `:80`. The OIDC issuer, redirect URI and `Secure` cookies follow the scheme. |
+| `TARGET_SCHEME` | Set implicitly by `TLS=1`; the scheme browsers use. |
+| `DATA_MODE=sim` | Default. One sim-agent per tenant fabricating telemetry. |
+| `DATA_MODE=none` | No data seeders, and disable any left over. **Use this when real agents are managed separately** — otherwise each redeploy resurrects the simulators alongside them. |
+| `DEVCHOKE=1` | Compile + attach the tc device data plane (single-tenant). |
+| `TENANTS` | Space-separated tenant ids (multi-tenant). |
 
 Every script **builds the current source** (Vite console + static Go binaries),
 provisions the target, and prints the URLs and generated logins on success. All

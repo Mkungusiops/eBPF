@@ -30,9 +30,59 @@ type Record struct {
 	Mode                 ebpfsocv1.EnforcementMode
 	BufferDepth          uint64
 	AppliedPolicyVersion string
+	// DevicePlane is the network-plane backend the agent reports ("tc" | "noop";
+	// empty from an agent predating the field). DeviceLinks is how many
+	// interfaces it is attached to. Kept so the fleet view can distinguish an
+	// agent that CAN enforce on the network plane from one only recording
+	// decisions, instead of assuming any online agent is enforcing.
+	DevicePlane string
+	DeviceLinks int32
+	// DeviceMode is the DEVICE plane's own enforcement mode. Mode above is the
+	// process plane's; the two arm independently.
+	DeviceMode ebpfsocv1.EnforcementMode
+	// KernelPolicies is the host's OTHER enforcement authority: Tetragon
+	// TracingPolicies as the kernel currently has them. A Sigkill in one fires
+	// regardless of Mode above, so without this the console reports the engine's
+	// mode as though it were the host's posture (threat-model EN-3). Empty from
+	// an agent predating the field, or one that could not reach Tetragon.
+	KernelPolicies []*ebpfsocv1.KernelPolicy
 	// Latest data-plane snapshot the agent reported (compact; may be empty).
 	Chokes  []*ebpfsocv1.ChokeSummary
 	Devices []*ebpfsocv1.DeviceSummary
+}
+
+// KernelEnforcing reports whether this host has a kernel-level enforcement
+// authority armed — a loaded TracingPolicy in Tetragon's `enforce` mode.
+//
+// It answers "can the kernel kill without the engine", which is the question
+// that makes the console's mode honest. Policies in `monitor` mode do not count:
+// Tetragon suppresses their enforcing actions in-kernel, verified on v1.6.1.
+func (r Record) KernelEnforcing() bool {
+	for _, p := range r.KernelPolicies {
+		if p.GetEnabled() && p.GetMode() == "enforce" {
+			return true
+		}
+	}
+	return false
+}
+
+// KernelEnforceActions totals enforcing actions that have ACTUALLY fired across
+// this host's policies. Non-zero is evidence rather than risk: something was
+// killed or diverted with no engine decision, so no audit row exists for it.
+func (r Record) KernelEnforceActions() uint64 {
+	var n uint64
+	for _, p := range r.KernelPolicies {
+		n += p.GetEnforceActions()
+	}
+	return n
+}
+
+// Diverged reports the condition EN-3 names: the operator has been told the
+// host is detect-only while a kernel authority is armed to kill. This is the
+// single fact worth alerting on — the rest is detail.
+func (r Record) Diverged() bool {
+	engineEnforcing := r.Mode == ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING
+	return !engineEnforcing && r.KernelEnforcing()
 }
 
 // Registry holds the latest Record per (tenant, agent). Safe for concurrent use.
@@ -67,6 +117,10 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 	}
 	if dp := req.GetDataPlane(); dp != nil {
 		rec.Mode = dp.GetMode()
+		rec.DevicePlane = dp.GetDevicePlane()
+		rec.DeviceLinks = dp.GetDeviceLinks()
+		rec.DeviceMode = dp.GetDeviceMode()
+		rec.KernelPolicies = dp.GetKernelPolicies()
 	}
 	r.mu.Lock()
 	r.agents[key(tenant, agent)] = rec

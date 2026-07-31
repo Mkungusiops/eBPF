@@ -17,7 +17,10 @@ Project docs, organized by audience.
   local-run options, key concepts).
 
 Local dev runs on the **OrbStack mirror** —
-[deployment/orbstack-local-mirror.md](deployment/orbstack-local-mirror.md). Also
+[deployment/orbstack-local-mirror.md](deployment/orbstack-local-mirror.md). The
+full multi-host platform (control plane + engine + one real agent per tenant +
+a device to contain, both gateways enforcing for real) is
+[deployment/aws-multi-host.md](deployment/aws-multi-host.md). Also
 at the repo root: **[CONTRIBUTING.md](../CONTRIBUTING.md)** (branch/commit/PR
 conventions + local gates).
 

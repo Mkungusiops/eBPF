@@ -27,6 +27,60 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// Plane selects which enforcement plane a command acts on. The agent runs two
+// independent gateways — processes (cgroup/BPF, a sever is a SIGKILL) and LAN
+// devices (tc, a sever is a reversible drop rule) — and they arm separately.
+// UNSPECIFIED means the process plane so that an older control plane, which had
+// no plane field, keeps its existing meaning.
+type Plane int32
+
+const (
+	Plane_PLANE_UNSPECIFIED Plane = 0
+	Plane_PLANE_PROCESS     Plane = 1
+	Plane_PLANE_DEVICE      Plane = 2
+)
+
+// Enum value maps for Plane.
+var (
+	Plane_name = map[int32]string{
+		0: "PLANE_UNSPECIFIED",
+		1: "PLANE_PROCESS",
+		2: "PLANE_DEVICE",
+	}
+	Plane_value = map[string]int32{
+		"PLANE_UNSPECIFIED": 0,
+		"PLANE_PROCESS":     1,
+		"PLANE_DEVICE":      2,
+	}
+)
+
+func (x Plane) Enum() *Plane {
+	p := new(Plane)
+	*p = x
+	return p
+}
+
+func (x Plane) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (Plane) Descriptor() protoreflect.EnumDescriptor {
+	return file_ebpfsoc_v1_command_proto_enumTypes[0].Descriptor()
+}
+
+func (Plane) Type() protoreflect.EnumType {
+	return &file_ebpfsoc_v1_command_proto_enumTypes[0]
+}
+
+func (x Plane) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use Plane.Descriptor instead.
+func (Plane) EnumDescriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{0}
+}
+
 type CommandAck_Status int32
 
 const (
@@ -66,11 +120,11 @@ func (x CommandAck_Status) String() string {
 }
 
 func (CommandAck_Status) Descriptor() protoreflect.EnumDescriptor {
-	return file_ebpfsoc_v1_command_proto_enumTypes[0].Descriptor()
+	return file_ebpfsoc_v1_command_proto_enumTypes[1].Descriptor()
 }
 
 func (CommandAck_Status) Type() protoreflect.EnumType {
-	return &file_ebpfsoc_v1_command_proto_enumTypes[0]
+	return &file_ebpfsoc_v1_command_proto_enumTypes[1]
 }
 
 func (x CommandAck_Status) Number() protoreflect.EnumNumber {
@@ -289,6 +343,7 @@ func (*Command_UpdateProtectedList) isCommand_Action() {}
 type SetMode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Mode          EnforcementMode        `protobuf:"varint,1,opt,name=mode,proto3,enum=ebpfsoc.v1.EnforcementMode" json:"mode,omitempty"`
+	Plane         Plane                  `protobuf:"varint,2,opt,name=plane,proto3,enum=ebpfsoc.v1.Plane" json:"plane,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -328,6 +383,13 @@ func (x *SetMode) GetMode() EnforcementMode {
 		return x.Mode
 	}
 	return EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
+}
+
+func (x *SetMode) GetPlane() Plane {
+	if x != nil {
+		return x.Plane
+	}
+	return Plane_PLANE_UNSPECIFIED
 }
 
 // Jail moves a target to a choke tier immediately (operator-driven override).
@@ -560,6 +622,7 @@ type KillSwitch struct {
 	state              protoimpl.MessageState `protogen:"open.v1"`
 	HaltAllEnforcement bool                   `protobuf:"varint,1,opt,name=halt_all_enforcement,json=haltAllEnforcement,proto3" json:"halt_all_enforcement,omitempty"`
 	Reason             string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	Plane              Plane                  `protobuf:"varint,3,opt,name=plane,proto3,enum=ebpfsoc.v1.Plane" json:"plane,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -606,6 +669,13 @@ func (x *KillSwitch) GetReason() string {
 		return x.Reason
 	}
 	return ""
+}
+
+func (x *KillSwitch) GetPlane() Plane {
+	if x != nil {
+		return x.Plane
+	}
+	return Plane_PLANE_UNSPECIFIED
 }
 
 // UpdateProtectedList adjusts the local allow-lists the agent refuses to enforce
@@ -755,9 +825,10 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\vkill_switch\x18\x0f \x01(\v2\x16.ebpfsoc.v1.KillSwitchH\x00R\n" +
 	"killSwitch\x12U\n" +
 	"\x15update_protected_list\x18\x10 \x01(\v2\x1f.ebpfsoc.v1.UpdateProtectedListH\x00R\x13updateProtectedListB\b\n" +
-	"\x06action\":\n" +
+	"\x06action\"c\n" +
 	"\aSetMode\x12/\n" +
-	"\x04mode\x18\x01 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\"E\n" +
+	"\x04mode\x18\x01 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\x12'\n" +
+	"\x05plane\x18\x02 \x01(\x0e2\x11.ebpfsoc.v1.PlaneR\x05plane\"E\n" +
 	"\x04Jail\x12\x17\n" +
 	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x12\n" +
@@ -772,11 +843,12 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\rquarantine_at\x18\x03 \x01(\x05R\fquarantineAt\x12\x19\n" +
 	"\bsever_at\x18\x04 \x01(\x05R\aseverAt\"%\n" +
 	"\vApplyPreset\x12\x16\n" +
-	"\x06preset\x18\x01 \x01(\tR\x06preset\"V\n" +
+	"\x06preset\x18\x01 \x01(\tR\x06preset\"\x7f\n" +
 	"\n" +
 	"KillSwitch\x120\n" +
 	"\x14halt_all_enforcement\x18\x01 \x01(\bR\x12haltAllEnforcement\x12\x16\n" +
-	"\x06reason\x18\x02 \x01(\tR\x06reason\"k\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\x12'\n" +
+	"\x05plane\x18\x03 \x01(\x0e2\x11.ebpfsoc.v1.PlaneR\x05plane\"k\n" +
 	"\x13UpdateProtectedList\x12-\n" +
 	"\x12protected_binaries\x18\x01 \x03(\tR\x11protectedBinaries\x12%\n" +
 	"\x0eprotected_macs\x18\x02 \x03(\tR\rprotectedMacs\"\xa9\x02\n" +
@@ -793,7 +865,11 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\x0fSTATUS_ACCEPTED\x10\x01\x12\x12\n" +
 	"\x0eSTATUS_APPLIED\x10\x02\x12\x13\n" +
 	"\x0fSTATUS_REJECTED\x10\x03\x12\x12\n" +
-	"\x0eSTATUS_EXPIRED\x10\x042M\n" +
+	"\x0eSTATUS_EXPIRED\x10\x04*C\n" +
+	"\x05Plane\x12\x15\n" +
+	"\x11PLANE_UNSPECIFIED\x10\x00\x12\x11\n" +
+	"\rPLANE_PROCESS\x10\x01\x12\x10\n" +
+	"\fPLANE_DEVICE\x10\x022M\n" +
 	"\x0eCommandService\x12;\n" +
 	"\bCommands\x12\x16.ebpfsoc.v1.CommandAck\x1a\x13.ebpfsoc.v1.Command(\x010\x01B<Z:github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1b\x06proto3"
 
@@ -809,42 +885,45 @@ func file_ebpfsoc_v1_command_proto_rawDescGZIP() []byte {
 	return file_ebpfsoc_v1_command_proto_rawDescData
 }
 
-var file_ebpfsoc_v1_command_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_ebpfsoc_v1_command_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
 var file_ebpfsoc_v1_command_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_ebpfsoc_v1_command_proto_goTypes = []any{
-	(CommandAck_Status)(0),        // 0: ebpfsoc.v1.CommandAck.Status
-	(*Command)(nil),               // 1: ebpfsoc.v1.Command
-	(*SetMode)(nil),               // 2: ebpfsoc.v1.SetMode
-	(*Jail)(nil),                  // 3: ebpfsoc.v1.Jail
-	(*Thaw)(nil),                  // 4: ebpfsoc.v1.Thaw
-	(*SetThresholds)(nil),         // 5: ebpfsoc.v1.SetThresholds
-	(*ApplyPreset)(nil),           // 6: ebpfsoc.v1.ApplyPreset
-	(*KillSwitch)(nil),            // 7: ebpfsoc.v1.KillSwitch
-	(*UpdateProtectedList)(nil),   // 8: ebpfsoc.v1.UpdateProtectedList
-	(*CommandAck)(nil),            // 9: ebpfsoc.v1.CommandAck
-	(*timestamppb.Timestamp)(nil), // 10: google.protobuf.Timestamp
-	(EnforcementMode)(0),          // 11: ebpfsoc.v1.EnforcementMode
+	(Plane)(0),                    // 0: ebpfsoc.v1.Plane
+	(CommandAck_Status)(0),        // 1: ebpfsoc.v1.CommandAck.Status
+	(*Command)(nil),               // 2: ebpfsoc.v1.Command
+	(*SetMode)(nil),               // 3: ebpfsoc.v1.SetMode
+	(*Jail)(nil),                  // 4: ebpfsoc.v1.Jail
+	(*Thaw)(nil),                  // 5: ebpfsoc.v1.Thaw
+	(*SetThresholds)(nil),         // 6: ebpfsoc.v1.SetThresholds
+	(*ApplyPreset)(nil),           // 7: ebpfsoc.v1.ApplyPreset
+	(*KillSwitch)(nil),            // 8: ebpfsoc.v1.KillSwitch
+	(*UpdateProtectedList)(nil),   // 9: ebpfsoc.v1.UpdateProtectedList
+	(*CommandAck)(nil),            // 10: ebpfsoc.v1.CommandAck
+	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
+	(EnforcementMode)(0),          // 12: ebpfsoc.v1.EnforcementMode
 }
 var file_ebpfsoc_v1_command_proto_depIdxs = []int32{
-	10, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
-	10, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
-	2,  // 2: ebpfsoc.v1.Command.set_mode:type_name -> ebpfsoc.v1.SetMode
-	3,  // 3: ebpfsoc.v1.Command.jail:type_name -> ebpfsoc.v1.Jail
-	4,  // 4: ebpfsoc.v1.Command.thaw:type_name -> ebpfsoc.v1.Thaw
-	5,  // 5: ebpfsoc.v1.Command.set_thresholds:type_name -> ebpfsoc.v1.SetThresholds
-	6,  // 6: ebpfsoc.v1.Command.apply_preset:type_name -> ebpfsoc.v1.ApplyPreset
-	7,  // 7: ebpfsoc.v1.Command.kill_switch:type_name -> ebpfsoc.v1.KillSwitch
-	8,  // 8: ebpfsoc.v1.Command.update_protected_list:type_name -> ebpfsoc.v1.UpdateProtectedList
-	11, // 9: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
-	0,  // 10: ebpfsoc.v1.CommandAck.status:type_name -> ebpfsoc.v1.CommandAck.Status
-	10, // 11: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
-	9,  // 12: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
-	1,  // 13: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
-	13, // [13:14] is the sub-list for method output_type
-	12, // [12:13] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	11, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
+	11, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
+	3,  // 2: ebpfsoc.v1.Command.set_mode:type_name -> ebpfsoc.v1.SetMode
+	4,  // 3: ebpfsoc.v1.Command.jail:type_name -> ebpfsoc.v1.Jail
+	5,  // 4: ebpfsoc.v1.Command.thaw:type_name -> ebpfsoc.v1.Thaw
+	6,  // 5: ebpfsoc.v1.Command.set_thresholds:type_name -> ebpfsoc.v1.SetThresholds
+	7,  // 6: ebpfsoc.v1.Command.apply_preset:type_name -> ebpfsoc.v1.ApplyPreset
+	8,  // 7: ebpfsoc.v1.Command.kill_switch:type_name -> ebpfsoc.v1.KillSwitch
+	9,  // 8: ebpfsoc.v1.Command.update_protected_list:type_name -> ebpfsoc.v1.UpdateProtectedList
+	12, // 9: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
+	0,  // 10: ebpfsoc.v1.SetMode.plane:type_name -> ebpfsoc.v1.Plane
+	0,  // 11: ebpfsoc.v1.KillSwitch.plane:type_name -> ebpfsoc.v1.Plane
+	1,  // 12: ebpfsoc.v1.CommandAck.status:type_name -> ebpfsoc.v1.CommandAck.Status
+	11, // 13: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
+	10, // 14: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
+	2,  // 15: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
+	15, // [15:16] is the sub-list for method output_type
+	14, // [14:15] is the sub-list for method input_type
+	14, // [14:14] is the sub-list for extension type_name
+	14, // [14:14] is the sub-list for extension extendee
+	0,  // [0:14] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_command_proto_init() }
@@ -867,7 +946,7 @@ func file_ebpfsoc_v1_command_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_command_proto_rawDesc), len(file_ebpfsoc_v1_command_proto_rawDesc)),
-			NumEnums:      1,
+			NumEnums:      2,
 			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,

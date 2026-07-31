@@ -83,7 +83,10 @@ test.describe("Choke route", () => {
     await expect(drill).toBeVisible();
     await expect(drill.locator(".choke-drill-hero")).toContainText("cat");
     await expect(drill.locator(".choke-drill-stats")).toContainText("Chain depth");
-    await expect(drill.locator(".choke-drill-narrative")).toContainText("2-process chain");
+    // The narrative is now told twice — once in plain English for a responder
+    // and once technically — so assert the pair rather than a single block.
+    await expect(drill.locator(".choke-narrative-plain")).toContainText("In plain English");
+    await expect(drill.locator(".choke-narrative-tech")).toContainText("2-process chain");
     await expect(drill).toContainText("Response");
     await expect(drill).toContainText("Process lineage");
     await expect(drill).toContainText("Event timeline");

@@ -104,9 +104,41 @@ type Gateway struct {
 // for "score-driven" suspicion (their MOTD/auth chains routinely look
 // suspicious). The list is intentionally narrow — too broad an exemption
 // would let attackers hide inside it.
+// Matching is by EXACT binary path, so a wrong or missing path silently
+// protects nothing. That is why the ssh family below lists every layout we
+// might land on rather than the one this repo was written against: a redundant
+// entry costs nothing (it simply never matches), a missing one is an operator
+// locked out of the host the product is supposed to be protecting.
 func DefaultSystemCriticalBinaries() []string {
 	return []string{
-		"/usr/sbin/sshd", "/usr/sbin/sshd-session",
+		// ── The login path ──────────────────────────────────────────────────
+		// OpenSSH >= 9.8 (Ubuntu 24.10+, Debian 13, RHEL 10) SPLIT the daemon:
+		// /usr/sbin/sshd is only the listener, each connection is handled by a
+		// re-exec'd sshd-session, and auth is split again into sshd-auth. The
+		// per-session binaries are the ones that actually do the credential
+		// reads, so they are the ones enforcement would kill. Debian/Ubuntu put
+		// them under /usr/lib/openssh, RHEL-family under /usr/libexec/openssh,
+		// and some builds alongside sshd in /usr/sbin.
+		"/usr/sbin/sshd",
+		"/usr/sbin/sshd-session",
+		"/usr/sbin/sshd-auth",
+		"/usr/lib/openssh/sshd-session",
+		"/usr/lib/openssh/sshd-auth",
+		"/usr/libexec/openssh/sshd-session",
+		"/usr/libexec/openssh/sshd-auth",
+		// Console / serial-console login — the out-of-band recovery path. If
+		// enforcement can kill this too, a mistake becomes unrecoverable
+		// without detaching the root disk.
+		"/usr/bin/login",
+		"/bin/login",
+		// Privilege escalation used for RECOVERY. Threat-model EN-1 calls for
+		// sudo/ssh/init/pkg-mgmt to be covered; sudo and su were missing, so a
+		// box in enforcing mode would score /usr/bin/sudo all the way to sever
+		// and take administration with it. This exempts the SCORE-DRIVEN path
+		// only — an operator can still contain a genuinely malicious sudo by
+		// manual override, which deliberately bypasses this list.
+		"/usr/bin/sudo",
+		"/usr/bin/su",
 		"/usr/lib/systemd/systemd",
 		"/usr/lib/systemd/systemd-logind",
 		"/usr/lib/systemd/systemd-journald",

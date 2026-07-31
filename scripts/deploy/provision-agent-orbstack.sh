@@ -94,7 +94,10 @@ m 'mkdir -p /opt/ebpf-soc /etc/ebpf-soc /var/lib/ebpf-soc-agent/honey'
 # `--no-xattrs`/exclude AppleDouble so macOS ._* files don't reach the VM as
 # unparseable YAML.
 tar --exclude='._*' -cz -C "$REPO_ROOT" policies attacks | m 'cat > /tmp/pa.tgz && tar -xzf /tmp/pa.tgz -C /opt/ebpf-soc && rm -f /tmp/pa.tgz'
-cat "$AGENT_BIN" | m 'cat > /opt/ebpf-soc/agent && chmod 755 /opt/ebpf-soc/agent'
+# Write-then-rename: `cat >` truncates the RUNNING executable in place and fails
+# with "Text file busy", so a redeploy silently keeps the old agent while
+# reporting success. rename(2) swaps the directory entry instead.
+cat "$AGENT_BIN" | m 'cat > /opt/ebpf-soc/agent.new && chmod 755 /opt/ebpf-soc/agent.new && mv -f /opt/ebpf-soc/agent.new /opt/ebpf-soc/agent'
 cat "$CA_BUNDLE" | push - /etc/ebpf-soc/ca-bundle.pem
 cat "$FLEET_PUB" | push - /etc/ebpf-soc/fleet.pub
 ok "agent stack shipped"
@@ -109,13 +112,25 @@ log "applying TracingPolicies to Tetragon"
 n=$(m '
   n=0
   docker exec tetragon mkdir -p /etc/tetragon/tetragon.tp.d >/dev/null 2>&1 || true
-  for p in /opt/ebpf-soc/policies/*.yaml /opt/ebpf-soc/policies/enforce/*.yaml; do
+  for p in /opt/ebpf-soc/policies/*.yaml; do
     [ -f "$p" ] || continue
     case "$p" in */._*) continue;; esac
     base=$(basename "$p")
     docker cp "$p" tetragon:/tmp/ >/dev/null 2>&1
     docker cp "$p" "tetragon:/etc/tetragon/tetragon.tp.d/$base" >/dev/null 2>&1 || true
-    docker exec tetragon tetra tracingpolicy add "/tmp/$base" >/dev/null 2>&1 && n=$((n+1))
+    # add is CREATE-ONLY — see provision-agent-ssh.sh. Delete first so a changed
+    # policy actually replaces the one already loaded.
+    # Keyed by metadata.name, NOT filename — network-watch.yaml declares
+    # "outbound-connections" and sensitive-files.yaml declares
+    # "sensitive-file-access", so deleting by filename silently no-ops and those
+    # policies could never receive a content update.
+    # No single quotes: this block is passed as a single-quoted argument, so one
+    # would terminate it. metadata.name is the first "name:" in these files.
+    pol=$(sed -n "s/^[[:space:]]*name:[[:space:]]*\"\{0,1\}\([^\"]*\)\"\{0,1\}[[:space:]]*$/\1/p" "$p" | head -1)
+    [ -n "$pol" ] || pol=${base%.yaml}
+    docker exec tetragon tetra tracingpolicy delete "$pol" >/dev/null 2>&1
+    docker exec tetragon tetra tracingpolicy add "/tmp/$base" >/dev/null 2>&1
+    docker exec tetragon tetra tracingpolicy list 2>/dev/null | grep -q "$pol" && n=$((n+1))
   done
   echo $n')
 ok "applied $n TracingPolicies (durable via tp.d)"

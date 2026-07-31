@@ -286,3 +286,89 @@ func contains(s, sub string) bool {
 	}
 	return false
 }
+
+// The system-critical exemption is matched by EXACT binary path, so a stale or
+// wrong path silently protects nothing. This pins the login path specifically:
+// it is the one set where being wrong locks the operator out of the host, and
+// it has rotted before — the list carried "/usr/sbin/sshd-session" while
+// Debian/Ubuntu ship it at "/usr/lib/openssh/sshd-session", so on every
+// OpenSSH >= 9.8 box the per-session daemon (the process that actually reads
+// credentials, and therefore the one enforcement would kill) was unprotected.
+func TestDefaultSystemCriticalCoversTheLoginPath(t *testing.T) {
+	have := make(map[string]bool)
+	for _, b := range DefaultSystemCriticalBinaries() {
+		have[b] = true
+	}
+	// Every layout we might land on. A redundant entry never matches and costs
+	// nothing; a missing one is a lockout.
+	for _, required := range []string{
+		"/usr/sbin/sshd",
+		"/usr/lib/openssh/sshd-session",     // Debian / Ubuntu
+		"/usr/lib/openssh/sshd-auth",        //
+		"/usr/libexec/openssh/sshd-session", // RHEL family
+		"/usr/libexec/openssh/sshd-auth",    //
+		"/usr/bin/login",                    // serial-console recovery path
+		"/bin/login",                        //
+		"/usr/bin/sudo",                     // threat-model EN-1: recovery
+		"/usr/bin/su",                       //
+	} {
+		if !have[required] {
+			t.Errorf("login/recovery path %q missing from the system-critical exemption — "+
+				"score-driven enforcement would be free to choke it", required)
+		}
+	}
+}
+
+// The exemption must actually take effect, not merely be listed: a score-driven
+// transition on a per-session sshd is bypassed, while a manual override on the
+// same binary still goes through (an operator can always contain something).
+func TestSystemCriticalBypassesScoreDrivenEnforcementOnly(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.New(filepath.Join(dir, "sc.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	pt := tree.New(time.Hour)
+	be := bpfmap.NewNoopBackend()
+	_ = be.Open()
+	g := NewGateway(Config{
+		Store: st, Broadcast: &recordingBcast{}, Tokens: tokens.NewManager(),
+		Tree: pt, BPFMap: be, Policies: policy.NewSet(), Enforcing: true,
+		Enforcer:               &enforce.Multi{Backends: []enforce.Enforcer{&enforce.Throttler{Backend: be}}},
+		SystemCriticalBinaries: DefaultSystemCriticalBinaries(),
+	})
+
+	const sshBin = "/usr/lib/openssh/sshd-session"
+	const pid = uint32(9101)
+	pt.Add(&tree.Node{ExecID: "S1", PID: pid, Binary: sshBin, StartTime: time.Now()})
+
+	inMap := func() bool {
+		snap, err := be.Snapshot()
+		if err != nil {
+			t.Fatalf("Snapshot: %v", err)
+		}
+		_, ok := snap[pid]
+		return ok
+	}
+
+	// Score into QUARANTINE, not sever: the Throttler backend implements the
+	// throttle/tarpit/quarantine rungs, and returns ErrUnsupported for sever —
+	// so a sever-level score would write no bucket whether or not the exemption
+	// worked, and the assertion below would pass vacuously.
+	g.OnEvent(context.Background(), Observation{ExecID: "S1", PID: pid, Binary: sshBin, Score: 30})
+	if inMap() {
+		t.Error("score-driven enforcement wrote a bucket for a system-critical login binary")
+	}
+
+	// The operator override is deliberately NOT exempt.
+	if _, err := g.Manual(context.Background(), ManualRequest{
+		ExecID: "S1", PID: pid, Binary: sshBin,
+		Action: circuit.ActThrottle, Reason: "operator decision", Actor: "tester",
+	}); err != nil {
+		t.Fatalf("manual override on a system-critical binary: %v", err)
+	}
+	if !inMap() {
+		t.Error("manual override on a system-critical binary was bypassed — an operator must always be able to contain")
+	}
+}

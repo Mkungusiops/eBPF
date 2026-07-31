@@ -296,13 +296,32 @@ func heartbeatLoop(ctx context.Context, hc ebpfsocv1.HeartbeatServiceClient, cfg
 	}
 }
 
+// minCommandRedial floors the reconnect rate after a CLEAN stream end. The
+// control plane parks an idle agent for its poll window, so a clean return
+// normally means either a delivered batch or that window elapsing — both worth
+// redialing at once. The floor only matters against a control plane that closes
+// the stream immediately (an older build), where redialing hot would spin.
+const minCommandRedial = time.Second
+
 func commandLoop(ctx context.Context, cc ebpfsocv1.CommandServiceClient, cfg *Config) {
 	for ctx.Err() == nil {
-		if err := command.RunCommands(ctx, cc, cfg.Processor); err != nil && ctx.Err() == nil {
+		start := time.Now()
+		err := command.RunCommands(ctx, cc, cfg.Processor)
+		if err != nil && ctx.Err() == nil {
 			cfg.Logf("[cpclient] command stream: %v (reconnecting)", err)
+			if !sleep(ctx, cfg.Backoff) {
+				return
+			}
+			continue
 		}
-		if !sleep(ctx, cfg.Backoff) {
-			return
+		// Clean end: reconnect immediately so the agent is parked in an open
+		// command stream as much of the time as possible. Waiting the full
+		// error backoff here would leave a window in which a dispatched command
+		// has nowhere to go.
+		if elapsed := time.Since(start); elapsed < minCommandRedial {
+			if !sleep(ctx, minCommandRedial-elapsed) {
+				return
+			}
 		}
 	}
 }

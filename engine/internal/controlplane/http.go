@@ -723,15 +723,20 @@ func (s *Server) handleDevices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type deviceView struct {
-		Agent string `json:"agent"`
-		MAC   string `json:"mac"`
-		State string `json:"state"`
-		Label string `json:"label"`
+		Agent     string `json:"agent"`
+		MAC       string `json:"mac"`
+		State     string `json:"state"`
+		Label     string `json:"label"`
+		LastIP    string `json:"last_ip,omitempty"`
+		Protected bool   `json:"protected"`
 	}
 	out := []deviceView{}
 	for _, rec := range s.registry.ListTenant(tenant) {
 		for _, d := range rec.Devices {
-			out = append(out, deviceView{Agent: rec.AgentID, MAC: d.GetMac(), State: d.GetState(), Label: d.GetLabel()})
+			out = append(out, deviceView{
+				Agent: rec.AgentID, MAC: d.GetMac(), State: d.GetState(),
+				Label: d.GetLabel(), LastIP: d.GetLastIp(), Protected: d.GetProtected(),
+			})
 		}
 	}
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "count": len(out), "devices": out})
@@ -822,16 +827,9 @@ func (s *Server) handleCommand(w http.ResponseWriter, r *http.Request) {
 
 	id := s.dispatcher.Enqueue(body.AgentID, cmd)
 	// The command channel is an agent dial-out stream; the agent verifies the
-	// signature, applies, and acks within a couple of seconds. Wait briefly so
-	// the operator gets the outcome inline.
-	var status, detail string
-	for i := 0; i < 60; i++ {
-		if a, ok := s.dispatcher.Ack(id); ok {
-			status, detail = a.GetStatus().String(), a.GetDetail()
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	// signature, applies, and acks. Wait briefly so the operator gets the
+	// outcome inline.
+	status, detail := s.waitAck(id)
 	writeJSON(w, 200, map[string]any{"command_id": id, "status": status, "detail": detail})
 }
 

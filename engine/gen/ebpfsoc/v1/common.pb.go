@@ -177,14 +177,29 @@ func (x *AgentInfo) GetBootId() string {
 // DataPlaneState reports both choke data planes so the fleet service can render
 // real enforcement posture (architecture.md §3.5 agent registry).
 type DataPlaneState struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ProcessPlane  string                 `protobuf:"bytes,1,opt,name=process_plane,json=processPlane,proto3" json:"process_plane,omitempty"`  // "cilium-ebpf" | "noop"
-	ProcessLinks  int32                  `protobuf:"varint,2,opt,name=process_links,json=processLinks,proto3" json:"process_links,omitempty"` // attached cgroup/connect links
-	DevicePlane   string                 `protobuf:"bytes,3,opt,name=device_plane,json=devicePlane,proto3" json:"device_plane,omitempty"`     // "tc" | "noop"
-	DeviceLinks   int32                  `protobuf:"varint,4,opt,name=device_links,json=deviceLinks,proto3" json:"device_links,omitempty"`    // attached tc links
-	Mode          EnforcementMode        `protobuf:"varint,5,opt,name=mode,proto3,enum=ebpfsoc.v1.EnforcementMode" json:"mode,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ProcessPlane string                 `protobuf:"bytes,1,opt,name=process_plane,json=processPlane,proto3" json:"process_plane,omitempty"`  // "cilium-ebpf" | "noop"
+	ProcessLinks int32                  `protobuf:"varint,2,opt,name=process_links,json=processLinks,proto3" json:"process_links,omitempty"` // attached cgroup/connect links
+	DevicePlane  string                 `protobuf:"bytes,3,opt,name=device_plane,json=devicePlane,proto3" json:"device_plane,omitempty"`     // "tc" | "noop"
+	DeviceLinks  int32                  `protobuf:"varint,4,opt,name=device_links,json=deviceLinks,proto3" json:"device_links,omitempty"`    // attached tc links
+	Mode         EnforcementMode        `protobuf:"varint,5,opt,name=mode,proto3,enum=ebpfsoc.v1.EnforcementMode" json:"mode,omitempty"`     // PROCESS plane mode
+	// The two planes arm independently, so the device plane reports its own mode.
+	// Without this the console showed the process mode on the Devices surface and
+	// an armed device plane still read as detect-only.
+	DeviceMode EnforcementMode `protobuf:"varint,6,opt,name=device_mode,json=deviceMode,proto3,enum=ebpfsoc.v1.EnforcementMode" json:"device_mode,omitempty"`
+	// Tetragon TracingPolicies are a SECOND enforcement authority, independent of
+	// the modes above: a Sigkill in a loaded policy fires whatever the engine's
+	// mode says, with no audit row, no reversal and no kill-switch. Reporting only
+	// the fields above therefore lets the console show "detect-only" while the
+	// kernel is killing processes — threat-model EN-3, which cost this project a
+	// host lockout and three hosts of broken package state before it was modelled.
+	//
+	// With this, host posture is `engine mode ∪ kernel policy mode` rather than
+	// the engine's half of it. Empty is not "safe": it means the agent could not
+	// read Tetragon, which is itself worth surfacing.
+	KernelPolicies []*KernelPolicy `protobuf:"bytes,7,rep,name=kernel_policies,json=kernelPolicies,proto3" json:"kernel_policies,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *DataPlaneState) Reset() {
@@ -252,6 +267,111 @@ func (x *DataPlaneState) GetMode() EnforcementMode {
 	return EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
 }
 
+func (x *DataPlaneState) GetDeviceMode() EnforcementMode {
+	if x != nil {
+		return x.DeviceMode
+	}
+	return EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
+}
+
+func (x *DataPlaneState) GetKernelPolicies() []*KernelPolicy {
+	if x != nil {
+		return x.KernelPolicies
+	}
+	return nil
+}
+
+// KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —
+// not as a config file describes it. The distinction matters: a policy edited on
+// disk but never reloaded still runs its old version, and a policy deleted at
+// runtime returns on the next restart if its file remains.
+type KernelPolicy struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Tetragon's own classification, straight from the daemon: "monitor" (every
+	// enforcing action suppressed in-kernel) or "enforce" (they execute as
+	// written). Everything this repo ships declares monitor, so an `enforce` here
+	// is either hand-loaded or deliberately armed — in both cases the operator
+	// should see it.
+	Mode    string `protobuf:"bytes,2,opt,name=mode,proto3" json:"mode,omitempty"`
+	Enabled bool   `protobuf:"varint,3,opt,name=enabled,proto3" json:"enabled,omitempty"`
+	// Enforcing actions that ACTUALLY fired (Sigkill/Signal/Override). Non-zero is
+	// proof of divergence, not a prediction of it: this policy has killed
+	// something without the engine's involvement.
+	EnforceActions uint64 `protobuf:"varint,4,opt,name=enforce_actions,json=enforceActions,proto3" json:"enforce_actions,omitempty"`
+	// Enforcing actions that WOULD have fired but were suppressed by monitor mode.
+	// Non-zero means the safety net is load-bearing — the policy is trying to kill
+	// and only the mode is stopping it.
+	SuppressedActions uint64 `protobuf:"varint,5,opt,name=suppressed_actions,json=suppressedActions,proto3" json:"suppressed_actions,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *KernelPolicy) Reset() {
+	*x = KernelPolicy{}
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *KernelPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*KernelPolicy) ProtoMessage() {}
+
+func (x *KernelPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use KernelPolicy.ProtoReflect.Descriptor instead.
+func (*KernelPolicy) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *KernelPolicy) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *KernelPolicy) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
+func (x *KernelPolicy) GetEnabled() bool {
+	if x != nil {
+		return x.Enabled
+	}
+	return false
+}
+
+func (x *KernelPolicy) GetEnforceActions() uint64 {
+	if x != nil {
+		return x.EnforceActions
+	}
+	return 0
+}
+
+func (x *KernelPolicy) GetSuppressedActions() uint64 {
+	if x != nil {
+		return x.SuppressedActions
+	}
+	return 0
+}
+
 // ProcessEvent mirrors internal/store.Event (process_exec / process_kprobe).
 type ProcessEvent struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -274,7 +394,7 @@ type ProcessEvent struct {
 
 func (x *ProcessEvent) Reset() {
 	*x = ProcessEvent{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -286,7 +406,7 @@ func (x *ProcessEvent) String() string {
 func (*ProcessEvent) ProtoMessage() {}
 
 func (x *ProcessEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -299,7 +419,7 @@ func (x *ProcessEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessEvent.ProtoReflect.Descriptor instead.
 func (*ProcessEvent) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *ProcessEvent) GetOccurredAt() *timestamppb.Timestamp {
@@ -410,7 +530,7 @@ type Alert struct {
 
 func (x *Alert) Reset() {
 	*x = Alert{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -422,7 +542,7 @@ func (x *Alert) String() string {
 func (*Alert) ProtoMessage() {}
 
 func (x *Alert) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -435,7 +555,7 @@ func (x *Alert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Alert.ProtoReflect.Descriptor instead.
 func (*Alert) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *Alert) GetOccurredAt() *timestamppb.Timestamp {
@@ -539,7 +659,7 @@ type Decision struct {
 
 func (x *Decision) Reset() {
 	*x = Decision{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -551,7 +671,7 @@ func (x *Decision) String() string {
 func (*Decision) ProtoMessage() {}
 
 func (x *Decision) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -564,7 +684,7 @@ func (x *Decision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Decision.ProtoReflect.Descriptor instead.
 func (*Decision) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{4}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Decision) GetId() int64 {
@@ -733,13 +853,22 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x06kernel\x18\x03 \x01(\tR\x06kernel\x12\x12\n" +
 	"\x04arch\x18\x04 \x01(\tR\x04arch\x12#\n" +
 	"\rbtf_available\x18\x05 \x01(\bR\fbtfAvailable\x12\x17\n" +
-	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\xd1\x01\n" +
+	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\xd2\x02\n" +
 	"\x0eDataPlaneState\x12#\n" +
 	"\rprocess_plane\x18\x01 \x01(\tR\fprocessPlane\x12#\n" +
 	"\rprocess_links\x18\x02 \x01(\x05R\fprocessLinks\x12!\n" +
 	"\fdevice_plane\x18\x03 \x01(\tR\vdevicePlane\x12!\n" +
 	"\fdevice_links\x18\x04 \x01(\x05R\vdeviceLinks\x12/\n" +
-	"\x04mode\x18\x05 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\"\xfc\x02\n" +
+	"\x04mode\x18\x05 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\x12<\n" +
+	"\vdevice_mode\x18\x06 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\n" +
+	"deviceMode\x12A\n" +
+	"\x0fkernel_policies\x18\a \x03(\v2\x18.ebpfsoc.v1.KernelPolicyR\x0ekernelPolicies\"\xa8\x01\n" +
+	"\fKernelPolicy\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x18\n" +
+	"\aenabled\x18\x03 \x01(\bR\aenabled\x12'\n" +
+	"\x0fenforce_actions\x18\x04 \x01(\x04R\x0eenforceActions\x12-\n" +
+	"\x12suppressed_actions\x18\x05 \x01(\x04R\x11suppressedActions\"\xfc\x02\n" +
 	"\fProcessEvent\x12;\n" +
 	"\voccurred_at\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"occurredAt\x12\x1d\n" +
@@ -818,26 +947,29 @@ func file_ebpfsoc_v1_common_proto_rawDescGZIP() []byte {
 }
 
 var file_ebpfsoc_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ebpfsoc_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_ebpfsoc_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_ebpfsoc_v1_common_proto_goTypes = []any{
 	(EnforcementMode)(0),          // 0: ebpfsoc.v1.EnforcementMode
 	(*AgentInfo)(nil),             // 1: ebpfsoc.v1.AgentInfo
 	(*DataPlaneState)(nil),        // 2: ebpfsoc.v1.DataPlaneState
-	(*ProcessEvent)(nil),          // 3: ebpfsoc.v1.ProcessEvent
-	(*Alert)(nil),                 // 4: ebpfsoc.v1.Alert
-	(*Decision)(nil),              // 5: ebpfsoc.v1.Decision
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(*KernelPolicy)(nil),          // 3: ebpfsoc.v1.KernelPolicy
+	(*ProcessEvent)(nil),          // 4: ebpfsoc.v1.ProcessEvent
+	(*Alert)(nil),                 // 5: ebpfsoc.v1.Alert
+	(*Decision)(nil),              // 6: ebpfsoc.v1.Decision
+	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
 }
 var file_ebpfsoc_v1_common_proto_depIdxs = []int32{
 	0, // 0: ebpfsoc.v1.DataPlaneState.mode:type_name -> ebpfsoc.v1.EnforcementMode
-	6, // 1: ebpfsoc.v1.ProcessEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	6, // 2: ebpfsoc.v1.Alert.occurred_at:type_name -> google.protobuf.Timestamp
-	6, // 3: ebpfsoc.v1.Decision.occurred_at:type_name -> google.protobuf.Timestamp
-	4, // [4:4] is the sub-list for method output_type
-	4, // [4:4] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	0, // 1: ebpfsoc.v1.DataPlaneState.device_mode:type_name -> ebpfsoc.v1.EnforcementMode
+	3, // 2: ebpfsoc.v1.DataPlaneState.kernel_policies:type_name -> ebpfsoc.v1.KernelPolicy
+	7, // 3: ebpfsoc.v1.ProcessEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	7, // 4: ebpfsoc.v1.Alert.occurred_at:type_name -> google.protobuf.Timestamp
+	7, // 5: ebpfsoc.v1.Decision.occurred_at:type_name -> google.protobuf.Timestamp
+	6, // [6:6] is the sub-list for method output_type
+	6, // [6:6] is the sub-list for method input_type
+	6, // [6:6] is the sub-list for extension type_name
+	6, // [6:6] is the sub-list for extension extendee
+	0, // [0:6] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_common_proto_init() }
@@ -851,7 +983,7 @@ func file_ebpfsoc_v1_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_common_proto_rawDesc), len(file_ebpfsoc_v1_common_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

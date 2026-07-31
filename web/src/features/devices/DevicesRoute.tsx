@@ -521,7 +521,6 @@ export function DevicesRoute({
             </a>
             <span className="devices-brand-divider" aria-hidden="true" />
             <h1 className="devices-brand-mark">Device Choke</h1>
-            <ModeBadge state={state} compact />
           </div>
           <label className="devices-search">
             <Search size={16} aria-hidden="true" />
@@ -992,9 +991,16 @@ function PlaneStateStrip({
   }
 
   const planeActive = Boolean(state?.data_plane) && state?.data_plane !== "noop" && state?.data_plane !== "disabled";
+  const mode = state?.mode ?? "unknown";
   return (
     <div className="devices-status-cluster" aria-label="Device data-plane state">
-      {/* Choke-style dot+label status pills — quiet at rest, boxed on hover. */}
+      {/* Choke-style dot+label status pills — quiet at rest, boxed on hover.
+          Enforcement mode leads (amber = detect-only, green = enforcing); the
+          header's ENFORCEMENT control remains the actionable toggle. */}
+      <span className={`devices-status-pill mode-${mode}`} title={`enforcement mode: ${mode}`}>
+        <span className="devices-status-dot" />
+        mode <strong>{mode}</strong>
+      </span>
       <span
         className="devices-status-pill"
         title="Data-plane actuator: 'noop' = audit only, no kernel enforcement; 'tc' = live TC/eBPF dropping or rate-limiting by MAC."
@@ -1028,27 +1034,6 @@ function LiveBeacon({ updatedAt }: { updatedAt: number | null }) {
       <span className="devices-beacon-core" />
       {updatedAt ? <span className="devices-beacon-ping" key={updatedAt} /> : null}
       <span className="devices-beacon-label">live</span>
-    </span>
-  );
-}
-
-function ModeBadge({
-  state,
-  compact = false
-}: {
-  state: DeviceDataPlaneState | null;
-  compact?: boolean;
-}) {
-  const mode = state?.mode ?? "unknown";
-  const tone =
-    mode === "enforcing" ? "good" :
-    mode === "detect-only" ? "info" :
-    mode === "dry-run" ? "warn" :
-    mode === "kill-switched" ? "danger" :
-    "muted";
-  return (
-    <span className={`devices-pill devices-pill--${tone}`}>
-      {compact ? mode : `Mode: ${mode}`}
     </span>
   );
 }

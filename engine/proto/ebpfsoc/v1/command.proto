@@ -37,8 +37,20 @@ message Command {
   }
 }
 
+// Plane selects which enforcement plane a command acts on. The agent runs two
+// independent gateways — processes (cgroup/BPF, a sever is a SIGKILL) and LAN
+// devices (tc, a sever is a reversible drop rule) — and they arm separately.
+// UNSPECIFIED means the process plane so that an older control plane, which had
+// no plane field, keeps its existing meaning.
+enum Plane {
+  PLANE_UNSPECIFIED = 0;
+  PLANE_PROCESS = 1;
+  PLANE_DEVICE = 2;
+}
+
 message SetMode {
   EnforcementMode mode = 1;
+  Plane plane = 2;
 }
 
 // Jail moves a target to a choke tier immediately (operator-driven override).
@@ -68,6 +80,7 @@ message ApplyPreset {
 message KillSwitch {
   bool halt_all_enforcement = 1;
   string reason = 2;
+  Plane plane = 3;
 }
 
 // UpdateProtectedList adjusts the local allow-lists the agent refuses to enforce

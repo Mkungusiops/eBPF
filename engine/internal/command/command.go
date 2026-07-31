@@ -24,13 +24,17 @@ import (
 
 // Applier is the agent's local effector. The real agent wires it to the choke
 // gateway; tests use a fake. Methods should be idempotent where possible.
+// The agent runs two independent enforcement planes, so mode and kill-switch
+// carry the plane they act on. Sending them plane-agnostically meant an operator
+// arming the DEVICE plane silently armed the PROCESS plane instead — where a
+// sever is a SIGKILL rather than a reversible drop rule.
 type Applier interface {
-	SetMode(mode ebpfsocv1.EnforcementMode) error
+	SetMode(mode ebpfsocv1.EnforcementMode, plane ebpfsocv1.Plane) error
 	Jail(execID string, pid uint32, tier string) error
 	Thaw(execID string, pid uint32) error
 	SetThresholds(throttleAt, tarpitAt, quarantineAt, severAt int32) error
 	ApplyPreset(name string) error
-	KillSwitch(halt bool, reason string) error
+	KillSwitch(halt bool, reason string, plane ebpfsocv1.Plane) error
 	SetProtectedList(binaries, macs []string) error
 }
 
@@ -68,12 +72,17 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 
 	// 3. Kill-switch is always honored, even while halted (it is the unhalt path).
 	if ks, ok := c.GetAction().(*ebpfsocv1.Command_KillSwitch); ok {
-		if err := p.applier.KillSwitch(ks.KillSwitch.GetHaltAllEnforcement(), ks.KillSwitch.GetReason()); err != nil {
+		if err := p.applier.KillSwitch(ks.KillSwitch.GetHaltAllEnforcement(), ks.KillSwitch.GetReason(), ks.KillSwitch.GetPlane()); err != nil {
 			return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, err.Error())
 		}
-		p.mu.Lock()
-		p.halted = ks.KillSwitch.GetHaltAllEnforcement()
-		p.mu.Unlock()
+		// Only a PROCESS-plane halt gates further commands. A device-plane
+		// kill-switch stops network enforcement without freezing the whole
+		// command channel, so process containment stays reachable.
+		if ks.KillSwitch.GetPlane() != ebpfsocv1.Plane_PLANE_DEVICE {
+			p.mu.Lock()
+			p.halted = ks.KillSwitch.GetHaltAllEnforcement()
+			p.mu.Unlock()
+		}
 		return ack(id, ebpfsocv1.CommandAck_STATUS_APPLIED, "")
 	}
 
@@ -89,7 +98,7 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 	var err error
 	switch a := c.GetAction().(type) {
 	case *ebpfsocv1.Command_SetMode:
-		err = p.applier.SetMode(a.SetMode.GetMode())
+		err = p.applier.SetMode(a.SetMode.GetMode(), a.SetMode.GetPlane())
 	case *ebpfsocv1.Command_Jail:
 		err = p.applier.Jail(a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier())
 	case *ebpfsocv1.Command_Thaw:

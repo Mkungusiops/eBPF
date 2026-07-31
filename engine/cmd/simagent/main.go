@@ -156,15 +156,22 @@ type simApplier struct {
 	mu      sync.Mutex
 	chokes  map[string]*ebpfsocv1.ChokeSummary // key = exec_id, else pid:<n>
 	devices map[string]string                  // mac -> state
-	mode    ebpfsocv1.EnforcementMode
-	killed  bool
+	// The two enforcement planes arm INDEPENDENTLY, so the sim has to model
+	// them independently too. Collapsing them into one field is not a harmless
+	// simplification: it reproduces the exact defect the real agent had, where
+	// arming the device plane silently armed process enforcement instead.
+	mode       ebpfsocv1.EnforcementMode
+	deviceMode ebpfsocv1.EnforcementMode
+	killed     bool
+	deviceKill bool
 }
 
 func newSimApplier() *simApplier {
 	a := &simApplier{
-		chokes:  map[string]*ebpfsocv1.ChokeSummary{},
-		devices: map[string]string{},
-		mode:    ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY,
+		chokes:     map[string]*ebpfsocv1.ChokeSummary{},
+		devices:    map[string]string{},
+		mode:       ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY,
+		deviceMode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY,
 	}
 	for i, st := range []string{"severed", "severed", "quarantined", "tarpit", "throttled", "severed", "quarantined"} {
 		id := execID(500 + i)
@@ -226,15 +233,26 @@ func (a *simApplier) Thaw(execID string, pid uint32) error {
 	delete(a.chokes, a.key(execID, pid))
 	return nil
 }
-func (a *simApplier) SetMode(m ebpfsocv1.EnforcementMode) error {
+
+// PLANE_DEVICE targets the network plane; anything else (including
+// UNSPECIFIED, what an older control plane sends) targets the process plane.
+func (a *simApplier) SetMode(m ebpfsocv1.EnforcementMode, plane ebpfsocv1.Plane) error {
 	a.mu.Lock()
-	a.mode = m
+	if plane == ebpfsocv1.Plane_PLANE_DEVICE {
+		a.deviceMode = m
+	} else {
+		a.mode = m
+	}
 	a.mu.Unlock()
 	return nil
 }
-func (a *simApplier) KillSwitch(halt bool, _ string) error {
+func (a *simApplier) KillSwitch(halt bool, _ string, plane ebpfsocv1.Plane) error {
 	a.mu.Lock()
-	a.killed = halt
+	if plane == ebpfsocv1.Plane_PLANE_DEVICE {
+		a.deviceKill = halt
+	} else {
+		a.killed = halt
+	}
 	a.mu.Unlock()
 	return nil
 }
@@ -256,7 +274,14 @@ func (a *simApplier) heartbeat() *ebpfsocv1.HeartbeatRequest {
 		devices = append(devices, &ebpfsocv1.DeviceSummary{Mac: mac, State: st})
 	}
 	return &ebpfsocv1.HeartbeatRequest{
-		DataPlane:            &ebpfsocv1.DataPlaneState{Mode: a.mode},
+		DataPlane: &ebpfsocv1.DataPlaneState{
+			Mode: a.mode,
+			// A sim agent has no kernel data plane; say so rather than letting
+			// the console infer one from a registered agent.
+			DevicePlane: "noop",
+			DeviceLinks: 0,
+			DeviceMode:  a.deviceMode,
+		},
 		BufferDepth:          0,
 		AppliedPolicyVersion: "pol-sim-1",
 		Chokes:               chokes,

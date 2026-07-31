@@ -321,6 +321,21 @@
   box-shadow: 0 0 12px var(--danger);
 }
 
+/* Enforcement-mode glance dot: amber while detect-only, green once enforcing,
+   red when the kill-switch is engaged. */
+.choke-status-cluster .choke-pill.mode-detect-only .choke-dot {
+  background: var(--warn);
+  box-shadow: 0 0 12px var(--warn);
+}
+.choke-status-cluster .choke-pill.mode-enforcing .choke-dot {
+  background: var(--ok);
+  box-shadow: 0 0 12px var(--ok);
+}
+.choke-status-cluster .choke-pill.mode-kill-switched .choke-dot {
+  background: var(--danger);
+  box-shadow: 0 0 12px var(--danger);
+}
+
 .choke-pill.ok {
   color: #a7f3d0;
 }

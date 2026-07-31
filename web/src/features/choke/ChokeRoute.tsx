@@ -957,9 +957,6 @@ export function ChokeRoute(): React.ReactElement {
             </a>
             <span className="choke-brand-divider" aria-hidden="true" />
             <span className="choke-brand-mark">Choke Gateway</span>
-            <button className="choke-link-pill choke-mode-pill" type="button" onClick={() => setPopover(popover === "mode" ? null : "mode")}>
-              <ModeBadge mode={mode} />
-            </button>
           </div>
           <input
             data-choke-global-search
@@ -970,6 +967,13 @@ export function ChokeRoute(): React.ReactElement {
           />
           {/* Status condensed to a colour-dot + one word; full detail on hover/click. */}
           <div className="choke-status-cluster">
+            {/* Enforcement mode merged into the status cluster — a quiet dot+label
+                glance (amber = detect-only, green = enforcing, red = kill-switch),
+                consistent with host/audit/live. The header's ENFORCEMENT control
+                remains the actionable toggle. */}
+            <button className={`choke-pill choke-mode-glance mode-${mode}`} type="button" onClick={() => setPopover(popover === "mode" ? null : "mode")} title={`enforcement mode: ${mode}`}>
+              <span className="choke-dot" /> {mode}
+            </button>
             <button className={`choke-pill host-${hostState}`} type="button" onClick={() => setPopover(popover === "host" ? null : "host")} title={`host ${hostState}`}>
               <span className="choke-dot" /> host
             </button>
@@ -1714,11 +1718,6 @@ function Banner({ title, children, tone, dataPanel }: { title: string; children:
 function StateBadge({ state }: { state?: string }) {
   const value = state || "pristine";
   return <span className={`choke-state-badge state-${value}`}>{value}</span>;
-}
-
-function ModeBadge({ mode }: { mode?: string }) {
-  const value = mode || "detect-only";
-  return <span className={`choke-mode-badge mode-${value}`}>{value}</span>;
 }
 
 function Sparkline({ bars, tone = "accent" }: { bars: number[]; tone?: "accent" | "warn" | "danger" }) {

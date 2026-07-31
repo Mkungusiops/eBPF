@@ -40,6 +40,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -88,6 +89,79 @@ var gw *choke.Gateway
 // tetragonConnected mirrors the OTel gauge so the /api/system-health
 // handler can read live state without reaching into the metrics pipeline.
 var tetragonConnected atomic.Bool
+
+// sensors is the Tetragon client, published once the event stream is dialled so
+// the heartbeat can ask the daemon what TracingPolicies the kernel actually has.
+// It is set after the control-plane config is built, hence the indirection: the
+// heartbeat closure runs on a timer and only ever reads it post-startup.
+var (
+	sensorsMu sync.RWMutex
+	sensors   tetragon.FineGuidanceSensorsClient
+)
+
+func setSensors(c tetragon.FineGuidanceSensorsClient) {
+	sensorsMu.Lock()
+	sensors = c
+	sensorsMu.Unlock()
+}
+
+// kernelPolicies reports Tetragon's TracingPolicies as the KERNEL has them, for
+// the heartbeat. This exists because the engine's enforcement mode is only half
+// of a host's posture: a `Sigkill` in a loaded policy fires regardless of what
+// mode the operator set, with no audit row and no way to reverse it, so a
+// console rendering only the engine's mode can report "detect-only" while the
+// kernel kills processes (threat-model EN-3).
+//
+// Read from the daemon rather than from the policy files on disk, because those
+// disagree in both directions: a file edited but never reloaded still runs its
+// old version, and a policy deleted at runtime comes back on the next restart if
+// its file remains. Only the daemon knows what is actually loaded.
+//
+// Never fatal and never blocking: a nil return degrades the console to the old
+// engine-only view, which is exactly the behaviour of an agent predating the
+// field. Enforcement must not depend on the reporting path.
+func kernelPolicies(ctx context.Context) []*ebpfsocv1.KernelPolicy {
+	sensorsMu.RLock()
+	c := sensors
+	sensorsMu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	resp, err := c.ListTracingPolicies(ctx, &tetragon.ListTracingPoliciesRequest{})
+	if err != nil {
+		return nil
+	}
+	out := make([]*ebpfsocv1.KernelPolicy, 0, len(resp.GetPolicies()))
+	for _, p := range resp.GetPolicies() {
+		kp := &ebpfsocv1.KernelPolicy{
+			Name:    p.GetName(),
+			Mode:    tracingPolicyMode(p.GetMode()),
+			Enabled: p.GetState() == tetragon.TracingPolicyState_TP_STATE_ENABLED,
+		}
+		// Signal and Override are the actions that kill or divert a syscall.
+		// Post is reporting and deliberately not counted here — counting it
+		// would make every healthy detection look like enforcement.
+		if ac := p.GetStats().GetActionCounters(); ac != nil {
+			kp.EnforceActions = ac.GetSignal() + ac.GetOverride()
+			kp.SuppressedActions = ac.GetMonitorSignal()
+		}
+		out = append(out, kp)
+	}
+	return out
+}
+
+func tracingPolicyMode(m tetragon.TracingPolicyMode) string {
+	switch m {
+	case tetragon.TracingPolicyMode_TP_MODE_ENFORCE:
+		return "enforce"
+	case tetragon.TracingPolicyMode_TP_MODE_MONITOR:
+		return "monitor"
+	default:
+		return "unknown"
+	}
+}
 
 // upBuf is the control-plane telemetry buffer. It is nil unless -controlplane
 // is configured; the event handlers enqueue into it only when non-nil, so with
@@ -717,7 +791,7 @@ func main() {
 			if err != nil {
 				log.Fatalf("controlplane: -fleet-pubkey: %v", err)
 			}
-			proc = command.NewProcessor(verifier, gatewayApplier{gw: gw}, critBins)
+			proc = command.NewProcessor(verifier, gatewayApplier{gw: gw, devGW: deviceGW}, critBins)
 			log.Printf("[controlplane] command channel enabled (%d protected binaries guardrail)", len(critBins))
 		} else {
 			log.Printf("[controlplane] command channel DISABLED (no -fleet-pubkey); telemetry + heartbeat only")
@@ -741,8 +815,21 @@ func main() {
 			Processor:      proc,
 			Heartbeat: func() *ebpfsocv1.HeartbeatRequest {
 				return &ebpfsocv1.HeartbeatRequest{
-					AgentInfo:   agentInfo(),
-					DataPlane:   &ebpfsocv1.DataPlaneState{Mode: gatewayMode(gw)},
+					AgentInfo: agentInfo(),
+					DataPlane: &ebpfsocv1.DataPlaneState{
+						Mode: gatewayMode(gw),
+						// Report the device plane truthfully: the control plane
+						// used to assume "active" for any registered agent, which
+						// showed a fleet as enforcing on the network plane while
+						// every agent was running the noop backend.
+						DevicePlane: deviceGW.DataPlaneTier(),
+						DeviceLinks: int32(deviceGW.AttachedLinks()),
+						DeviceMode:  deviceGatewayMode(deviceGW),
+						// The other enforcement authority on this host. Without
+						// it the console reports the engine's mode as if it were
+						// the host's posture — see kernelPolicies.
+						KernelPolicies: kernelPolicies(ctx),
+					},
 					BufferDepth: uint64(upBuf.PendingDepth()),
 					Chokes:      chokeSummaries(gw),
 					Devices:     deviceSummaries(deviceGW),
@@ -769,6 +856,10 @@ func main() {
 	defer conn.Close()
 
 	client := tetragon.NewFineGuidanceSensorsClient(conn)
+	// Publish it for the heartbeat, which asks the daemon what TracingPolicies
+	// the kernel really has so the console can show host posture rather than
+	// just the engine's half of it.
+	setSensors(client)
 
 	stream, err := client.GetEvents(ctx, &tetragon.GetEventsRequest{})
 	if err != nil {
@@ -1076,6 +1167,24 @@ func hostOnly(hostport string) string {
 
 // gatewayMode maps the choke gateway's runtime mode onto the wire enum for
 // heartbeat reporting.
+// deviceGatewayMode maps the device gateway's mode string onto the wire enum.
+// The device gateway reports "kill-switched" as a mode of its own; on the wire
+// that is still detect-only (nothing is being applied), and the kill-switch is
+// reported separately.
+func deviceGatewayMode(g *choke.DeviceGateway) ebpfsocv1.EnforcementMode {
+	if g == nil {
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_UNSPECIFIED
+	}
+	switch g.Mode() {
+	case "enforcing":
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING
+	case "dry-run":
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DRY_RUN
+	default:
+		return ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY
+	}
+}
+
 func gatewayMode(g *choke.Gateway) ebpfsocv1.EnforcementMode {
 	switch g.Mode() {
 	case choke.ModeEnforcing:
@@ -1127,7 +1236,10 @@ func deviceSummaries(g *choke.DeviceGateway) []*ebpfsocv1.DeviceSummary {
 		if label == "" {
 			label = d.Vendor
 		}
-		out = append(out, &ebpfsocv1.DeviceSummary{Mac: d.MAC, State: d.State, Label: label})
+		out = append(out, &ebpfsocv1.DeviceSummary{
+			Mac: d.MAC, State: d.State, Label: label,
+			LastIp: d.LastIP, Protected: d.Protected,
+		})
 	}
 	return out
 }
@@ -1138,14 +1250,38 @@ func deviceSummaries(g *choke.DeviceGateway) []*ebpfsocv1.DeviceSummary {
 // runs, so these are the raw effectors. Actions without a clean, safe gateway
 // mapping in Phase 1 return an error, which the processor reports as REJECTED
 // (honest — never a silent no-op).
-type gatewayApplier struct{ gw *choke.Gateway }
+// devGW is the network-plane counterpart of gw. It may be nil on an agent
+// built without device choke, in which case device-targeted commands are
+// REJECTED with a reason rather than silently applied to the wrong plane.
+type gatewayApplier struct {
+	gw    *choke.Gateway
+	devGW *choke.DeviceGateway
+}
 
-func (a gatewayApplier) SetMode(m ebpfsocv1.EnforcementMode) error {
-	a.gw.SetEnforcing(m == ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, "control-plane", "remote SetMode command")
+// SetMode arms or disarms one plane. PLANE_DEVICE targets the network gateway;
+// anything else (including UNSPECIFIED, which is what an older control plane
+// sends) targets the process gateway, preserving the previous meaning.
+func (a gatewayApplier) SetMode(m ebpfsocv1.EnforcementMode, plane ebpfsocv1.Plane) error {
+	enforcing := m == ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING
+	if plane == ebpfsocv1.Plane_PLANE_DEVICE {
+		if a.devGW == nil {
+			return fmt.Errorf("set-mode: device plane requested but no device gateway on this agent")
+		}
+		a.devGW.SetEnforcing(enforcing, "control-plane", "remote SetMode command")
+		return nil
+	}
+	a.gw.SetEnforcing(enforcing, "control-plane", "remote SetMode command")
 	return nil
 }
 
-func (a gatewayApplier) KillSwitch(halt bool, _ string) error {
+func (a gatewayApplier) KillSwitch(halt bool, _ string, plane ebpfsocv1.Plane) error {
+	if plane == ebpfsocv1.Plane_PLANE_DEVICE {
+		if a.devGW == nil {
+			return fmt.Errorf("kill-switch: device plane requested but no device gateway on this agent")
+		}
+		a.devGW.SetKillSwitch(halt)
+		return nil
+	}
 	a.gw.SetKillSwitch(halt)
 	return nil
 }
@@ -1160,35 +1296,69 @@ func (a gatewayApplier) SetThresholds(throttleAt, tarpitAt, quarantineAt, severA
 	return nil
 }
 
-// Jail applies a remote enforcement tier to one process. It routes through the
+// devicePrefix marks a command whose target is a LAN device (keyed by MAC)
+// rather than a process (keyed by exec_id). The control plane encodes device
+// targets as "device:<mac>" because Jail/Thaw carry a single target field for
+// both planes; this is the matching decode.
+const devicePrefix = "device:"
+
+// tierToAction maps the wire tier name onto a circuit action.
+func tierToAction(tier string) (circuit.Action, error) {
+	switch tier {
+	case "throttle":
+		return circuit.ActThrottle, nil
+	case "tarpit":
+		return circuit.ActTarpit, nil
+	case "quarantine":
+		return circuit.ActQuarantine, nil
+	case "sever":
+		return circuit.ActSever, nil
+	default:
+		return circuit.ActNone, fmt.Errorf("jail: unknown tier %q", tier)
+	}
+}
+
+// Jail applies a remote enforcement tier to one target. It routes through the
 // gateway's Manual path — the same one the agent's local HTTP API uses — so a
 // console-dispatched choke behaves exactly like a local operator override,
 // including bypassing detect-only mode (a manual override is a deliberate
 // decision, not an automatic one) and writing the audit row.
+//
+// A "device:<mac>" target goes to the DEVICE gateway (network plane). Without
+// this branch the MAC would be treated as an exec_id and choked on the PROCESS
+// gateway, which silently does nothing to the device and leaves a phantom pid=0
+// circuit behind.
 func (a gatewayApplier) Jail(execID string, pid uint32, tier string) error {
-	var action circuit.Action
-	switch tier {
-	case "throttle":
-		action = circuit.ActThrottle
-	case "tarpit":
-		action = circuit.ActTarpit
-	case "quarantine":
-		action = circuit.ActQuarantine
-	case "sever":
-		action = circuit.ActSever
-	default:
-		return fmt.Errorf("jail: unknown tier %q", tier)
+	action, err := tierToAction(tier)
+	if err != nil {
+		return err
 	}
-	_, err := a.gw.Manual(context.Background(), choke.ManualRequest{
+	if mac, isDevice := strings.CutPrefix(execID, devicePrefix); isDevice {
+		if a.devGW == nil {
+			return fmt.Errorf("jail: device target %q but no device gateway on this agent", mac)
+		}
+		_, err := a.devGW.ManualDevice(context.Background(), mac, action,
+			"remote jail ("+tier+")", "control-plane")
+		return err
+	}
+	_, err = a.gw.Manual(context.Background(), choke.ManualRequest{
 		ExecID: execID, PID: pid, Action: action,
 		Reason: "remote jail (" + tier + ")", Actor: "control-plane",
 	})
 	return err
 }
 
-// Thaw releases one process back to pristine — ActNone through the same Manual
-// path, matching the per-process release the local API performs.
+// Thaw releases one target back to pristine — ActNone through the same Manual
+// path, matching the per-process release the local API performs. Mirrors Jail's
+// device-vs-process routing.
 func (a gatewayApplier) Thaw(execID string, pid uint32) error {
+	if mac, isDevice := strings.CutPrefix(execID, devicePrefix); isDevice {
+		if a.devGW == nil {
+			return fmt.Errorf("thaw: device target %q but no device gateway on this agent", mac)
+		}
+		_, err := a.devGW.ThawDevice(context.Background(), mac, "control-plane", "remote thaw")
+		return err
+	}
 	_, err := a.gw.Manual(context.Background(), choke.ManualRequest{
 		ExecID: execID, PID: pid, Action: circuit.ActNone,
 		Reason: "remote thaw", Actor: "control-plane",

@@ -168,9 +168,11 @@ else
 fi
 
 log "applying TracingPolicies (detection + Sigkill/Override enforcement)"
-sh_sudo "for p in /opt/ebpf-soc/policies/*.yaml /opt/ebpf-soc/policies/enforce/*.yaml; do
+sh_sudo "for p in /opt/ebpf-soc/policies/*.yaml; do
     [ -f \"\$p\" ] || continue
     docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || true
+    # add is CREATE-ONLY, so delete first or a changed policy never takes effect.
+    docker exec tetragon tetra tracingpolicy delete \"\$(basename \"\$p\" .yaml)\" >/dev/null 2>&1 || true
     docker exec tetragon tetra tracingpolicy add \"/tmp/\$(basename \"\$p\")\" >/dev/null 2>&1 || true
   done"
 ok "policies applied"

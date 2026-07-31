@@ -329,14 +329,10 @@ flowchart LR
     </tbody>
   </table>
 
-  <h3>Enforcement policies (in-kernel Sigkill — independent of engine choke mode)</h3>
-  <table>
-    <thead><tr><th>Policy</th><th>Action</th></tr></thead>
-    <tbody>
-      <tr><td><code>sever-pipe-to-shell</code></td><td>kprobe <code>execve</code> + <code>Sigkill</code> on <code>curl | sh</code> / <code>wget | bash</code> argv postfix — a kernel backstop that fires even if the userspace engine is down.</td></tr>
-      <tr><td><code>override-credential-read</code></td><td>kretprobe <code>security_file_permission</code> + <code>Sigkill</code> on credential reads by non-allowlisted binaries, before the read returns data.</td></tr>
-    </tbody>
-  </table>
+  <h3>Why Tetragon never enforces</h3>
+  <p>All four policies above declare <code>policy-mode: monitor</code>, under which Tetragon suppresses enforcing actions (<code>Sigkill</code>, <code>Override</code>, <code>Signal</code>) inside the kernel while leaving <code>Post</code> untouched. Enforcement belongs to the engine&rsquo;s choke gateway instead, which matches the process it actually scored, honours the operator&rsquo;s mode, is reversible, and writes an audit row.</p>
+  <p>This is not a stylistic preference. A Tetragon <code>Sigkill</code> fires regardless of what the console says the host&rsquo;s mode is, and it cost this project two incidents: an SSH lockout (OpenSSH &ge;9.8 re-execs <code>sshd-session</code>, which the allow-list did not name), and <code>debconf</code> killed mid-configure on three hosts, blocking <code>apt</code> fleet-wide &mdash; <code>matchBinaries</code> matches the <em>executable</em>, so allow-listing an interpreted script has no effect. A third policy, <code>sever-pipe-to-shell</code>, shipped <code>Sigkill</code> and was found never to fire at all; it was removed, and the engine scores that pattern from the exec chain instead.</p>
+  <p>Because the mode is declarative it survives a Tetragon restart, and the daemon reports it over gRPC &mdash; so the agent carries the host&rsquo;s real kernel posture on its heartbeat and the console flags any divergence rather than presenting the engine&rsquo;s mode as the whole picture.</p>
 
   <div class="callout warn"><span class="t">Honeypot signal</span> The engine seeds five decoy credential files (<code>_passwd _shadow _id_rsa _aws_credentials _db_backup.sql</code>) under a watched prefix on startup. No legitimate process ever reads them, so <strong>any hit is a high-confidence signal</strong>, surfaced with a 🍯 badge.</div>
 

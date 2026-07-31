@@ -150,10 +150,21 @@ func TestDeviceGatewayProtectedMACRefused(t *testing.T) {
 	const mac = "aa:bb:cc:dd:ee:03"
 	gw, backend, st := newTestDeviceGateway(t, mac)
 
-	// Sever on a protected MAC: the call succeeds (it always audits) but the
-	// data plane is NOT written — the allow-list guard refuses it.
-	if _, err := gw.ManualDevice(context.Background(), mac, circuit.ActSever, "oops", "tester"); err != nil {
-		t.Fatalf("ManualDevice returned error (should record refusal, not fail): %v", err)
+	// Sever on a protected MAC: the data plane is NOT written, the attempt IS
+	// audited, and the caller is told it was refused.
+	//
+	// This last part used to be the opposite — the call returned success and the
+	// circuit was left reading "severed". Auditing the attempt and REPORTING it
+	// as applied are separate things, and conflating them meant the console
+	// showed a protected gateway as contained while it kept routing. Reporting
+	// containment that did not happen is the worst failure a containment product
+	// has: the operator believes the threat is cut off and stops responding.
+	d, err := gw.ManualDevice(context.Background(), mac, circuit.ActSever, "oops", "tester")
+	if err == nil {
+		t.Fatal("sever on a protected MAC must return the refusal to the caller")
+	}
+	if d != nil && d.To != circuit.Pristine {
+		t.Fatalf("refused sever must not move the circuit, got state=%v", d.To)
 	}
 	if _, ok := hasMAC(t, backend, mac); ok {
 		t.Fatal("protected MAC must NOT get a sever bucket")
@@ -161,6 +172,12 @@ func TestDeviceGatewayProtectedMACRefused(t *testing.T) {
 	decs, _ := st.RecentDecisions(10)
 	if len(decs) == 0 || decs[0].Outcome == "ok" {
 		t.Fatalf("expected a refusal outcome in the audit row, got: %+v", decs[0])
+	}
+	// The refusal must be visible in the live table too, not only in the audit.
+	for _, e := range gw.Snapshot() {
+		if e.MAC == mac && e.State != circuit.Pristine.String() {
+			t.Fatalf("refused sever left the device reading %q — the console would show a protected gateway as contained", e.State)
+		}
 	}
 
 	// Throttle on a protected MAC IS allowed (recoverable, not a lockout).

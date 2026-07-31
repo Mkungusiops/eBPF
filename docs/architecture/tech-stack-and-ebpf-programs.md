@@ -70,9 +70,22 @@ up an external service.
 | 7 | kprobe `__x64_sys_setuid` + `__x64_sys_setreuid` (2 programs) | `policies/privilege-escalation.yaml` | syscall kprobe | Fires only when the target uid argument is `0` — catches privilege escalation to root while filtering out routine uid drops in-kernel. |
 | 8 | kretprobe `security_file_permission` | `policies/sensitive-files.yaml` | LSM hook kprobe | Detect-only read/write watch on `/etc/shadow`, `/etc/passwd`, `/etc/sudoers`, `/root/.ssh/` and the honeypot dir. Placed at the LSM hook rather than `open()` so it can't be bypassed by an alternate syscall path. |
 | 9 | kprobe `tcp_connect` | `policies/network-watch.yaml` | kernel-function kprobe | Records outbound connections but *only* from shells and netcat-family binaries (`bash`/`sh`/`zsh`/`dash`/`nc`/`ncat`/`socat`) — the reverse-shell / C2-beacon signal, without the noise of every socket on the box. |
-| **D. Tetragon-loaded — enforcement policies (`policies/enforce/`)** | | | | |
-| 10 | kretprobe `security_file_permission` + `Sigkill` | `policies/enforce/override-credential-read.yaml` | LSM hook kprobe | Kills any non-allowlisted process that reads a credential path before the read returns data. Uses `Sigkill` rather than `Override`/EACCES because kprobe error-injection isn't available on the kernels actually deployed — documented in the policy header. |
-| 11 | kprobe `__x64_sys_execve` + `Sigkill` | `policies/enforce/sever-pipe-to-shell.yaml` | syscall kprobe | Kernel-level backstop for `curl \| sh` / `wget \| bash`, matching on argv postfix. Runs independently of the userspace scoring engine, so the pattern is severed even if the engine is down or lagging. |
+| 10 | kretprobe `security_file_permission` | `policies/override-credential-read.yaml` | LSM hook kprobe | Detect-only watch on credential paths (`~/.ssh/`, `~/.aws/`, `~/.gnupg/`, …) read by non-allowlisted binaries. Enforcement for this signal lives in the engine's choke gateway, not here — the policy header records why, and why `Override`/EACCES was unavailable on the deployed kernels. |
+
+There is no separate enforcement tier. `policies/enforce/` used to exist and no
+longer does: everything in it either moved up (the credential watch, now
+detect-only) or was deleted (`sever-pipe-to-shell`, which shipped `Sigkill` and
+**never fired** — at `execve` the calling process is the shell, not `curl`, so
+`matchBinaries In [curl,wget]` could not match, and `| sh` is a shell construct
+absent from curl's argv). The engine scores that pattern from the exec chain
+instead, which works for exactly the reason the selector could not.
+
+All four remaining policies declare `policy-mode: monitor`, so Tetragon
+suppresses enforcing actions in-kernel regardless of their selectors while
+leaving `Post` untouched — the second enforcement authority is disarmed by
+declaration, reported on the agent heartbeat, and asserted by
+[`host-posture.sh`](../../scripts/e2e/host-posture.sh). See
+[threat-model](../plan/threat-model.md) EN-1c/EN-1d/EN-3.
 
 ### Supporting BPF maps
 

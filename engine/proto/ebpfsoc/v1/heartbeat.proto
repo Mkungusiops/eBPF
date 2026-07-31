@@ -48,6 +48,16 @@ message DeviceSummary {
   string mac = 1;
   string state = 2;
   string label = 3;
+  // Last observed address for the device (ARP/neighbour or DHCP). Carried so a
+  // fleet operator can identify an asset by IP the way the single-host console
+  // already does; without it a multi-tenant device row is a bare MAC.
+  string last_ip = 4;
+  // True when the agent's allow-list refuses to choke this device (gateway,
+  // uplink, DHCP/DNS, operator workstation, the agent's own NIC). Reported so
+  // the console can disable the action rather than offering an enforcement that
+  // the agent will reject — on an inline deployment the protected entries are
+  // exactly the ones whose severing would cut the agent off.
+  bool protected = 5;
 }
 
 message HeartbeatResponse {

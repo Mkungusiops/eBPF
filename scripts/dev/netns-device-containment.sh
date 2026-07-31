@@ -21,6 +21,9 @@ BIN="${2:?usage: netns-device-containment.sh DEVCHOKE_OBJ ENGINE_BIN}"
 LAB="$(cd "$(dirname "$0")" && pwd)/netns-lab.sh"
 GW_LAN=veth-gw-lan
 URL="http://127.0.0.1:8080"
+# Must satisfy the engine's password policy (14+ chars, upper, 3 digits, 3
+# specials) or it refuses to start. The lab is loopback-only inside a netns.
+LAB_PASS='Lab#Choke$Demo7!42'
 
 PASS=0
 FAIL=0
@@ -94,7 +97,7 @@ sleep 0.5
 
 echo "== starting platform in ns-gw (attach $GW_LAN) =="
 ip netns exec ns-gw "$BIN" -fake -db /tmp/netns-device-containment.db \
-  -http 127.0.0.1:8080 -pass ebpf-soc-demo -devchoke-obj "$OBJ" -devchoke-iface "$GW_LAN" \
+  -http 127.0.0.1:8080 -pass "$LAB_PASS" -devchoke-obj "$OBJ" -devchoke-iface "$GW_LAN" \
   >/tmp/netns-device-containment-engine.log 2>&1 &
 ENGINE_PID=$!
 
@@ -113,7 +116,8 @@ if [[ "$up" != "1" ]]; then
 fi
 
 JAR=$(mktemp)
-ip netns exec ns-gw curl -s -c "$JAR" -d 'user=admin&pass=ebpf-soc-demo' "$URL/api/login" >/dev/null
+ip netns exec ns-gw curl -s -c "$JAR" --data-urlencode 'user=admin' \
+  --data-urlencode "pass=$LAB_PASS" "$URL/api/login" >/dev/null
 CSRF=$(awk '$6=="csrf_token"{print $7}' "$JAR")
 
 GET() { ip netns exec ns-gw curl -s -b "$JAR" "$URL$1"; }

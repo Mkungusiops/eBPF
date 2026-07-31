@@ -54,8 +54,8 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)     // fleet-wide ApplyPreset
 	mux.HandleFunc("/api/choke/device-jail", s.handleDeviceJail)
 	mux.HandleFunc("/api/choke/device-thaw", s.handleDeviceThaw)
-	mux.HandleFunc("/api/choke/device-mode", s.handleChokeMode) // device data plane shares SetMode
-	mux.HandleFunc("/api/choke/device-kill-switch", s.handleChokeKill)
+	mux.HandleFunc("/api/choke/device-mode", s.handleDeviceMode) // device plane arms independently
+	mux.HandleFunc("/api/choke/device-kill-switch", s.handleDeviceKill)
 	// Engine-local ops with no fleet command (cosmetic / snapshot) — clean 200/501.
 	mux.HandleFunc("/api/choke/annotate", s.handleChokeAnnotate)
 	for _, p := range []string{"/api/choke/policy/preview", "/api/choke/forensic-snapshot"} {
@@ -153,18 +153,23 @@ func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid
 		writeJSON(w, 200, map[string]any{"ok": false, "detail": "no agent online for tenant"})
 		return
 	}
-	id := s.dispatcher.Enqueue(agents[0], cmd)
-	var status, detail string
-	for i := 0; i < 60; i++ {
-		if a, ok := s.dispatcher.Ack(id); ok {
-			status, detail = a.GetStatus().String(), a.GetDetail()
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+	// Dispatch to EVERY candidate agent, not just the first. agentForExec
+	// narrows to the agent that reported this exec/pid when it can, and only
+	// falls back to the whole tenant when the choke snapshot is stale — in which
+	// case the owner applies and the others no-op. Sending to agents[0] alone
+	// meant that on a tenant with more than one agent the command could land on
+	// one that is not running the target, which acks STATUS_APPLIED for a
+	// process it never touched: the operator is told a process was severed while
+	// it keeps running. Reporting containment that did not happen is the failure
+	// mode this product exists to avoid.
+	// Fan OUT first, then wait once. Enqueue is cheap and non-blocking, so
+	// waiting per-agent would make the operator's request take N * ackTimeout —
+	// a ten-agent tenant would hang for over a minute on what looks like a
+	// single button press. One deadline covers the whole fan-out.
+	status, detail, applied := s.waitAckAny(agents, cmd)
 	writeJSON(w, 200, map[string]any{
 		"ok": status == "STATUS_APPLIED", "status": status, "detail": detail,
-		"agent": agents[0], "action": action, "reason": reason,
+		"agent": applied, "action": action, "reason": reason,
 	})
 }
 
@@ -233,26 +238,90 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 
 // dispatchAll sends cmd to every agent in the tenant and waits for each ack —
 // the fleet-wide actions (mode, kill-switch, thresholds, preset).
+// ackTimeout bounds how long a dispatching request waits for the agent's ack.
+//
+// It must comfortably exceed the worst case for a command to reach a connected
+// agent, or the caller reports "not applied" for a command that was in fact
+// delivered — the operator then sees success or failure at random for identical
+// actions. The agent parks in an open command stream and Enqueue wakes it, so
+// the realistic path is well under a second; the headroom covers a reconnect.
+const ackTimeout = 10 * time.Second
+
+// waitAck blocks until the agent acks commandID or ackTimeout elapses. Empty
+// status means no ack arrived — deliberately distinct from an ack that reported
+// a non-applied status, so callers never report a timeout as a rejection.
+func (s *Server) waitAck(commandID string) (status, detail string) {
+	deadline := time.Now().Add(ackTimeout)
+	for time.Now().Before(deadline) {
+		if a, ok := s.dispatcher.Ack(commandID); ok {
+			return a.GetStatus().String(), a.GetDetail()
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return "", ""
+}
+
+// waitAckAny enqueues cmd for every agent and waits ONE ackTimeout for any of
+// them to report APPLIED, returning that agent. Agents that are not running the
+// target no-op, so the first APPLIED is the one that actually enforced. Falls
+// back to any other reported status so a rejection still surfaces its reason.
+func (s *Server) waitAckAny(agents []string, cmd *ebpfsocv1.Command) (status, detail, agent string) {
+	ids := make(map[string]string, len(agents)) // command id -> agent
+	for _, a := range agents {
+		ids[s.dispatcher.Enqueue(a, cmd)] = a
+	}
+	deadline := time.Now().Add(ackTimeout)
+	for time.Now().Before(deadline) {
+		pending := false
+		for id, a := range ids {
+			ack, ok := s.dispatcher.Ack(id)
+			if !ok {
+				pending = true
+				continue
+			}
+			if ack.GetStatus().String() == "STATUS_APPLIED" {
+				return ack.GetStatus().String(), ack.GetDetail(), a
+			}
+			if status == "" {
+				status, detail, agent = ack.GetStatus().String(), ack.GetDetail(), a
+			}
+		}
+		if !pending {
+			return status, detail, agent
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return status, detail, agent
+}
+
 func (s *Server) dispatchAll(tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
 	for _, rec := range s.registry.ListTenant(tenant) {
 		total++
-		id := s.dispatcher.Enqueue(rec.AgentID, cmd)
-		for i := 0; i < 50; i++ {
-			if a, ok := s.dispatcher.Ack(id); ok {
-				if a.GetStatus().String() == "STATUS_APPLIED" {
-					applied++
-				}
-				detail = a.GetDetail()
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
+		status, d := s.waitAck(s.dispatcher.Enqueue(rec.AgentID, cmd))
+		if status == "STATUS_APPLIED" {
+			applied++
+		}
+		if d != "" {
+			detail = d
 		}
 	}
 	return
 }
 
-// handleChokeMode — fleet-wide SetMode (also serves /api/choke/device-mode).
+// handleChokeMode — fleet-wide SetMode on the PROCESS plane.
 func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSetMode(w, r, ebpfsocv1.Plane_PLANE_PROCESS)
+}
+
+// handleDeviceMode — fleet-wide SetMode on the DEVICE plane. Deliberately NOT
+// the same handler as the process one: both used to dispatch a plane-agnostic
+// SetMode, so arming the network plane from the console actually armed process
+// enforcement, where a sever is a SIGKILL instead of a reversible drop rule.
+func (s *Server) handleDeviceMode(w http.ResponseWriter, r *http.Request) {
+	s.dispatchSetMode(w, r, ebpfsocv1.Plane_PLANE_DEVICE)
+}
+
+func (s *Server) dispatchSetMode(w http.ResponseWriter, r *http.Request, plane ebpfsocv1.Plane) {
 	tenant, ok := s.authorizeRespond(w, r)
 	if !ok {
 		return
@@ -268,13 +337,22 @@ func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
 		mode, modeStr = ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, "enforcing"
 	}
 	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
-		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode}}})
+		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode, Plane: plane}}})
 	writeJSON(w, 200, map[string]any{
 		"ok": applied > 0, "mode": modeStr, "previous": "", "applied": applied, "total": total, "detail": detail})
 }
 
-// handleChokeKill — fleet-wide KillSwitch (also /api/choke/device-kill-switch).
+// handleChokeKill — fleet-wide KillSwitch on the PROCESS plane.
 func (s *Server) handleChokeKill(w http.ResponseWriter, r *http.Request) {
+	s.dispatchKillSwitch(w, r, ebpfsocv1.Plane_PLANE_PROCESS)
+}
+
+// handleDeviceKill — fleet-wide KillSwitch on the DEVICE plane.
+func (s *Server) handleDeviceKill(w http.ResponseWriter, r *http.Request) {
+	s.dispatchKillSwitch(w, r, ebpfsocv1.Plane_PLANE_DEVICE)
+}
+
+func (s *Server) dispatchKillSwitch(w http.ResponseWriter, r *http.Request, plane ebpfsocv1.Plane) {
 	tenant, ok := s.authorizeRespond(w, r)
 	if !ok {
 		return
@@ -285,7 +363,9 @@ func (s *Server) handleChokeKill(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = json.NewDecoder(r.Body).Decode(&b)
 	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
-		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{HaltAllEnforcement: b.On, Reason: b.Reason}}})
+		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{
+			HaltAllEnforcement: b.On, Reason: b.Reason, Plane: plane,
+		}}})
 	writeJSON(w, 200, map[string]any{
 		"ok": applied > 0, "engaged": b.On, "previous": !b.On, "applied": applied, "total": total, "detail": detail})
 }
@@ -351,15 +431,9 @@ func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
 	for _, t := range b.Targets {
 		okv := false
 		if agents := s.agentForExec(tenant, t.ExecID, t.Pid); len(agents) > 0 {
-			id := s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
-				Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: t.ExecID, Pid: t.Pid, Tier: b.Action}}})
-			for i := 0; i < 50; i++ {
-				if a, ok := s.dispatcher.Ack(id); ok {
-					okv = a.GetStatus().String() == "STATUS_APPLIED"
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
+			status, _ := s.waitAck(s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
+				Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: t.ExecID, Pid: t.Pid, Tier: b.Action}}}))
+			okv = status == "STATUS_APPLIED"
 		}
 		results = append(results, res{ExecID: t.ExecID, OK: okv})
 	}
@@ -379,14 +453,9 @@ func (s *Server) handleChokeForget(w http.ResponseWriter, r *http.Request) {
 	n := 0
 	for _, e := range b.ExecIDs {
 		if agents := s.agentForExec(tenant, e, 0); len(agents) > 0 {
-			id := s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
-				Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: e}}})
-			for i := 0; i < 30; i++ {
-				if _, ok := s.dispatcher.Ack(id); ok {
-					n++
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
+			if status, _ := s.waitAck(s.dispatcher.Enqueue(agents[0], &ebpfsocv1.Command{
+				Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: e}}})); status != "" {
+				n++
 			}
 		}
 	}
@@ -458,10 +527,21 @@ func (s *Server) handleDeviceThaw(w http.ResponseWriter, r *http.Request) {
 
 // chokePosture folds the tenant's agents into a single enforcement posture (the
 // highest level present), matching the ChokeMode strings the frontend renders.
+// chokePosture reduces the fleet's PROCESS-plane modes to one answer.
 func chokePosture(recs []heartbeat.Record) (mode string, enforcing, dryRun bool) {
+	return posture(recs, func(r heartbeat.Record) ebpfsocv1.EnforcementMode { return r.Mode })
+}
+
+// devicePosture is the same reduction over the DEVICE plane. The two planes arm
+// independently, so the Devices surface must not be shown the process posture.
+func devicePosture(recs []heartbeat.Record) (mode string, enforcing, dryRun bool) {
+	return posture(recs, func(r heartbeat.Record) ebpfsocv1.EnforcementMode { return r.DeviceMode })
+}
+
+func posture(recs []heartbeat.Record, pick func(heartbeat.Record) ebpfsocv1.EnforcementMode) (mode string, enforcing, dryRun bool) {
 	level := 0 // 1 detect-only, 2 dry-run, 3 enforcing
 	for _, rec := range recs {
-		switch rec.Mode {
+		switch pick(rec) {
 		case ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING:
 			if level < 3 {
 				level = 3
@@ -514,7 +594,56 @@ func (s *Server) handleChokeStateGW(w http.ResponseWriter, r *http.Request) {
 		// engine defaults so the panel renders. (Editing is the write increment.)
 		"thresholds": map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40},
 		"audit":      map[string]any{"ok": true, "total": 0},
+		// "mode" above is only the ENGINE's half of this host's posture. Tetragon
+		// policies enforce independently of it, so ship the kernel's half too and
+		// let the console show the whole thing (threat-model EN-3).
+		"kernel": kernelPosture(recs),
 	})
+}
+
+// kernelPosture reduces the agents' reported Tetragon policies to what an
+// operator needs to trust the mode shown next to it.
+//
+// `diverged` is the one that matters: the console says detect-only while some
+// host has a kernel authority armed to kill. It is reported per fleet AND with
+// the offending agents named, because "somewhere in your fleet" is not
+// actionable — the operator has to know which box to go and look at.
+func kernelPosture(recs []heartbeat.Record) map[string]any {
+	var (
+		enforcing = []string{}
+		diverged  = []string{}
+		fired     uint64
+		reporting int
+	)
+	for _, rec := range recs {
+		// Distinguish "no enforcing policies" from "the agent never told us".
+		// An agent predating the field, or one that cannot reach Tetragon,
+		// reports nothing — and silence must not read as a clean host.
+		if len(rec.KernelPolicies) == 0 {
+			continue
+		}
+		reporting++
+		if rec.KernelEnforcing() {
+			enforcing = append(enforcing, rec.AgentID)
+		}
+		if rec.Diverged() {
+			diverged = append(diverged, rec.AgentID)
+		}
+		fired += rec.KernelEnforceActions()
+	}
+	sort.Strings(enforcing)
+	sort.Strings(diverged)
+	return map[string]any{
+		"agents_reporting": reporting,
+		"agents_total":     len(recs),
+		"enforcing_agents": enforcing,
+		"diverged_agents":  diverged,
+		"diverged":         len(diverged) > 0,
+		// Enforcing actions that actually fired, fleet-wide. Non-zero means
+		// something was killed with no engine decision behind it, so there is no
+		// audit row for it and no way to reverse it.
+		"enforce_actions": fired,
+	}
 }
 
 func (s *Server) handleChokeCircuits(w http.ResponseWriter, r *http.Request) {
@@ -585,13 +714,50 @@ func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "total": 0})
 }
 
+// aggregateDevicePlane reduces the agents' self-reported device data planes to
+// one fleet answer plus the total attached links.
+//
+//	"unknown" — no agents online (or none reporting a plane yet)
+//	"noop"    — every reporting agent is recording decisions only
+//	"tc"      — every reporting agent has a real data plane
+//	"partial" — a mix; some of the fleet cannot enforce on the network plane
+//
+// An agent enrolled before this field existed reports "", which is counted as
+// unknown rather than silently folded into "tc".
+func aggregateDevicePlane(recs []heartbeat.Record) (plane string, links int) {
+	var withPlane, noop, real int
+	for _, rec := range recs {
+		links += int(rec.DeviceLinks)
+		switch rec.DevicePlane {
+		case "":
+			// pre-field agent; no claim either way
+		case "noop":
+			withPlane++
+			noop++
+		default:
+			withPlane++
+			real++
+		}
+	}
+	switch {
+	case withPlane == 0:
+		return "unknown", links
+	case real == 0:
+		return "noop", links
+	case noop == 0:
+		return "tc", links
+	default:
+		return "partial", links
+	}
+}
+
 func (s *Server) handleDeviceState(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.authorizeRead(w, r)
 	if !ok {
 		return
 	}
 	recs := s.registry.ListTenant(tenant)
-	mode, enforcing, dryRun := chokePosture(recs)
+	mode, enforcing, dryRun := devicePosture(recs)
 	counts := map[string]int{"pristine": 0, "throttled": 0, "tarpit": 0, "quarantined": 0, "severed": 0}
 	known := 0
 	for _, rec := range recs {
@@ -602,10 +768,13 @@ func (s *Server) handleDeviceState(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	dataPlane := "unknown"
-	if len(recs) > 0 {
-		dataPlane = "active"
-	}
+	// Aggregate the device plane the AGENTS report, rather than assuming a
+	// registered agent means a live data plane. Previously this returned
+	// "active" for any online agent, so a fleet whose agents all ran the noop
+	// backend looked like it was enforcing on the network plane when nothing
+	// was attached. "noop" only when every agent says noop; "partial" when some
+	// agents can enforce and others cannot.
+	dataPlane, links := aggregateDevicePlane(recs)
 	writeJSON(w, 200, map[string]any{
 		"data_plane":    dataPlane,
 		"mode":          mode,
@@ -615,11 +784,10 @@ func (s *Server) handleDeviceState(w http.ResponseWriter, r *http.Request) {
 		"tracked":       known,
 		"devices_known": known,
 		"devices_seen":  known,
-		// The control plane aggregates agent-reported device state; it does not
-		// itself attach a device-choke BPF program to any link, so links=0 (the
-		// frontend treats 0 as "no inline bridge" — not the amber bridge-master
-		// warning that a links>0 / frames==0 mix would trigger).
-		"links_attached": 0,
+		// Summed from the agents: the control plane attaches nothing itself.
+		// links>0 with frames==0 is the frontend's bridge-master warning, so
+		// this must reflect real agent attachments, never a placeholder.
+		"links_attached": links,
 		"frames_seen":    0,
 		"counts":         counts,
 	})
@@ -630,17 +798,23 @@ func (s *Server) handleDeviceList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// last_ip matches the single-host engine's field name so the console renders
+	// a fleet device row exactly like a single-host one.
 	type device struct {
 		MAC       string `json:"mac"`
 		State     string `json:"state"`
 		Hostname  string `json:"hostname"`
+		LastIP    string `json:"last_ip,omitempty"`
 		Source    string `json:"source"`
 		Protected bool   `json:"protected"`
 	}
 	out := []device{}
 	for _, rec := range s.registry.ListTenant(tenant) {
 		for _, d := range rec.Devices {
-			out = append(out, device{MAC: d.GetMac(), State: d.GetState(), Hostname: d.GetLabel(), Source: rec.AgentID})
+			out = append(out, device{
+				MAC: d.GetMac(), State: d.GetState(), Hostname: d.GetLabel(),
+				LastIP: d.GetLastIp(), Source: rec.AgentID, Protected: d.GetProtected(),
+			})
 		}
 	}
 	writeJSON(w, 200, out)

@@ -14,6 +14,18 @@
   --devices-warn: #e0a53b;
   --devices-danger: #f2576b;
   --devices-info: #6e8bff;
+  /* Bridge the SHARED ContainmentCommand header (.cc-*) to this page's palette
+     so it renders pixel-identical to the Choke Gateway header. Those shared
+     classes read the bare --accent/--text/etc. names (which the Choke page
+     defines); without these aliases they hit slightly-off fallback defaults.
+     Only the shared header/ladder use these — the rest of the device page uses
+     --devices-*, so nothing else changes. */
+  --accent: var(--devices-accent);
+  --text: var(--devices-text);
+  --muted: var(--devices-muted);
+  --border: var(--devices-border);
+  --border-strong: var(--devices-border-strong);
+  --danger: var(--devices-danger);
   min-height: 100vh;
   background:
     radial-gradient(circle at 100% 0%, rgb(110 139 255 / 0.06), transparent 36rem),
@@ -30,9 +42,12 @@
 }
 
 .devices-layout {
-  width: min(1320px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 24px 0 40px;
+  /* Full-width to match the Choke Gateway (which has no max-width) — the 1320px
+     cap made this page read as "compressed" next to it. 20px side inset mirrors
+     the choke toolbar/grid gutters. */
+  width: 100%;
+  margin: 0;
+  padding: 24px 20px 40px;
 }
 
 .devices-panel,
@@ -58,9 +73,9 @@
   align-items: center;
   gap: 12px;
   flex-wrap: wrap;
-  width: min(1320px, calc(100% - 32px));
-  margin: 0 auto;
-  padding: 9px 0;
+  width: 100%;
+  margin: 0;
+  padding: 8px 20px;
   min-width: 0;
 }
 
@@ -213,6 +228,20 @@
 }
 
 .devices-status-dot.down {
+  background: var(--devices-danger);
+  box-shadow: 0 0 12px var(--devices-danger);
+}
+
+/* Enforcement-mode glance dot: amber detect-only, green enforcing, red kill-switch. */
+.devices-status-cluster .devices-status-pill.mode-detect-only .devices-status-dot {
+  background: var(--devices-warn);
+  box-shadow: 0 0 12px var(--devices-warn);
+}
+.devices-status-cluster .devices-status-pill.mode-enforcing .devices-status-dot {
+  background: var(--devices-good);
+  box-shadow: 0 0 12px var(--devices-good);
+}
+.devices-status-cluster .devices-status-pill.mode-kill-switched .devices-status-dot {
   background: var(--devices-danger);
   box-shadow: 0 0 12px var(--devices-danger);
 }
@@ -882,8 +911,7 @@
 
 @media (max-width: 860px) {
   .devices-layout {
-    width: min(100% - 20px, 1320px);
-    padding-top: 14px;
+    padding: 14px 12px 40px;
   }
 
   .devices-panel-header {

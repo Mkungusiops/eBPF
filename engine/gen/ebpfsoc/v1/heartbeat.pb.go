@@ -207,10 +207,20 @@ func (x *ChokeSummary) GetScore() int32 {
 // DeviceSummary is one device under the MAC gateway (empty when the device
 // data plane is inactive).
 type DeviceSummary struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Mac           string                 `protobuf:"bytes,1,opt,name=mac,proto3" json:"mac,omitempty"`
-	State         string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
-	Label         string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Mac   string                 `protobuf:"bytes,1,opt,name=mac,proto3" json:"mac,omitempty"`
+	State string                 `protobuf:"bytes,2,opt,name=state,proto3" json:"state,omitempty"`
+	Label string                 `protobuf:"bytes,3,opt,name=label,proto3" json:"label,omitempty"`
+	// Last observed address for the device (ARP/neighbour or DHCP). Carried so a
+	// fleet operator can identify an asset by IP the way the single-host console
+	// already does; without it a multi-tenant device row is a bare MAC.
+	LastIp string `protobuf:"bytes,4,opt,name=last_ip,json=lastIp,proto3" json:"last_ip,omitempty"`
+	// True when the agent's allow-list refuses to choke this device (gateway,
+	// uplink, DHCP/DNS, operator workstation, the agent's own NIC). Reported so
+	// the console can disable the action rather than offering an enforcement that
+	// the agent will reject — on an inline deployment the protected entries are
+	// exactly the ones whose severing would cut the agent off.
+	Protected     bool `protobuf:"varint,5,opt,name=protected,proto3" json:"protected,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -264,6 +274,20 @@ func (x *DeviceSummary) GetLabel() string {
 		return x.Label
 	}
 	return ""
+}
+
+func (x *DeviceSummary) GetLastIp() string {
+	if x != nil {
+		return x.LastIp
+	}
+	return ""
+}
+
+func (x *DeviceSummary) GetProtected() bool {
+	if x != nil {
+		return x.Protected
+	}
+	return false
 }
 
 type HeartbeatResponse struct {
@@ -358,11 +382,13 @@ const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x16\n" +
 	"\x06binary\x18\x03 \x01(\tR\x06binary\x12\x14\n" +
 	"\x05state\x18\x04 \x01(\tR\x05state\x12\x14\n" +
-	"\x05score\x18\x05 \x01(\x05R\x05score\"M\n" +
+	"\x05score\x18\x05 \x01(\x05R\x05score\"\x84\x01\n" +
 	"\rDeviceSummary\x12\x10\n" +
 	"\x03mac\x18\x01 \x01(\tR\x03mac\x12\x14\n" +
 	"\x05state\x18\x02 \x01(\tR\x05state\x12\x14\n" +
-	"\x05label\x18\x03 \x01(\tR\x05label\"\xf2\x01\n" +
+	"\x05label\x18\x03 \x01(\tR\x05label\x12\x17\n" +
+	"\alast_ip\x18\x04 \x01(\tR\x06lastIp\x12\x1c\n" +
+	"\tprotected\x18\x05 \x01(\bR\tprotected\"\xf2\x01\n" +
 	"\x11HeartbeatResponse\x12;\n" +
 	"\vserver_time\x18\x01 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"serverTime\x12?\n" +

@@ -80,8 +80,8 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 │   ├── network-watch.yaml                   # policy name: outbound-connections
 │   ├── privilege-escalation.yaml
 │   ├── sensitive-files.yaml
-│   ├── choke/                               # ChokePolicy DSL (agent-loop-cap, network-tools-tarpit, shell-egress-throttle)
-│   └── enforce/                             # Tetragon Sigkill/Override (sever-pipe-to-shell, override-credential-read)
+│   ├── override-credential-read.yaml         # credential-path reads (detect-only)
+│   └── choke/                               # ChokePolicy DSL (agent-loop-cap, network-tools-tarpit, shell-egress-throttle)
 ├── attacks/                                 # 6 attack-simulation scripts
 ├── deploy/                                  # install.sh, ebpf-engine.service, engine.yaml.example, nginx/
 └── engine/                                  # Go correlation engine (single binary)

@@ -34,6 +34,12 @@ LOGIN_RATE="${LOGIN_RATE:-5}"               # 0 disables (dev/E2E)
 # multi-tenant
 CP_HTTP_PORT="${CP_HTTP_PORT:-9090}"
 KC_PORT="${KC_PORT:-8085}"
+# TARGET_SCHEME is the scheme BROWSERS use, which is also the scheme baked into
+# the OIDC issuer + redirect URI and the one Keycloak echoes in absolute URLs.
+# Set to https once certs exist for TARGET_HOST (see provision_tls). It is a
+# separate knob rather than part of TARGET_HOST because every consumer needs the
+# bare hostname too (certificate paths, server_name, Host headers).
+TARGET_SCHEME="${TARGET_SCHEME:-http}"
 PG_PASS="${PG_PASS:-}"                       # generated if empty
 CP_ADMIN_TOKEN="${CP_ADMIN_TOKEN:-}"        # generated if empty
 TENANTS="${TENANTS:-adanian-internal acme-corp}"
@@ -42,6 +48,12 @@ TENANTS="${TENANTS:-adanian-internal acme-corp}"
 #          honest, multi-host story. Set by multi-tenant-orbstack.sh.
 #   sim  — one sim-agent per tenant fabricating telemetry (fast, no VMs). The
 #          legacy default, kept for environments that can't spin up agent VMs.
+#   none — provision no data source at all, and disable any sim-agents left over
+#          from an earlier sim deploy. Use when REAL agents are managed out of
+#          band (scripts/deploy/provision-agent-ssh.sh). Without this, every
+#          redeploy resurrects the sims alongside the real agents, and a tenant
+#          then has two agents: enforcement can be dispatched to the sim, which
+#          acks APPLIED for a process it never touched.
 DATA_MODE="${DATA_MODE:-sim}"
 PASSWORD_POLICY="length(14) and upperCase(1) and lowerCase(1) and digits(3) and specialChars(3)"
 
@@ -195,18 +207,30 @@ provision_engine() {
     log "applying TracingPolicies (detection + enforcement)"
     RUN "applied=0; failed=''
       docker exec tetragon mkdir -p /etc/tetragon/tetragon.tp.d >/dev/null 2>&1 || true
-      for p in /var/lib/ebpf-engine/policies/*.yaml /var/lib/ebpf-engine/policies/enforce/*.yaml; do
+      for p in /var/lib/ebpf-engine/policies/*.yaml; do
         [ -f \"\$p\" ] || continue
         name=\$(basename \"\$p\")
         docker cp \"\$p\" tetragon:/tmp/ >/dev/null 2>&1 || { failed=\"\$failed \$name(copy)\"; continue; }
         docker cp \"\$p\" \"tetragon:/etc/tetragon/tetragon.tp.d/\$name\" >/dev/null 2>&1 || true
+        # ALWAYS delete-then-add. \`tetra tracingpolicy add\` is create-only, so a
+        # policy whose CONTENT changed keeps running the version loaded when
+        # Tetragon started — the file on disk and the rules in the kernel
+        # silently diverge, and an allow-list fix or a Sigkill->detect switch
+        # deploys with no effect. Deleting first makes the file authoritative.
+        # The policy is keyed by metadata.name, NOT by filename — and they differ
+        # (network-watch.yaml declares 'outbound-connections', sensitive-files
+        # .yaml declares 'sensitive-file-access'). Deleting by filename silently
+        # no-ops for those, so they would keep running whatever was loaded first
+        # and could never receive a content update.
+        pol=\$(awk '/^metadata:/{f=1;next} f&&/^[[:space:]]+name:/{gsub(/[\"'\''[:space:]]/,\"\",\$2);print \$2;exit}' \"\$p\")
+        [ -n \"\$pol\" ] || pol=\$(basename \"\$name\" .yaml)
         ok=0
         for attempt in 1 2 3; do
-          err=\$(docker exec tetragon tetra tracingpolicy add \"/tmp/\$name\" 2>&1)
-          case \"\$err\" in
-            *'already exists'*) ok=1; break ;;
-          esac
-          if [ -z \"\$err\" ]; then ok=1; break; fi
+          docker exec tetragon tetra tracingpolicy delete \"\$pol\" >/dev/null 2>&1
+          docker exec tetragon tetra tracingpolicy add \"/tmp/\$name\" >/dev/null 2>&1
+          # Verify against the LOADED policy list rather than the CLI's output:
+          # success is 'the policy is running', not 'the command printed nothing'.
+          if docker exec tetragon tetra tracingpolicy list 2>/dev/null | grep -q \"\$pol\"; then ok=1; break; fi
           sleep 2
         done
         if [ \"\$ok\" = 1 ]; then applied=\$((applied+1)); else failed=\"\$failed \$name\"; fi
@@ -221,6 +245,46 @@ provision_engine() {
   # and /proc/<pid>/cmdline is world-readable. -fake / -login-rate are non-secret
   # CLI-only flags, so they stay on ExecStart.
   local tetline=""; [[ "$ENGINE_MODE" == tetragon ]] && tetline="tetragon: unix:///var/run/tetragon/tetragon.sock"
+
+  # Device-choke protect list — a SAFETY control, written even when the tc data
+  # plane is not attached, so enabling enforcement later can never be a
+  # self-inflicted outage. On a cloud host the ONLY device an engine discovers is
+  # usually its own default gateway: without this, the first (and only) device an
+  # operator can choke is the box's route to the world. The engine also auto-adds
+  # its own NIC. Extend with DEVCHOKE_PROTECT="mac,mac".
+  log "resolving the device-choke protect list (gateway + uplink)"
+  local gwmac
+  gwmac="$(RUN 'gw=$(ip -o -4 route show default | awk "{print \$3}" | head -1)
+    [ -n "$gw" ] && ping -c1 -W1 "$gw" >/dev/null 2>&1
+    ip -4 neigh show | awk -v gw="$gw" "\$1==gw {for(i=1;i<=NF;i++) if (\$i==\"lladdr\") print \$(i+1)}" | head -1' 2>/dev/null | tr -d '\r')"
+  local protect="${DEVCHOKE_PROTECT:-}"
+  [[ -n "$gwmac" ]] && protect="${protect:+$protect,}$gwmac"
+  [[ -n "$protect" ]] && ok "protected MACs: $protect" \
+                      || warn "could not resolve the gateway MAC — only the engine's own NIC is protected"
+
+  # The tc data plane itself is opt-in (DEVCHOKE=1): it needs a compiled
+  # devchoke.o, which means a clang/libbpf toolchain on the target. Without it
+  # the device gateway still runs — audited, reversible, just not enforcing in
+  # the kernel (the noop backend).
+  local devlines=""
+  [[ -n "$protect" ]] && devlines="devchoke_protect: $protect"
+  if [[ "${DEVCHOKE:-0}" == 1 ]]; then
+    local iface
+    iface="$(RUN 'ip -o -4 route show default | awk "{print \$5}" | head -1' 2>/dev/null | tr -d '\r')"
+    log "compiling the device-choke data plane for $iface"
+    PKG clang libbpf-dev linux-libc-dev
+    RUN "mkdir -p /var/lib/ebpf-engine/bpf"
+    PUT "$REPO_ROOT/engine/internal/enforce/devbpf/bpf/devchoke.c" /var/lib/ebpf-engine/bpf/devchoke.c
+    if RUN "cd /var/lib/ebpf-engine/bpf && clang -O2 -g -target bpf -I/usr/include/\$(uname -m)-linux-gnu -c devchoke.c -o devchoke.o" >/dev/null 2>&1; then
+      devlines="$devlines
+devchoke_obj: /var/lib/ebpf-engine/bpf/devchoke.o
+devchoke_ifaces: $iface"
+      ok "device data plane compiled (tc on $iface)"
+    else
+      warn "devchoke.o failed to compile — device gateway stays on the noop backend"
+    fi
+  fi
+
   log "writing engine config (/etc/ebpf-engine/engine.yaml, 0600)"
   RUN "umask 077; cat > /etc/ebpf-engine/engine.yaml <<'YAML'
 $tetline
@@ -232,6 +296,7 @@ secret_path: /var/lib/ebpf-engine/secret
 policies: /var/lib/ebpf-engine/policies
 attacks: /var/lib/ebpf-engine/attacks
 honeypots: /var/lib/ebpf-engine/honey
+$devlines
 YAML"
   log "writing systemd unit (ebpf-engine)"
   local fakeflag=""; [[ "$ENGINE_MODE" == fake ]] && fakeflag="-fake"
@@ -244,8 +309,70 @@ YAML"
   RUN "systemctl enable ebpf-engine >/dev/null 2>&1; systemctl restart ebpf-engine; sleep 3"
 
   local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost:$ENGINE_PORT/login" || true)"
-  [[ "$code" == 200 ]] && ok "engine live at http://$TARGET_HOST:$ENGINE_PORT/ (login $ENGINE_USER / $ENGINE_PASS)" \
-                       || die "engine did not come up (HTTP $code); check: systemctl status ebpf-engine"
+  [[ "$code" == 200 ]] || die "engine did not come up (HTTP $code); check: systemctl status ebpf-engine"
+
+  # Front the engine with nginx when TARGET_HOST is a DNS name, so it is reached
+  # on a clean origin (and can carry TLS) instead of host:$ENGINE_PORT. Keeps the
+  # engine's own port off the firewall entirely — one door, not two. Skipped for
+  # a bare IP, where a vhost buys nothing.
+  case "$TARGET_HOST" in
+    *[a-zA-Z]*.*)
+      log "fronting the engine with nginx on $TARGET_HOST"
+      PKG nginx
+      local has_tls=no
+      RUN "test -s /etc/letsencrypt/live/$TARGET_HOST/fullchain.pem" >/dev/null 2>&1 && has_tls=yes
+      RUN "mkdir -p /etc/nginx/snippets /var/www/certbot
+cat > /etc/nginx/snippets/ebpf-engine.conf <<'NGINX'
+    location / {
+        proxy_pass http://127.0.0.1:$ENGINE_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        # /api/stream is server-sent events: never buffer, never time out.
+        proxy_buffering off;
+        proxy_read_timeout 1d;
+    }
+NGINX"
+      if [[ "$has_tls" == yes ]]; then
+        log "certs found for $TARGET_HOST — serving TLS, redirecting :80"
+        RUN "cat > /etc/nginx/sites-available/engine <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name $TARGET_HOST _;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://\$host\$request_uri; }
+}
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name $TARGET_HOST _;
+    ssl_certificate     /etc/letsencrypt/live/$TARGET_HOST/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$TARGET_HOST/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    include /etc/nginx/snippets/ebpf-engine.conf;
+}
+NGINX"
+      else
+        RUN "cat > /etc/nginx/sites-available/engine <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name $TARGET_HOST _;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    include /etc/nginx/snippets/ebpf-engine.conf;
+}
+NGINX"
+      fi
+      RUN "rm -f /etc/nginx/sites-enabled/default
+        ln -sf /etc/nginx/sites-available/engine /etc/nginx/sites-enabled/engine
+        nginx -t && systemctl enable nginx >/dev/null 2>&1 && systemctl restart nginx"
+      ok "engine live at $TARGET_SCHEME://$TARGET_HOST/ (login $ENGINE_USER / $ENGINE_PASS)"
+      ;;
+    *)
+      ok "engine live at http://$TARGET_HOST:$ENGINE_PORT/ (login $ENGINE_USER / $ENGINE_PASS)"
+      ;;
+  esac
 }
 
 # console_password <username> — the STABLE password for a console user.
@@ -270,6 +397,75 @@ console_password() {
       printf '%s=%s\n' '$key' '$pw' >> /etc/ebpf-soc/console-users.env" >/dev/null 2>&1
   fi
   printf '%s' "$pw"
+}
+
+# provision_tls <hostname> — obtain/renew a Let's Encrypt cert for the target.
+#
+# certonly, NOT --nginx: the nginx config is written by the provisioners in this
+# file and rewritten on every deploy, so anything certbot edited there would be
+# silently discarded the next time you redeploy — TLS would disappear with no
+# error, while the OIDC issuer kept claiming https. Instead certbot only fetches
+# the certificate and the provisioners detect it on disk and emit the TLS server
+# block themselves.
+#
+# Validation is webroot on the already-open :80 (HTTP-01), which is why the
+# provisioners keep /.well-known/acme-challenge/ unredirected. Requires :80
+# reachable from the INTERNET — Let's Encrypt validates from arbitrary IPs, so an
+# IP-scoped :80 rule fails here.
+provision_tls() {
+  require_driver
+  local host="${1:-$TARGET_HOST}" email="${TLS_EMAIL:-admin@$TARGET_HOST}"
+  case "$host" in
+    *.*) : ;;
+    *) die "TLS needs a DNS name, not '$host' — Let's Encrypt will not issue for a bare IP" ;;
+  esac
+  log "installing certbot"
+  PKG certbot
+  RUN "mkdir -p /var/www/certbot"
+  if RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem" >/dev/null 2>&1; then
+    ok "certificate already present for $host (renewal is certbot's own timer)"
+    return 0
+  fi
+  # Bootstrap the challenge path. On the FIRST TLS deploy of a host the live
+  # nginx config predates the ACME location, so the SPA's try_files catch-all
+  # answers the challenge with index.html and Let's Encrypt rejects it. Probe it
+  # functionally rather than grepping the config, then stand up a throwaway :80
+  # vhost only if needed, and put the previous sites back afterwards so a failed
+  # run never leaves the box serving 404s.
+  local restore=""
+  RUN "mkdir -p /var/www/certbot/.well-known/acme-challenge
+    echo probe > /var/www/certbot/.well-known/acme-challenge/.probe"
+  if [[ "$(RUN "curl -s --max-time 5 http://127.0.0.1/.well-known/acme-challenge/.probe 2>/dev/null" 2>/dev/null | tr -d '\r\n')" != "probe" ]]; then
+    log "installing a temporary :80 vhost so the ACME challenge is reachable"
+    restore="$(RUN 'ls /etc/nginx/sites-enabled 2>/dev/null | tr "\n" " "' 2>/dev/null | tr -d '\r')"
+    RUN "cat > /etc/nginx/sites-available/acme-bootstrap <<'ACME'
+server {
+    listen 80 default_server;
+    server_name _;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 503; }
+}
+ACME
+      rm -f /etc/nginx/sites-enabled/*
+      ln -sf /etc/nginx/sites-available/acme-bootstrap /etc/nginx/sites-enabled/acme-bootstrap
+      nginx -t && systemctl reload nginx" || warn "could not install the ACME bootstrap vhost"
+  fi
+  # Whatever happens below, put the original vhosts back.
+  _restore_vhosts() {
+    [[ -z "$restore" ]] && return 0
+    RUN "rm -f /etc/nginx/sites-enabled/acme-bootstrap
+      for v in $restore; do ln -sf /etc/nginx/sites-available/\$v /etc/nginx/sites-enabled/\$v 2>/dev/null || true; done
+      nginx -t && systemctl reload nginx" >/dev/null 2>&1 || true
+  }
+
+  log "requesting a certificate for $host (HTTP-01 over :80)"
+  RUN "certbot certonly --webroot -w /var/www/certbot -d $host \
+        --non-interactive --agree-tos -m $email --keep-until-expiring" \
+    || { _restore_vhosts; warn "certbot failed for $host — is :80 open to 0.0.0.0/0 and DNS pointing here? staying on http"; return 1; }
+  _restore_vhosts
+  RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem" >/dev/null 2>&1 \
+    || { warn "certbot reported success but no cert on disk — staying on http"; return 1; }
+  ok "certificate issued for $host"
 }
 
 # ─── multi-tenant: the control plane ────────────────────────────────────────
@@ -315,8 +511,19 @@ provision_controlplane() {
   # block below so none of them depend on the temporary admin surviving.
   local KC_CFG="/opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user '$PERM_ADMIN_USER' --password '$PERM_ADMIN_PW' >/dev/null 2>&1 || /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user admin --password '$KC_ADMIN_PASS' >/dev/null 2>&1"
 
-  local issuer="http://$TARGET_HOST:$KC_PORT/realms/ebpf-soc"
-  local redirect="http://$TARGET_HOST/auth/callback"
+  # Keycloak is reached THROUGH nginx on :80, not on its own port. Two reasons:
+  # the console only needs one port open (browsers complete the OIDC flow on the
+  # same origin they loaded the app from), and the control plane resolves OIDC
+  # discovery by dialling this very URL — on a cloud host that is a hairpin to
+  # the box's own public IP, which only works on a port the firewall/security
+  # group actually admits. Pointing discovery at Keycloak's private port instead
+  # is not an option: the issuer in the discovery document must match the issuer
+  # browsers are redirected to, or the OIDC library rejects it.
+  local base="$TARGET_SCHEME://$TARGET_HOST"
+  local issuer="$base/realms/ebpf-soc"
+  # The CP turns on Secure cookies iff this redirect is https, so the scheme here
+  # is what makes session cookies https-only — not a separate flag.
+  local redirect="$base/auth/callback"
 
   log "installing packages (postgres, nginx, java, unzip, curl)"
   PKG postgresql nginx openjdk-21-jre-headless unzip curl
@@ -337,6 +544,10 @@ KC_HTTP_PORT=$KC_PORT
 KC_HTTP_ENABLED=true
 KC_HOSTNAME_STRICT=false
 KC_HEALTH_ENABLED=true
+# Behind nginx: trust the forwarded headers and emit absolute URLs on the public
+# origin, so the login form posts back through the proxy instead of to :$KC_PORT.
+KC_PROXY_HEADERS=xforwarded
+KC_HOSTNAME=$TARGET_SCHEME://$TARGET_HOST
 EOF"
   # Persist the permanent-admin password (0600) so redeploys reuse it.
   RUN "umask 077; cat > /etc/ebpf-soc/keycloak-admin.env <<EOF
@@ -423,7 +634,15 @@ EOF"
     K update realms/master   -s sslRequired=NONE >/dev/null 2>&1 || true
     K create roles -r ebpf-soc -s name=tenant-analyst >/dev/null 2>&1 || true
     K create roles -r ebpf-soc -s name=msoc-admin >/dev/null 2>&1 || true
-    CID=\$(K create clients -r ebpf-soc -s clientId=console-bff -s enabled=true -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=true -s directAccessGrantsEnabled=true -s 'redirectUris=[\"$redirect\",\"http://$TARGET_HOST/*\"]' -s 'webOrigins=[\"http://$TARGET_HOST\"]' -i 2>/dev/null || K get clients -r ebpf-soc -q clientId=console-bff --fields id --format csv | tail -1 | tr -d '\"')
+    CID=\$(K create clients -r ebpf-soc -s clientId=console-bff -s enabled=true -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=true -s directAccessGrantsEnabled=true -s 'redirectUris=[\"$redirect\",\"$base/*\"]' -s 'webOrigins=[\"$base\"]' -i 2>/dev/null || K get clients -r ebpf-soc -q clientId=console-bff --fields id --format csv | tail -1 | tr -d '\"')
+    # ALWAYS re-assert the URLs. The create above is a no-op on redeploy (the
+    # client already exists), so without this an existing deployment keeps the
+    # redirect URIs of whatever TARGET_HOST it was FIRST built with. Point the
+    # same stack at a new hostname and Keycloak answers the authorize request
+    # with 'Invalid parameter: redirect_uri' — a 400 on the login page, with the
+    # console itself serving fine, which reads like a broken app rather than a
+    # stale client registration.
+    K update clients/\$CID -r ebpf-soc -s 'redirectUris=[\"$redirect\",\"$base/*\"]' -s 'webOrigins=[\"$base\"]' -s 'rootUrl=$base' >/dev/null 2>&1 || true
     K create clients/\$CID/protocol-mappers/models -r ebpf-soc -s name=tenant -s protocol=openid-connect -s protocolMapper=oidc-usermodel-attribute-mapper -s 'config.\"user.attribute\"=tenant' -s 'config.\"claim.name\"=tenant' -s 'config.\"jsonType.label\"=String' -s 'config.\"id.token.claim\"=true' -s 'config.\"access.token.claim\"=true' -s 'config.\"userinfo.token.claim\"=true' >/dev/null 2>&1 || true
     K get clients/\$CID/client-secret -r ebpf-soc | grep value | sed -E 's/.*\"value\" *: *\"([^\"]+)\".*/\1/'")"
 
@@ -496,10 +715,11 @@ EOF"
   # favicon at all). Ship the engine's embedded icons alongside the bundle.
   PUT "$REPO_ROOT/engine/internal/api/favicon.svg"       /var/www/console/favicon.svg
   PUT "$REPO_ROOT/engine/internal/api/favicon-light.svg" /var/www/console/favicon-light.svg
-  RUN "cat > /etc/nginx/sites-available/console <<'NGINX'
-server {
-    listen 80 default_server;
-    server_name _;
+  # The routing lives in ONE snippet that both the :80 and :443 servers include.
+  # Duplicating it per-scheme is how a TLS site ends up serving different rules
+  # on http and https after someone edits only one copy.
+  RUN "mkdir -p /etc/nginx/snippets /var/www/certbot
+cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
     root /var/www/console;
     index index.html;
     location = /login      { return 302 \$scheme://\$http_host/auth/login; }
@@ -510,10 +730,60 @@ server {
     location /auth/ { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; proxy_http_version 1.1;
         proxy_set_header Host \$host; proxy_set_header X-Forwarded-Proto \$scheme; }
     location /healthz { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; }
+    # Keycloak, same origin. /realms + /resources carry the OIDC flow and its
+    # login-page assets; /admin + /js are the admin console.
+    location ~ ^/(realms|resources|admin|js|robots.txt) {
+        proxy_pass http://127.0.0.1:$KC_PORT;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header X-Forwarded-Host \$host;
+        proxy_set_header X-Forwarded-Port \$server_port;
+    }
     location / { try_files \$uri \$uri.html /index.html; }
+NGINX"
+
+  # TLS is driven by whether certs EXIST on the target, not by a flag, so a
+  # redeploy can never silently downgrade a site that already has them. certbot
+  # is run with 'certonly' (see provision_tls) precisely so nginx config stays
+  # owned here — letting certbot edit it would put TLS one redeploy away from
+  # being overwritten, with no error to notice.
+  local has_tls=no
+  RUN "test -s /etc/letsencrypt/live/$TARGET_HOST/fullchain.pem" >/dev/null 2>&1 && has_tls=yes
+  if [[ "$has_tls" == yes ]]; then
+    log "certs found for $TARGET_HOST — serving TLS, redirecting :80"
+    RUN "cat > /etc/nginx/sites-available/console <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name $TARGET_HOST _;
+    # Keep the ACME path on :80 and unredirected, or renewals fail.
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    location / { return 301 https://\$host\$request_uri; }
 }
-NGINX
-    rm -f /etc/nginx/sites-enabled/default
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name $TARGET_HOST _;
+    ssl_certificate     /etc/letsencrypt/live/$TARGET_HOST/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/$TARGET_HOST/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers off;
+    include /etc/nginx/snippets/ebpf-console.conf;
+}
+NGINX"
+  else
+    RUN "cat > /etc/nginx/sites-available/console <<'NGINX'
+server {
+    listen 80 default_server;
+    server_name $TARGET_HOST _;
+    location /.well-known/acme-challenge/ { root /var/www/certbot; }
+    include /etc/nginx/snippets/ebpf-console.conf;
+}
+NGINX"
+  fi
+  RUN "rm -f /etc/nginx/sites-enabled/default
     ln -sf /etc/nginx/sites-available/console /etc/nginx/sites-enabled/console
     nginx -t && systemctl restart nginx && systemctl enable nginx >/dev/null 2>&1"
 
@@ -546,6 +816,12 @@ NGINX
       warn "DATA_MODE=real but the provisioner or its inputs are missing — skipping agent VMs"
     fi
     RUN "sleep 4"
+  elif [[ "$DATA_MODE" == none ]]; then
+    log "DATA_MODE=none — no data seeders; disabling any leftover sim-agents"
+    for t in $TENANTS; do
+      local label; label="sim-$(echo $t | cut -d- -f1)"
+      RUN "systemctl disable --now ebpf-$label >/dev/null 2>&1 || true"
+    done
   else
     # sim-agents (data seeders) — one per tenant
     log "starting a sim-agent per tenant"
@@ -565,8 +841,10 @@ NGINX
 
   local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost/" || true)"
   echo
-  ok "control plane live at  http://$TARGET_HOST/   (console HTTP $code)"
-  echo "  Keycloak admin:  http://$TARGET_HOST:$KC_PORT/admin/  ($PERM_ADMIN_USER / $PERM_ADMIN_PW)"
+  ok "control plane live at  $TARGET_SCHEME://$TARGET_HOST/   (console HTTP $code)"
+  # Keycloak is proxied on the console origin, NOT on :$KC_PORT — that port is
+  # deliberately closed to the internet.
+  echo "  Keycloak admin:  $TARGET_SCHEME://$TARGET_HOST/admin/  ($PERM_ADMIN_USER / $PERM_ADMIN_PW)"
   printf "  Console logins:\n%b" "$userlist"
   dim "credentials also written to $BUILD_DIR/credentials-$TARGET_HOST.txt"
   { echo "# ebpf-soc multi-tenant — $TARGET_HOST — $(date)"; echo "Keycloak admin: $PERM_ADMIN_USER / $PERM_ADMIN_PW"; printf "%b" "$userlist"; echo "postgres: postgres / $PG_PASS"; echo "cp admin token: $CP_ADMIN_TOKEN"; echo "console-bff secret: $CP_SECRET"; } > "$BUILD_DIR/credentials-$TARGET_HOST.txt"

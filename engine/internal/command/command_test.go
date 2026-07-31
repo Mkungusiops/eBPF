@@ -14,20 +14,24 @@ type fakeApplier struct {
 	mode          ebpfsocv1.EnforcementMode
 	protectedBins []string
 	killHalt      bool
+	killPlane     ebpfsocv1.Plane
 	setModeCalls  int
 	jailCalls     int
 }
 
-func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode) error {
+func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode, p ebpfsocv1.Plane) error {
 	f.mode = m
 	f.setModeCalls++
 	return nil
 }
-func (f *fakeApplier) Jail(string, uint32, string) error       { f.jailCalls++; return nil }
-func (f *fakeApplier) Thaw(string, uint32) error               { return nil }
-func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error    { return nil }
-func (f *fakeApplier) ApplyPreset(string) error                { return nil }
-func (f *fakeApplier) KillSwitch(halt bool, _ string) error    { f.killHalt = halt; return nil }
+func (f *fakeApplier) Jail(string, uint32, string) error    { f.jailCalls++; return nil }
+func (f *fakeApplier) Thaw(string, uint32) error            { return nil }
+func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error { return nil }
+func (f *fakeApplier) ApplyPreset(string) error             { return nil }
+func (f *fakeApplier) KillSwitch(halt bool, _ string, p ebpfsocv1.Plane) error {
+	f.killHalt, f.killPlane = halt, p
+	return nil
+}
 func (f *fakeApplier) SetProtectedList(bins, _ []string) error { f.protectedBins = bins; return nil }
 
 // sign fills in a command's signature over its canonical bytes.

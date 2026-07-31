@@ -14,4 +14,10 @@ D="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$D/lib.sh"
 source "$D/driver-ssh.sh"
 build_binaries engine
+# TLS=1 obtains a cert for TARGET_HOST first; provision_engine then detects it on
+# disk and serves https with an :80 redirect. Needs TARGET_HOST to be a DNS name
+# pointing here and :80 open to 0.0.0.0/0 for the HTTP-01 challenge.
+if [[ "${TLS:-0}" == 1 ]]; then
+  provision_tls "$TARGET_HOST" && export TARGET_SCHEME=https
+fi
 provision_engine

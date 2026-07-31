@@ -112,6 +112,12 @@ func (g *DeviceGateway) ManualDevice(ctx context.Context, macStr string, action 
 
 	outcome := "ok"
 	backendName := g.thr.Backend.DataPlaneTier()
+	// applyErr is the enforcement refusal (e.g. a protected MAC). It must reach
+	// the caller: reporting a device as contained when the data plane refused is
+	// the worst failure mode a containment product has — the operator believes a
+	// threat is cut off and stops responding. The audit row is still written, so
+	// the refused ATTEMPT stays in the chain.
+	var applyErr error
 	switch {
 	case g.killSwitch.Load():
 		outcome = "skipped: kill-switch engaged"
@@ -127,6 +133,7 @@ func (g *DeviceGateway) ManualDevice(ctx context.Context, macStr string, action 
 		if err := g.thr.Apply(mac, action); err != nil {
 			outcome = "error: " + err.Error()
 			log.Printf("[devgateway] enforce action=%s mac=%s: %v", action, canon, err)
+			applyErr = err
 		}
 	}
 
@@ -165,6 +172,16 @@ func (g *DeviceGateway) ManualDevice(ctx context.Context, macStr string, action 
 		log.Printf("[devgateway] insert decision: %v", err)
 	} else if g.bcast != nil {
 		g.bcast.Broadcast("decision", rec)
+	}
+
+	// The data plane refused, so the device is NOT in the state we optimistically
+	// forced above. Roll the circuit back and surface the error. Without this the
+	// table shows a protected gateway as "severed" while it keeps routing — the
+	// operator is told the containment landed when nothing was applied.
+	if applyErr != nil {
+		g.circuit.Force(canon, prev)
+		d.To = prev
+		return d, applyErr
 	}
 	return d, nil
 }
@@ -347,6 +364,27 @@ func (g *DeviceGateway) BucketsSnapshot() (map[devbpf.MAC]devbpf.DeviceBucket, e
 
 // DataPlaneState reports the active actuator tier and attach status — the
 // operator's confirmation that the box is actually enforcing.
+// DataPlaneTier names the backend actually enforcing device choke ("tc" when a
+// compiled program is attached, "noop" otherwise). Reported to the control
+// plane so a fleet operator can tell an agent that *can* enforce from one that
+// is only recording decisions.
+func (g *DeviceGateway) DataPlaneTier() string {
+	if g == nil || g.backend == nil {
+		return "noop"
+	}
+	return g.backend.DataPlaneTier()
+}
+
+// AttachedLinks is the number of interfaces the device data plane is attached
+// to. Zero with a "tc" tier means the program loaded but is attached nowhere —
+// the case that looks healthy and enforces nothing.
+func (g *DeviceGateway) AttachedLinks() int {
+	if g == nil || g.backend == nil {
+		return 0
+	}
+	return g.backend.AttachedLinks()
+}
+
 func (g *DeviceGateway) DataPlaneState() map[string]interface{} {
 	tier := "noop"
 	links := 0

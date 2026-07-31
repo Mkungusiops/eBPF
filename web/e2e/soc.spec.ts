@@ -106,7 +106,10 @@ test.describe("SOC route", () => {
     await expect(drill).toBeVisible();
     await expect(drill.locator(".soc-drill-hero")).toContainText("Credential file read");
     await expect(drill.locator(".soc-drill-grid")).toContainText("Chain depth");
-    await expect(drill.locator(".soc-drill-narrative")).toContainText("2-process chain");
+    // The drill narrative is now a plain-English / technical pair rather than a
+    // single block, matching the Choke drill panel.
+    await expect(drill.locator(".soc-narrative-plain")).toBeVisible();
+    await expect(drill.locator(".soc-narrative-tech")).toContainText("2-process chain");
     await expect(drill).toContainText("Choke response");
     await expect(drill).toContainText("Process lineage");
     // Event timeline is the shared replay widget; it lists the kernel events.
