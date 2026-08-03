@@ -69,6 +69,13 @@ export interface OriginInfo {
 
 export interface CircuitEntry {
   exec_id: string;
+  /**
+   * The agent this circuit lives on (fleet console only; the single-host engine
+   * omits it). Sent back on jail/thaw so containment is ROUTED to the right
+   * host rather than guessed from a PID — PIDs are per-host and collide across
+   * a fleet, and the control plane refuses an unroutable sever outright.
+   */
+  agent?: string;
   pid?: number;
   binary?: string;
   state?: ChokeStateName | string;

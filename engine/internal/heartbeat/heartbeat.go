@@ -37,6 +37,13 @@ type Record struct {
 	// decisions, instead of assuming any online agent is enforcing.
 	DevicePlane string
 	DeviceLinks int32
+	// FramesSeen is forwarded frames this agent's data plane has actually
+	// observed. The control plane has no data plane of its own, so without
+	// this it reported zero and the console's bridge-master warning fired on
+	// every deployment.
+	FramesSeen uint64
+	// DevicesSeen is devices the data plane observed, not devices known.
+	DevicesSeen uint32
 	// DeviceMode is the DEVICE plane's own enforcement mode. Mode above is the
 	// process plane's; the two arm independently.
 	DeviceMode ebpfsocv1.EnforcementMode
@@ -119,6 +126,8 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 		rec.Mode = dp.GetMode()
 		rec.DevicePlane = dp.GetDevicePlane()
 		rec.DeviceLinks = dp.GetDeviceLinks()
+		rec.FramesSeen = dp.GetFramesSeen()
+		rec.DevicesSeen = dp.GetDevicesSeen()
 		rec.DeviceMode = dp.GetDeviceMode()
 		rec.KernelPolicies = dp.GetKernelPolicies()
 	}

@@ -92,6 +92,7 @@ type Gateway struct {
 	sysProcFn       SysProcListFn
 	sysProcDetailFn SysProcDetailFn
 	originFn        OriginLookupFn
+	pidLiveFn       PIDLiveFn
 
 	// systemCritical: auto-enforce exemption set. Looked up by exact
 	// binary path; manual overrides bypass it.
@@ -158,6 +159,13 @@ type knownProc struct {
 	Binary    string
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// FromTelemetry marks an exec_id this host actually OBSERVED, as opposed to
+	// one it only learned because a control-plane command named it. Manual()
+	// caches every target it is handed, so without this flag a fleet-wide
+	// command would teach an innocent agent the exec_id and that agent would
+	// then claim definitive ownership of it on the next command. Ownership must
+	// only ever be evidenced by this host's own telemetry.
+	FromTelemetry bool
 }
 
 // Config bundles the inputs to NewGateway. Only Store is required; the
@@ -308,7 +316,9 @@ type Observation struct {
 // been updated. It is safe to call frequently; if no transition occurs
 // nothing happens. Returns the Decision (nil if no transition) for tests.
 func (g *Gateway) OnEvent(ctx context.Context, obs Observation) *circuit.Decision {
-	g.remember(obs.ExecID, obs.PID, obs.Binary)
+	// observed=true: this is the host's own telemetry, the only thing that
+	// establishes ownership of an exec_id (see Owns).
+	g.remember(obs.ExecID, obs.PID, obs.Binary, true)
 
 	d := g.circuit.Evaluate(obs.ExecID, obs.PID, obs.Binary, obs.Score, obs.Reason)
 	if d == nil {
@@ -319,8 +329,11 @@ func (g *Gateway) OnEvent(ctx context.Context, obs Observation) *circuit.Decisio
 }
 
 // remember updates the known-proc cache so Manual/Snapshot have a fall-
-// back when the tree has GC'd the node.
-func (g *Gateway) remember(execID string, pid uint32, binary string) {
+// back when the tree has GC'd the node. observed says whether this host saw
+// the process itself (an exec event) rather than merely being told about it
+// by a command — see knownProc.FromTelemetry. It is sticky: once observed,
+// always observed.
+func (g *Gateway) remember(execID string, pid uint32, binary string, observed bool) {
 	if execID == "" {
 		return
 	}
@@ -335,12 +348,90 @@ func (g *Gateway) remember(execID string, pid uint32, binary string) {
 		if binary != "" {
 			k.Binary = binary
 		}
+		k.FromTelemetry = k.FromTelemetry || observed
 		g.known[execID] = k
 		return
 	}
 	g.known[execID] = knownProc{
 		PID: pid, Binary: binary, FirstSeen: now, LastSeen: now,
+		FromTelemetry: observed,
 	}
+}
+
+// TargetMatch grades how strongly a Jail/Thaw target belongs to THIS host.
+//
+// A fleet command may reach several agents at once — the control plane cannot
+// always tell in advance which one is running a given process — so the answer
+// cannot be a bare bool. PID numbers are per-host and collide freely across a
+// fleet, so "I have a live process numbered 4021" is a guess, while "I observed
+// this exec_id" is proof. Grading them apart is what lets the control plane
+// refuse to SIGKILL on a guess.
+type TargetMatch int
+
+const (
+	// MatchNone — neither the exec_id nor the pid belongs to this host.
+	MatchNone TargetMatch = iota
+	// MatchPID — only the pid is live here and the exec_id was never observed.
+	// WEAK: an unrelated process can hold that number.
+	MatchPID
+	// MatchExecID — this host observed the exec_id in its own telemetry.
+	// Tetragon exec_ids encode the node, so this is proof of ownership.
+	MatchExecID
+)
+
+func (m TargetMatch) String() string {
+	switch m {
+	case MatchPID:
+		return "pid"
+	case MatchExecID:
+		return "exec_id"
+	}
+	return "none"
+}
+
+// PIDLiveFn reports whether a PID is a live process on this host. Injected so
+// the gateway stays testable and platform-agnostic; main.go wires the real one.
+type PIDLiveFn func(pid uint32) bool
+
+// SetPIDLiveFn wires the liveness probe used by Owns.
+func (g *Gateway) SetPIDLiveFn(fn PIDLiveFn) { g.pidLiveFn = fn }
+
+// Owns grades whether (execID, pid) is a process this host is actually running.
+//
+// This is the agent's half of the multi-agent false-containment defense. The
+// control plane may dispatch one containment command to every agent in a tenant
+// because it does not yet know which one holds the target; each agent answers
+// with what it can prove, and only a genuine owner may report the action as
+// applied. An agent that no-ops MUST NOT ack APPLIED — that is what tells an
+// operator a process was severed while it keeps running.
+//
+// Evidence, strongest first:
+//
+//	MatchExecID — the exec_id appears in this host's own telemetry (the known
+//	              cache populated by OnEvent, or a circuit already tracking it).
+//	MatchPID    — no exec_id evidence, but the pid is live here. A guess.
+//	MatchNone   — nothing to act on.
+func (g *Gateway) Owns(execID string, pid uint32) TargetMatch {
+	if execID != "" {
+		g.knownMu.RLock()
+		k, ok := g.known[execID]
+		g.knownMu.RUnlock()
+		if ok && k.FromTelemetry {
+			return MatchExecID
+		}
+		// A circuit exists only for an exec_id this gateway scored or was told
+		// to force. Scored ones are telemetry; forced ones were remembered
+		// above, so a tracked-but-unobserved exec_id is not proof of anything.
+		if g.tree != nil {
+			if _, inTree := g.tree.Get(execID); inTree {
+				return MatchExecID
+			}
+		}
+	}
+	if pid != 0 && g.pidLiveFn != nil && g.pidLiveFn(pid) {
+		return MatchPID
+	}
+	return MatchNone
 }
 
 // act runs an emitted Decision through the enforcer + store + broadcast.
@@ -739,8 +830,11 @@ func (g *Gateway) Manual(ctx context.Context, req ManualRequest) (*circuit.Decis
 	// entry. Without this, manual overrides on synthetic exec_ids (from
 	// chokectl jail, or jail-by-PID from the UI) yield "(unknown)" pid=-
 	// in the drill panel even though we have the data right here.
+	// observed=false: being NAMED by an operator or a control-plane command is
+	// not evidence that this host runs the process. Caching it must not let this
+	// agent claim ownership of the exec_id on a later fleet command (see Owns).
 	if req.PID != 0 {
-		g.remember(req.ExecID, req.PID, req.Binary)
+		g.remember(req.ExecID, req.PID, req.Binary, false)
 	}
 	target := actionToState(req.Action)
 	prev, _ := g.circuit.Force(req.ExecID, target)

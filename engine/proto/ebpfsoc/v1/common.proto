@@ -60,6 +60,23 @@ message DataPlaneState {
   // the engine's half of it. Empty is not "safe": it means the agent could not
   // read Tetragon, which is itself worth surfacing.
   repeated KernelPolicy kernel_policies = 7;
+  // Forwarded Ethernet frames the device data plane has actually observed,
+  // summed across the agent's attached links.
+  //
+  // The console's "links are attached but no forwarded frames have been seen"
+  // warning is computed from links>0 && frames==0 — the detector for attaching
+  // tc to a bridge MASTER instead of its slaves, where everything looks healthy
+  // and containment silently does nothing. Without this field the control plane
+  // had no frame count to report and hardcoded zero, so that warning fired on
+  // every multi-tenant deployment regardless of topology: a red herring on the
+  // first screen an operator sees, and it discredits the one panel that would
+  // matter on a genuinely inline install.
+  uint64 frames_seen = 8;
+  // Devices the data plane has actually OBSERVED, as distinct from devices the
+  // agent merely knows about (neighbour table, DHCP). The control plane
+  // previously reported devices_known for both, so a fleet where the data plane
+  // saw nothing looked identical to one where it saw everything.
+  uint32 devices_seen = 9;
 }
 
 // KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —

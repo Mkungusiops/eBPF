@@ -92,6 +92,25 @@ func NewDeviceGateway(cfg DeviceConfig) *DeviceGateway {
 // reads from.
 func (g *DeviceGateway) Table() *device.Table { return g.table }
 
+// Owns reports whether this agent has actually seen the MAC on its own LAN.
+//
+// The device analog of Gateway.Owns, and the same defense: a fleet-wide device
+// jail reaches every agent in the tenant, but only the one whose segment the
+// device is on can contain it. An agent that has never seen the MAC writes a tc
+// rule that matches nothing — so if it acked "applied", the console would show
+// a device as cut off while it keeps talking on someone else's segment.
+//
+// MACs are globally unique (unlike PIDs), so unlike the process side there is
+// no weak grade here: the device is either in this host's table or it is not.
+func (g *DeviceGateway) Owns(macStr string) bool {
+	mac, err := devbpf.ParseMAC(macStr)
+	if err != nil {
+		return false
+	}
+	_, ok := g.table.Lookup(mac.String())
+	return ok
+}
+
 // ManualDevice applies an enforcement action to a device by MAC. It is the
 // device analog of Gateway.Manual: the circuit is forced to the target
 // state, the data plane is updated (unless dry-run / kill-switch), and a
@@ -378,6 +397,40 @@ func (g *DeviceGateway) DataPlaneTier() string {
 // AttachedLinks is the number of interfaces the device data plane is attached
 // to. Zero with a "tc" tier means the program loaded but is attached nowhere —
 // the case that looks healthy and enforces nothing.
+// FramesSeen is the total forwarded frames the data plane has observed, summed
+// across every device it knows about. Exposed separately from DataPlaneState so
+// the agent can put a real number on the heartbeat: the control plane has no
+// data plane of its own, and previously reported a hardcoded zero, which made
+// the console's bridge-master warning fire on every multi-tenant deployment.
+func (g *DeviceGateway) FramesSeen() uint64 {
+	if g == nil || g.backend == nil {
+		return 0
+	}
+	seen, err := g.backend.SeenSnapshot()
+	if err != nil {
+		return 0
+	}
+	var total uint64
+	for _, s := range seen {
+		total += s.Packets
+	}
+	return total
+}
+
+// DevicesSeen is how many distinct devices the data plane has actually
+// observed — not how many the agent knows about. See devices_seen in
+// common.proto for why the two must not be conflated.
+func (g *DeviceGateway) DevicesSeen() int {
+	if g == nil || g.backend == nil {
+		return 0
+	}
+	seen, err := g.backend.SeenSnapshot()
+	if err != nil {
+		return 0
+	}
+	return len(seen)
+}
+
 func (g *DeviceGateway) AttachedLinks() int {
 	if g == nil || g.backend == nil {
 		return 0

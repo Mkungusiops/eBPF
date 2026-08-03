@@ -93,23 +93,41 @@ export function updateThresholds(thresholds: Thresholds): Promise<unknown> {
   return putJSON("/api/choke/thresholds", thresholds);
 }
 
+/**
+ * Outcome of a containment command, as the fleet control plane reports it.
+ *
+ * `ok` is the only thing that means the action actually landed. It is false
+ * when every agent disowned the target (status STATUS_NOT_TARGET) — the
+ * process is not on this fleet — and the request 409s with AMBIGUOUS_TARGET
+ * when a sever could not be pinned to a single host.
+ */
+export interface ChokeActionResult {
+  ok?: boolean;
+  status?: string;
+  detail?: string;
+  agent?: string;
+  applied_by?: string[];
+  candidates?: string[];
+}
+
 export function manualAction(body: {
   exec_id?: string;
   pid?: number;
   binary?: string;
+  agent_id?: string;
   action: ChokeAction;
   reason: string;
   revert_after_seconds?: number;
-}): Promise<unknown> {
-  return postJSON("/api/choke/manual", body);
+}): Promise<ChokeActionResult> {
+  return postJSON("/api/choke/manual", body) as Promise<ChokeActionResult>;
 }
 
 export function bulkManualAction(body: {
-  targets: Array<{ exec_id?: string; pid?: number; binary?: string }>;
+  targets: Array<{ exec_id?: string; pid?: number; binary?: string; agent_id?: string }>;
   action: ChokeAction;
   reason: string;
   revert_after_seconds?: number;
-}): Promise<{ results?: Array<{ exec_id?: string; ok?: boolean; error?: string }> }> {
+}): Promise<{ results?: Array<{ exec_id?: string; ok?: boolean; error?: string; detail?: string; agent?: string }> }> {
   return postJSON("/api/choke/bulk-manual", body);
 }
 
@@ -129,8 +147,13 @@ export function thawQuarantine(reason: string): Promise<unknown> {
  * "release" reported success and left the process quarantined. Passing the
  * target makes it a real per-process release.
  */
-export function releaseProcess(execId: string, pid: number | undefined, reason: string): Promise<unknown> {
-  return postJSON("/api/choke/thaw", { exec_id: execId, pid, reason });
+export function releaseProcess(
+  execId: string,
+  pid: number | undefined,
+  reason: string,
+  agentId?: string
+): Promise<ChokeActionResult> {
+  return postJSON("/api/choke/thaw", { exec_id: execId, pid, reason, agent_id: agentId }) as Promise<ChokeActionResult>;
 }
 
 export function toggleKillSwitch(on: boolean): Promise<unknown> {

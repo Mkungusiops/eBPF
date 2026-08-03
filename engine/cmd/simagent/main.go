@@ -58,7 +58,16 @@ var (
 	}
 )
 
-func execID(i int) string { return fmt.Sprintf("ZXhlYy0%08d", i) }
+// nodeTag scopes this sim agent's exec_ids to itself, set from -label in main.
+//
+// Real Tetragon exec_ids encode the node they were minted on, which is what
+// lets the control plane tell WHICH agent is running a process. Every sim agent
+// used to emit the identical exec_id series, so a multi-agent tenant looked
+// like several hosts all running the same processes — the one shape that makes
+// containment unroutable, and pure simulator artifact.
+var nodeTag = "sim"
+
+func execID(i int) string { return fmt.Sprintf("ZXhlYy0%s-%08d", nodeTag, i) }
 
 func evEvent(seq int) *ebpfsocv1.TelemetryRecord {
 	b := binaries[rand.Intn(len(binaries))]
@@ -211,6 +220,40 @@ func (a *simApplier) key(execID string, pid uint32) string {
 	return fmt.Sprintf("pid:%d", pid)
 }
 
+// OwnsTarget implements command.TargetOwner so a simulated fleet reproduces the
+// real one's containment honesty: a sim agent that is not carrying the target
+// no-ops with STATUS_NOT_TARGET rather than claiming it enforced. Without this
+// the local multi-agent stack would show every jail succeeding everywhere,
+// which is precisely the false-containment behavior the real agents no longer
+// have — a simulator that is wrong in the product's most dangerous direction is
+// worse than no simulator.
+func (a *simApplier) OwnsTarget(execID string, pid uint32) ebpfsocv1.CommandAck_TargetMatch {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if mac, ok := strings.CutPrefix(execID, "device:"); ok {
+		if _, seen := a.devices[mac]; seen {
+			return ebpfsocv1.CommandAck_TARGET_MATCH_DEVICE
+		}
+		return ebpfsocv1.CommandAck_TARGET_MATCH_NONE
+	}
+	if execID != "" {
+		if _, seen := a.chokes[execID]; seen {
+			return ebpfsocv1.CommandAck_TARGET_MATCH_EXEC_ID
+		}
+	}
+	if pid != 0 {
+		if _, seen := a.chokes[a.key("", pid)]; seen {
+			return ebpfsocv1.CommandAck_TARGET_MATCH_PID
+		}
+		for _, c := range a.chokes {
+			if c.GetPid() == pid {
+				return ebpfsocv1.CommandAck_TARGET_MATCH_PID
+			}
+		}
+	}
+	return ebpfsocv1.CommandAck_TARGET_MATCH_NONE
+}
+
 func (a *simApplier) Jail(execID string, pid uint32, tier string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -320,6 +363,8 @@ func main() {
 	label := flag.String("label", "sim-agent", "agent hostname label")
 	fleetPub := flag.String("fleet-pubkey", "", "path to the fleet signing pubkey (hex); enables the command channel so console jail/thaw acks + updates state")
 	flag.Parse()
+
+	nodeTag = *label // scope this agent's exec_ids to it, before anything is seeded
 
 	tok, ca := mintToken(*cpHTTP, *adminToken, *tenant)
 	log.Printf("[simagent] minted enroll token for tenant=%s (ca %d bytes)", *tenant, len(ca))

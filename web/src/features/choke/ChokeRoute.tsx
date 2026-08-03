@@ -506,6 +506,18 @@ export function ChokeRoute(): React.ReactElement {
   // while this page says detect-only. Surfacing that is the whole point of
   // reporting it — see docs/plan/threat-model.md EN-3.
   const kernel = chokeState?.kernel;
+  // Only the control plane returns a `kernel` block; the single-tenant engine's
+  // /api/choke/state has no such key. That makes it a reliable "am I the
+  // multi-tenant console?" signal without inventing a capability flag.
+  //
+  // It matters because two actions here are engine-LOCAL: policy preview
+  // evaluates YAML against one host's tracked processes, and a forensic
+  // snapshot dumps one host's state. Neither has a fleet-wide meaning, so the
+  // control plane answers both with 501. Offering an enabled button that always
+  // fails is worse than not offering it — the operator cannot tell a missing
+  // feature from a broken one, and finds out by clicking it in front of someone.
+  const isFleetConsole = Boolean(kernel);
+  const engineOnlyHint = "Engine-local action — open the single-tenant engine for this host. The fleet console has no host to evaluate it against.";
   const divergedAgents = kernel?.diverged_agents || [];
   const kernelFired = kernel?.enforce_actions || 0;
   // Only meaningful once at least one agent has answered; before that the
@@ -686,15 +698,28 @@ export function ChokeRoute(): React.ReactElement {
       reasonRequired: true,
       withRevert: action !== "sever",
       onConfirm: async ({ reason, revert_after_seconds }) => {
-        await manualAction({
+        const result = await manualAction({
           exec_id: entry.exec_id,
           pid: entry.pid,
           binary: entry.binary,
+          // Route to the host the row came from. Without it the control plane
+          // has to infer the owner, and on a fleet a PID alone can point at the
+          // wrong machine.
+          agent_id: entry.agent,
           action,
           reason,
           revert_after_seconds,
         });
-        pushToast(`${action} applied`, "ok");
+        // Report what the fleet actually did. A blanket "applied" toast here
+        // told the operator a process was contained even when every agent
+        // reported it was not theirs — the containment lie this whole path
+        // exists to prevent.
+        if (result?.ok) {
+          const where = result.agent ? ` on ${result.agent}` : "";
+          pushToast(`${action} applied${where}`, "ok");
+        } else {
+          pushToast(`${action} NOT applied: ${result?.detail || result?.status || "no agent applied it"}`, "err");
+        }
         await refreshAll();
       },
     });
@@ -715,6 +740,7 @@ export function ChokeRoute(): React.ReactElement {
             exec_id: entry.exec_id,
             pid: entry.pid,
             binary: entry.binary,
+            agent_id: entry.agent,
           })),
           action,
           reason,
@@ -947,7 +973,8 @@ export function ChokeRoute(): React.ReactElement {
       { group: "action", label: "Open jail picker", run: () => setJailOpen(true) },
       { group: "action", label: "Toggle kill-switch", run: openKillSwitchConfirm },
       { group: "action", label: "Thaw quarantine", run: openThawConfirm },
-      { group: "action", label: "Download forensic snapshot", run: () => void downloadSnapshot() },
+      // Omitted on the fleet console: the endpoint is a deliberate 501 there.
+      ...(isFleetConsole ? [] : [{ group: "action", label: "Download forensic snapshot", run: () => void downloadSnapshot() }]),
       { group: "view", label: "Toggle density", run: () => setDensity((prev) => (prev === "compact" ? "normal" : "compact")) },
       { group: "view", label: "Show help", run: () => setHelpOpen(true) },
       ...circuits.slice(0, 25).map((entry) => ({
@@ -970,6 +997,19 @@ export function ChokeRoute(): React.ReactElement {
             </a>
             <span className="choke-brand-divider" aria-hidden="true" />
             <span className="choke-brand-mark">Choke Gateway</span>
+            {/* Which deployment am I looking at? The engine and the console
+                serve identical page titles on all four routes, so with both
+                open nothing on screen distinguishes a single host from the
+                whole fleet — and the actions differ. Cheap to render, and it
+                removes a way to act on the wrong system. */}
+            <span
+              className={`choke-deployment-tag ${isFleetConsole ? "fleet" : "engine"}`}
+              title={isFleetConsole
+                ? "Multi-tenant console — actions fan out to every agent in this tenant"
+                : "Single-tenant engine — actions apply to this host only"}
+            >
+              {isFleetConsole ? "FLEET" : "THIS HOST"}
+            </span>
           </div>
           <input
             data-choke-global-search
@@ -1409,7 +1449,7 @@ export function ChokeRoute(): React.ReactElement {
               <div className="choke-policy-actions">
                 <button className="choke-action-button" type="button" onClick={() => { setPolicyYaml(DEFAULT_POLICY); setPolicyPreview(null); setPolicyError(""); }}>Insert sample</button>
                 <button className="choke-action-button" type="button" onClick={insertLivePolicy} title="Build a policy from the processes currently tracked so preview returns real matches">Build from live</button>
-                <button className="choke-action-button ok" type="button" onClick={() => void runPolicyPreview()} disabled={disabled || policyChecking}>{policyChecking ? "Checking…" : "Preview matches"}</button>
+                <button className="choke-action-button ok" type="button" onClick={() => void runPolicyPreview()} disabled={disabled || policyChecking || isFleetConsole} title={isFleetConsole ? engineOnlyHint : undefined}>{policyChecking ? "Checking…" : "Preview matches"}</button>
               </div>
             </div>
             <PolicyPreview preview={policyPreview} error={policyError} checking={policyChecking} circuits={circuits} />
@@ -2470,17 +2510,28 @@ function ProcessDrill({
                 const execId = entry.exec_id || drill.execId;
                 try {
                   if (rung === "pristine") {
-                    await releaseProcess(execId, entry.pid, why);
-                  } else {
-                    await manualAction({
-                      exec_id: execId,
-                      pid: entry.pid,
-                      binary: entry.binary,
-                      action: ACTION_FOR_RUNG[rung] as ChokeAction,
-                      reason: why
-                    });
+                    await releaseProcess(execId, entry.pid, why, entry.agent);
+                    return { ok: true, detail: "release accepted" };
                   }
-                  return { ok: true, detail: `${ACTION_FOR_RUNG[rung]} accepted` };
+                  const result = await manualAction({
+                    exec_id: execId,
+                    pid: entry.pid,
+                    binary: entry.binary,
+                    agent_id: entry.agent,
+                    action: ACTION_FOR_RUNG[rung] as ChokeAction,
+                    reason: why
+                  });
+                  // "accepted" is not "applied". The ladder must show the rung
+                  // as reached only when an agent reported it actually enforced,
+                  // or the operator watches the ladder climb on a process no
+                  // host is running.
+                  if (!result?.ok) {
+                    return { ok: false, detail: result?.detail || result?.status || "no agent applied it" };
+                  }
+                  return {
+                    ok: true,
+                    detail: `${ACTION_FOR_RUNG[rung]} applied${result.agent ? ` on ${result.agent}` : ""}`
+                  };
                 } catch (error) {
                   return { ok: false, detail: (error as Error).message || "action failed" };
                 }

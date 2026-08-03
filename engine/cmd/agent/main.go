@@ -30,7 +30,9 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -150,6 +152,38 @@ func kernelPolicies(ctx context.Context) []*ebpfsocv1.KernelPolicy {
 		out = append(out, kp)
 	}
 	return out
+}
+
+// policyVersion fingerprints the policy set this host is ACTUALLY running, so
+// the console can spot an agent that has drifted from the rest of the fleet.
+//
+// The wire contract has carried applied_policy_version since the beginning and
+// the control plane already displays it — but nothing ever set it, so every
+// agent reported an empty string and drift was invisible. That is not
+// hypothetical: `tetra tracingpolicy add` is create-only, so an edited policy
+// keeps running the version loaded at start, and a policy deleted at runtime
+// returns from a stale file on the next restart. Both leave a host quietly
+// running something different from its neighbours.
+//
+// Derived from the LOADED set (name + mode + enabled), never from files on
+// disk, for exactly that reason: what is on disk is what someone intended, and
+// the whole class of bug here is the two disagreeing. Mode is included because
+// the same policies in enforce rather than monitor mode is a different — and
+// much more dangerous — posture, and it should not hash identically.
+func policyVersion(pols []*ebpfsocv1.KernelPolicy) string {
+	if len(pols) == 0 {
+		return ""
+	}
+	lines := make([]string, 0, len(pols))
+	for _, p := range pols {
+		lines = append(lines, fmt.Sprintf("%s\x00%s\x00%t", p.GetName(), p.GetMode(), p.GetEnabled()))
+	}
+	// Tetragon does not promise an order, so sort before hashing or the same
+	// fleet-wide policy set would fingerprint differently per host and every
+	// agent would look like it had drifted.
+	sort.Strings(lines)
+	sum := sha256.Sum256([]byte(strings.Join(lines, "\n")))
+	return hex.EncodeToString(sum[:8])
 }
 
 func tracingPolicyMode(m tetragon.TracingPolicyMode) string {
@@ -495,6 +529,17 @@ func main() {
 		SystemCriticalBinaries: critBins,
 	})
 	httpSrv.SetGateway(gw)
+	// Liveness probe behind Gateway.Owns — the fallback evidence for a target
+	// named by PID rather than by an exec_id this host observed. signal 0 does
+	// no work but still runs the kernel's permission check, so EPERM means the
+	// process exists and belongs to someone else; only ESRCH means "not here".
+	gw.SetPIDLiveFn(func(pid uint32) bool {
+		if pid == 0 {
+			return false
+		}
+		err := syscall.Kill(int(pid), 0)
+		return err == nil || errors.Is(err, syscall.EPERM)
+	})
 
 	// ---- Network Choke Gateway (per-device / MAC) -------------------------
 	// A parallel data plane: tc clsact programs keyed by MAC on the LAN /
@@ -814,8 +859,13 @@ func main() {
 			Buffer:         upBuf,
 			Processor:      proc,
 			Heartbeat: func() *ebpfsocv1.HeartbeatRequest {
+				// Read the kernel's policy set ONCE per heartbeat: the version
+				// must fingerprint exactly the set being reported, and a second
+				// call could observe a reload in between and disagree with it.
+				kpols := kernelPolicies(ctx)
 				return &ebpfsocv1.HeartbeatRequest{
-					AgentInfo: agentInfo(),
+					AgentInfo:            agentInfo(),
+					AppliedPolicyVersion: policyVersion(kpols),
 					DataPlane: &ebpfsocv1.DataPlaneState{
 						Mode: gatewayMode(gw),
 						// Report the device plane truthfully: the control plane
@@ -824,11 +874,15 @@ func main() {
 						// every agent was running the noop backend.
 						DevicePlane: deviceGW.DataPlaneTier(),
 						DeviceLinks: int32(deviceGW.AttachedLinks()),
+						// Real frame count, not a placeholder — see frames_seen
+						// in common.proto for why the console needs it.
+						FramesSeen:  deviceGW.FramesSeen(),
+						DevicesSeen: uint32(deviceGW.DevicesSeen()),
 						DeviceMode:  deviceGatewayMode(deviceGW),
 						// The other enforcement authority on this host. Without
 						// it the console reports the engine's mode as if it were
 						// the host's posture — see kernelPolicies.
-						KernelPolicies: kernelPolicies(ctx),
+						KernelPolicies: kpols,
 					},
 					BufferDepth: uint64(upBuf.PendingDepth()),
 					Chokes:      chokeSummaries(gw),
@@ -940,7 +994,7 @@ func handleExec(ev *tetragon.ProcessExec, st *store.Store, pt *tree.Tree, broadc
 	}
 	pt.Add(node)
 
-	delta, reason := score.Score("process_exec", p.Binary, p.Arguments, "", p.Uid.GetValue())
+	delta, reason, finding := score.Score("process_exec", p.Binary, p.Arguments, "", p.Uid.GetValue())
 	if delta > 0 {
 		pt.AddScore(p.ExecId, delta, "process_exec")
 	}
@@ -970,7 +1024,7 @@ func handleExec(ev *tetragon.ProcessExec, st *store.Store, pt *tree.Tree, broadc
 	enqueueUplink(uplink.EventRecord(e))
 	metrics.IncEvent("process_exec")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
-	checkAlert(p.ExecId, st, pt, broadcast, reason)
+	checkAlert(p.ExecId, st, pt, broadcast, reason, finding)
 }
 
 func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
@@ -982,7 +1036,7 @@ func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, br
 
 	argStr := extractKprobeArgs(ev.Args)
 
-	delta, reason := score.Score("process_kprobe", p.Binary, argStr, policyName, p.Uid.GetValue())
+	delta, reason, finding := score.Score("process_kprobe", p.Binary, argStr, policyName, p.Uid.GetValue())
 	if delta > 0 {
 		pt.AddScore(p.ExecId, delta, "process_kprobe:"+policyName)
 	}
@@ -1007,7 +1061,7 @@ func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, br
 	enqueueUplink(uplink.EventRecord(e))
 	metrics.IncEvent("process_kprobe")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
-	checkAlert(p.ExecId, st, pt, broadcast, reason)
+	checkAlert(p.ExecId, st, pt, broadcast, reason, finding)
 }
 
 func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
@@ -1060,7 +1114,7 @@ func joinHostPort(addr string, port uint32) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {
+func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason, finding string) {
 	chainScore := pt.ChainScore(execID)
 
 	// Gateway runs on every event regardless of alert threshold so a process
@@ -1069,6 +1123,15 @@ func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- 
 	dispatchGateway(execID, pt, chainScore, reason)
 
 	if chainScore < 10 {
+		return
+	}
+	// Alert on an escalation in severity, or on a finding this chain has not
+	// reported before — not on every event. Chain scores are cumulative and
+	// never fall, so alerting per-event made 91 of 100 alerts critical on the
+	// engine. The agent carries its own copy of this path, so without the same
+	// guard every multi-tenant console would still saturate. Enforcement is
+	// untouched: dispatchGateway above runs on every event regardless.
+	if !pt.EscalateAlert(execID, score.Band(chainScore), finding) {
 		return
 	}
 	severity := score.Severity(chainScore)
@@ -1294,6 +1357,36 @@ func (a gatewayApplier) SetThresholds(throttleAt, tarpitAt, quarantineAt, severA
 		SeverAt:      int(severAt),
 	})
 	return nil
+}
+
+// OwnsTarget implements command.TargetOwner: it answers whether a Jail/Thaw
+// target belongs to THIS host, so the command processor can no-op with a
+// STATUS_NOT_TARGET ack instead of enforcing on someone else's process.
+//
+// The control plane dispatches one containment command to several agents when
+// it cannot yet tell which one holds the target. Before this gate, every agent
+// applied: on the process plane that means the severer SIGKILLs whatever local
+// process happens to hold that PID number (PIDs are per-host and collide across
+// a fleet) and then acks APPLIED — so the console reported a threat contained
+// while the real process kept running on another host, and an unrelated process
+// died on this one. Both halves of that are what this gate removes.
+func (a gatewayApplier) OwnsTarget(execID string, pid uint32) ebpfsocv1.CommandAck_TargetMatch {
+	if mac, isDevice := strings.CutPrefix(execID, devicePrefix); isDevice {
+		// MACs are globally unique, so seeing the device is proof; an agent
+		// without a device gateway can never own one.
+		if a.devGW != nil && a.devGW.Owns(mac) {
+			return ebpfsocv1.CommandAck_TARGET_MATCH_DEVICE
+		}
+		return ebpfsocv1.CommandAck_TARGET_MATCH_NONE
+	}
+	switch a.gw.Owns(execID, pid) {
+	case choke.MatchExecID:
+		return ebpfsocv1.CommandAck_TARGET_MATCH_EXEC_ID
+	case choke.MatchPID:
+		return ebpfsocv1.CommandAck_TARGET_MATCH_PID
+	default:
+		return ebpfsocv1.CommandAck_TARGET_MATCH_NONE
+	}
 }
 
 // devicePrefix marks a command whose target is a LAN device (keyed by MAC)

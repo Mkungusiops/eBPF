@@ -98,11 +98,37 @@ message CommandAck {
   string detail = 3;
   google.protobuf.Timestamp applied_at = 4;
 
+  // How this agent identified the target of a Jail/Thaw. A targeted command
+  // may be dispatched to several agents when the control plane cannot yet tell
+  // which one is running the target, so the ack has to carry the STRENGTH of
+  // the match, not just the outcome. Without it an agent that merely happens to
+  // have a live process of the same PID number is indistinguishable from the
+  // one actually running the target — and PID numbers collide across hosts.
+  TargetMatch target_match = 5;
+
   enum Status {
     STATUS_UNSPECIFIED = 0;
     STATUS_ACCEPTED = 1; // valid signature, queued
     STATUS_APPLIED = 2;  // effected on the host
     STATUS_REJECTED = 3; // bad signature or failed local guardrail
     STATUS_EXPIRED = 4;  // past expires_at
+    // The command was valid and authorized, but this agent is not running the
+    // target, so it did nothing. Deliberately NOT applied and NOT rejected:
+    // reporting a no-op as applied tells the operator a threat is contained
+    // when it is still running, and reporting it as rejected hides the agent
+    // that genuinely did enforce behind a fleet-wide "failed".
+    STATUS_NOT_TARGET = 5;
+  }
+
+  enum TargetMatch {
+    TARGET_MATCH_UNSPECIFIED = 0; // not a targeted command (mode, thresholds, …)
+    TARGET_MATCH_NONE = 1;        // neither the exec_id nor the pid is this host's
+    // Only the pid is live here, and this agent has never observed the exec_id.
+    // WEAK: on a fleet, an unrelated process can hold that PID number.
+    TARGET_MATCH_PID = 2;
+    // This agent observed the exec_id in its OWN telemetry. Tetragon exec_ids
+    // encode the node, so this is a definitive statement of ownership.
+    TARGET_MATCH_EXEC_ID = 3;
+    TARGET_MATCH_DEVICE = 4; // the MAC is in this agent's device table
   }
 }

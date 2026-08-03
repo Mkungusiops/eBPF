@@ -72,6 +72,10 @@ type Server struct {
 	registry   *heartbeat.Registry
 	dispatcher *command.Dispatcher
 	auditor    *authz.MemAuditor
+	// owners remembers which agent proved it was running a given target, so a
+	// follow-up command on the same process routes straight to it instead of
+	// being re-guessed from a PID. See ownerCache in choke.go.
+	owners *ownerCache
 }
 
 // New builds the gRPC + HTTP surfaces. It does not listen; call Serve (or drive
@@ -113,6 +117,7 @@ func New(cfg Config) (*Server, error) {
 		registry:   heartbeat.NewRegistry(),
 		dispatcher: command.NewDispatcher(cfg.FleetSigner, time.Minute),
 		auditor:    authz.NewMemAuditor(),
+		owners:     newOwnerCache(),
 	}
 
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))

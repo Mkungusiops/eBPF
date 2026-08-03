@@ -167,3 +167,113 @@ func TestKillSwitchHaltsThenUnhalts(t *testing.T) {
 		t.Fatalf("expected exactly one applied SetMode after unhalt, got %d", fa.setModeCalls)
 	}
 }
+
+// ─────────── Multi-agent containment honesty ─────────────────────────────
+//
+// A Jail/Thaw may be dispatched to several agents at once because the control
+// plane cannot always tell which one is running the target. An agent that is
+// not running it must no-op AND SAY SO: a no-op reported as APPLIED tells the
+// operator a threat is contained while the process keeps running elsewhere.
+
+// owningApplier answers ownership questions from a fixed grade.
+type owningApplier struct {
+	fakeApplier
+	match ebpfsocv1.CommandAck_TargetMatch
+}
+
+func (o *owningApplier) OwnsTarget(string, uint32) ebpfsocv1.CommandAck_TargetMatch { return o.match }
+
+func newOwningProc(t *testing.T, match ebpfsocv1.CommandAck_TargetMatch) (*Processor, signing.Signer, *owningApplier) {
+	t.Helper()
+	s, v, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oa := &owningApplier{match: match}
+	return NewProcessor(v, oa, []string{"sudo"}), s, oa
+}
+
+func jailCmd(s signing.Signer, id, execID string, pid uint32, tier string) *ebpfsocv1.Command {
+	return sign(s, &ebpfsocv1.Command{
+		CommandId: id,
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{
+			ExecId: execID, Pid: pid, Tier: tier}},
+	})
+}
+
+// TestJailNotTargetIsNotApplied: the core fix. An agent that disowns the target
+// must not run the enforcer at all — on a sever the enforcer is a SIGKILL, so
+// deciding after the fact would already have killed a same-numbered local PID.
+func TestJailNotTargetIsNotApplied(t *testing.T) {
+	p, s, oa := newOwningProc(t, ebpfsocv1.CommandAck_TARGET_MATCH_NONE)
+	ack := p.Handle(jailCmd(s, "j1", "someone-elses-exec", 4021, "sever"))
+
+	if ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_NOT_TARGET {
+		t.Fatalf("status = %v (%s), want NOT_TARGET", ack.GetStatus(), ack.GetDetail())
+	}
+	if oa.jailCalls != 0 {
+		t.Fatal("enforcer ran for a target this agent does not own — a sever here SIGKILLs an unrelated local process")
+	}
+	if ack.GetStatus() == ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatal("a no-op must never report APPLIED")
+	}
+}
+
+// TestThawNotTargetIsNotApplied: same rule on the release path, so a thaw that
+// touched nothing is not reported as having released the process.
+func TestThawNotTargetIsNotApplied(t *testing.T) {
+	p, s, _ := newOwningProc(t, ebpfsocv1.CommandAck_TARGET_MATCH_NONE)
+	cmd := sign(s, &ebpfsocv1.Command{
+		CommandId: "t1",
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action:    &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: "not-mine", Pid: 4021}},
+	})
+	if ack := p.Handle(cmd); ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_NOT_TARGET {
+		t.Fatalf("status = %v, want NOT_TARGET", ack.GetStatus())
+	}
+}
+
+// TestJailAckCarriesMatchGrade: the owner applies, and the ack reports HOW it
+// knew. The control plane needs the grade — an exec_id match is proof of
+// ownership, a pid match is a coincidence it must not act irreversibly on.
+func TestJailAckCarriesMatchGrade(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		match ebpfsocv1.CommandAck_TargetMatch
+	}{
+		{"definitive", ebpfsocv1.CommandAck_TARGET_MATCH_EXEC_ID},
+		{"weak", ebpfsocv1.CommandAck_TARGET_MATCH_PID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p, s, oa := newOwningProc(t, tc.match)
+			ack := p.Handle(jailCmd(s, "j-"+tc.name, "mine", 4021, "quarantine"))
+			if ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+				t.Fatalf("status = %v (%s), want APPLIED", ack.GetStatus(), ack.GetDetail())
+			}
+			if ack.GetTargetMatch() != tc.match {
+				t.Fatalf("target_match = %v, want %v", ack.GetTargetMatch(), tc.match)
+			}
+			if oa.jailCalls != 1 {
+				t.Fatalf("jail calls = %d, want 1", oa.jailCalls)
+			}
+		})
+	}
+}
+
+// TestApplierWithoutOwnershipKeepsApplying: an Applier that cannot answer the
+// ownership question (simulators, older builds) must keep its previous
+// behavior rather than start refusing every command.
+func TestApplierWithoutOwnershipKeepsApplying(t *testing.T) {
+	p, s, fa := newProc(t)
+	ack := p.Handle(jailCmd(s, "j2", "whatever", 4021, "throttle"))
+	if ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("status = %v, want APPLIED", ack.GetStatus())
+	}
+	if ack.GetTargetMatch() != ebpfsocv1.CommandAck_TARGET_MATCH_UNSPECIFIED {
+		t.Fatalf("target_match = %v, want UNSPECIFIED (the claim is ungraded, not proven)", ack.GetTargetMatch())
+	}
+	if fa.jailCalls != 1 {
+		t.Fatalf("jail calls = %d, want 1", fa.jailCalls)
+	}
+}

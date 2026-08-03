@@ -30,12 +30,21 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/fleet/alerts", s.handleFleetAlerts)
 	mux.HandleFunc("/api/fleet/devices", s.handleFleetDevices)
 	mux.HandleFunc("/api/fleet/probe", s.handleFleetProbe)
-	for _, p := range []string{
-		"/api/fleet/preset", "/api/fleet/thresholds",
-		"/api/fleet/kill-switch", "/api/fleet/thaw",
-	} {
-		mux.HandleFunc(p, s.handleChokeWriteStub) // same clean 501
-	}
+	// The Fleet surface offers the same four fleet-wide response actions as the
+	// Choke surface, and they were already implemented — /api/choke/kill-switch,
+	// /api/choke/thresholds, /api/choke/preset and /api/choke/thaw all dispatch
+	// signed, fleet-wide commands. Only the /api/fleet/* aliases were missing,
+	// so an operator working from Fleet got "not yet enabled" for actions that
+	// worked one screen across, including the fleet-wide KILL-SWITCH. Two
+	// kill-switch paths behaving differently is worse than one that is absent:
+	// the emergency stop must not depend on which page you happened to open.
+	//
+	// These are aliases, not new behaviour — same handlers, same signed command
+	// dispatcher, same RBAC ActionRespond grant.
+	mux.HandleFunc("/api/fleet/kill-switch", s.handleChokeKill)
+	mux.HandleFunc("/api/fleet/thresholds", s.handleChokeThresh)
+	mux.HandleFunc("/api/fleet/preset", s.handleChokePreset)
+	mux.HandleFunc("/api/fleet/thaw", s.handleChokeThaw)
 }
 
 // hostResult is the frontend's HostResult<T> — one per agent.

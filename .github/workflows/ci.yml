@@ -2,6 +2,7 @@
 #
 # On every PR (and pushes to main / feat branches):
 #   - go vet ./...  and  go test ./...
+#   - policy posture: every shipped TracingPolicy is disarmed by declaration
 #   - build all THREE binaries (engine, agent, controlplane) as static linux
 #   - web suite: npm ci && npm run lint && npm run typecheck && npm test
 #   - Playwright e2e (mocked API, Chromium; credential/target-VM specs self-skip)
@@ -77,6 +78,12 @@ jobs:
 
       - name: proto-lint (wire contract IDL)
         run: make proto-lint
+
+      # Enforcement posture, checked statically so it cannot rot between
+      # deployments. The live equivalent (scripts/e2e/host-posture.sh) needs the
+      # AWS rig and only runs when someone remembers; this runs on every push.
+      - name: policy posture (every TracingPolicy declares monitor mode)
+        run: ./scripts/ci/check-policy-posture.sh
 
       - name: go vet
         working-directory: engine

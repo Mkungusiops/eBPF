@@ -38,6 +38,27 @@ type Applier interface {
 	SetProtectedList(binaries, macs []string) error
 }
 
+// TargetOwner is the optional half of Applier that answers "is this Jail/Thaw
+// target actually mine?".
+//
+// It exists because the control plane cannot always tell which agent in a
+// tenant is running a given process, so one containment command may be
+// dispatched to several of them. Every agent that is not running the target
+// must no-op AND SAY SO: an agent that no-ops but acks APPLIED tells the
+// operator a threat is contained while it is still running, which is the exact
+// failure this product exists to prevent. Worse on the process plane, applying
+// blind means SIGKILLing whatever local process happens to hold that PID
+// number — PIDs are per-host and collide across a fleet.
+//
+// An Applier that does not implement this keeps the old, trusting behavior, so
+// simulators and tests are unaffected.
+type TargetOwner interface {
+	// OwnsTarget grades this host's claim on (execID, pid). The grades are
+	// ordered: EXEC_ID (this host observed it) beats PID (a live process of
+	// that number is here, which is a guess) beats NONE.
+	OwnsTarget(execID string, pid uint32) ebpfsocv1.CommandAck_TargetMatch
+}
+
 // Processor verifies and applies signed commands. It is safe for concurrent use.
 type Processor struct {
 	verify          signing.Verifier
@@ -95,13 +116,25 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 	}
 
 	// 5. Effect the action.
+	//
+	// The targeted actions (Jail/Thaw) are gated on ownership FIRST. Deciding
+	// after the fact is not good enough: on the process plane the enforcer would
+	// already have SIGKILLed a same-numbered local PID before anyone asked whose
+	// process it was.
 	var err error
+	match := ebpfsocv1.CommandAck_TARGET_MATCH_UNSPECIFIED
 	switch a := c.GetAction().(type) {
 	case *ebpfsocv1.Command_SetMode:
 		err = p.applier.SetMode(a.SetMode.GetMode(), a.SetMode.GetPlane())
 	case *ebpfsocv1.Command_Jail:
+		if match = p.ownership(a.Jail.GetExecId(), a.Jail.GetPid()); match == ebpfsocv1.CommandAck_TARGET_MATCH_NONE {
+			return ackMatch(id, ebpfsocv1.CommandAck_STATUS_NOT_TARGET, notTargetDetail, match)
+		}
 		err = p.applier.Jail(a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier())
 	case *ebpfsocv1.Command_Thaw:
+		if match = p.ownership(a.Thaw.GetExecId(), a.Thaw.GetPid()); match == ebpfsocv1.CommandAck_TARGET_MATCH_NONE {
+			return ackMatch(id, ebpfsocv1.CommandAck_STATUS_NOT_TARGET, notTargetDetail, match)
+		}
 		err = p.applier.Thaw(a.Thaw.GetExecId(), a.Thaw.GetPid())
 	case *ebpfsocv1.Command_SetThresholds:
 		t := a.SetThresholds
@@ -118,9 +151,27 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, "unknown or empty command action")
 	}
 	if err != nil {
-		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, err.Error())
+		return ackMatch(id, ebpfsocv1.CommandAck_STATUS_REJECTED, err.Error(), match)
 	}
-	return ack(id, ebpfsocv1.CommandAck_STATUS_APPLIED, "")
+	return ackMatch(id, ebpfsocv1.CommandAck_STATUS_APPLIED, "", match)
+}
+
+// notTargetDetail is what the operator ends up reading when a command reached
+// an agent that is not running the target. It has to be plain, because it will
+// appear in the console next to a containment they asked for.
+const notTargetDetail = "this agent is not running that target; nothing was done"
+
+// ownership asks the applier whether the target is this host's. An applier that
+// does not implement TargetOwner cannot answer, so it keeps the pre-existing
+// behavior of applying whatever it is told — reported as UNSPECIFIED so the
+// control plane can see the claim is ungraded rather than mistaking it for
+// proof of ownership.
+func (p *Processor) ownership(execID string, pid uint32) ebpfsocv1.CommandAck_TargetMatch {
+	owner, ok := p.applier.(TargetOwner)
+	if !ok {
+		return ebpfsocv1.CommandAck_TARGET_MATCH_UNSPECIFIED
+	}
+	return owner.OwnsTarget(execID, pid)
 }
 
 // Halted reports whether the kill-switch is currently engaged.
@@ -176,10 +227,15 @@ func unionProtected(requested, always []string) []string {
 }
 
 func ack(id string, st ebpfsocv1.CommandAck_Status, detail string) *ebpfsocv1.CommandAck {
+	return ackMatch(id, st, detail, ebpfsocv1.CommandAck_TARGET_MATCH_UNSPECIFIED)
+}
+
+func ackMatch(id string, st ebpfsocv1.CommandAck_Status, detail string, match ebpfsocv1.CommandAck_TargetMatch) *ebpfsocv1.CommandAck {
 	return &ebpfsocv1.CommandAck{
-		CommandId: id,
-		Status:    st,
-		Detail:    detail,
-		AppliedAt: timestamppb.Now(),
+		CommandId:   id,
+		Status:      st,
+		Detail:      detail,
+		AppliedAt:   timestamppb.Now(),
+		TargetMatch: match,
 	}
 }

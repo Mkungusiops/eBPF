@@ -8,6 +8,7 @@ import (
 
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
@@ -86,20 +87,33 @@ func (d *Dispatcher) wake(agentID string) {
 
 // Enqueue assigns an id + expiry, signs the command over its canonical bytes,
 // and queues it for agentID. Returns the command id.
+//
+// The command id identifies ONE DISPATCH TO ONE AGENT, not the action, so each
+// call mints a fresh id and queues its own copy of c. Both matter when a caller
+// sends the same action to several agents:
+//
+//   - reusing the id would make every agent's ack land on the same key, so only
+//     one would ever be observed and it would be attributed to whichever agent
+//     was enqueued last. A caller fanning a containment command out to a tenant
+//     could not tell which host actually enforced.
+//   - mutating c in place would alias the queued commands, so signing the
+//     second dispatch would retroactively rewrite the first agent's id.
+//
+// Callers therefore cannot pre-set a command id; nothing needs to, and allowing
+// it is what made the aliasing silent.
 func (d *Dispatcher) Enqueue(agentID string, c *ebpfsocv1.Command) string {
-	if c.GetCommandId() == "" {
-		c.CommandId = newCommandID()
+	cmd, _ := proto.Clone(c).(*ebpfsocv1.Command)
+	cmd.CommandId = newCommandID()
+	cmd.IssuedAt = timestamppb.Now()
+	if cmd.GetExpiresAt() == nil {
+		cmd.ExpiresAt = timestamppb.New(time.Now().Add(d.signTTL))
 	}
-	c.IssuedAt = timestamppb.Now()
-	if c.GetExpiresAt() == nil {
-		c.ExpiresAt = timestamppb.New(time.Now().Add(d.signTTL))
-	}
-	c.Signature = d.signer.Sign(Canonical(c))
+	cmd.Signature = d.signer.Sign(Canonical(cmd))
 	d.mu.Lock()
-	d.queues[agentID] = append(d.queues[agentID], c)
+	d.queues[agentID] = append(d.queues[agentID], cmd)
 	d.wake(agentID)
 	d.mu.Unlock()
-	return c.GetCommandId()
+	return cmd.GetCommandId()
 }
 
 // Ack returns the recorded ack for a command id.

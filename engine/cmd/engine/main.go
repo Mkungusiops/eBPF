@@ -851,7 +851,7 @@ func handleExec(ev *tetragon.ProcessExec, st *store.Store, pt *tree.Tree, broadc
 	}
 	pt.Add(node)
 
-	delta, reason := score.Score("process_exec", p.Binary, p.Arguments, "", p.Uid.GetValue())
+	delta, reason, finding := score.Score("process_exec", p.Binary, p.Arguments, "", p.Uid.GetValue())
 	if delta > 0 {
 		pt.AddScore(p.ExecId, delta, "process_exec")
 	}
@@ -880,7 +880,7 @@ func handleExec(ev *tetragon.ProcessExec, st *store.Store, pt *tree.Tree, broadc
 
 	metrics.IncEvent("process_exec")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
-	checkAlert(p.ExecId, st, pt, broadcast, reason)
+	checkAlert(p.ExecId, st, pt, broadcast, reason, finding)
 }
 
 func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast) {
@@ -892,7 +892,7 @@ func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, br
 
 	argStr := extractKprobeArgs(ev.Args)
 
-	delta, reason := score.Score("process_kprobe", p.Binary, argStr, policyName, p.Uid.GetValue())
+	delta, reason, finding := score.Score("process_kprobe", p.Binary, argStr, policyName, p.Uid.GetValue())
 	if delta > 0 {
 		pt.AddScore(p.ExecId, delta, "process_kprobe:"+policyName)
 	}
@@ -916,7 +916,7 @@ func handleKprobe(ev *tetragon.ProcessKprobe, st *store.Store, pt *tree.Tree, br
 
 	metrics.IncEvent("process_kprobe")
 	send(broadcast, api.Broadcast{Type: "event", Payload: e})
-	checkAlert(p.ExecId, st, pt, broadcast, reason)
+	checkAlert(p.ExecId, st, pt, broadcast, reason, finding)
 }
 
 func extractKprobeArgs(args []*tetragon.KprobeArgument) string {
@@ -969,7 +969,7 @@ func joinHostPort(addr string, port uint32) string {
 	return fmt.Sprintf("%s:%d", addr, port)
 }
 
-func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason string) {
+func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- api.Broadcast, reason, finding string) {
 	chainScore := pt.ChainScore(execID)
 
 	// Gateway runs on every event regardless of alert threshold so a
@@ -979,6 +979,15 @@ func checkAlert(execID string, st *store.Store, pt *tree.Tree, broadcast chan<- 
 	dispatchGateway(execID, pt, chainScore, reason)
 
 	if chainScore < 10 {
+		return
+	}
+	// Alert on an escalation in severity, or on a finding this chain has not
+	// reported before — not on every event. Chain scores are cumulative and
+	// never fall, so alerting on each event above the threshold made 91 of 100
+	// alerts critical on a measured run, and an operator could not tell an
+	// escalation from noise. Enforcement is untouched: dispatchGateway above
+	// runs on every event regardless.
+	if !pt.EscalateAlert(execID, score.Band(chainScore), finding) {
 		return
 	}
 	severity := score.Severity(chainScore)

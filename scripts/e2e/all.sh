@@ -123,6 +123,18 @@ if [[ -n "${AGENT_RSH:-}" ]]; then
      bash "$ROOT/scripts/e2e/posture-divergence.sh"; then RESULTS+=("PASS posture-divergence"); else RESULTS+=("FAIL posture-divergence"); RC=1; fi
 fi
 
+# The autonomy invariant: "a missed heartbeat never stops enforcement". If a
+# control-plane outage silently disarms every agent, one host going down takes
+# the fleet with it, and anyone who can reach the console can disable protection
+# everywhere without touching a protected machine. Stops the control plane for
+# real, so it is opt-in alongside the reboot suite.
+if [[ "${REBOOT_TEST:-0}" == "1" && -n "${AGENT_B_RSH:-}" && -n "${CP_RSH:-}" ]]; then
+  section "agent autonomy (control-plane outage)"
+  if AGENT_RSH="$AGENT_B_RSH" CP_RSH="$CP_RSH" CONSOLE_URL="$CONSOLE_URL" \
+     MT_USER="$MT_B_USER" MT_PASS="$MT_B_PASS" \
+     bash "$ROOT/scripts/e2e/agent-autonomy.sh"; then RESULTS+=("PASS agent-autonomy"); else RESULTS+=("FAIL agent-autonomy"); RC=1; fi
+fi
+
 # OPT-IN: this reboots a real host, so it is not part of the default loop —
 # five minutes and an outage is the wrong price for an ordinary pre-commit run.
 # Run it before a release or a customer deployment, where "does the agent come

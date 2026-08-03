@@ -89,6 +89,12 @@ const (
 	CommandAck_STATUS_APPLIED     CommandAck_Status = 2 // effected on the host
 	CommandAck_STATUS_REJECTED    CommandAck_Status = 3 // bad signature or failed local guardrail
 	CommandAck_STATUS_EXPIRED     CommandAck_Status = 4 // past expires_at
+	// The command was valid and authorized, but this agent is not running the
+	// target, so it did nothing. Deliberately NOT applied and NOT rejected:
+	// reporting a no-op as applied tells the operator a threat is contained
+	// when it is still running, and reporting it as rejected hides the agent
+	// that genuinely did enforce behind a fleet-wide "failed".
+	CommandAck_STATUS_NOT_TARGET CommandAck_Status = 5
 )
 
 // Enum value maps for CommandAck_Status.
@@ -99,6 +105,7 @@ var (
 		2: "STATUS_APPLIED",
 		3: "STATUS_REJECTED",
 		4: "STATUS_EXPIRED",
+		5: "STATUS_NOT_TARGET",
 	}
 	CommandAck_Status_value = map[string]int32{
 		"STATUS_UNSPECIFIED": 0,
@@ -106,6 +113,7 @@ var (
 		"STATUS_APPLIED":     2,
 		"STATUS_REJECTED":    3,
 		"STATUS_EXPIRED":     4,
+		"STATUS_NOT_TARGET":  5,
 	}
 )
 
@@ -134,6 +142,65 @@ func (x CommandAck_Status) Number() protoreflect.EnumNumber {
 // Deprecated: Use CommandAck_Status.Descriptor instead.
 func (CommandAck_Status) EnumDescriptor() ([]byte, []int) {
 	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8, 0}
+}
+
+type CommandAck_TargetMatch int32
+
+const (
+	CommandAck_TARGET_MATCH_UNSPECIFIED CommandAck_TargetMatch = 0 // not a targeted command (mode, thresholds, …)
+	CommandAck_TARGET_MATCH_NONE        CommandAck_TargetMatch = 1 // neither the exec_id nor the pid is this host's
+	// Only the pid is live here, and this agent has never observed the exec_id.
+	// WEAK: on a fleet, an unrelated process can hold that PID number.
+	CommandAck_TARGET_MATCH_PID CommandAck_TargetMatch = 2
+	// This agent observed the exec_id in its OWN telemetry. Tetragon exec_ids
+	// encode the node, so this is a definitive statement of ownership.
+	CommandAck_TARGET_MATCH_EXEC_ID CommandAck_TargetMatch = 3
+	CommandAck_TARGET_MATCH_DEVICE  CommandAck_TargetMatch = 4 // the MAC is in this agent's device table
+)
+
+// Enum value maps for CommandAck_TargetMatch.
+var (
+	CommandAck_TargetMatch_name = map[int32]string{
+		0: "TARGET_MATCH_UNSPECIFIED",
+		1: "TARGET_MATCH_NONE",
+		2: "TARGET_MATCH_PID",
+		3: "TARGET_MATCH_EXEC_ID",
+		4: "TARGET_MATCH_DEVICE",
+	}
+	CommandAck_TargetMatch_value = map[string]int32{
+		"TARGET_MATCH_UNSPECIFIED": 0,
+		"TARGET_MATCH_NONE":        1,
+		"TARGET_MATCH_PID":         2,
+		"TARGET_MATCH_EXEC_ID":     3,
+		"TARGET_MATCH_DEVICE":      4,
+	}
+)
+
+func (x CommandAck_TargetMatch) Enum() *CommandAck_TargetMatch {
+	p := new(CommandAck_TargetMatch)
+	*p = x
+	return p
+}
+
+func (x CommandAck_TargetMatch) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (CommandAck_TargetMatch) Descriptor() protoreflect.EnumDescriptor {
+	return file_ebpfsoc_v1_command_proto_enumTypes[2].Descriptor()
+}
+
+func (CommandAck_TargetMatch) Type() protoreflect.EnumType {
+	return &file_ebpfsoc_v1_command_proto_enumTypes[2]
+}
+
+func (x CommandAck_TargetMatch) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use CommandAck_TargetMatch.Descriptor instead.
+func (CommandAck_TargetMatch) EnumDescriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8, 1}
 }
 
 type Command struct {
@@ -735,11 +802,18 @@ func (x *UpdateProtectedList) GetProtectedMacs() []string {
 }
 
 type CommandAck struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CommandId     string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
-	Status        CommandAck_Status      `protobuf:"varint,2,opt,name=status,proto3,enum=ebpfsoc.v1.CommandAck_Status" json:"status,omitempty"`
-	Detail        string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
-	AppliedAt     *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=applied_at,json=appliedAt,proto3" json:"applied_at,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
+	Status    CommandAck_Status      `protobuf:"varint,2,opt,name=status,proto3,enum=ebpfsoc.v1.CommandAck_Status" json:"status,omitempty"`
+	Detail    string                 `protobuf:"bytes,3,opt,name=detail,proto3" json:"detail,omitempty"`
+	AppliedAt *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=applied_at,json=appliedAt,proto3" json:"applied_at,omitempty"`
+	// How this agent identified the target of a Jail/Thaw. A targeted command
+	// may be dispatched to several agents when the control plane cannot yet tell
+	// which one is running the target, so the ack has to carry the STRENGTH of
+	// the match, not just the outcome. Without it an agent that merely happens to
+	// have a live process of the same PID number is indistinguishable from the
+	// one actually running the target — and PID numbers collide across hosts.
+	TargetMatch   CommandAck_TargetMatch `protobuf:"varint,5,opt,name=target_match,json=targetMatch,proto3,enum=ebpfsoc.v1.CommandAck_TargetMatch" json:"target_match,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -802,6 +876,13 @@ func (x *CommandAck) GetAppliedAt() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *CommandAck) GetTargetMatch() CommandAck_TargetMatch {
+	if x != nil {
+		return x.TargetMatch
+	}
+	return CommandAck_TARGET_MATCH_UNSPECIFIED
+}
+
 var File_ebpfsoc_v1_command_proto protoreflect.FileDescriptor
 
 const file_ebpfsoc_v1_command_proto_rawDesc = "" +
@@ -851,7 +932,7 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\x05plane\x18\x03 \x01(\x0e2\x11.ebpfsoc.v1.PlaneR\x05plane\"k\n" +
 	"\x13UpdateProtectedList\x12-\n" +
 	"\x12protected_binaries\x18\x01 \x03(\tR\x11protectedBinaries\x12%\n" +
-	"\x0eprotected_macs\x18\x02 \x03(\tR\rprotectedMacs\"\xa9\x02\n" +
+	"\x0eprotected_macs\x18\x02 \x03(\tR\rprotectedMacs\"\x96\x04\n" +
 	"\n" +
 	"CommandAck\x12\x1d\n" +
 	"\n" +
@@ -859,13 +940,21 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\x06status\x18\x02 \x01(\x0e2\x1d.ebpfsoc.v1.CommandAck.StatusR\x06status\x12\x16\n" +
 	"\x06detail\x18\x03 \x01(\tR\x06detail\x129\n" +
 	"\n" +
-	"applied_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tappliedAt\"r\n" +
+	"applied_at\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\tappliedAt\x12E\n" +
+	"\ftarget_match\x18\x05 \x01(\x0e2\".ebpfsoc.v1.CommandAck.TargetMatchR\vtargetMatch\"\x89\x01\n" +
 	"\x06Status\x12\x16\n" +
 	"\x12STATUS_UNSPECIFIED\x10\x00\x12\x13\n" +
 	"\x0fSTATUS_ACCEPTED\x10\x01\x12\x12\n" +
 	"\x0eSTATUS_APPLIED\x10\x02\x12\x13\n" +
 	"\x0fSTATUS_REJECTED\x10\x03\x12\x12\n" +
-	"\x0eSTATUS_EXPIRED\x10\x04*C\n" +
+	"\x0eSTATUS_EXPIRED\x10\x04\x12\x15\n" +
+	"\x11STATUS_NOT_TARGET\x10\x05\"\x8b\x01\n" +
+	"\vTargetMatch\x12\x1c\n" +
+	"\x18TARGET_MATCH_UNSPECIFIED\x10\x00\x12\x15\n" +
+	"\x11TARGET_MATCH_NONE\x10\x01\x12\x14\n" +
+	"\x10TARGET_MATCH_PID\x10\x02\x12\x18\n" +
+	"\x14TARGET_MATCH_EXEC_ID\x10\x03\x12\x17\n" +
+	"\x13TARGET_MATCH_DEVICE\x10\x04*C\n" +
 	"\x05Plane\x12\x15\n" +
 	"\x11PLANE_UNSPECIFIED\x10\x00\x12\x11\n" +
 	"\rPLANE_PROCESS\x10\x01\x12\x10\n" +
@@ -885,45 +974,47 @@ func file_ebpfsoc_v1_command_proto_rawDescGZIP() []byte {
 	return file_ebpfsoc_v1_command_proto_rawDescData
 }
 
-var file_ebpfsoc_v1_command_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_ebpfsoc_v1_command_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_ebpfsoc_v1_command_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
 var file_ebpfsoc_v1_command_proto_goTypes = []any{
 	(Plane)(0),                    // 0: ebpfsoc.v1.Plane
 	(CommandAck_Status)(0),        // 1: ebpfsoc.v1.CommandAck.Status
-	(*Command)(nil),               // 2: ebpfsoc.v1.Command
-	(*SetMode)(nil),               // 3: ebpfsoc.v1.SetMode
-	(*Jail)(nil),                  // 4: ebpfsoc.v1.Jail
-	(*Thaw)(nil),                  // 5: ebpfsoc.v1.Thaw
-	(*SetThresholds)(nil),         // 6: ebpfsoc.v1.SetThresholds
-	(*ApplyPreset)(nil),           // 7: ebpfsoc.v1.ApplyPreset
-	(*KillSwitch)(nil),            // 8: ebpfsoc.v1.KillSwitch
-	(*UpdateProtectedList)(nil),   // 9: ebpfsoc.v1.UpdateProtectedList
-	(*CommandAck)(nil),            // 10: ebpfsoc.v1.CommandAck
-	(*timestamppb.Timestamp)(nil), // 11: google.protobuf.Timestamp
-	(EnforcementMode)(0),          // 12: ebpfsoc.v1.EnforcementMode
+	(CommandAck_TargetMatch)(0),   // 2: ebpfsoc.v1.CommandAck.TargetMatch
+	(*Command)(nil),               // 3: ebpfsoc.v1.Command
+	(*SetMode)(nil),               // 4: ebpfsoc.v1.SetMode
+	(*Jail)(nil),                  // 5: ebpfsoc.v1.Jail
+	(*Thaw)(nil),                  // 6: ebpfsoc.v1.Thaw
+	(*SetThresholds)(nil),         // 7: ebpfsoc.v1.SetThresholds
+	(*ApplyPreset)(nil),           // 8: ebpfsoc.v1.ApplyPreset
+	(*KillSwitch)(nil),            // 9: ebpfsoc.v1.KillSwitch
+	(*UpdateProtectedList)(nil),   // 10: ebpfsoc.v1.UpdateProtectedList
+	(*CommandAck)(nil),            // 11: ebpfsoc.v1.CommandAck
+	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
+	(EnforcementMode)(0),          // 13: ebpfsoc.v1.EnforcementMode
 }
 var file_ebpfsoc_v1_command_proto_depIdxs = []int32{
-	11, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
-	11, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
-	3,  // 2: ebpfsoc.v1.Command.set_mode:type_name -> ebpfsoc.v1.SetMode
-	4,  // 3: ebpfsoc.v1.Command.jail:type_name -> ebpfsoc.v1.Jail
-	5,  // 4: ebpfsoc.v1.Command.thaw:type_name -> ebpfsoc.v1.Thaw
-	6,  // 5: ebpfsoc.v1.Command.set_thresholds:type_name -> ebpfsoc.v1.SetThresholds
-	7,  // 6: ebpfsoc.v1.Command.apply_preset:type_name -> ebpfsoc.v1.ApplyPreset
-	8,  // 7: ebpfsoc.v1.Command.kill_switch:type_name -> ebpfsoc.v1.KillSwitch
-	9,  // 8: ebpfsoc.v1.Command.update_protected_list:type_name -> ebpfsoc.v1.UpdateProtectedList
-	12, // 9: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
+	12, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
+	12, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
+	4,  // 2: ebpfsoc.v1.Command.set_mode:type_name -> ebpfsoc.v1.SetMode
+	5,  // 3: ebpfsoc.v1.Command.jail:type_name -> ebpfsoc.v1.Jail
+	6,  // 4: ebpfsoc.v1.Command.thaw:type_name -> ebpfsoc.v1.Thaw
+	7,  // 5: ebpfsoc.v1.Command.set_thresholds:type_name -> ebpfsoc.v1.SetThresholds
+	8,  // 6: ebpfsoc.v1.Command.apply_preset:type_name -> ebpfsoc.v1.ApplyPreset
+	9,  // 7: ebpfsoc.v1.Command.kill_switch:type_name -> ebpfsoc.v1.KillSwitch
+	10, // 8: ebpfsoc.v1.Command.update_protected_list:type_name -> ebpfsoc.v1.UpdateProtectedList
+	13, // 9: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
 	0,  // 10: ebpfsoc.v1.SetMode.plane:type_name -> ebpfsoc.v1.Plane
 	0,  // 11: ebpfsoc.v1.KillSwitch.plane:type_name -> ebpfsoc.v1.Plane
 	1,  // 12: ebpfsoc.v1.CommandAck.status:type_name -> ebpfsoc.v1.CommandAck.Status
-	11, // 13: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
-	10, // 14: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
-	2,  // 15: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
-	15, // [15:16] is the sub-list for method output_type
-	14, // [14:15] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	12, // 13: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
+	2,  // 14: ebpfsoc.v1.CommandAck.target_match:type_name -> ebpfsoc.v1.CommandAck.TargetMatch
+	11, // 15: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
+	3,  // 16: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
+	16, // [16:17] is the sub-list for method output_type
+	15, // [15:16] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_command_proto_init() }
@@ -946,7 +1037,7 @@ func file_ebpfsoc_v1_command_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_command_proto_rawDesc), len(file_ebpfsoc_v1_command_proto_rawDesc)),
-			NumEnums:      2,
+			NumEnums:      3,
 			NumMessages:   9,
 			NumExtensions: 0,
 			NumServices:   1,

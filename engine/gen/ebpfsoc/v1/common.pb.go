@@ -198,8 +198,25 @@ type DataPlaneState struct {
 	// the engine's half of it. Empty is not "safe": it means the agent could not
 	// read Tetragon, which is itself worth surfacing.
 	KernelPolicies []*KernelPolicy `protobuf:"bytes,7,rep,name=kernel_policies,json=kernelPolicies,proto3" json:"kernel_policies,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Forwarded Ethernet frames the device data plane has actually observed,
+	// summed across the agent's attached links.
+	//
+	// The console's "links are attached but no forwarded frames have been seen"
+	// warning is computed from links>0 && frames==0 — the detector for attaching
+	// tc to a bridge MASTER instead of its slaves, where everything looks healthy
+	// and containment silently does nothing. Without this field the control plane
+	// had no frame count to report and hardcoded zero, so that warning fired on
+	// every multi-tenant deployment regardless of topology: a red herring on the
+	// first screen an operator sees, and it discredits the one panel that would
+	// matter on a genuinely inline install.
+	FramesSeen uint64 `protobuf:"varint,8,opt,name=frames_seen,json=framesSeen,proto3" json:"frames_seen,omitempty"`
+	// Devices the data plane has actually OBSERVED, as distinct from devices the
+	// agent merely knows about (neighbour table, DHCP). The control plane
+	// previously reported devices_known for both, so a fleet where the data plane
+	// saw nothing looked identical to one where it saw everything.
+	DevicesSeen   uint32 `protobuf:"varint,9,opt,name=devices_seen,json=devicesSeen,proto3" json:"devices_seen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *DataPlaneState) Reset() {
@@ -279,6 +296,20 @@ func (x *DataPlaneState) GetKernelPolicies() []*KernelPolicy {
 		return x.KernelPolicies
 	}
 	return nil
+}
+
+func (x *DataPlaneState) GetFramesSeen() uint64 {
+	if x != nil {
+		return x.FramesSeen
+	}
+	return 0
+}
+
+func (x *DataPlaneState) GetDevicesSeen() uint32 {
+	if x != nil {
+		return x.DevicesSeen
+	}
+	return 0
 }
 
 // KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —
@@ -853,7 +884,7 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x06kernel\x18\x03 \x01(\tR\x06kernel\x12\x12\n" +
 	"\x04arch\x18\x04 \x01(\tR\x04arch\x12#\n" +
 	"\rbtf_available\x18\x05 \x01(\bR\fbtfAvailable\x12\x17\n" +
-	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\xd2\x02\n" +
+	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\x96\x03\n" +
 	"\x0eDataPlaneState\x12#\n" +
 	"\rprocess_plane\x18\x01 \x01(\tR\fprocessPlane\x12#\n" +
 	"\rprocess_links\x18\x02 \x01(\x05R\fprocessLinks\x12!\n" +
@@ -862,7 +893,10 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x04mode\x18\x05 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\x12<\n" +
 	"\vdevice_mode\x18\x06 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\n" +
 	"deviceMode\x12A\n" +
-	"\x0fkernel_policies\x18\a \x03(\v2\x18.ebpfsoc.v1.KernelPolicyR\x0ekernelPolicies\"\xa8\x01\n" +
+	"\x0fkernel_policies\x18\a \x03(\v2\x18.ebpfsoc.v1.KernelPolicyR\x0ekernelPolicies\x12\x1f\n" +
+	"\vframes_seen\x18\b \x01(\x04R\n" +
+	"framesSeen\x12!\n" +
+	"\fdevices_seen\x18\t \x01(\rR\vdevicesSeen\"\xa8\x01\n" +
 	"\fKernelPolicy\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x18\n" +

@@ -26,8 +26,10 @@ the wrong one before a deployment.
 | device-drop | 8 | An operator severs a device and real traffic stops in the kernel, then resumes |
 | posture-divergence | 6 | If a second enforcement authority appears, the console **notices and names the agent** |
 | reboot-resilience | 9 | An agent host reboots and the whole stack returns unattended |
+| agent-autonomy | 12 | The agent keeps detecting with the control plane stopped, and re-converges alone |
 
-**161 assertions, all passing** as of the last run against the five-host rig.
+Run against a **six-host** rig: control plane, single-tenant engine, three agents
+(two of them in one tenant) and a victim device.
 
 ## 2. Why several of these exist
 
@@ -74,30 +76,108 @@ redeploy resurrects the simulators alongside them, the tenant ends up with two
 agents, and enforcement can be dispatched to a simulator that acks success for a
 process it never touched.
 
-## 4. Known gaps — read before you promise anything
+## 4. Closed since the first pass
 
-**Alert severity saturates.** On a rig with six attack simulations run once,
-**91 of 100 alerts were `critical`** (score range 16–179 against a critical
-threshold of 40). Scores are cumulative per process chain and only grow, so once
-a chain crosses 40 every subsequent event on it is critical too. Detection is
-correct and the severity matches the documented bands — but as a triage signal
-the field carries almost no information, and a SOC analyst will notice in the
-first hour. Either score per-event, decay the chain score over time, or raise the
-bands. This is a product decision, not a bug, and it is not fixed.
+**Alert severity saturation — FIXED.** Six attack simulations produced 100
+alerts, 91% of them `critical`, from only 5 distinct descriptions. Chain scores
+are cumulative and never fall, so once a chain crossed 40 every later event on it
+was critical too. Alerts now fire on an *escalation in severity* or on a *finding
+the chain has not reported before*, rather than on every event above the
+threshold. Same six simulations now produce **20 alerts with 12 distinct
+findings** and a severity spread.
 
-**Fresh-host enrolment is not covered by any suite.** The rig's agents were
-enrolled by hand and the suites only exercise hosts that are *already* enrolled.
-Enrolling a brand-new host is precisely what a customer deployment does, and it
-is the least-tested path in the system. Testing it needs a sixth host, or a
-decision to consume the victim (which would break `device-drop-proof`, since that
-suite requires a clean, non-agent neighbour to contain).
+Two traps, both hit and both worth knowing: deduplicating on severity band alone
+silenced three of the six simulations outright, because an early file-read pushed
+the chain to critical and the event that actually identified the reverse shell
+had no band left to climb. And the agent carries its own copy of `checkAlert`, so
+fixing only the engine would have left every multi-tenant console saturated.
 
-**Also untested:** policy bundle distribution and signature verification (EN-4),
-agent behaviour when the control plane is unreachable for an extended period,
-Postgres backup and restore, TLS certificate renewal under `certbot`, and
-anything at scale — the largest fleet ever exercised is two agents.
+**Cloud credential theft was invisible — FIXED.** `override-credential-read` had
+no case in `scoreKprobe`, so every event it produced scored 0 and never raised an
+alert. It watches paths `sensitive-file-access` does not: `/etc/gshadow` and the
+user's `~/.ssh`, `~/.aws`, `~/.kube`, `~/.gnupg`, `~/.netrc`. Verified on the rig
+— a read of `~/.aws/credentials` produced **zero** alerts in the same command
+where `/etc/shadow` produced four. It now scores 18 and reports
+`Credential store read: <path>`.
 
-## 5. Operational traps that cost real time
+**Fresh-host enrolment — TESTED.** A clean Ubuntu 26.04 host went from nothing to
+an enrolled, reporting agent in **166 seconds**: 4 policies applied durably, the
+tc device plane attached, the protect list resolved to gateway + control plane,
+mTLS identity persisted, services running. This is the path a customer deployment
+takes and it had never been exercised.
+
+**Agent autonomy — TESTED** (`agent-autonomy.sh`, 12 assertions). With the
+control plane stopped outright, the agent kept its service, Tetragon and all four
+policies, **detected and recorded a live attack**, and re-registered on its own
+once the console returned. The invariant that a missed heartbeat never stops
+enforcement now has evidence behind it.
+
+**Backup and restore — TESTED.** `pg_dump -Fc` → restore into a scratch database
+reproduced all **1,884,606** rows with RLS still enabled and its policy intact.
+Production was never the restore target.
+
+**Fleet response actions — FIXED.** `/api/fleet/{kill-switch,thresholds,preset,
+thaw}` returned HTTP 501 while the identical fleet-wide operations worked under
+`/api/choke/*`. An operator on the Fleet page got "not yet enabled" for the
+**fleet-wide emergency stop** that worked one screen across. They are now aliases
+of the same handlers, dispatcher and RBAC grant.
+
+## 5. Known gaps — read before you promise anything
+
+**Severity bands — MEASURED, and they are fine.** This was previously listed as
+"untuned" on the strength of 65% of alerts being critical during an attack run.
+That was the wrong baseline: a host running six back-to-back intrusion
+simulations *should* look critical. The number that decides whether severity is
+informative is what a normal host produces, and over four minutes of ordinary
+operation the engine emitted **zero alerts**. A detector that is silent at rest
+and loud under attack is behaving correctly, so the bands stay as they are.
+
+Still worth revisiting after a week of real customer traffic — four minutes on a
+test rig is evidence, not proof — but there is no reason to change them now, and
+changing scoring thresholds on the eve of a deployment would be the riskier act.
+
+**Policy DRIFT is now visible; policy DISTRIBUTION is still manual.** The wire
+contract has always carried `applied_policy_version`, the console has always
+displayed it, and no agent ever set it — so every host reported an empty string
+and a host running a different policy set from its neighbours was invisible.
+
+Agents now fingerprint the policy set the kernel is *actually* running (name +
+mode + enabled, sorted then hashed) and report it every heartbeat. Derived from
+the loaded set rather than files on disk, deliberately: `tetra tracingpolicy add`
+is create-only and a deleted policy returns from a stale file on restart, so what
+is on disk is what someone *intended* and the entire bug class is the two
+disagreeing. Proven on the rig — two agents in one tenant agreed on
+`00b71db0107eb563`, removing one policy from a single host moved it to
+`15ffbf59d932fcfb`, and restoring brought them back into agreement.
+
+What is still *not* built is signed bundle distribution: there is no mechanism
+for the control plane to ship a policy set to agents. Policies reach hosts
+through the provisioner (`make deploy-agent`), over SSH, applied durably to
+`tetragon.tp.d`. That is a working distribution channel with real authentication
+— it is simply not the one EN-4 describes.
+
+**This was deliberately not built before the deployment.** A brand-new path that
+fetches remote content and applies it to the kernel is exactly the wrong thing to
+introduce two days before a customer install, with no soak time. Drift detection
+gives the operational safety (you find out when a host diverges) without adding
+that risk. Note the other half of EN-4 *is* already enforced: local guardrails —
+the protected-binary list and the kill-switch — apply regardless of what any
+command says, and `TestProtectedListGuardrail` pins it.
+
+**Scale is proven to three agents, not thirty.** Two agents in one tenant
+aggregate correctly (`links_attached=4` across both). Nothing has been exercised
+at fleet scale.
+
+**`/api/fleet/kill-switch` accepts `{}` with HTTP 200** where sibling endpoints
+reject a missing reason with 400. It defaults to disengaged so it is not
+dangerous, but it is inconsistent with the audit discipline everywhere else.
+
+**Still untested:** certbot renewal end-to-end (certs are valid to 2026-10-28 and
+the timers are active, but a full `--dry-run` was not completed),
+`/api/choke/policy/preview` and `/api/choke/forensic-snapshot` remain 501 by
+design — hide those controls rather than letting a customer click them.
+
+## 6. Operational traps that cost real time
 
 - **`tetra tracingpolicy add` is create-only.** An edited policy keeps running
   the version loaded at start. Delete first, keyed on `metadata.name`, which is
