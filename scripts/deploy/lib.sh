@@ -285,6 +285,28 @@ devchoke_ifaces: $iface"
     fi
   fi
 
+  # Fleet peer list. Without this the /fleet console and every /api/fleet/*
+  # fanout answer 503, which reads to an operator as a broken page rather than
+  # an unconfigured feature. Default to the engine itself: the Fleet view treats
+  # the local host as a peer like any other, so a one-box deploy gets a working
+  # page showing one host instead of an error.
+  #
+  # Self is addressed on LOOPBACK, never via TARGET_HOST. The fanout dials from
+  # this box, and a public-hostname hairpin is exactly what crash-looped the
+  # control plane's OIDC discovery — same trap, same fix. Add real peers with
+  # FLEET_HOSTS="ebpf-2 https://peer.example.io" (one "name url" per line).
+  log "writing fleet peer list (/etc/ebpf-engine/fleet.hosts)"
+  local fleet_hosts="${FLEET_HOSTS:-}"
+  if [[ -z "$fleet_hosts" ]]; then
+    local selfname
+    selfname="$(RUN 'hostname -s' 2>/dev/null | tr -d '\r')"
+    fleet_hosts="${selfname:-engine} http://127.0.0.1:$ENGINE_PORT"
+  fi
+  RUN "umask 077; cat > /etc/ebpf-engine/fleet.hosts <<'HOSTS'
+# name  base-url   — managed by scripts/deploy/lib.sh, edit FLEET_HOSTS to change
+$fleet_hosts
+HOSTS"
+
   log "writing engine config (/etc/ebpf-engine/engine.yaml, 0600)"
   RUN "umask 077; cat > /etc/ebpf-engine/engine.yaml <<'YAML'
 $tetline
@@ -296,6 +318,7 @@ secret_path: /var/lib/ebpf-engine/secret
 policies: /var/lib/ebpf-engine/policies
 attacks: /var/lib/ebpf-engine/attacks
 honeypots: /var/lib/ebpf-engine/honey
+fleet_hosts: /etc/ebpf-engine/fleet.hosts
 $devlines
 YAML"
   log "writing systemd unit (ebpf-engine)"

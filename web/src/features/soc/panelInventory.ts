@@ -154,7 +154,7 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     title: "Fleet",
     risk: "H",
     mode: "local",
-    description: "Local host directory shell using soc.fleet.hosts; cross-origin probes are not started by default.",
+    description: "Operator-maintained peer directory in soc.fleet.hosts; reachability is probed server-side via /api/fleet/probe.",
     storage: ["soc.fleet.hosts"]
   },
   {

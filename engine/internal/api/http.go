@@ -163,6 +163,7 @@ func (s *Server) Start(addr string) error {
 	// message rather than 404ing when fleet mode is disabled.
 	mux.HandleFunc("/fleet", s.handleFleetConsole)
 	mux.HandleFunc("/api/fleet/hosts", s.handleFleetHosts)
+	mux.HandleFunc("/api/fleet/probe", s.handleFleetProbe)
 	mux.HandleFunc("/api/fleet/state", s.handleFleetState)
 	mux.HandleFunc("/api/fleet/cgroups", s.handleFleetCgroups)
 	mux.HandleFunc("/api/fleet/decisions", s.handleFleetDecisions)

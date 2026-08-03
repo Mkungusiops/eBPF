@@ -4,9 +4,9 @@ import {
 } from "../../e2e/support/contracts";
 
 describe("API certification contract", () => {
-  it("tracks all 21 CSRF-protected write endpoints", () => {
-    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(21);
-    expect(new Set(UNSAFE_WRITE_ENDPOINTS.map((endpoint) => endpoint.path)).size).toBe(21);
+  it("tracks all 22 CSRF-protected write endpoints", () => {
+    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(22);
+    expect(new Set(UNSAFE_WRITE_ENDPOINTS.map((endpoint) => endpoint.path)).size).toBe(22);
   });
 
   it("keeps only run-attack form-encoded among CSRF-protected writes", () => {

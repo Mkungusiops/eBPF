@@ -1,12 +1,15 @@
 package controlplane
 
 import (
+	"encoding/json"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
+	"github.com/jeffmk/ebpf-poc-engine/internal/fleetprobe"
 	"github.com/jeffmk/ebpf-poc-engine/internal/heartbeat"
 )
 
@@ -26,6 +29,7 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/fleet/decisions", s.handleFleetDecisions)
 	mux.HandleFunc("/api/fleet/alerts", s.handleFleetAlerts)
 	mux.HandleFunc("/api/fleet/devices", s.handleFleetDevices)
+	mux.HandleFunc("/api/fleet/probe", s.handleFleetProbe)
 	for _, p := range []string{
 		"/api/fleet/preset", "/api/fleet/thresholds",
 		"/api/fleet/kill-switch", "/api/fleet/thaw",
@@ -172,6 +176,33 @@ func (s *Server) handleFleetDevices(w http.ResponseWriter, r *http.Request) {
 		hosts = append(hosts, hostResult{Name: rec.AgentID, OK: true, Data: devices})
 	}
 	writeJSON(w, 200, map[string]any{"hosts": hosts})
+}
+
+// handleFleetProbe reports whether ad-hoc peer consoles answer HTTP. The
+// tenant's own agents never need this — they are known from heartbeats, and
+// dial the CP rather than listening — so this exists for peers the operator
+// adds by hand, such as a single-tenant engine console alongside the CP.
+//
+// Read authorization is required, but the probe is not tenant-scoped data:
+// it carries no credentials and returns only reachability plus a status code.
+func (s *Server) handleFleetProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if _, ok := s.authorizeRead(w, r); !ok {
+		return
+	}
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64*1024)).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, 200, map[string]any{
+		"hosts": fleetprobe.New().Probe(r.Context(), req.URLs),
+	})
 }
 
 // fleetEnvelope builds a HostResult per tenant agent, attaching each agent's

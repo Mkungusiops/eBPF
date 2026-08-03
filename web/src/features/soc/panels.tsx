@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
 import { Activity, AlertTriangle, Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Shield, ShieldCheck, Target, Trash2, Volume2 } from "lucide-react";
 import { cx, EmptyState, Sparkline } from "./components";
-import { fetchPolicyStats } from "./api";
+import { fetchPolicyStats, probeFleetHosts } from "./api";
 import type {
   Severity,
   SocAlert,
@@ -1073,11 +1073,40 @@ export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyS
 
 /* ------------------------------------------------------------------- Fleet */
 
+type FleetState = "up" | "down" | "probing" | "unknown";
+
 interface FleetProbe {
-  state: "up" | "down" | "probing" | "unknown";
+  state: FleetState;
   rttMs?: number;
-  user?: string;
-  host?: string;
+  status?: number;
+  error?: string;
+}
+
+// This panel is the operator's OWN directory: the console serving it, plus the
+// peers they typed in. It deliberately does not enumerate the backend's enrolled
+// agents — those have their own surfaces, and mixing them in both duplicated the
+// self row on an engine and made a hand-maintained list look auto-populated.
+type FleetRowKind = "self" | "local";
+
+interface FleetRow {
+  name: string;
+  url: string;
+  kind: FleetRowKind;
+  probe?: FleetProbe;
+}
+
+/** Peers are addressed over http(s); a bare host would resolve as a relative URL. */
+export function normalizePeerUrl(raw: string): { url?: string; error?: string } {
+  const trimmed = raw.trim().replace(/\/+$/, "");
+  if (!trimmed) return { error: "Enter a peer URL." };
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return { error: "Include the scheme, e.g. https://engine.example.io or http://192.168.1.10:8080" };
+  }
+  try {
+    return { url: new URL(trimmed).origin };
+  } catch {
+    return { error: "That is not a valid URL." };
+  }
 }
 
 export function FleetBody({
@@ -1094,65 +1123,96 @@ export function FleetBody({
   const [probes, setProbes] = useState<Record<string, FleetProbe>>({});
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
+  const [addError, setAddError] = useState("");
 
   // Always present the host serving this console as the first, self-evident row.
   const selfUrl = typeof window !== "undefined" ? window.location.origin : "";
-  const allHosts = useMemo(() => {
-    const withSelf = [{ name: "this", url: selfUrl, self: true }, ...hosts.map((h) => ({ ...h, self: false }))];
-    return withSelf;
-  }, [hosts, selfUrl]);
 
-  const probeHost = useCallback(async (target: string) => {
-    setProbes((prev) => ({ ...prev, [target]: { ...prev[target], state: "probing" } }));
-    const started = performance.now();
+  const rows = useMemo<FleetRow[]>(() => {
+    const self: FleetRow = { name: whoami.host || "this console", url: selfUrl, kind: "self" };
+    const localRows: FleetRow[] = hosts.map((host) => ({
+      name: host.name,
+      url: host.url,
+      kind: "local",
+      probe: probes[host.url]
+    }));
+    return [self, ...localRows];
+  }, [hosts, probes, selfUrl, whoami.host]);
+
+  const probeTargets = useMemo(() => hosts.map((h) => h.url), [hosts]);
+
+  const probe = useCallback(async (targets: string[]) => {
+    if (targets.length === 0) return;
+    setProbes((prev) => {
+      const next = { ...prev };
+      for (const target of targets) next[target] = { ...next[target], state: "probing" };
+      return next;
+    });
     try {
-      const res = await fetch(`${target.replace(/\/$/, "")}/api/whoami`, {
-        credentials: "include",
-        signal: AbortSignal.timeout(4000)
-      });
-      const rttMs = Math.round(performance.now() - started);
-      if (!res.ok) {
-        setProbes((prev) => ({ ...prev, [target]: { state: "down", rttMs } }));
-        return;
-      }
-      const body = (await res.json().catch(() => ({}))) as Record<string, unknown>;
-      setProbes((prev) => ({
-        ...prev,
-        [target]: {
-          state: "up",
-          rttMs,
-          user: typeof body.user === "string" ? body.user : undefined,
-          host: typeof body.host === "string" ? body.host : undefined
+      const results = await probeFleetHosts(targets);
+      setProbes((prev) => {
+        const next = { ...prev };
+        for (const result of results) {
+          next[result.url] = {
+            state: result.reachable ? "up" : "down",
+            rttMs: result.rtt_ms,
+            status: result.status,
+            error: result.error
+          };
         }
-      }));
-    } catch {
-      setProbes((prev) => ({ ...prev, [target]: { state: "down", rttMs: Math.round(performance.now() - started) } }));
+        return next;
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "probe failed";
+      setProbes((prev) => {
+        const next = { ...prev };
+        for (const target of targets) next[target] = { state: "down", error: message };
+        return next;
+      });
     }
   }, []);
 
-  const pingAll = useCallback(() => {
-    for (const host of allHosts) void probeHost(host.url);
-  }, [allHosts, probeHost]);
+  // Probe on open. The probe is a single same-origin call the server fans out,
+  // so there is no longer a reason to make the operator ask: a freshly-opened
+  // panel showing UNKNOWN for a host that is plainly up was the original
+  // complaint. "Ping all" stays for an explicit re-check.
+  useEffect(() => {
+    void probe(probeTargets);
+    // Deliberately on mount only — re-probing on every hosts change would fire
+    // mid-typing as the operator edits the directory.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   function addHost() {
-    const trimmed = url.trim();
-    if (!trimmed) return;
-    setHosts([...hosts, { name: name.trim() || trimmed, url: trimmed }]);
+    const { url: normalized, error } = normalizePeerUrl(url);
+    if (!normalized) {
+      setAddError(error ?? "Invalid URL.");
+      return;
+    }
+    if (normalized === selfUrl || hosts.some((h) => h.url === normalized)) {
+      setAddError("That host is already listed.");
+      return;
+    }
+    setAddError("");
+    setHosts([...hosts, { name: name.trim() || normalized, url: normalized }]);
     setName("");
     setUrl("");
+    void probe([normalized]); // answer "is it up?" immediately, not on next click
   }
 
   function removeHost(target: string) {
     setHosts(hosts.filter((h) => h.url !== target));
   }
 
-  const reachable = allHosts.filter((h) => probes[h.url]?.state === "up").length;
-  const down = allHosts.filter((h) => probes[h.url]?.state === "down").length;
+  const stateOf = (row: FleetRow): FleetState =>
+    row.kind === "self" ? "up" : row.probe?.state ?? "unknown";
+  const reachable = rows.filter((row) => stateOf(row) === "up").length;
+  const down = rows.filter((row) => stateOf(row) === "down").length;
 
   return (
     <div className="soc-fleet">
       <StatGrid>
-        <StatCard label="Hosts" value={allHosts.length} />
+        <StatCard label="Hosts" value={rows.length} />
         <StatCard label="Reachable" value={reachable} tone={reachable ? "good" : undefined} />
         <StatCard label="Down" value={down} tone={down ? "danger" : undefined} />
         <StatCard label="Tracked (sum)" value={fmtNum(currentTracked)} />
@@ -1160,14 +1220,28 @@ export function FleetBody({
 
       <div className="soc-fleet-add">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="name (e.g. ebpf-2)" />
-        <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="http://192.168.x.y:8080" />
+        <input
+          value={url}
+          onChange={(e) => {
+            setUrl(e.target.value);
+            if (addError) setAddError("");
+          }}
+          placeholder="https://engine.example.io"
+          aria-invalid={addError ? true : undefined}
+        />
         <button type="button" className="soc-ghost-button" onClick={addHost}>
           <Plus size={14} aria-hidden="true" /> Add host
         </button>
-        <button type="button" className="soc-ghost-button" onClick={pingAll}>
+        <button
+          type="button"
+          className="soc-ghost-button"
+          onClick={() => void probe(probeTargets)}
+          disabled={probeTargets.length === 0}
+        >
           <RadioTower size={14} aria-hidden="true" /> Ping all
         </button>
       </div>
+      {addError ? <p className="soc-fleet-error">{addError}</p> : null}
 
       <div className="soc-fleet-table">
         <div className="soc-fleet-th">
@@ -1177,26 +1251,33 @@ export function FleetBody({
           <span>Status</span>
           <span>Actions</span>
         </div>
-        {allHosts.map((host) => {
-          const probe = probes[host.url];
-          const state = host.self && !probe ? "up" : probe?.state || "unknown";
+        {rows.map((row) => {
+          const state = stateOf(row);
+          const rtt = row.probe?.rttMs;
+          // A peer that answers 401 is up and simply does not know this session.
+          // Saying so beats a bare DOWN that sends operators hunting a dead host.
+          const detail =
+            row.probe?.error ??
+            (row.probe?.status && row.probe.status >= 400 ? `HTTP ${row.probe.status} — reachable, not signed in` : undefined);
           return (
-            <div key={host.url} className="soc-fleet-tr">
+            <div key={`${row.kind}:${row.url || row.name}`} className="soc-fleet-tr">
               <span className={cx("soc-fleet-state", `is-${state}`)}>
-                <i /> {host.self ? whoami.host || host.name : host.name}
+                <i /> {row.name}
               </span>
-              <code title={host.url}>{host.url || "—"}</code>
-              <span>{probe?.rttMs !== undefined ? `${probe.rttMs} ms` : "—"}</span>
-              <span className={cx("soc-fleet-status", `is-${state}`)}>{state.toUpperCase()}</span>
+              <code title={detail || row.url}>{row.url || "—"}</code>
+              <span>{rtt !== undefined ? `${rtt} ms` : "—"}</span>
+              <span className={cx("soc-fleet-status", `is-${state}`)} title={detail}>
+                {state.toUpperCase()}
+              </span>
               <span className="soc-fleet-actions">
-                <a className="soc-mini-link" href={`${host.url.replace(/\/$/, "")}/`}>
+                <a className="soc-mini-link" href={`${row.url.replace(/\/$/, "")}/`}>
                   SOC
                 </a>
-                <a className="soc-mini-link" href={`${host.url.replace(/\/$/, "")}/choke`}>
+                <a className="soc-mini-link" href={`${row.url.replace(/\/$/, "")}/choke`}>
                   Choke
                 </a>
-                {!host.self ? (
-                  <button type="button" className="soc-mini-x" onClick={() => removeHost(host.url)} aria-label="remove host">
+                {row.kind === "local" ? (
+                  <button type="button" className="soc-mini-x" onClick={() => removeHost(row.url)} aria-label="remove host">
                     <Trash2 size={12} aria-hidden="true" />
                   </button>
                 ) : null}
@@ -1206,8 +1287,8 @@ export function FleetBody({
         })}
       </div>
       <p className="soc-fleet-foot">
-        Cross-origin probes use credentials <code>include</code>. Log in to a peer once in another tab so the shared cookie
-        is reused for subsequent probes.
+        Probes run on this host, not in your browser, so peers on other origins are reported honestly. A peer that
+        answers <code>401</code> is up — it just does not share this console's session.
       </p>
     </div>
   );

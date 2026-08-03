@@ -77,6 +77,19 @@ section "single-tenant engine"
 if ENGINE_URL="$ENGINE_URL" ENGINE_PASS="$ENGINE_PASS" RSH="$ENGINE_RSH" \
    bash "$ROOT/scripts/e2e/single-tenant.sh"; then RESULTS+=("PASS single-tenant"); else RESULTS+=("FAIL single-tenant"); RC=1; fi
 
+# Detection before response. Every other suite tests what happens AFTER a threat
+# is identified; if nothing is identified, none of it matters. Six attack
+# simulations shipped in attacks/ for months without a single suite running one.
+section "detection pipeline (attack -> alert)"
+if ENGINE_URL="$ENGINE_URL" ENGINE_PASS="$ENGINE_PASS" RSH="$ENGINE_RSH" \
+   bash "$ROOT/scripts/e2e/detection.sh"; then RESULTS+=("PASS detection"); else RESULTS+=("FAIL detection"); RC=1; fi
+
+# The emergency stop. Previously only ever asserted to be DISENGAGED, which a
+# kill-switch wired to nothing would also satisfy.
+section "kill-switch (emergency stop)"
+if ENGINE_URL="$ENGINE_URL" ENGINE_PASS="$ENGINE_PASS" RSH="$ENGINE_RSH" \
+   bash "$ROOT/scripts/e2e/kill-switch.sh"; then RESULTS+=("PASS kill-switch"); else RESULTS+=("FAIL kill-switch"); RC=1; fi
+
 section "multi-tenant — $MT_TENANT"
 if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" MT_TENANT="$MT_TENANT" \
    AGENT_RSH="${AGENT_RSH:-}" bash "$ROOT/scripts/e2e/multi-tenant.sh"; then RESULTS+=("PASS multi-tenant/$MT_TENANT"); else RESULTS+=("FAIL multi-tenant/$MT_TENANT"); RC=1; fi
@@ -98,6 +111,27 @@ if [[ -n "${VICTIM_IP:-}" && -n "${AGENT_RSH:-}" ]]; then
   if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" \
      AGENT_RSH="$AGENT_RSH" VICTIM_IP="$VICTIM_IP" \
      bash "$ROOT/scripts/e2e/device-drop-proof.sh"; then RESULTS+=("PASS device-drop"); else RESULTS+=("FAIL device-drop"); RC=1; fi
+fi
+
+# host-posture asserts the fleet is clean NOW. This asserts we would FIND OUT if
+# it stopped being clean — a detector wired to a field nobody computes passes the
+# clean-state check forever. Arms a real enforcing policy scoped to a path that
+# exists nowhere, then requires the console to name the agent and to clear again.
+if [[ -n "${AGENT_RSH:-}" ]]; then
+  section "posture divergence detection"
+  if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" AGENT_RSH="$AGENT_RSH" \
+     bash "$ROOT/scripts/e2e/posture-divergence.sh"; then RESULTS+=("PASS posture-divergence"); else RESULTS+=("FAIL posture-divergence"); RC=1; fi
+fi
+
+# OPT-IN: this reboots a real host, so it is not part of the default loop —
+# five minutes and an outage is the wrong price for an ordinary pre-commit run.
+# Run it before a release or a customer deployment, where "does the agent come
+# back by itself" is exactly the question that matters:
+#   REBOOT_TEST=1 ./scripts/e2e/all.sh
+if [[ "${REBOOT_TEST:-0}" == "1" && -n "${AGENT_B_RSH:-}" ]]; then
+  section "reboot resilience (reboots ${AGENT_B_RSH##* })"
+  if AGENT_RSH="$AGENT_B_RSH" CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_B_USER" MT_PASS="$MT_B_PASS" \
+     bash "$ROOT/scripts/e2e/reboot-resilience.sh"; then RESULTS+=("PASS reboot-resilience"); else RESULTS+=("FAIL reboot-resilience"); RC=1; fi
 fi
 
 printf '\n\033[1m══════ summary ══════\033[0m\n'

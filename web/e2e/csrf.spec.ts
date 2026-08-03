@@ -24,7 +24,7 @@ test.describe("csrf", () => {
     }
   });
 
-  test("unsafe write inventory matches the 21-route certification contract", () => {
-    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(21);
+  test("unsafe write inventory matches the 22-route certification contract", () => {
+    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(22);
   });
 });

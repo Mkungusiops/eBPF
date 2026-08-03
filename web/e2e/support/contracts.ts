@@ -193,6 +193,13 @@ export const UNSAFE_WRITE_ENDPOINTS = [
     body: { on: false }
   },
   {
+    name: "fleet probe",
+    path: "/api/fleet/probe",
+    method: "POST",
+    encoding: "json",
+    body: { urls: ["https://peer.invalid"] }
+  },
+  {
     name: "fleet preset",
     path: "/api/fleet/preset",
     method: "POST",

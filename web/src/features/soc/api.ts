@@ -135,6 +135,26 @@ export async function fetchPolicyStats(signal?: AbortSignal): Promise<SocPolicyS
   return unwrapList(result.data, ["stats", "policies", "items", "data"]).map(normalizePolicyStat);
 }
 
+/* --------------------------------------------------------------------- Fleet */
+
+export interface FleetProbeResult {
+  url: string;
+  reachable: boolean;
+  status?: number;
+  rtt_ms?: number;
+  error?: string;
+}
+
+// Probes run on the backend, not in the browser. A cross-origin probe from the
+// console is blocked by mixed content, missing CORS headers and SameSite=Lax
+// cookies all at once, which renders healthy peers as DOWN. The server has
+// none of those constraints. See internal/fleetprobe.
+export async function probeFleetHosts(urls: string[], signal?: AbortSignal): Promise<FleetProbeResult[]> {
+  if (urls.length === 0) return [];
+  const body = await postJSON<{ hosts?: FleetProbeResult[] }>("/api/fleet/probe", { urls }, { signal });
+  return body.hosts ?? [];
+}
+
 export function runSocAttack(id: string): Promise<unknown> {
   const form = new URLSearchParams();
   form.set("id", id);

@@ -3881,6 +3881,7 @@ button.soc-metric:hover {
 
 .soc-fleet-foot { margin: 0; color: var(--soc-dim); font-size: 11px; }
 .soc-fleet-foot code { color: var(--soc-accent); }
+.soc-fleet-error { margin: 0; color: var(--soc-danger); font-size: 11px; }
 
 @keyframes soc-pulse { 50% { opacity: 0.35; } }
 

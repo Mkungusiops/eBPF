@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/jeffmk/ebpf-poc-engine/internal/fleetprobe"
 )
 
 //go:embed fleet.html
@@ -389,6 +391,35 @@ func (s *Server) handleFleetThaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fanoutJSON(w, http.MethodPost, "/api/choke/thaw", body)
+}
+
+// handleFleetProbe answers "are these peers up?" on behalf of the browser.
+//
+// Deliberately NOT behind requireFleet: the hosts file is the fan-out control
+// set, whereas this serves the console's ad-hoc peer directory, which is
+// useful precisely on engines that have no hosts file configured. It performs
+// no fan-out and carries no credentials, so it grants nothing the operator's
+// session did not already imply.
+func (s *Server) handleFleetProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"hosts": fleetprobe.New().Probe(r.Context(), req.URLs),
+	})
 }
 
 // handleFleetDevices fans the device snapshot out across every gateway so
