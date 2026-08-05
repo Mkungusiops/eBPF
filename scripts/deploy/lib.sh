@@ -123,6 +123,99 @@ UNIT
 systemctl daemon-reload"
 }
 
+_systemd_timer() { # <name> <description> <ExecStart> <OnCalendar>
+  RUN "cat > /etc/systemd/system/$1.service <<'UNIT'
+[Unit]
+Description=$2
+[Service]
+Type=oneshot
+ExecStart=$3
+UNIT
+cat > /etc/systemd/system/$1.timer <<'TIMER'
+[Unit]
+Description=$2 (scheduled)
+[Timer]
+OnCalendar=$4
+# Catch up after downtime. Without this a host that was off at 03:30 simply
+# skips that night, and the gap is invisible until someone needs the backup.
+Persistent=true
+RandomizedDelaySec=300
+[Install]
+WantedBy=timers.target
+TIMER
+systemctl daemon-reload
+systemctl enable --now $1.timer >/dev/null 2>&1 || true"
+}
+
+# ─── backups ────────────────────────────────────────────────────────────────
+#
+# This was set up BY HAND on the previous deployment and did not survive the
+# migration: no deploy script ever provisioned it, so the estate ran with zero
+# backups of anything. It is provisioned here so it cannot be lost again.
+#
+# What is actually at risk differs per host, and only one of them is
+# irreplaceable:
+#
+#   control plane — /var/lib/ebpf-soc holds the CA key and the FLEET SIGNING
+#     KEY. Lose them and every agent must be re-enrolled by hand; leak them and
+#     an attacker can mint agent identities and sign commands the fleet obeys.
+#     Nothing regenerates these. /etc/ebpf-soc holds the DSNs and admin token.
+#   engine — events.db is the evidence store. It is WAL-mode SQLite, so a plain
+#     `cp` can capture a torn database; socbackup uses VACUUM INTO for a
+#     consistent snapshot.
+#
+# Both archives therefore contain live secrets or evidence: 0600, root-owned.
+
+provision_engine_backups() {
+  require_driver
+  [[ -f "$BUILD_DIR/socbackup" ]] || {
+    log "cross-compiling socbackup (WAL-safe snapshotter)"
+    ( cd "$REPO_ROOT/engine" && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+        go build -o "$BUILD_DIR/socbackup" ./cmd/socbackup ) || die "socbackup build failed"
+  }
+  PUT "$BUILD_DIR/socbackup" /usr/local/bin/socbackup
+  RUN "chmod 0755 /usr/local/bin/socbackup; install -d -m 0700 /var/backups/ebpf-soc"
+  _systemd_timer ebpf-soc-backup "eBPF-SOC engine database backup" \
+    "/usr/local/bin/socbackup -db /var/lib/ebpf-engine/events.db -dest /var/backups/ebpf-soc -keep 3" \
+    "*-*-* 03:30:00"
+  ok "engine backups: nightly 03:30, 3 retained, /var/backups/ebpf-soc"
+}
+
+provision_controlplane_backups() {
+  require_driver
+  # Written to a file and shipped, NOT heredoc'd through RUN. The script is full
+  # of $VAR and quoting that has to survive the remote shell verbatim; nesting it
+  # inside the transport's own quoting silently mangles it, which is exactly how
+  # a backup job ends up "installed" and broken.
+  mkdir -p "$BUILD_DIR"
+  cat > "$BUILD_DIR/ebpf-soc-cp-backup" <<'SH'
+#!/usr/bin/env bash
+# Snapshot the control plane's IRREPLACEABLE material: the CA + fleet signing
+# keys, and the config holding DSNs/tokens. Contains live secrets — 0600.
+set -euo pipefail
+DEST=/var/backups/ebpf-soc
+KEEP=7
+STAMP=$(date -u +%Y%m%d-%H%M%S)
+ARCHIVE="$DEST/cp-pki-config-$STAMP.tar.gz"
+install -d -m 0700 "$DEST"
+umask 077
+tar -czf "$ARCHIVE" -C / var/lib/ebpf-soc etc/ebpf-soc 2>/dev/null
+chmod 0600 "$ARCHIVE"
+# Fail loudly on a degenerate archive: a backup job that "succeeds" while
+# writing nothing is worse than no job, because it is trusted.
+[ -s "$ARCHIVE" ] || { echo 'backup archive is empty' >&2; exit 1; }
+tar -tzf "$ARCHIVE" | grep -q 'var/lib/ebpf-soc/ca.key' || {
+  echo 'backup is missing the CA key — refusing to report success' >&2; exit 1; }
+ls -1t "$DEST"/cp-pki-config-*.tar.gz 2>/dev/null | tail -n +$((KEEP+1)) | xargs -r rm -f
+echo "wrote $ARCHIVE"
+SH
+  PUT "$BUILD_DIR/ebpf-soc-cp-backup" /usr/local/bin/ebpf-soc-cp-backup
+  RUN "chmod 0700 /usr/local/bin/ebpf-soc-cp-backup; install -d -m 0700 /var/backups/ebpf-soc"
+  _systemd_timer ebpf-soc-cp-backup "eBPF-SOC control-plane PKI + config backup" \
+    "/usr/local/bin/ebpf-soc-cp-backup" "*-*-* 03:00:00"
+  ok "control-plane backups: nightly 03:00, 7 retained, /var/backups/ebpf-soc"
+}
+
 # ─── single-tenant: the engine ──────────────────────────────────────────────
 provision_engine() {
   require_driver
@@ -753,6 +846,11 @@ cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
     location /auth/ { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; proxy_http_version 1.1;
         proxy_set_header Host \$host; proxy_set_header X-Forwarded-Proto \$scheme; }
     location /healthz { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; }
+    # /readyz was NOT proxied, so it fell through to the SPA catch-all below and
+    # answered 200 with index.html — an uptime check pointed at it saw HTML and
+    # called it healthy. It is the only probe that reports store reachability,
+    # so it has to reach the control plane.
+    location /readyz { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; }
     # Keycloak, same origin. /realms + /resources carry the OIDC flow and its
     # login-page assets; /admin + /js are the admin console.
     location ~ ^/(realms|resources|admin|js|robots.txt) {

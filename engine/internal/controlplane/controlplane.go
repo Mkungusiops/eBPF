@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/approval"
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
@@ -58,6 +59,17 @@ type Config struct {
 	BFF        *bff.Handler
 	AdminToken string
 
+	// RequireApproval turns on EN-2 change-control: quarantine/sever and
+	// fleet-wide arming are HELD until a second operator approves them.
+	//
+	// Default OFF, deliberately. Dual control needs two people who can respond,
+	// and a tenant with a single on-call operator would otherwise be unable to
+	// contain a threat from the console at all — an approval rule that can block
+	// containment during an incident is a worse failure than the one it prevents.
+	// Deployments with a staffed SOC turn it on; the automatic score-driven
+	// enforcement on each agent is never gated either way.
+	RequireApproval bool
+
 	Logf func(string, ...any)
 }
 
@@ -76,6 +88,12 @@ type Server struct {
 	// follow-up command on the same process routes straight to it instead of
 	// being re-guessed from a PID. See ownerCache in choke.go.
 	owners *ownerCache
+	// approvals holds destructive actions awaiting a second operator
+	// (threat-model EN-2). See internal/approval.
+	approvals *approval.Store
+	// stats caches computed alert-window aggregates briefly, so N open console
+	// tabs do not each trigger the same scan. See alertstats.go.
+	stats *statsCache
 }
 
 // New builds the gRPC + HTTP surfaces. It does not listen; call Serve (or drive
@@ -115,9 +133,11 @@ func New(cfg Config) (*Server, error) {
 		tokens:     enrollment.NewTokenStore(),
 		fleet:      fleet.NewService(cfg.FleetSigner, cfg.FleetKeyID),
 		registry:   heartbeat.NewRegistry(),
+		stats:      &statsCache{},
 		dispatcher: command.NewDispatcher(cfg.FleetSigner, time.Minute),
 		auditor:    authz.NewMemAuditor(),
 		owners:     newOwnerCache(),
+		approvals:  approval.NewStore(approval.DefaultTTL),
 	}
 
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))

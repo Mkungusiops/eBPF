@@ -337,7 +337,11 @@ func isPublicPath(p string) bool {
 	// /api/logout is public so signing out always works — it only clears the
 	// session cookies (idempotent). Gating it behind auth means an expired
 	// session dead-ends on logout instead of clearing.
-	case "/login", "/api/login", "/api/logout", "/favicon.svg", "/favicon.ico", "/favicon-light.svg":
+	// /healthz and /readyz are public so a load balancer or uptime check —
+	// which holds no session — can actually use them. A probe behind auth is
+	// not a probe.
+	case "/login", "/api/login", "/api/logout", "/favicon.svg", "/favicon.ico", "/favicon-light.svg",
+		"/healthz", "/readyz":
 		return true
 	}
 	return isBuiltAssetPath(p) || isPWARootPath(p)

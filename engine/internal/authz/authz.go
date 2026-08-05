@@ -34,6 +34,14 @@ type Action string
 const (
 	ActionRead    Action = "read"
 	ActionRespond Action = "respond" // enforcement/response actions
+	// ActionApprove authorizes a destructive action REQUESTED BY SOMEONE ELSE
+	// (threat-model EN-2 change-control). It carries the same role capability as
+	// respond today, and is a separate Action so an approver-only role can be
+	// introduced later without revisiting every call site.
+	//
+	// The capability is not the control here — dual control is: the approver may
+	// not be the requester, which authz cannot see and approval.Store enforces.
+	ActionApprove Action = "approve"
 )
 
 // Grant binds a role to a tenant. For cross-tenant roles TenantID is ignored.
@@ -146,7 +154,7 @@ func roleCan(r Role, a Action) bool {
 	case RoleReadOnly:
 		return a == ActionRead
 	case RoleTenantAnalyst, RoleMSOCAdmin, RoleCrossTenantResponder:
-		return a == ActionRead || a == ActionRespond
+		return a == ActionRead || a == ActionRespond || a == ActionApprove
 	default:
 		return false
 	}

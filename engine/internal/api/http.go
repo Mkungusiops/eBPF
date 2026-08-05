@@ -9,10 +9,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/buildinfo"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
@@ -93,6 +95,11 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/favicon-light.svg", s.handleFaviconLight)
 	mux.HandleFunc("/assets/", s.handleWebAssets)
 
+	// Probes are public: a load balancer or uptime check holds no session, and
+	// gating them behind auth is the same as not having them.
+	mux.HandleFunc("/healthz", s.handleHealthz)
+	mux.HandleFunc("/readyz", s.handleReadyz)
+
 	// PWA support files live at the dist root and are public so the worker,
 	// manifest, and icons load before authentication (see web_assets.go).
 	mux.HandleFunc("/sw.js", s.handlePWAFile)
@@ -107,6 +114,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
+	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleSSE)
 	mux.HandleFunc("/api/whoami", s.auth.HandleWhoami)
@@ -284,17 +292,87 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	serveMissingEmbeddedWeb(w)
 }
 
-// handleVersion returns the build SHA + start time. The dashboard polls
-// this every 30s; if the SHA changes between polls, a "new version
-// deployed — reload" toast is shown so users get fresh UI without a
-// blind hard refresh.
+// handleVersion returns the build identity + start time. The dashboard polls
+// this every 30s; if `sha` changes between polls, a "new version deployed —
+// reload" toast is shown so users get fresh UI without a blind hard refresh.
+//
+// `sha` stays the EMBEDDED-ASSET hash on purpose: it is the reload signal, and
+// it must move whenever the shipped UI moves — including for a rebuild from an
+// uncommitted tree, which is how this project actually deploys. The source
+// revision is reported alongside it, because the asset hash cannot answer
+// "which code is this box running?" — a Go-only fix leaves it unchanged.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
+	b := buildinfo.Get()
 	writeJSON(w, map[string]interface{}{
-		"sha":        versionSHA,
+		"sha":        versionSHA, // asset hash — drives the reload toast
+		"revision":   b.Revision,
+		"build":      b.String(),
+		"dirty":      b.Dirty,
+		"built_at":   b.BuiltAt,
 		"started_at": startedAt.Format(time.RFC3339),
 		"server_now": time.Now().UTC().Format(time.RFC3339),
 	})
+}
+
+// handleAlertStats serves server-computed counts for a window — the numbers the
+// dashboard's KPI tiles, posture score, deltas and timeline are built from.
+//
+// The console previously derived all of these by filtering its buffer of recent
+// alerts, which silently under-reports any window longer than the buffer spans
+// (~20 minutes at this fleet's rate) and made "vs prior" deltas meaningless,
+// because the preceding window was never in the buffer at all. Aggregating here
+// is O(window) on an indexed column and ships counts instead of rows, so a 24h
+// range costs about what a 5m range costs.
+//
+// ?window_min= window length in minutes (default 30, max 7 days)
+// ?buckets=    timeline columns (default 30, max 240)
+func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
+	windowMin := intParam(r, "window_min", 30, 60*24*7)
+	buckets := intParam(r, "buckets", 30, 240)
+	to := time.Now().UTC()
+	from := to.Add(-time.Duration(windowMin) * time.Minute)
+	stats, err := s.store.AlertStats(from, to, buckets)
+	if err != nil {
+		log.Printf("alert stats: %v", err)
+		http.Error(w, "stats failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, stats)
+}
+
+// handleHealthz is liveness: the process is up and serving HTTP. Deliberately a
+// constant — a liveness probe that fails on a dependency turns a transient
+// database blip into a restart loop.
+func (s *Server) handleHealthz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, map[string]interface{}{"status": "ok"})
+}
+
+// handleReadyz is readiness: can this engine actually serve an operator?
+//
+// This box had NO probe of any kind — no /healthz, no /readyz — so nothing
+// outside it could distinguish "serving" from "up but useless". The control
+// plane's equivalent outage on 2026-08-05 stayed invisible for hours for
+// exactly this reason, and it at least had a (constant) /healthz.
+//
+// The probe reads one row through the same store the API reads, so a corrupt,
+// locked or unreadable database fails it rather than being discovered by an
+// operator staring at an empty dashboard. Public, and deliberately terse: it
+// must be usable by a load balancer that holds no session.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	if _, err := s.store.RecentAlerts(1); err != nil {
+		log.Printf("readiness probe failed: store unreadable: %v", err)
+		w.WriteHeader(http.StatusServiceUnavailable)
+		writeJSON(w, map[string]interface{}{
+			"status": "unready", "store": "unreadable",
+			"detail": "engine cannot read its local store; see the journal for the driver error",
+		})
+		return
+	}
+	writeJSON(w, map[string]interface{}{"status": "ready", "store": "ok"})
 }
 
 func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
@@ -309,8 +387,43 @@ func (s *Server) handleFaviconLight(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(faviconLightSVG)
 }
 
+// intParam reads a named positive integer query parameter, falling back to def
+// and clamping to max.
+func intParam(r *http.Request, name string, def, max int) int {
+	v := def
+	if q := r.URL.Query().Get(name); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			v = n
+		}
+	}
+	if v > max {
+		v = max
+	}
+	return v
+}
+
+// queryLimit reads ?limit, falling back to def and clamping to max.
+//
+// These two endpoints used to hardcode their row counts and ignore ?limit
+// entirely, which the console had no way to detect: it asked for 1000 alerts,
+// silently received 100, and rendered them as a complete 24h window. A capped
+// feed that does not say it is capped is indistinguishable from a quiet estate.
+// handleDecisions already did this; alerts and events did not.
+func queryLimit(r *http.Request, def, max int) int {
+	limit := def
+	if q := r.URL.Query().Get("limit"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	if limit > max {
+		limit = max
+	}
+	return limit
+}
+
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.store.RecentEvents(200)
+	events, err := s.store.RecentEvents(queryLimit(r, 500, 5000))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
@@ -319,7 +432,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	alerts, err := s.store.RecentAlerts(100)
+	alerts, err := s.store.RecentAlerts(queryLimit(r, 200, 2000))
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return

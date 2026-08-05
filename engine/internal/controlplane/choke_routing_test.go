@@ -244,7 +244,7 @@ func TestSeverIsNeverBroadcast(t *testing.T) {
 	w := httptest.NewRecorder()
 	// s.dispatcher is nil: if this path dispatches at all, the test panics —
 	// which is the point. Nothing may go out on an unroutable sever.
-	s.dispatchChoke(w, "acme", "", 4021, "sever", "confirmed C2 beacon", "")
+	s.dispatchChoke(w, httptest.NewRequest("POST", "/api/choke/manual", nil), "acme", "", 4021, "sever", "confirmed C2 beacon", "")
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409 refusing to broadcast an irreversible action", w.Code)

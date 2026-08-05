@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deploy the SINGLE-TENANT engine (soc.adanianlabs.io model) to a local OrbStack
+# Deploy the SINGLE-TENANT engine (the engine.adanianlabs.io model) to a local OrbStack
 # machine. systemd-managed, survives reboot.
 #
 #   ./single-tenant-orbstack.sh [machine-name]                 # REAL eBPF (default)

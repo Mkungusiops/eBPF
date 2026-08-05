@@ -10,6 +10,7 @@ import (
 	"time"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/approval"
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/heartbeat"
 )
@@ -290,11 +291,53 @@ func irreversible(action string) bool { return action == "sever" }
 //  2. Only an agent that CLAIMS the target may make the request succeed. Agents
 //     answer with a target_match grade, and a no-op ack (STATUS_NOT_TARGET)
 //     never counts as containment.
-func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid uint32, action, reason, agentID string) {
-	if err := requireReasonForDestructive(action, reason); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+func (s *Server) dispatchChoke(w http.ResponseWriter, r *http.Request, tenant, execID string, pid uint32, action, reason, agentID string) {
+	code, body := s.chokeRequest(s.subject(r), tenant, execID, pid, action, reason, agentID)
+	writeJSON(w, code, body)
+}
+
+// subject names the operator behind a request, for change-control records. An
+// unattributable destructive action is not one anyone can approve, so this must
+// never silently return "": the handlers authorize first, so a principal exists.
+func (s *Server) subject(r *http.Request) string {
+	if p, ok := s.principal(r); ok && p.Subject != "" {
+		return p.Subject
 	}
+	return "unknown-operator"
+}
+
+// chokeRequest is dispatchChoke's core, minus the HTTP. Split out so the
+// APPROVED path (approvals.go) executes byte-for-byte the same containment the
+// requester asked for — an approval that re-derives the action from separate
+// code is an approval of something the approver did not read.
+func (s *Server) chokeRequest(requester, tenant, execID string, pid uint32, action, reason, agentID string) (int, map[string]any) {
+	if err := requireReasonForDestructive(action, reason); err != nil {
+		return http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error(), "detail": err.Error()}
+	}
+	// EN-2 change-control. A destructive action is HELD here, before anything is
+	// signed or dispatched, until a second operator approves it. Held, not
+	// refused: the request becomes a queued approval the console surfaces.
+	if s.cfg.RequireApproval && s.approvals != nil && approval.RequiresApproval(action) {
+		req := s.approvals.Create(approval.Request{
+			Tenant: tenant, Action: action, ExecID: execID, PID: pid,
+			AgentID: agentID, Scope: "target", Reason: reason, Requester: requester,
+		})
+		s.cfg.Logf("[approval] %s requested %s on %s (tenant=%s) -> %s (awaiting a second operator)",
+			requester, action, targetLabel(execID, pid), tenant, req.ID)
+		return http.StatusAccepted, map[string]any{
+			"ok": false, "status": "APPROVAL_REQUIRED", "approval_required": true,
+			"approval": req, "action": action, "reason": reason,
+			"detail": fmt.Sprintf(
+				"%s is a destructive action and needs a second operator to approve it (request %s). "+
+					"It has NOT been applied.", action, req.ID),
+		}
+	}
+	return s.performChoke(tenant, execID, pid, action, reason, agentID)
+}
+
+// performChoke routes and executes the containment. Reached directly for the
+// non-destructive rungs, and via an approval for the destructive ones.
+func (s *Server) performChoke(tenant, execID string, pid uint32, action, reason, agentID string) (int, map[string]any) {
 	var cmd *ebpfsocv1.Command
 	switch action {
 	case "throttle", "tarpit", "quarantine", "sever":
@@ -302,19 +345,16 @@ func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid
 	case "thaw":
 		cmd = &ebpfsocv1.Command{Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: execID, Pid: pid}}}
 	default:
-		http.Error(w, "action must be throttle | tarpit | quarantine | sever | thaw", http.StatusBadRequest)
-		return
+		return badChoke("action must be throttle | tarpit | quarantine | sever | thaw")
 	}
 	if execID == "" && pid == 0 {
-		http.Error(w, "exec_id or pid required to identify the target", http.StatusBadRequest)
-		return
+		return badChoke("exec_id or pid required to identify the target")
 	}
 
 	res := s.resolveTarget(tenant, execID, pid, agentID)
 	if len(res.agents) == 0 {
-		writeJSON(w, 200, map[string]any{"ok": false, "status": "NO_AGENT",
-			"detail": "no agent online for tenant", "action": action, "reason": reason})
-		return
+		return 200, map[string]any{"ok": false, "status": "NO_AGENT",
+			"detail": "no agent online for tenant", "action": action, "reason": reason}
 	}
 	// An unrouteable sever stops here. Refusing is the safe answer: the operator
 	// gets the candidate hosts and can re-issue against one, which is strictly
@@ -326,15 +366,14 @@ func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid
 			"cannot determine which agent is running this process (%s), and %s is irreversible — "+
 				"re-issue with agent_id set to one of: %s",
 			res.how, action, strings.Join(res.agents, ", "))
-		writeJSON(w, http.StatusConflict, map[string]any{
+		return http.StatusConflict, map[string]any{
 			"ok": false, "status": "AMBIGUOUS_TARGET", "action": action, "reason": reason,
 			"candidates": res.agents, "detail": msg,
 			// "error" is what the console's API client lifts out of a non-2xx
 			// body; without it the operator gets a bare "Conflict" for the one
 			// refusal they most need to understand.
 			"error": msg,
-		})
-		return
+		}
 	}
 
 	// Fan OUT first, then wait once. Enqueue is cheap and non-blocking, so
@@ -364,7 +403,24 @@ func (s *Server) dispatchChoke(w http.ResponseWriter, tenant, execID string, pid
 			"target could not be pinned to one host (%s); %s applied on %s",
 			res.how, action, strings.Join(out.appliedBy, ", "))
 	}
-	writeJSON(w, 200, body)
+	return 200, body
+}
+
+// badChoke is a 400 in the (code, body) shape performChoke returns.
+func badChoke(msg string) (int, map[string]any) {
+	return http.StatusBadRequest, map[string]any{"ok": false, "error": msg, "detail": msg}
+}
+
+// targetLabel renders a choke target for a log line / approval summary.
+func targetLabel(execID string, pid uint32) string {
+	switch {
+	case execID != "" && pid != 0:
+		return fmt.Sprintf("%s (pid %d)", execID, pid)
+	case execID != "":
+		return execID
+	default:
+		return fmt.Sprintf("pid %d", pid)
+	}
 }
 
 // handleChokeManual — Choke Gateway per-row action {exec_id,pid,binary,action,reason}.
@@ -387,7 +443,7 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.dispatchChoke(w, tenant, b.ExecID, b.Pid, b.Action, b.Reason, b.AgentID)
+	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, b.Action, b.Reason, b.AgentID)
 }
 
 // handleChokeThaw — release a process {exec_id,pid} (or {reason} only = no-op ack).
@@ -403,7 +459,7 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 		AgentID string `json:"agent_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	s.dispatchChoke(w, tenant, b.ExecID, b.Pid, "thaw", b.Reason, b.AgentID)
+	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, "thaw", b.Reason, b.AgentID)
 }
 
 // handleChokeJailFromSoc — SOC dashboard alert "jail" {pids,binary,action,reason}.
@@ -434,7 +490,7 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 	default:
 		action = "quarantine"
 	}
-	s.dispatchChoke(w, tenant, b.ExecID, pid, action, b.Reason, b.AgentID)
+	s.dispatchChoke(w, r, tenant, b.ExecID, pid, action, b.Reason, b.AgentID)
 }
 
 // dispatchAll sends cmd to every agent in the tenant and waits for each ack —
@@ -658,6 +714,13 @@ func (s *Server) dispatchSetMode(w http.ResponseWriter, r *http.Request, plane e
 	if b.Enforcing {
 		mode, modeStr = ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, "enforcing"
 	}
+	// EN-2: arming an entire tenant is the fleet-wide destructive change the
+	// threat model is about — one click puts every host into a posture where a
+	// score can SIGKILL. It waits for a second operator. DISARMING does not:
+	// the way back to detect-only must never need a quorum.
+	if s.requireFleetApproval(w, r, tenant, "mode", b.Enforcing, plane, b.Reason) {
+		return
+	}
 	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode, Plane: plane}}})
 	writeJSON(w, 200, map[string]any{
@@ -722,6 +785,12 @@ func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&b)
+	// "containment" is the mass-choke preset: it drops every threshold so that
+	// ordinary activity reaches a choke rung across the whole tenant. That is a
+	// fleet-wide destructive change; the calmer presets are not.
+	if s.requireFleetApproval(w, r, tenant, "preset", strings.EqualFold(b.Name, "containment"), ebpfsocv1.Plane_PLANE_PROCESS, b.Name) {
+		return
+	}
 	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: b.Name}}})
 	writeJSON(w, 200, map[string]any{"ok": applied > 0, "preset": b.Name, "applied": applied, "total": total, "detail": detail})

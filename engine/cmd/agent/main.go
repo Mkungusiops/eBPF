@@ -859,6 +859,16 @@ func main() {
 			Buffer:         upBuf,
 			Processor:      proc,
 			Heartbeat: func() *ebpfsocv1.HeartbeatRequest {
+				// The uplink buffer sheds its oldest records once the backlog
+				// cap is reached (uplink.DefaultMaxRecords). That keeps the
+				// agent alive, but it means this host's telemetry has a HOLE,
+				// and an operator must be able to find out. Reported every beat
+				// while non-zero, not once: a gap that stopped being mentioned
+				// reads as a gap that stopped happening.
+				if n := upBuf.Dropped(); n > 0 {
+					log.Printf("[uplink] TELEMETRY GAP: %d record(s) dropped since start "+
+						"(backlog cap %d reached; control plane not acking)", n, uplink.DefaultMaxRecords)
+				}
 				// Read the kernel's policy set ONCE per heartbeat: the version
 				// must fingerprint exactly the set being reported, and a second
 				// call could observe a reload in between and disagree with it.
@@ -889,6 +899,7 @@ func main() {
 					Devices:     deviceSummaries(deviceGW),
 				}
 			},
+
 			Logf: log.Printf,
 		}
 		go func() {

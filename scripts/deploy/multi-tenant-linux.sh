@@ -14,3 +14,4 @@ source "$D/lib.sh"
 source "$D/driver-ssh.sh"
 build_binaries controlplane
 provision_controlplane
+provision_controlplane_backups

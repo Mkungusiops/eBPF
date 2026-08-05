@@ -8,7 +8,7 @@ so there is nothing to copy-paste by hand beyond a few commands.
 
 > Already deployed and just need to redeploy/upgrade? Jump to
 > [§7 Operations](#7-operations). For the production runbook of the live
-> `soc.adanianlabs.io` host (and its enforcing-mode traps) see
+> engine host (and its enforcing-mode traps) see
 > [live-soc-adanianlabs.md](live-soc-adanianlabs.md).
 
 ---

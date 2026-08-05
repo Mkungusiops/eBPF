@@ -15,3 +15,4 @@ source "$D/lib.sh"
 source "$D/driver-ssh.sh"
 build_binaries engine
 provision_engine
+provision_engine_backups

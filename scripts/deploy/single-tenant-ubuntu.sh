@@ -21,3 +21,4 @@ if [[ "${TLS:-0}" == 1 ]]; then
   provision_tls "$TARGET_HOST" && export TARGET_SCHEME=https
 fi
 provision_engine
+provision_engine_backups

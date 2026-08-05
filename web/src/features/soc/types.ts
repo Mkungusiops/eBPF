@@ -125,6 +125,9 @@ export interface SocSystemHealth {
   choke?: string;
   kernel?: string;
   uptime?: string;
+  /** Central-store reachability. When this is not ok, every store-backed read endpoint fails together. */
+  storeOk?: boolean;
+  storeError?: string;
   details: Record<string, unknown>;
 }
 
@@ -156,6 +159,8 @@ export interface SocSnapshot {
 
 export interface SocSnapshotRead {
   snapshot: SocSnapshot;
+  /** Per-feed: the server returned a full page, so older records exist that the console does not hold. */
+  truncated: { alerts: boolean; events: boolean };
   errors: Record<string, string>;
   statuses: Record<string, number | undefined>;
 }

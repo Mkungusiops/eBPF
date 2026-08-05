@@ -177,6 +177,20 @@ tenancy + data + isolation spine (Phase 1) is solid, or we multiply an un-isolat
 
 ## 7. Migration — keeping `soc.adanianlabs.io` alive throughout
 
+> **Status (2026-08-03): steps 1–3 complete; step 4 deliberately not taken.**
+> The Azure VM this section describes is decommissioned and `soc.adanianlabs.io`
+> no longer resolves — the estate migrated wholesale to the six-host AWS rig, so
+> the strangler ran to completion by relocation rather than in place.
+> `console.adanianlabs.io` now serves the rich console from the control plane,
+> tenant-scoped and RBAC-gated.
+>
+> **Step 4 stays open on purpose.** The `ebpf-engine` still running on
+> `single_tenant_engine` is the **single-tenant product variant**, not a leftover
+> monolith: `single-tenant.sh`, `detection.sh` and `kill-switch.sh` all test it.
+> Retiring it would delete coverage of a shipping configuration, so "retire the
+> monolith" now means *stop requiring it in multi-tenant deployments* — which is
+> already true — not *delete the build target*.
+
 The live box is a single-NIC Azure VM running a bare root process. We use a **strangler**
 migration so there is never a flag-day rewrite:
 

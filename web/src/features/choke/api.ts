@@ -108,6 +108,68 @@ export interface ChokeActionResult {
   agent?: string;
   applied_by?: string[];
   candidates?: string[];
+  /**
+   * Set when the action was HELD for change-control (threat-model EN-2): a
+   * quarantine/sever needs a second operator to approve it. `ok` is false and
+   * nothing has been applied — the action is queued, not done.
+   */
+  approval_required?: boolean;
+  approval?: ApprovalRequest;
+}
+
+/**
+ * A destructive action awaiting a second operator, and its audit record: who
+ * asked, who decided, and what actually happened when it ran.
+ */
+export interface ApprovalRequest {
+  id: string;
+  tenant?: string;
+  action: string;
+  exec_id?: string;
+  pid?: number;
+  agent_id?: string;
+  scope?: "target" | "fleet";
+  reason?: string;
+  requester?: string;
+  created_at?: string;
+  expires_at?: string;
+  status: "pending" | "approved" | "denied" | "expired";
+  approver?: string;
+  decided_at?: string;
+  decide_note?: string;
+  outcome?: string;
+  executed?: boolean;
+  /** True when the viewer is the requester — they may not approve their own. */
+  mine?: boolean;
+}
+
+export function getApprovals(): Promise<{ approvals?: ApprovalRequest[]; pending?: number; you?: string }> {
+  return getJSON("/api/approvals");
+}
+
+export function decideApproval(id: string, approve: boolean, note?: string): Promise<ChokeActionResult> {
+  return postJSON("/api/approvals/decide", { id, approve, note }) as Promise<ChokeActionResult>;
+}
+
+/**
+ * Did a choke action actually land?
+ *
+ * The two deployments answer differently and BOTH must read correctly, because
+ * this same bundle is served by the fleet console and by the single-host engine:
+ *
+ *   - the control plane returns an explicit `ok`, false when no agent applied
+ *     (or `approval_required` when it was held for a second operator);
+ *   - the engine has no `ok` at all — it returns `{applied: {...}}` and a
+ *     non-2xx throws before we get here.
+ *
+ * So absence of `ok` means the legacy engine contract (applied), and only an
+ * explicit `ok: false` means it did not land. Treating undefined as failure
+ * would make the engine console report every successful sever as "NOT applied"
+ * — the mirror image of the containment lie this reporting exists to remove.
+ */
+export function chokeApplied(result: ChokeActionResult | undefined): boolean {
+  if (result?.approval_required) return false;
+  return result?.ok !== false;
 }
 
 export function manualAction(body: {

@@ -893,7 +893,11 @@ export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyS
       if (!cancelled && stats.length) setLive(stats);
     };
     void tick();
-    const id = window.setInterval(() => void tick(), 3000);
+    // 3s was chosen to make per-probe rate moves visible, but each call is a
+    // server-side aggregate over the tenant's recent telemetry — at 3s the
+    // requests outran their own query time and piled up on the database. 15s
+    // still reads as live for a rate panel and cuts that load fivefold.
+    const id = window.setInterval(() => void tick(), 15_000);
     return () => { cancelled = true; controller.abort(); window.clearInterval(id); };
   }, []);
   const policyStats = live ?? propStats;
@@ -1589,11 +1593,14 @@ const RISK_TONE_COLOR: Record<string, string> = {
 
 export function RiskGauge({
   score,
+  rawScore,
   counts,
   contributors,
   window: windowLabel
 }: {
   score: number;
+  /** The uncapped weighted score. The dial only goes to 100; the breakdown below it routinely sums past that, so say when the two differ. */
+  rawScore?: number;
   counts: Record<Severity, number>;
   contributors: Array<{ title: string; score: number; severity: Severity }>;
   window?: string;
@@ -1638,6 +1645,7 @@ export function RiskGauge({
             {meta.label}
           </span>
           {windowLabel ? <em>window: {windowLabel}</em> : null}
+          {rawScore !== undefined && rawScore > score ? <em>capped from {rawScore}</em> : null}
         </div>
       </div>
 

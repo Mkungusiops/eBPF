@@ -18,6 +18,10 @@
 /engine/agent-linux-*
 /engine/controlplane
 /engine/controlplane-linux-*
+# The sim-agent binary was committed by accident (a 31 MB macOS build, useless
+# on the Linux targets). The deploy path builds its own into $BUILD_DIR.
+/engine/simagent
+/engine/simagent-linux-*
 # Phase 1 generated gRPC stubs (`make proto`) are COMMITTED so CI and consumers
 # build without the protoc plugins; regenerate from engine/proto/ via `make proto`.
 *.exe

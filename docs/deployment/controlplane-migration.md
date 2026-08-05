@@ -1,5 +1,19 @@
 # Control-plane migration runbook — `soc.adanianlabs.io` → tenant #0
 
+> ## ⚠️ HISTORICAL — this infrastructure no longer exists
+>
+> The Azure deployment described below (`soc.adanianlabs.io`, VM
+> `safeai-security-client`, user `azureuser`) was **retired** when the estate
+> moved wholesale to AWS. The domain no longer resolves and the SSH alias is
+> dead, so nothing here can be followed as-is.
+>
+> Current deployment: [aws-multi-host.md](aws-multi-host.md). Readiness and
+> known traps: [pre-deployment-checklist.md](pre-deployment-checklist.md).
+>
+> Kept because the operational detail is transferable — WAL-safe backups
+> (`VACUUM INTO`, never `cp`), logrotate needing `copytruncate` under systemd
+> `append:`, and which unit-hardening directives break the engine.
+
 > **What this is:** the operator runbook to bring the live single-host demo
 > (`soc.adanianlabs.io`, a bare `cmd/engine` process on an Azure VM) under the new
 > multi-tenant control plane **without a flag-day rewrite** — the strangler

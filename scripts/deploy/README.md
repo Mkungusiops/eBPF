@@ -2,7 +2,7 @@
 
 Deploy scripts split along the two axes that actually matter:
 
-- **What** you deploy — the **single-tenant engine** (the `soc.adanianlabs.io`
+- **What** you deploy — the **single-tenant engine** (the `engine.adanianlabs.io`
   model: one host, its own dashboard) or the **multi-tenant control plane** (the
   `console.adanianlabs.io` model: Keycloak SSO, per-tenant RLS, a fleet of
   agents).

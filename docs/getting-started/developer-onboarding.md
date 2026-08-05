@@ -16,7 +16,9 @@ single-host proof-of-concept into a **multi-tenant SaaS SOC platform**.
   **Choke Gateways** turn scores + operator actions into graduated, audited
   enforcement (process choke: throttle→tarpit→quarantine→sever; network/device
   choke: per-MAC on an inline bridge). Ships as one static Go binary with the
-  React console embedded via `go:embed`. This is what runs at `soc.adanianlabs.io`.
+  React console embedded via `go:embed`. This is the single-tenant product
+  variant, deployed on the rig's `single_tenant_engine` host
+  (`engine.adanianlabs.io`).
 - **Control plane + agents** (the multi-tenant future, `cmd/controlplane` +
   `cmd/agent`) — the engine split via the **strangler-fig** pattern: agents
   enroll (mTLS), stream tenant-stamped telemetry to a central control plane, take

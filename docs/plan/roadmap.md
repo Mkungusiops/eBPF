@@ -63,12 +63,19 @@ Kills README limitations **#1 (single host)** and **#2 (single-user auth)**.
   central store; OIDC login; RBAC-gated. Reuses `web/src/` panels.
 - **Isolation tests** — automated cross-tenant read-denial tests in CI.
 
-**Exit gate**
+**Exit gate** — ✅ **MET** (2026-08-03; see the note below on where each is proven)
 - Enroll an agent with a bootstrap token in minutes; it streams telemetry, takes central commands,
-  and **still enforces when disconnected**.
-- Two tenants' data provably isolated (leakage tests green).
+  and **still enforces when disconnected**. *(Fresh-host enrolment measured at 166s on the AWS rig.
+  The autonomy half is proven twice: `internal/e2e/autonomy_test.go` in CI — it stops the control
+  plane and requires enforcement, evidence-keeping and unaided re-convergence — and
+  `scripts/e2e/agent-autonomy.sh` against the real rig by stopping systemd.)*
+- Two tenants' data provably isolated (leakage tests green). *(`scripts/e2e/multi-tenant.sh` runs
+  from both sides; Postgres RLS integration test in CI.)*
 - SSO + RBAC gate the console; single-admin/plaintext era removed.
-- `soc.adanianlabs.io` served as a tenant of the control plane (migration step 3 in `plan.md` §7).
+- The live single-host deployment served as a tenant of the control plane (migration step 3 in
+  `plan.md` §7). *(Superseded by the full migration to the AWS estate — the Azure box that step
+  named is decommissioned and `soc.adanianlabs.io` no longer resolves.
+  `console.adanianlabs.io` serves the rich console from the control plane, tenant-scoped.)*
 
 ---
 

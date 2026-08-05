@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -30,6 +31,22 @@ CREATE TABLE IF NOT EXISTS telemetry (
   payload   bytea NOT NULL,
   PRIMARY KEY (tenant_id, agent_id, dedup_key)
 );
+-- Every operator read is "newest N rows for this tenant, optionally of one
+-- kind": WHERE kind = $1 ORDER BY at DESC LIMIT $2, with RLS supplying the
+-- tenant predicate. The primary key leads with tenant_id but cannot order by
+-- "at", so without these indexes Postgres scans the tenant's entire history and
+-- top-N sorts it — per request.
+--
+-- That is not a tuning nicety. It took the production control plane down on
+-- 2026-08-05 with only 2.8M rows (~1 GB of data): the console polls
+-- /api/policy-stats continuously, each sort took longer than the poll interval,
+-- and because the Go pool was unbounded every overlap opened another Postgres
+-- connection until max_connections (100) was exhausted. Every store-backed
+-- endpoint then returned HTTP 500 at once, the box sat at load 106 on 2 vCPUs,
+-- and the sorts spilled 20 GB of pgsql_tmp until the disk hit 100%. Adding the
+-- index took the same query from >10 minutes to 7 ms.
+CREATE INDEX IF NOT EXISTS telemetry_tenant_kind_at ON telemetry (tenant_id, kind, at DESC);
+CREATE INDEX IF NOT EXISTS telemetry_tenant_at      ON telemetry (tenant_id, at DESC);
 ALTER TABLE telemetry ENABLE ROW LEVEL SECURITY;
 -- FORCE so RLS applies even to the table owner; without it the owner bypasses.
 ALTER TABLE telemetry FORCE ROW LEVEL SECURITY;
@@ -107,6 +124,78 @@ SELECT
 // that a contended one fails fast with a clear error instead of hanging.
 const startupLockTimeout = "5s"
 
+// Connection pool bounds. Sized against a stock max_connections of 100: the
+// control plane is one of several clients (psql, pg_dump backups, the readiness
+// probe), and leaving most of the server's budget unclaimed is what keeps an
+// overloaded control plane diagnosable instead of locking every operator out.
+//
+// Idle connections are capped and aged out so a burst does not leave the pool
+// permanently holding connections the server could give to someone else.
+const (
+	maxOpenConns    = 20
+	maxIdleConns    = 10
+	connMaxLifetime = 30 * time.Minute
+	connMaxIdleTime = 5 * time.Minute
+)
+
+// readPathIndexes are the indexes the operator read path depends on. They live
+// in pgSchema too (fresh databases get them at provisioning, on an empty table,
+// instantly) — but an ALREADY-provisioned database never re-runs pgSchema,
+// because schemaReady deliberately short-circuits the DDL to avoid locking a
+// live table. So every deployment that existed before these indexes did would
+// have gone on full-scanning forever. ensureIndexes is that migration.
+var readPathIndexes = []struct{ name, create string }{
+	{"telemetry_tenant_kind_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS telemetry_tenant_kind_at ON telemetry (tenant_id, kind, at DESC)`},
+	{"telemetry_tenant_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS telemetry_tenant_at ON telemetry (tenant_id, at DESC)`},
+}
+
+// ensureIndexes builds any missing read-path index, CONCURRENTLY, in the
+// background.
+//
+// CONCURRENTLY takes SHARE UPDATE EXCLUSIVE rather than ACCESS EXCLUSIVE, so
+// agents keep writing throughout — the whole point, since on a multi-gigabyte
+// telemetry table this takes minutes and a blocking build would stall the fleet
+// for all of them. It runs in a goroutine so a restart never waits on it.
+//
+// Intended to be called as `go ensureIndexes(db)`.
+func ensureIndexes(db *sql.DB) {
+	for _, ix := range readPathIndexes {
+		var valid bool
+		err := db.QueryRow(
+			`SELECT i.indisvalid FROM pg_class c JOIN pg_index i ON i.indexrelid = c.oid WHERE c.relname = $1`,
+			ix.name).Scan(&valid)
+		switch {
+		case err == nil && valid:
+			continue // already present and usable by the planner
+		case err == nil && !valid:
+			// A previous CONCURRENTLY build failed partway and left an INVALID
+			// index behind. The planner ignores it, but CREATE INDEX IF NOT
+			// EXISTS sees it and skips — so without this drop the table would
+			// never get a working index, and the failure would be permanent
+			// and silent.
+			slog.Warn("dropping invalid index from a failed build", "index", ix.name)
+			if _, err := db.Exec(`DROP INDEX CONCURRENTLY IF EXISTS ` + ix.name); err != nil {
+				slog.Error("could not drop invalid index", "index", ix.name, "error", err)
+				continue
+			}
+		case errors.Is(err, sql.ErrNoRows):
+			// Missing: build it.
+		default:
+			slog.Error("could not probe index", "index", ix.name, "error", err)
+			continue
+		}
+
+		slog.Info("building read-path index (concurrent; writes continue)", "index", ix.name)
+		start := time.Now()
+		if _, err := db.Exec(ix.create); err != nil {
+			slog.Error("read-path index build failed; operator reads will full-scan until this succeeds",
+				"index", ix.name, "error", err)
+			continue
+		}
+		slog.Info("read-path index ready", "index", ix.name, "took", time.Since(start).String())
+	}
+}
+
 // OpenPostgres connects, creates the schema + RLS policy, and ensures the
 // non-superuser app role exists.
 func OpenPostgres(dsn string) (*PGStore, error) {
@@ -114,6 +203,22 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	// database/sql defaults MaxOpenConns to UNLIMITED. That default is what
+	// turned a slow-query problem into a total outage: when reads outran the
+	// console's poll interval, every overlapping request opened another
+	// Postgres connection instead of waiting for one, until the server hit
+	// max_connections (100) and answered "sorry, too many clients already" —
+	// to everything, including the health surfaces meant to report the fault.
+	//
+	// A bounded pool converts that failure into backpressure: request N+1
+	// waits for a free connection rather than manufacturing one, so overload
+	// degrades into latency instead of a cascading 500 across every endpoint.
+	// The ceiling stays well under a stock max_connections so psql, backups and
+	// the readiness probe always have room to get in and diagnose.
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	db.SetConnMaxLifetime(connMaxLifetime)
+	db.SetConnMaxIdleTime(connMaxIdleTime)
 	if err := db.Ping(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -148,6 +253,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 		return nil, fmt.Errorf("centralstore: schema probe: %w", err)
 	}
 	if provisioned {
+		go ensureIndexes(db)
 		return &PGStore{db: db}, nil
 	}
 
@@ -171,6 +277,9 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	// pgSchema just built these on an empty table, so this is a cheap no-op
+	// here; it runs anyway so there is exactly one path that guarantees them.
+	go ensureIndexes(db)
 	return &PGStore{db: db}, nil
 }
 

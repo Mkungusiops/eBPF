@@ -1,5 +1,19 @@
 # Live deployment & verification runbook — `soc.adanianlabs.io`
 
+> ## ⚠️ HISTORICAL — this infrastructure no longer exists
+>
+> The Azure deployment described below (`soc.adanianlabs.io`, VM
+> `safeai-security-client`, user `azureuser`) was **retired** when the estate
+> moved wholesale to AWS. The domain no longer resolves and the SSH alias is
+> dead, so nothing here can be followed as-is.
+>
+> Current deployment: [aws-multi-host.md](aws-multi-host.md). Readiness and
+> known traps: [pre-deployment-checklist.md](pre-deployment-checklist.md).
+>
+> Kept because the operational detail is transferable — WAL-safe backups
+> (`VACUUM INTO`, never `cp`), logrotate needing `copytruncate` under systemd
+> `append:`, and which unit-hardening directives break the engine.
+
 Operational record + reproducible runbook for the live engine running on the
 Azure host **`safeai-security-client`** (SSH alias; `20.238.49.130`,
 user `azureuser`, key `~/Code/safeai-security-client-key.pem`).

@@ -128,7 +128,28 @@ type Buffer struct {
 	// still un-acked (belt-and-suspenders alongside server-side dedup). Keys
 	// are pruned as records are acked, so this stays bounded.
 	pending map[string]struct{}
+	// maxRecords caps the un-acked backlog. See MaxRecords.
+	maxRecords int
+	// dropped counts records evicted by the cap since the process started. It
+	// is never reset: a fleet that lost telemetry must keep saying so.
+	dropped uint64
 }
+
+// DefaultMaxRecords caps the un-acked backlog an agent will hold.
+//
+// This buffer was previously UNBOUNDED: Enqueue appended without limit, so an
+// agent whose control plane could not ack grew in memory for as long as the
+// outage lasted. On 2026-08-05 the control plane was unable to serve or ingest
+// for ~3.5 hours; these agents survived it (they buffered and drained on
+// recovery), but the failure mode scales the wrong way — a longer outage, or a
+// busier host, ends in the OOM killer, which loses the entire backlog rather
+// than the oldest part of it.
+//
+// A bounded buffer trades the oldest records for the agent's survival, and
+// counts what it traded. 200k records is minutes-to-hours of a normal host's
+// telemetry at a few MB of memory, and is the amount worth keeping when the
+// alternative is keeping none.
+const DefaultMaxRecords = 200_000
 
 type item struct {
 	seq uint64
@@ -138,7 +159,27 @@ type item struct {
 // NewBuffer returns an empty Buffer. Sequences start at 1 (0 means "nothing
 // acked yet" for a peer that has never received an ack).
 func NewBuffer() *Buffer {
-	return &Buffer{nextSeq: 1, pending: make(map[string]struct{})}
+	return &Buffer{nextSeq: 1, pending: make(map[string]struct{}), maxRecords: DefaultMaxRecords}
+}
+
+// MaxRecords sets the un-acked backlog cap. A value <= 0 restores the default.
+// Intended for tests and for hosts tuned away from the default.
+func (b *Buffer) MaxRecords(n int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if n <= 0 {
+		n = DefaultMaxRecords
+	}
+	b.maxRecords = n
+}
+
+// Dropped returns how many records the cap has evicted since start. Non-zero
+// means this agent's telemetry has holes, which an operator must be able to
+// learn — silently losing security telemetry is worse than reporting a gap.
+func (b *Buffer) Dropped() uint64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.dropped
 }
 
 // Enqueue appends rec and returns its assigned sequence. If a record with the
@@ -153,7 +194,28 @@ func (b *Buffer) Enqueue(rec *ebpfsocv1.TelemetryRecord) (seq uint64, ok bool) {
 	b.nextSeq++
 	b.items = append(b.items, item{seq: seq, rec: rec})
 	b.pending[rec.GetDedupKey()] = struct{}{}
+	b.evictLocked()
 	return seq, true
+}
+
+// evictLocked drops the OLDEST records once the backlog exceeds the cap.
+//
+// Oldest-first is the deliberate choice: during an outage the newest telemetry
+// is the most operationally useful, and the oldest is the most likely to be
+// stale by the time anyone can act on it. Every eviction is counted, and its
+// dedup key released so the record can be re-enqueued if it recurs.
+//
+// Caller must hold b.mu.
+func (b *Buffer) evictLocked() {
+	excess := len(b.items) - b.maxRecords
+	if excess <= 0 {
+		return
+	}
+	for _, it := range b.items[:excess] {
+		delete(b.pending, it.rec.GetDedupKey())
+	}
+	b.items = append(b.items[:0], b.items[excess:]...)
+	b.dropped += uint64(excess)
 }
 
 // NextBatch returns up to maxRecords oldest un-acked records as a batch whose

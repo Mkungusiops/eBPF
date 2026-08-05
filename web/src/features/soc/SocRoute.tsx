@@ -47,6 +47,11 @@ import { EventReplay } from "../../components/EventReplay";
 import { VirtualList } from "../../components/VirtualList";
 import {
   EMPTY_SOC_SNAPSHOT,
+  type AlertStats,
+  fetchAlertStats,
+  MAX_BUFFERED_ALERTS,
+  MAX_BUFFERED_DECISIONS,
+  MAX_BUFFERED_EVENTS,
   fetchProcessDetail,
   fetchSocSnapshot,
   jailSocAlert,
@@ -181,7 +186,7 @@ interface HoverPreviewState {
 }
 
 export function SocRoute() {
-  const { snapshot, setSnapshot, loading, errors, statuses, refresh } = useSocData();
+  const { snapshot, setSnapshot, loading, errors, statuses, truncated, refresh } = useSocData();
   const sharedStream = useStream();
   const stream = useMemo<StreamTelemetry>(
     () => ({
@@ -341,8 +346,13 @@ export function SocRoute() {
     return snapshot.events.filter((event) => Date.parse(event.timestamp) >= cutoff);
   }, [now, rangeMin, snapshot.events]);
 
-  const counts = useMemo(() => countSeverities(rangeAlerts), [rangeAlerts]);
-  const previousCounts = useMemo(() => countSeverities(previousRangeAlerts), [previousRangeAlerts]);
+  // Server-computed counts win whenever available; the buffer-derived versions
+  // are the fallback for servers without the endpoint. See useAlertStats.
+  const { stats: serverStats, supported: statsSupported } = useAlertStats(rangeMin, TIMELINE_BUCKETS);
+  const bufferCounts = useMemo(() => countSeverities(rangeAlerts), [rangeAlerts]);
+  const bufferPreviousCounts = useMemo(() => countSeverities(previousRangeAlerts), [previousRangeAlerts]);
+  const counts = serverStats ? serverStats.counts : bufferCounts;
+  const previousCounts = serverStats ? serverStats.previous : bufferPreviousCounts;
   const hiddenTimelineSet = useMemo(() => new Set(timelineHidden), [timelineHidden]);
   const filteredAlerts = useMemo(() => {
     const pinned = new Set(pinnedAlerts);
@@ -354,12 +364,20 @@ export function SocRoute() {
     return groupAlerts ? groupAlertList(filtered) : filtered.map((alert) => ({ ...alert, groupCount: 1, members: [alert] }));
   }, [ackStates, filterUnack, groupAlerts, hideBaseline, pinnedAlerts, query, rangeAlerts, sortField]);
 
-  const riskScore = useMemo(() => Math.min(100, counts.critical * 8 + counts.high * 3 + counts.medium), [counts]);
-  const riskLabel = riskScore >= 80 ? "critical" : riskScore >= 45 ? "high" : riskScore >= 18 ? "elevated" : "low";
-  const previousRiskScore = useMemo(
-    () => Math.min(100, previousCounts.critical * 8 + previousCounts.high * 3 + previousCounts.medium),
+  // Risk is a weighted alert count, so it runs well past 100 on a busy window —
+  // 19 criticals alone saturate it. The gauge still reads 0..100, but the TREND
+  // is computed on the raw scores: comparing two clamped values printed "no
+  // change vs prior 5m" while criticals were climbing, which is the opposite of
+  // what the number was there to tell you. `riskSaturated` lets the band say the
+  // gauge is pegged instead of implying 100 is the top of the observed range.
+  const rawRiskScore = useMemo(() => counts.critical * 8 + counts.high * 3 + counts.medium, [counts]);
+  const previousRawRiskScore = useMemo(
+    () => previousCounts.critical * 8 + previousCounts.high * 3 + previousCounts.medium,
     [previousCounts]
   );
+  const riskScore = Math.min(100, rawRiskScore);
+  const riskSaturated = rawRiskScore > 100;
+  const riskLabel = riskScore >= 80 ? "critical" : riskScore >= 45 ? "high" : riskScore >= 18 ? "elevated" : "low";
   const openContainment = useMemo(() => {
     let critical = 0;
     let high = 0;
@@ -370,14 +388,28 @@ export function SocRoute() {
     }
     return { critical, high };
   }, [ackStates, rangeAlerts]);
+  // Decisions scoped to the selected window. The exec band sits under a window
+  // selector and every other cell in it is windowed, so an all-time count there
+  // read as "actions taken in the last 5m" when it meant "ever".
+  const rangeDecisions = useMemo(() => {
+    const cutoff = now - rangeMin * 60_000;
+    return snapshot.decisions.filter((decision) => Date.parse(decision.timestamp) >= cutoff);
+  }, [now, rangeMin, snapshot.decisions]);
   const eps = useMemo(() => eventsPerSecond(snapshot.events, now), [now, snapshot.events]);
   const activeProcesses = useMemo(() => processSummary(rangeAlerts, rangeEvents), [rangeAlerts, rangeEvents]);
-  const timeline = useMemo(() => buildTimeline(rangeAlerts, rangeMin, now, hiddenTimelineSet), [
+  const bufferTimeline = useMemo(() => buildTimeline(rangeAlerts, rangeMin, now, hiddenTimelineSet), [
     hiddenTimelineSet,
     now,
     rangeAlerts,
     rangeMin
   ]);
+  // The server returns the same bucket shape the client builds, so the timeline
+  // renders identically either way — but over the FULL window rather than the
+  // slice of it the buffer happens to hold.
+  const timeline = useMemo(
+    () => (serverStats ? serverTimeline(serverStats, hiddenTimelineSet) : bufferTimeline),
+    [bufferTimeline, hiddenTimelineSet, serverStats]
+  );
   const severitySparks = useMemo(() => {
     const buckets = buildTimeline(rangeAlerts, rangeMin, now, new Set(), 12);
     return Object.fromEntries(SEVERITIES.map((severity) => [severity, buckets.map((bucket) => bucket.counts[severity])])) as Record<
@@ -390,6 +422,19 @@ export function SocRoute() {
     () => mitreCoverage(rangeEvents, snapshot.policies, snapshot.policyStats),
     [rangeEvents, snapshot.policies, snapshot.policyStats]
   );
+  // Technique attribution is a join through policy metadata (see mitreCoverage).
+  // A server that publishes no `mitre` on any policy can never produce a row, so
+  // an empty coverage panel there means "not mapped", not "nothing observed" —
+  // and the two must not render the same. The multi-tenant control plane omitted
+  // the field entirely, which is why this panel read empty on every tenant.
+  //
+  // Claim the stronger "not mapped" only on positive evidence: policies came
+  // back and none carried a technique. An empty policy list means the tenant has
+  // no telemetry yet, which says nothing about the server's mapping.
+  const techniqueMapped = useMemo(
+    () => snapshot.policies.length === 0 || snapshot.policies.some((policy) => Boolean(policy.mitre)),
+    [snapshot.policies]
+  );
   const topProcesses = useMemo(() => topProcessRows(rangeAlerts), [rangeAlerts]);
   const iocs = useMemo(() => extractIocs(rangeAlerts, rangeEvents), [rangeAlerts, rangeEvents]);
   const networkRows = useMemo(() => aggregateNetwork(rangeEvents), [rangeEvents]);
@@ -397,10 +442,58 @@ export function SocRoute() {
     () => filterEvents(snapshot.events, streamFilter, streamHideNoise).slice(0, 200),
     [snapshot.events, streamFilter, streamHideNoise]
   );
+  // Does the console actually hold the whole selected window?
+  //
+  // The buffers are capped, and both feeds arrive newest-first, so a range
+  // longer than the buffer covers is served silently: the panels render a
+  // partial window that looks like a complete quiet one. At ~2 events/s a 2000
+  // event buffer is ~16 minutes, so the 30m and 60m ranges under-report by
+  // construction. A feed is short only if it came back FULL (older records
+  // exist server-side) and its oldest held record starts after the window did.
+  const windowCoverage = useMemo(() => {
+    const windowMs = rangeMin * 60_000;
+    const windowStart = now - windowMs;
+    const oldest = (items: Array<{ timestamp: string }>) =>
+      items.length ? Math.min(...items.map((item) => Date.parse(item.timestamp))) : undefined;
+    const oldestEvent = truncated.events ? oldest(snapshot.events) : undefined;
+    const oldestAlert = truncated.alerts ? oldest(snapshot.alerts) : undefined;
+    const shortBy = (value?: number) => (value !== undefined && value > windowStart ? value - windowStart : 0);
+    const eventsShortMs = shortBy(oldestEvent);
+    const alertsShortMs = shortBy(oldestAlert);
+    // The feeds reach back different distances — alerts are far rarer than
+    // events, so 1000 alerts can span hours while 2000 events span minutes.
+    // Coverage is therefore set by the SHORTEST feed, not the longest: taking
+    // the longest printed "holds the most recent 89m, not the full 30m", which
+    // is both self-contradictory and the opposite of the truth.
+    const shortMs = Math.max(eventsShortMs, alertsShortMs);
+    const shortFeeds = [eventsShortMs ? "events" : "", alertsShortMs ? "alerts" : ""].filter(Boolean);
+    return {
+      complete: shortMs === 0,
+      shortFeeds,
+      // What the limiting feed actually covers.
+      coveredMs: Math.max(0, windowMs - shortMs)
+    };
+  }, [now, rangeMin, snapshot.alerts, snapshot.events, truncated.alerts, truncated.events]);
+
   const staleSeconds = stream.lastMessageAt ? Math.max(0, Math.floor((now - stream.lastMessageAt) / 1000)) : undefined;
   const streamStale = staleSeconds === undefined || staleSeconds > 30;
   const selectedAlertCount = selectedIds.size;
   const activeEndpointErrors = Object.entries(errors).filter(([, error]) => error);
+  // When the alert or event feed is failing, what is left in the buffer is
+  // whatever the live stream has pushed since the last SUCCESSFUL load — not a
+  // sample of the window, and not a floor either. Every count, delta, sparkline
+  // and posture score derived from it is unfounded, so they must not be
+  // rendered as measurements. Observed in production: with all five store-backed
+  // endpoints returning 500, a 24h window displayed 15 alerts and a "+53 vs
+  // prior 24h" posture move, both invented by the gap.
+  // Counts are unfounded only when we had to derive them from the buffer AND
+  // that buffer's feed is failing. With server-computed stats the counts stand
+  // on their own, even if the row feeds are down.
+  const countsUnfounded = !serverStats && Boolean(errors.alerts || errors.events);
+  // The control plane reports store reachability on /api/system-health. When
+  // the store is the fault, every store-backed endpoint fails together and the
+  // list of five 500s says nothing an operator can act on — the subsystem does.
+  const storeFault = snapshot.health.storeOk === false ? snapshot.health.storeError || "central store unreachable" : "";
   const disabledEndpoints = Object.entries(statuses)
     .filter(([, status]) => status === 503)
     .map(([key]) => key);
@@ -636,14 +729,54 @@ export function SocRoute() {
           </div>
 
           {activeEndpointErrors.length ? (
-            <InlineNotice tone="warn" title="Some read-only SOC endpoints are unavailable.">
-              {activeEndpointErrors.map(([key, error]) => `${key}: ${error}`).join("; ")}
+            <InlineNotice
+              tone={countsUnfounded ? "danger" : "warn"}
+              title={
+                countsUnfounded
+                  ? "Telemetry feed is down — the counts below are not a measurement of this window."
+                  : "Some read-only SOC endpoints are unavailable."
+              }
+            >
+              {countsUnfounded
+                ? `${
+                    storeFault
+                      ? `The control plane cannot read its central store (${storeFault}), so every telemetry endpoint is failing together. `
+                      : ""
+                  }Showing only what the live stream has delivered since the last successful load. Do not read these totals, deltas or the posture score as the state of the ${rangeLabel(
+                    rangeMin
+                  )} window. ${activeEndpointErrors.map(([key, error]) => `${key}: ${error}`).join("; ")}`
+                : activeEndpointErrors.map(([key, error]) => `${key}: ${error}`).join("; ")}
             </InlineNotice>
           ) : null}
           {disabledEndpoints.length ? (
             <InlineNotice tone="info" title="Disabled endpoint state detected.">
               {disabledEndpoints.join(", ")}
             </InlineNotice>
+          ) : null}
+          {serverStats?.truncated ? (
+            <InlineNotice tone="warn" title="Counts are a floor — this window exceeds the server's scan limit.">
+              More alerts fall in this {rangeLabel(rangeMin)} window than the control plane will aggregate in one pass.
+              Narrow the range for exact totals.
+            </InlineNotice>
+          ) : null}
+          {!windowCoverage.complete ? (
+            serverStats ? (
+              // Counts, deltas and the timeline are server-computed and cover the
+              // whole window; only the row-level panels are buffer-bound. Saying
+              // "counts are a floor" here would now be the inaccurate statement.
+              <InlineNotice tone="info" title="Counts cover the full window. The lists below do not.">
+                Severity counts, deltas, posture and the timeline are computed over the full {rangeLabel(rangeMin)}. The
+                alert queue, process and IOC panels show only the most recent {formatDuration(windowCoverage.coveredMs)}{" "}
+                the console holds in memory.
+              </InlineNotice>
+            ) : (
+              <InlineNotice tone="warn" title="Partial window — counts below are a floor, not a total.">
+                The console holds only the most recent {formatDuration(windowCoverage.coveredMs)} of this{" "}
+                {rangeLabel(rangeMin)} window ({windowCoverage.shortFeeds.join(" and ")} reach no further back)
+                {statsSupported ? "" : ", and this server does not provide window totals"}. Narrow the range to see a
+                complete picture.
+              </InlineNotice>
+            )
           ) : null}
 
           <ExecutiveBand
@@ -653,13 +786,16 @@ export function SocRoute() {
             onToggleBriefing={() => setBriefingOpen((value) => !value)}
             riskScore={riskScore}
             riskLabel={riskLabel}
-            riskDelta={riskScore - previousRiskScore}
-            windowLabel={rangeMin === 1440 ? "24h" : `${rangeMin}m`}
+            riskDelta={rawRiskScore - previousRawRiskScore}
+            riskSaturated={riskSaturated}
+            countsUnfounded={countsUnfounded}
+            windowLabel={rangeLabel(rangeMin)}
             totalAlerts={rangeAlerts.length}
             openCritical={openContainment.critical}
             openHigh={openContainment.high}
-            containmentActions={snapshot.decisions.length}
+            containmentActions={rangeDecisions.length}
             topTechnique={mitreRows[0]}
+            techniqueMapped={techniqueMapped}
             eps={eps}
             activeProcesses={activeProcesses.count}
             topProcess={activeProcesses.top}
@@ -676,7 +812,7 @@ export function SocRoute() {
               value={counts.critical}
               sub="Containment priority"
               meta={`${rangeMin}m window`}
-              delta={counts.critical - previousCounts.critical}
+              delta={countsUnfounded ? undefined : counts.critical - previousCounts.critical}
               badge="P1"
               tone="critical"
               onClick={() => openKpi("critical", "Critical alerts")}
@@ -688,7 +824,7 @@ export function SocRoute() {
               value={counts.high}
               sub="Escalation watch"
               meta={`${rangeMin}m window`}
-              delta={counts.high - previousCounts.high}
+              delta={countsUnfounded ? undefined : counts.high - previousCounts.high}
               badge="P2"
               tone="high"
               onClick={() => openKpi("high", "High alerts")}
@@ -700,7 +836,7 @@ export function SocRoute() {
               value={counts.medium}
               sub="Analyst triage"
               meta={`${rangeMin}m window`}
-              delta={counts.medium - previousCounts.medium}
+              delta={countsUnfounded ? undefined : counts.medium - previousCounts.medium}
               badge="P3"
               tone="medium"
               onClick={() => openKpi("medium", "Medium alerts")}
@@ -718,14 +854,17 @@ export function SocRoute() {
             >
               <Sparkline values={eventSparkValues} tone="accent" />
             </ExecutiveMetricTile>
+            {/* Not "active": these are distinct processes OBSERVED in the window,
+                most of which have already exited. The badge used to read a
+                hardcoded "LAST 10M" regardless of the selected range. */}
             <ExecutiveMetricTile
-              label="Active processes"
+              label="Processes seen"
               value={activeProcesses.count}
               sub={activeProcesses.top || "No dominant process"}
-              meta={`${topProcesses.length} scored processes`}
-              badge="LAST 10M"
+              meta={`${topProcesses.length} scored · ${rangeLabel(rangeMin)} window`}
+              badge={rangeLabel(rangeMin).toUpperCase()}
               tone="good"
-              onClick={() => openKpi("procs", "Active processes")}
+              onClick={() => openKpi("procs", "Processes seen")}
             />
           </section>
 
@@ -811,7 +950,14 @@ export function SocRoute() {
 
             <div className="soc-right-rail">
               <PanelFrame panel={PANELS["mitre-coverage"]}>
-                <MiniBarList rows={mitreRows} empty="No MITRE techniques observed in this range." />
+                <MiniBarList
+                  rows={mitreRows}
+                  empty={
+                    techniqueMapped
+                      ? "No MITRE techniques observed in this range."
+                      : "This server publishes no policy→ATT&CK mapping, so coverage cannot be computed here."
+                  }
+                />
               </PanelFrame>
               <PanelFrame panel={PANELS["top-processes"]}>
                 <MiniBarList
@@ -887,7 +1033,13 @@ export function SocRoute() {
         <PillHostContent whoami={snapshot.whoami} errors={errors} statuses={statuses} onRefresh={refresh} />
       </PopoverCard>
       <PopoverCard panel={PANELS["pill-popovers"]} open={openPill === "risk"} title="Risk breakdown" onClose={() => setOpenPill(null)}>
-        <PillRiskContent counts={counts} riskScore={riskScore} alerts={rangeAlerts} windowLabel={`last ${rangeMin}m`} />
+        <PillRiskContent
+          counts={counts}
+          riskScore={riskScore}
+          rawRiskScore={rawRiskScore}
+          alerts={rangeAlerts}
+          windowLabel={`last ${rangeLabel(rangeMin)}`}
+        />
       </PopoverCard>
 
       <SocModals
@@ -898,6 +1050,7 @@ export function SocRoute() {
         filteredAlerts={filteredAlerts}
         rangeAlerts={rangeAlerts}
         rangeEvents={rangeEvents}
+        rangeDecisions={rangeDecisions}
         mitreRows={mitreRows}
         topProcesses={topProcesses}
         watchlist={watchlist}
@@ -944,6 +1097,7 @@ function useSocData() {
   const [loading, setLoading] = useState(true);
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [statuses, setStatuses] = useState<Record<string, number | undefined>>({});
+  const [truncated, setTruncated] = useState({ alerts: false, events: false });
 
   const load = useCallback(async (signal?: AbortSignal, quiet = false) => {
     if (!quiet) setLoading(true);
@@ -952,6 +1106,7 @@ function useSocData() {
     setSnapshot(read.snapshot);
     setErrors(read.errors);
     setStatuses(read.statuses);
+    setTruncated(read.truncated);
     setLoading(false);
   }, []);
 
@@ -983,6 +1138,7 @@ function useSocData() {
     loading,
     errors,
     statuses,
+    truncated,
     refresh
   };
 }
@@ -998,23 +1154,70 @@ function applySocStreamBatch(
         const alert = normalizeAlert(frame.payload);
         next = {
           ...next,
-          alerts: [alert, ...next.alerts.filter((item) => item.id !== alert.id)].slice(0, 200)
+          alerts: [alert, ...next.alerts.filter((item) => item.id !== alert.id)].slice(0, MAX_BUFFERED_ALERTS)
         };
       } else if (frame.type === "event" || frame.type === "process_exit") {
         const socEvent = normalizeEvent(frame.payload);
         next = {
           ...next,
-          events: [socEvent, ...next.events.filter((item) => item.id !== socEvent.id)].slice(0, 500)
+          events: [socEvent, ...next.events.filter((item) => item.id !== socEvent.id)].slice(0, MAX_BUFFERED_EVENTS)
         };
       } else if (frame.type === "decision") {
         next = {
           ...next,
-          decisions: [normalizeDecisionFrame(frame.payload), ...next.decisions].slice(0, 20)
+          decisions: [normalizeDecisionFrame(frame.payload), ...next.decisions].slice(0, MAX_BUFFERED_DECISIONS)
         };
       }
     }
     return next;
   });
+}
+
+/**
+ * Server-computed counts for the selected window.
+ *
+ * The dashboard's counts, deltas, posture score and timeline used to be derived
+ * in the browser by filtering the alert buffer. That is only correct while the
+ * buffer spans the window — at this fleet's rate it spans roughly twenty
+ * minutes, so every range above 30m was a fraction of itself presented as a
+ * total, and the "vs prior" delta compared against a window that was never
+ * loaded (printing "+313 vs prior 24h" when the honest answer was unknown).
+ *
+ * Returns null while loading, or when the server has no such endpoint — the
+ * caller then falls back to computing from the buffer, which stays correct for
+ * the short ranges where the buffer really does cover the window.
+ */
+function useAlertStats(rangeMin: number, buckets: number) {
+  const [stats, setStats] = useState<AlertStats | null>(null);
+  const [supported, setSupported] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const tick = async () => {
+      const next = await fetchAlertStats(rangeMin, buckets, controller.signal);
+      if (cancelled) return;
+      if (next) {
+        setStats(next);
+        setSupported(true);
+      } else {
+        // Do not keep the previous window's numbers on screen when the range
+        // changed and the new fetch failed; stale counts under a new label are
+        // exactly the class of lie this replaces.
+        setStats(null);
+        setSupported(false);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 15_000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [buckets, rangeMin]);
+
+  return { stats, supported };
 }
 
 function useNow(intervalMs: number) {
@@ -1137,7 +1340,11 @@ function TimelinePanel({ buckets, rangeMin }: { buckets: TimelineBucket[]; range
   const max = Math.max(1, ...buckets.map((bucket) => bucket.total));
   const total = buckets.reduce((sum, bucket) => sum + bucket.total, 0);
   const avg = total / Math.max(1, buckets.length);
-  const bucketMinutes = Math.max(1, Math.round(rangeMin / Math.max(1, buckets.length)));
+  // A 5m range across 30 buckets is 10s per bar. The old label rounded that to
+  // minutes and clamped at 1, so every short range claimed "each bar ≈ 1m" and
+  // the per-bar average silently read as a per-minute rate — off by 6x.
+  const bucketMs = (rangeMin * 60_000) / Math.max(1, buckets.length);
+  const bucketSpan = formatDuration(bucketMs);
 
   return (
     <div className="soc-timeline-wrap">
@@ -1169,14 +1376,14 @@ function TimelinePanel({ buckets, rangeMin }: { buckets: TimelineBucket[]; range
             bucket={buckets[hover]}
             leftPct={((hover + 0.5) / Math.max(1, buckets.length)) * 100}
             avg={avg}
-            bucketMinutes={bucketMinutes}
+            bucketSpan={bucketSpan}
           />
         ) : null}
       </div>
       <div className="soc-timeline-legend">
         <span>{buckets[0]?.label}</span>
         <span className="soc-timeline-legend-mid">
-          each bar ≈ {bucketMinutes}m · avg {avg.toFixed(1)} · peak {max} alerts
+          each bar {bucketSpan} · avg {avg.toFixed(1)} · peak {max} alerts per bar
         </span>
         <span>
           {buckets.at(-1)?.label} <em>· now</em>
@@ -1190,12 +1397,12 @@ function TimelineTooltip({
   bucket,
   leftPct,
   avg,
-  bucketMinutes
+  bucketSpan
 }: {
   bucket: TimelineBucket;
   leftPct: number;
   avg: number;
-  bucketMinutes: number;
+  bucketSpan: string;
 }) {
   // Absolutely positioned inside the chart; the column index drives a pure-CSS
   // clamp so the card tracks the hovered bar yet never spills past either edge.
@@ -1203,7 +1410,7 @@ function TimelineTooltip({
     <div className="soc-timeline-tip" style={{ left: `clamp(8px, ${leftPct.toFixed(2)}%, calc(100% - 218px))` }} role="tooltip">
       <div className="soc-timeline-tip-head">
         <strong>{bucket.label}</strong>
-        <span>{bucketMinutes}m window</span>
+        <span>{bucketSpan} bucket</span>
       </div>
       {bucket.total === 0 ? (
         <p className="soc-timeline-tip-empty">No alerts in this window.</p>
@@ -1294,16 +1501,41 @@ function techniqueName(label: string) {
   return label.replace(/^T\d{4}(?:\.\d+)?\s*/, "").trim() || "technique";
 }
 
-function ExecPostureGauge({ score, label }: { score: number; label: string }) {
+// `saturated` means the underlying weighted score ran past the top of the
+// scale. The dial still reads 100/100 — a saturating gauge is a normal reading
+// and both consoles show it identically — but the band beneath states that it
+// is pegged, and the trend is computed on the UNCAPPED score so movement stays
+// visible while the dial cannot move.
+function ExecPostureGauge({
+  score,
+  label,
+  saturated,
+  unavailable
+}: {
+  score: number;
+  label: string;
+  saturated?: boolean;
+  unavailable?: boolean;
+}) {
   const radius = 56;
   const centerX = 66;
   const centerY = 66;
   const circumference = Math.PI * radius;
-  const filled = (score / 100) * circumference;
+  const filled = unavailable ? 0 : (score / 100) * circumference;
   const arc = `M ${centerX - radius} ${centerY} A ${radius} ${radius} 0 0 1 ${centerX + radius} ${centerY}`;
   return (
     <div className={cx("soc-exec-gauge", postureSeverityClass(label))}>
-      <svg viewBox="0 0 132 76" role="img" aria-label={`Security posture ${label} score ${score} of 100`}>
+      <svg
+        viewBox="0 0 132 76"
+        role="img"
+        aria-label={
+          unavailable
+            ? "Security posture unavailable: the telemetry feed is down"
+            : saturated
+              ? `Security posture ${label}, score above the 100 point scale maximum`
+              : `Security posture ${label} score ${score} of 100`
+        }
+      >
         <path className="soc-exec-gauge-track" d={arc} strokeWidth={11} fill="none" strokeLinecap="round" />
         <path
           className="soc-exec-gauge-fill"
@@ -1315,8 +1547,8 @@ function ExecPostureGauge({ score, label }: { score: number; label: string }) {
         />
       </svg>
       <div className="soc-exec-gauge-readout">
-        <strong>{score}</strong>
-        <small>/100</small>
+        <strong>{unavailable ? "—" : score}</strong>
+        {unavailable ? null : <small>/100</small>}
       </div>
     </div>
   );
@@ -1333,12 +1565,15 @@ function ExecutiveBand({
   riskScore,
   riskLabel,
   riskDelta,
+  riskSaturated,
+  countsUnfounded,
   windowLabel,
   totalAlerts,
   openCritical,
   openHigh,
   containmentActions,
   topTechnique,
+  techniqueMapped,
   eps,
   activeProcesses,
   topProcess,
@@ -1355,12 +1590,17 @@ function ExecutiveBand({
   riskScore: number;
   riskLabel: string;
   riskDelta: number;
+  riskSaturated: boolean;
+  /** The alert/event feed is failing, so every count feeding this band is an artefact of the gap. */
+  countsUnfounded: boolean;
   windowLabel: string;
   totalAlerts: number;
   openCritical: number;
   openHigh: number;
   containmentActions: number;
   topTechnique?: { label: string; value: number };
+  /** Whether this server supplies any policy→ATT&CK mapping at all. Absent mapping is not the same as no technique observed. */
+  techniqueMapped: boolean;
   eps: number;
   activeProcesses: number;
   topProcess?: string;
@@ -1370,8 +1610,14 @@ function ExecutiveBand({
   onReviewCriticals: () => void;
   onOpenRisk: () => void;
 }) {
-  const trend = riskDelta > 0 ? "up" : riskDelta < 0 ? "down" : "flat";
-  const trendText = riskDelta === 0 ? `no change vs prior ${windowLabel}` : `${riskDelta > 0 ? "+" : ""}${riskDelta} vs prior ${windowLabel}`;
+  const trend = countsUnfounded ? "flat" : riskDelta > 0 ? "up" : riskDelta < 0 ? "down" : "flat";
+  // A delta across a window the console could not load is a measurement of the
+  // outage, not of the estate.
+  const trendText = countsUnfounded
+    ? "trend unavailable — telemetry feed down"
+    : riskDelta === 0
+      ? `no change vs prior ${windowLabel}`
+      : `${riskDelta > 0 ? "+" : ""}${riskDelta} vs prior ${windowLabel}`;
   const postureClass = postureSeverityClass(riskLabel);
   const healthy = hostOk && streamState === "live";
   const priorityCount = openCritical + openHigh;
@@ -1379,15 +1625,19 @@ function ExecutiveBand({
   const topTechniqueName = topTechnique ? `${techniqueId(topTechnique.label)} ${techniqueName(topTechnique.label)}` : "";
   const readableTopProcess = topProcess ? shortGraphLabel(topProcess, 32) : undefined;
   const leadSignal = topTechniqueName || readableTopProcess || "No dominant technique or process yet";
-  const incidentLabel = openCritical
+  const incidentLabel = countsUnfounded
+    ? "Telemetry feed down — posture unknown"
+    : openCritical
     ? "Critical active incident queue"
     : riskScore >= 45
       ? "High-risk security posture"
       : riskScore >= 18
         ? "Elevated security posture"
         : "No priority incident in the current window";
-  const briefingSummary = openCritical
-    ? `${openCritical} critical alert${openCritical === 1 ? "" : "s"} need containment review. Telemetry is ${healthy ? "healthy" : "degraded"}, so the dashboard can still support triage.`
+  const briefingSummary = countsUnfounded
+    ? "The console cannot load alerts or events, so it cannot say what is happening. Restore the telemetry feed before drawing any conclusion from this page; what is shown is only what the live stream pushed since the last successful load."
+    : openCritical
+    ? `${openCritical} critical alert${openCritical === 1 ? "" : "s"} need containment review. Telemetry is ${healthy ? "healthy, so the dashboard can support triage" : "degraded, so treat these counts as incomplete"}.`
     : totalAlerts
       ? `${totalAlerts} alert${totalAlerts === 1 ? "" : "s"} are visible in this window. The next step is to confirm whether any create business or service impact.`
       : "No alerts are visible in this window. Keep monitoring stream health and host reachability.";
@@ -1407,7 +1657,9 @@ function ExecutiveBand({
       value: leadSignal,
       detail: topTechnique
         ? `${topTechnique.value} technique hit${topTechnique.value === 1 ? "" : "s"} point to the current threat pattern.`
-        : "Technique attribution is not available yet; use the alert queue and process view to confirm the pattern."
+        : techniqueMapped
+          ? "No policy with an ATT&CK mapping fired in this window; use the alert queue and process view to confirm the pattern."
+          : "This server publishes no policy→ATT&CK mapping, so technique attribution is unavailable here — not absent from the telemetry."
     },
     {
       label: "What is affected",
@@ -1421,8 +1673,16 @@ function ExecutiveBand({
     },
     {
       label: "Next action",
-      value: openCritical ? "Contain criticals first" : priorityCount ? "Clear high-priority queue" : "Keep watch",
-      detail: openCritical
+      value: countsUnfounded
+        ? "Restore telemetry"
+        : openCritical
+          ? "Contain criticals first"
+          : priorityCount
+            ? "Clear high-priority queue"
+            : "Keep watch",
+      detail: countsUnfounded
+        ? "Check the control plane's store connectivity — the read endpoints named in the banner are all store-backed. Triage cannot resume until they answer."
+        : openCritical
         ? "Validate true positives, group duplicates, identify asset owner, and execute the safest containment path."
         : priorityCount
           ? "Review high-severity items, confirm scope, and decide whether containment needs approval."
@@ -1435,8 +1695,8 @@ function ExecutiveBand({
       <section className="soc-exec-band is-collapsed" data-panel="exec-summary" aria-label="Executive summary">
         <span className="soc-exec-eyebrow">Executive summary</span>
         <button type="button" className={cx("soc-exec-mini-score", postureClass)} onClick={onOpenRisk} title="View risk breakdown">
-          {riskScore}
-          <em>{riskLabel} · {trendText}</em>
+          {countsUnfounded ? "—" : riskScore}
+          <em>{countsUnfounded ? "unavailable" : riskLabel} · {trendText}</em>
         </button>
         <span className="soc-exec-mini-stat">
           <strong className={openCritical ? "severity-critical" : ""}>{openCritical}</strong> open critical · {openHigh} high
@@ -1484,11 +1744,19 @@ function ExecutiveBand({
       </div>
       <div className="soc-exec-band-body">
         <button type="button" className="soc-exec-posture" onClick={onOpenRisk} title="View risk breakdown">
-          <ExecPostureGauge score={riskScore} label={riskLabel} />
+          <ExecPostureGauge
+            score={riskScore}
+            label={riskLabel}
+            saturated={riskSaturated && !countsUnfounded}
+            unavailable={countsUnfounded}
+          />
           <div className="soc-exec-posture-meta">
             <span className="soc-exec-cell-label">Security posture</span>
-            <strong className={cx("soc-exec-posture-label", postureClass)}>{riskLabel}</strong>
+            <strong className={cx("soc-exec-posture-label", !countsUnfounded && postureClass)}>
+              {countsUnfounded ? "unavailable" : riskLabel}
+            </strong>
             <span className={cx("soc-exec-trend", `is-${trend}`)}>{trendText}</span>
+            {riskSaturated ? <span className="soc-exec-cell-sub">gauge pegged · trend tracks the uncapped score</span> : null}
           </div>
         </button>
         <div className="soc-exec-cells">
@@ -1500,13 +1768,17 @@ function ExecutiveBand({
           <div className="soc-exec-cell">
             <span className="soc-exec-cell-label">Response actions</span>
             <strong>{containmentActions}</strong>
-            <span className="soc-exec-cell-sub">containment decisions logged</span>
+            <span className="soc-exec-cell-sub">containment decisions in this {windowLabel}</span>
           </div>
           <div className="soc-exec-cell">
             <span className="soc-exec-cell-label">Top technique</span>
-            <strong className="soc-exec-cell-tech">{topTechnique ? techniqueId(topTechnique.label) : "—"}</strong>
+            <strong className="soc-exec-cell-tech">{topTechnique ? techniqueId(topTechnique.label) : techniqueMapped ? "—" : "n/a"}</strong>
             <span className="soc-exec-cell-sub">
-              {topTechnique ? `${topTechnique.value} hit${topTechnique.value === 1 ? "" : "s"} · ${techniqueName(topTechnique.label)}` : "no techniques in window"}
+              {topTechnique
+                ? `${topTechnique.value} hit${topTechnique.value === 1 ? "" : "s"} · ${techniqueName(topTechnique.label)}`
+                : techniqueMapped
+                  ? "no techniques in window"
+                  : "no ATT&CK mapping from this server"}
             </span>
           </div>
           <div className="soc-exec-cell">
@@ -1515,7 +1787,7 @@ function ExecutiveBand({
               {eps.toFixed(1)}
               <small>/s</small>
             </strong>
-            <span className="soc-exec-cell-sub">{activeProcesses} active processes</span>
+            <span className="soc-exec-cell-sub">{activeProcesses} processes seen</span>
           </div>
           <div className="soc-exec-cell">
             <span className="soc-exec-cell-label">Operations</span>
@@ -1973,6 +2245,7 @@ function SocModals({
   filteredAlerts,
   rangeAlerts,
   rangeEvents,
+  rangeDecisions,
   mitreRows,
   topProcesses,
   watchlist,
@@ -2002,6 +2275,7 @@ function SocModals({
   filteredAlerts: AlertGroup[];
   rangeAlerts: SocAlert[];
   rangeEvents: SocEvent[];
+  rangeDecisions: SocDecision[];
   mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>;
   topProcesses: Array<{ process: string; score: number; count: number; execId?: string }>;
   watchlist: typeof DEFAULT_WATCHLIST;
@@ -2147,7 +2421,7 @@ function SocModals({
           filteredAlerts={filteredAlerts}
           rangeAlerts={rangeAlerts}
           events={rangeEvents}
-          decisions={snapshot.decisions}
+          decisions={rangeDecisions}
           policies={snapshot.policies}
           mitreRows={mitreRows}
           whoami={snapshot.whoami}
@@ -4623,11 +4897,13 @@ function PillHostContent({
 function PillRiskContent({
   counts,
   riskScore,
+  rawRiskScore,
   alerts,
   windowLabel
 }: {
   counts: Record<Severity, number>;
   riskScore: number;
+  rawRiskScore: number;
   alerts: SocAlert[];
   windowLabel: string;
 }) {
@@ -4642,7 +4918,7 @@ function PillRiskContent({
   );
   return (
     <div className="soc-popover-body soc-popover-risk">
-      <RiskGauge score={riskScore} counts={counts} contributors={contributors} window={windowLabel} />
+      <RiskGauge score={riskScore} rawScore={rawRiskScore} counts={counts} contributors={contributors} window={windowLabel} />
     </div>
   );
 }
@@ -4708,6 +4984,51 @@ function AlertContextMenu({
       ) : null}
     </div>
   );
+}
+
+// The window selector's own vocabulary — "5m", "60m", "24h".
+function rangeLabel(rangeMin: number): string {
+  return rangeMin >= 1440 ? "24h" : `${rangeMin}m`;
+}
+
+// A span in plain words: "45s", "3m", "1h 12m".
+function formatDuration(ms: number): string {
+  const totalSec = Math.max(0, Math.round(ms / 1000));
+  if (totalSec < 60) return `${totalSec}s`;
+  const min = Math.round(totalSec / 60);
+  if (min < 60) return `${min}m`;
+  const hr = Math.floor(min / 60);
+  const rem = min % 60;
+  return rem ? `${hr}h ${rem}m` : `${hr}h`;
+}
+
+// How many columns the severity timeline draws. Shared with the server request
+// so the buckets it returns line up with what the chart expects.
+const TIMELINE_BUCKETS = 30;
+
+// serverTimeline adapts server buckets to the chart's shape, applying the
+// legend's severity toggles client-side (they are a view filter, not a query).
+// Anomaly marking uses the same mean+2σ rule as the client-side builder.
+function serverTimeline(stats: AlertStats, hidden: Set<Severity>): TimelineBucket[] {
+  const buckets = stats.buckets.map((bucket) => {
+    const counts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 } as Record<Severity, number>;
+    let total = 0;
+    for (const severity of SEVERITIES) {
+      if (hidden.has(severity)) continue;
+      counts[severity] = bucket.counts[severity] || 0;
+      total += counts[severity];
+    }
+    const at = new Date(bucket.at);
+    const label = Number.isNaN(at.getTime())
+      ? ""
+      : `${String(at.getHours()).padStart(2, "0")}:${String(at.getMinutes()).padStart(2, "0")}`;
+    return { label, total, anomaly: false, counts };
+  });
+  const totals = buckets.map((b) => b.total);
+  const avg = totals.reduce((sum, v) => sum + v, 0) / Math.max(1, totals.length);
+  const variance = totals.reduce((sum, v) => sum + (v - avg) ** 2, 0) / Math.max(1, totals.length);
+  const std = Math.sqrt(variance);
+  return buckets.map((b) => ({ ...b, anomaly: b.total > avg + std * 2 && b.total > 2 }));
 }
 
 function countSeverities(alerts: SocAlert[]): Record<Severity, number> {

@@ -4,6 +4,7 @@ import (
 	"crypto/subtle"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -12,13 +13,18 @@ import (
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
+	"github.com/jeffmk/ebpf-poc-engine/internal/buildinfo"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
+	"github.com/jeffmk/ebpf-poc-engine/internal/mitre"
 )
 
 func (s *Server) buildHTTP() http.Handler {
 	mux := http.NewServeMux()
+	// Liveness: the process is up and serving HTTP. Deliberately a constant —
+	// it must not fail on a dependency, or a restart loop follows a database
+	// blip. Readiness is the endpoint that speaks for the dependencies.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]any{"status": "ok"}) })
-	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, map[string]any{"status": "ready"}) })
+	mux.HandleFunc("/readyz", s.handleReadyz)
 	mux.HandleFunc("/api/whoami", s.handleWhoami)
 	mux.HandleFunc("/api/telemetry", s.handleTelemetry)
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
@@ -31,11 +37,13 @@ func (s *Server) buildHTTP() http.Handler {
 	mux.HandleFunc("/api/decisions", s.handleDecisions)
 	mux.HandleFunc("/api/policies", s.handlePolicies)
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
+	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleStream)
-	s.registerChokeRoutes(mux)  // rich Choke Gateway + Devices API, tenant-scoped
-	s.registerFleetRoutes(mux)  // Fleet view: tenant's agents as hosts
-	s.registerAttackRoutes(mux) // quick-fire attacks + honeypots (demo/lab)
+	s.registerChokeRoutes(mux)    // rich Choke Gateway + Devices API, tenant-scoped
+	s.registerApprovalRoutes(mux) // EN-2 change-control queue for destructive actions
+	s.registerFleetRoutes(mux)    // Fleet view: tenant's agents as hosts
+	s.registerAttackRoutes(mux)   // quick-fire attacks + honeypots (demo/lab)
 	mux.HandleFunc("/api/admin/enroll-token", s.handleEnrollToken)
 	mux.HandleFunc("/api/admin/command", s.handleCommand)
 	if s.cfg.BFF != nil {
@@ -126,7 +134,7 @@ func (s *Server) handleTelemetry(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant}, limit)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "", limit, err)
 		return
 	}
 	out := make([]telemetryRow, 0, len(rows))
@@ -206,6 +214,54 @@ func (s *Server) authorizeRead(w http.ResponseWriter, r *http.Request) (string, 
 	return tenant, true
 }
 
+// readinessProbeTenant is a reserved tenant id that can never be enrolled, so
+// the readiness probe exercises the full read path without touching, or being
+// able to reach, any tenant's rows.
+const readinessProbeTenant = "__readyz_probe__"
+
+// handleReadyz reports whether the control plane can actually SERVE, which for
+// an operator console means one thing: can it read its central store?
+//
+// /healthz answers a constant. It proves the process is running and nothing
+// else — and it is what the deployment's uptime checks point at. So when this
+// control plane lost its database, all five store-backed read endpoints
+// returned 500 to the console while /healthz stayed green: nothing paged,
+// nothing failed over, and the only signal in the entire system was an operator
+// noticing that a 24h window showed fewer alerts than a 5m one.
+//
+// The probe runs the same path the read endpoints run — transaction, SET LOCAL
+// ROLE, tenant GUC, indexed read — so it catches connection, role and grant
+// failures rather than just TCP reachability.
+func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.cfg.Store.Count(centralstore.Scope{TenantID: readinessProbeTenant}); err != nil {
+		slog.Error("readiness probe failed: central store unreadable", "error", err)
+		// Unauthenticated endpoint: name the subsystem, not the driver error.
+		writeJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status": "unready", "store": "unreadable",
+			"detail": "control plane cannot read its central store; see the journal for the driver error",
+		})
+		return
+	}
+	writeJSON(w, 200, map[string]any{"status": "ready", "store": "ok"})
+}
+
+// storeQueryFailed logs the real store error, then answers a generic 500.
+//
+// Every read endpoint used to discard `err` and write a bare "query failed".
+// When the control plane lost its database, the console showed five identical
+// HTTP 500s and the journal showed NOTHING — the only signal an operator had
+// was a banner naming the endpoints, with no way to learn what went wrong.
+// The response body stays generic on purpose (store errors name schema and
+// role internals); the journal gets the detail.
+func storeQueryFailed(w http.ResponseWriter, r *http.Request, tenant, kind string, limit int, err error) {
+	if kind == "" {
+		kind = "all"
+	}
+	slog.Error("store query failed",
+		"path", r.URL.Path, "tenant", tenant, "kind", kind, "limit", limit, "error", err)
+	http.Error(w, "query failed", http.StatusInternalServerError)
+}
+
 // handleAlerts serves a tenant's recent alerts (the triage queue). The frontend
 // derives the severity timeline from the same list, so one endpoint covers both.
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
@@ -221,7 +277,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "alert"}, limit)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "alert", limit, err)
 		return
 	}
 	type alertView struct {
@@ -273,7 +329,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "event"}, limit)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "event", limit, err)
 		return
 	}
 	type eventView struct {
@@ -310,31 +366,99 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "count": len(out), "events": out})
 }
 
-// handleSystemHealth reports the tenant's control-plane-side health (the SOC
-// dashboard's Operations tile). Derived from the agent registry.
+// handleSystemHealth reports the tenant's control-plane-side health.
+//
+// Scoped to what the control plane can actually observe: agent heartbeats. It
+// used to answer `tetragon: "connected"` and `stream: "live"` as constants —
+// claims about a kernel sensor running on a host the control plane never
+// inspects, asserted even when every agent in the tenant had been silent for
+// hours. Kernel-sensor state belongs to the agent and reaches the console via
+// the single-tenant engine's own /api/system-health; it is reported as unknown
+// here rather than invented.
+//
+// A registered agent is only meaningful if it is still heartbeating, so
+// "healthy" means at least one FRESH agent, not at least one row.
 func (s *Server) handleSystemHealth(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.authorizeRead(w, r)
 	if !ok {
 		return
 	}
 	agents := s.registry.ListTenant(tenant)
-	status := "healthy"
-	if len(agents) == 0 {
-		status = "degraded"
+	fresh := 0
+	var lastSeen time.Time
+	for _, a := range agents {
+		if time.Since(a.LastSeen) <= agentFreshWindow {
+			fresh++
+		}
+		if a.LastSeen.After(lastSeen) {
+			lastSeen = a.LastSeen
+		}
 	}
-	writeJSON(w, 200, map[string]any{
-		"status": status, "host": tenant, "tetragon": "connected",
-		"agents": len(agents), "stream": "live",
-	})
+	// The store is the reason every other read endpoint can fail at once, so
+	// this endpoint — the one the console polls to describe system state — has
+	// to speak for it. Without this the console could only report five
+	// anonymous HTTP 500s and could not name the subsystem at fault.
+	storeErr := ""
+	if _, err := s.cfg.Store.Count(centralstore.Scope{TenantID: readinessProbeTenant}); err != nil {
+		storeErr = err.Error()
+		slog.Error("system health: central store unreadable", "tenant", tenant, "error", err)
+	}
+
+	status := "healthy"
+	switch {
+	case storeErr != "":
+		status = "degraded" // telemetry cannot be read at all
+	case len(agents) == 0:
+		status = "degraded" // nothing has ever enrolled and reported
+	case fresh == 0:
+		status = "degraded" // agents known, all stale
+	}
+	out := map[string]any{
+		"status": status, "host": tenant,
+		"agents": len(agents), "agents_fresh": fresh,
+		"kernel_sensor": "unknown: not observable from the control plane",
+		"store": map[string]any{
+			"ok": storeErr == "",
+			// Operators reach this endpoint through an authenticated console
+			// session, so the driver error is safe here and is what turns
+			// "everything is 500" into an actionable fault.
+			"error": storeErr,
+		},
+	}
+	if !lastSeen.IsZero() {
+		out["last_seen"] = lastSeen.UTC().Format(time.RFC3339)
+		out["last_seen_age_seconds"] = int(time.Since(lastSeen).Seconds())
+	}
+	writeJSON(w, 200, out)
 }
+
+// agentFreshWindow is how long after its last heartbeat an agent still counts
+// as live. Agents heartbeat every 30s (see the HeartbeatService registration in
+// controlplane.go), so three missed beats is the staleness bar.
+const agentFreshWindow = 90 * time.Second
 
 // handleVersion returns the control-plane build (public; not sensitive).
+//
+// `sha` was the constant "0.3.0-controlplane" and had never changed, so the
+// endpoint could not answer the one question it exists for: which code is this
+// box running? It now reports the source revision the binary was built from.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"sha": cpBuild, "version": cpBuild})
+	b := buildinfo.Get()
+	out := map[string]any{
+		"sha":      b.String(), // the console's build-change signal
+		"revision": b.Revision,
+		"dirty":    b.Dirty,
+		"version":  cpProduct,
+	}
+	if b.BuiltAt != "" {
+		out["built_at"] = b.BuiltAt
+	}
+	writeJSON(w, 200, out)
 }
 
-// cpBuild identifies the control-plane build to the console version tile.
-const cpBuild = "0.3.0-controlplane"
+// cpProduct is the control plane's product version, independent of the source
+// revision that implements it.
+const cpProduct = "0.3.0-controlplane"
 
 // handleDecisions serves a tenant's recent enforcement decisions (the SOC
 // dashboard's decision ledger). Sourced from the store's "decision" records
@@ -352,7 +476,7 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "decision"}, limit)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "decision", limit, err)
 		return
 	}
 	type decisionView struct {
@@ -410,6 +534,12 @@ func (s *Server) policyPosts(tenant string, window int) (map[string]int, error) 
 
 // handlePolicies lists the tenant's active policies — those actually firing in
 // its telemetry (distinct policy_name), so the list reflects real tenant state.
+//
+// The mitre/tactic fields are not decoration: the console's ATT&CK coverage
+// panel is built by joining event.policy_name → policy.mitre, so omitting them
+// here made that panel report "no techniques observed in this range" for every
+// tenant, in every window, regardless of what the fleet was actually doing.
+// Sourced from internal/mitre, the same table the single-tenant engine serves.
 func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.authorizeRead(w, r)
 	if !ok {
@@ -417,12 +547,15 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	}
 	counts, err := s.policyPosts(tenant, 5000)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "event", 5000, err)
 		return
 	}
 	type policyView struct {
-		Name  string `json:"name"`
-		Posts int    `json:"posts"`
+		Name        string `json:"name"`
+		Posts       int    `json:"posts"`
+		Description string `json:"description,omitempty"`
+		MITRE       string `json:"mitre,omitempty"`
+		Tactic      string `json:"tactic,omitempty"`
 	}
 	names := make([]string, 0, len(counts))
 	for n := range counts {
@@ -431,7 +564,13 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 	sort.Strings(names)
 	out := make([]policyView, 0, len(names))
 	for _, n := range names {
-		out = append(out, policyView{Name: n, Posts: counts[n]})
+		// An unmapped policy yields empty strings, not a guessed technique —
+		// the fleet can run policies this build has never heard of.
+		meta, _ := mitre.Lookup(n)
+		out = append(out, policyView{
+			Name: n, Posts: counts[n],
+			Description: meta.Description, MITRE: meta.Technique, Tactic: meta.Tactic,
+		})
 	}
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "count": len(out), "policies": out})
 }
@@ -445,7 +584,7 @@ func (s *Server) handlePolicyStats(w http.ResponseWriter, r *http.Request) {
 	}
 	counts, err := s.policyPosts(tenant, 5000)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "event", 5000, err)
 		return
 	}
 	type statView struct {
@@ -481,7 +620,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 	}
 	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "event"}, 5000)
 	if err != nil {
-		http.Error(w, "query failed", http.StatusInternalServerError)
+		storeQueryFailed(w, r, tenant, "event", 5000, err)
 		return
 	}
 	type node struct {

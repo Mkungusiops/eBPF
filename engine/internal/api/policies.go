@@ -8,32 +8,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/jeffmk/ebpf-poc-engine/internal/mitre"
 )
 
-// Policy metadata that the dashboard uses to annotate the embedded YAMLs.
-// The map keys match the `metadata.name` field inside each YAML and what
-// `tetra tracingpolicy list` reports.
-var policyMeta = map[string]struct {
-	File        string
-	Description string
-	MITRE       string
-}{
-	"outbound-connections": {
-		File:        "network-watch.yaml",
-		Description: "tcp_connect kprobe filtered to bash/sh/nc/socat — catches shells calling out",
-		MITRE:       "T1071 Command & Control",
-	},
-	"privilege-escalation": {
-		File:        "privilege-escalation.yaml",
-		Description: "setuid hooks — catches gain-of-root events",
-		MITRE:       "T1548 Abuse Elevation Control Mechanism",
-	},
-	"sensitive-file-access": {
-		File:        "sensitive-files.yaml",
-		Description: "security_file_permission kprobe on /etc/shadow, /etc/passwd, /etc/sudoers, /root/.ssh",
-		MITRE:       "T1003 OS Credential Dumping",
-	},
-}
+// Policy metadata comes from internal/mitre, which the multi-tenant control
+// plane serves from the same table — one map, so the two consoles cannot drift
+// apart on what a policy detects.
 
 type policyEntry struct {
 	Name        string `json:"name"`
@@ -41,6 +22,7 @@ type policyEntry struct {
 	YAML        string `json:"yaml"`
 	Description string `json:"description"`
 	MITRE       string `json:"mitre"`
+	Tactic      string `json:"tactic"`
 }
 
 // PolicyDir is set from main via the -policies flag. When unset, the handler
@@ -71,14 +53,17 @@ func readPolicyFile(name string) string {
 }
 
 func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
-	out := make([]policyEntry, 0, len(policyMeta))
-	for name, meta := range policyMeta {
+	names := mitre.Policies()
+	out := make([]policyEntry, 0, len(names))
+	for _, name := range names {
+		meta, _ := mitre.Lookup(name)
 		out = append(out, policyEntry{
 			Name:        name,
 			File:        meta.File,
 			YAML:        readPolicyFile(meta.File),
 			Description: meta.Description,
-			MITRE:       meta.MITRE,
+			MITRE:       meta.Technique,
+			Tactic:      meta.Tactic,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })

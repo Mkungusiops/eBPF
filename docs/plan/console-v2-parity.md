@@ -11,6 +11,13 @@
 > `console.html` SPA. Retiring the monolith is a **separate, later** step
 > (migration runbook §4–5), explicitly deferred.
 
+> **Estate note (2026-08-03).** This document was written while the rich console
+> lived on the Azure host `soc.adanianlabs.io`. That box is retired and the
+> domain no longer resolves — references to it below are historically accurate,
+> not current infrastructure. The single-tenant engine now runs on the rig's
+> `single_tenant_engine` host (`engine.adanianlabs.io`); the multi-tenant console
+> is `console.adanianlabs.io`. The parity work itself is complete.
+
 ## ⭐ FINALIZED STATUS — 2026-07-15 (authoritative; supersedes the sections below)
 
 **The approach pivoted.** The original plan (a bespoke 4-tab console with custom

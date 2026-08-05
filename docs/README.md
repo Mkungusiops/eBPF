@@ -61,14 +61,22 @@ SaaS/MSSP platform. Design references (not status reports).
 
 | Scenario | Guide |
 | --- | --- |
+| **The reference deployment** — full platform across AWS hosts | [aws-multi-host.md](deployment/aws-multi-host.md) |
+| Before shipping to a customer — readiness, gaps, known traps | [pre-deployment-checklist.md](deployment/pre-deployment-checklist.md) |
 | Local dev of the **multi-tenant console** (durable, systemd, mirrors prod) | [orbstack-local-mirror.md](deployment/orbstack-local-mirror.md) |
-| Deploy the **engine** to a fresh Ubuntu server (recommended) | [ubuntu-server.md](deployment/ubuntu-server.md) |
+| Deploy the **engine** to a fresh Ubuntu server | [ubuntu-server.md](deployment/ubuntu-server.md) |
 | Fastest engine deploy (build → scp → run) | [tarball-quickstart.md](deployment/tarball-quickstart.md) |
 | Deep, manual engine walkthrough (rationale + hardening checklist) | [linux-server.md](deployment/linux-server.md) |
-| Azure-specific engine deploy | [azure.md](deployment/azure.md) |
 | The **network / device choke** inline-bridge gateway | [network-choke-gateway.md](deployment/network-choke-gateway.md) |
-| Stand the **control plane** up beside the live engine (tenant #0) | [controlplane-migration.md](deployment/controlplane-migration.md) |
-| Operate the live `soc.adanianlabs.io` host | [live-soc-adanianlabs.md](deployment/live-soc-adanianlabs.md) |
+
+**Historical — the infrastructure these describe no longer exists.** The Azure
+deployment (`soc.adanianlabs.io`, VM `safeai-security-client`) was retired when
+the estate moved wholesale to AWS; the domain no longer resolves. Kept for the
+transferable runbook detail (systemd hardening, WAL-safe backups, the strangler
+sequence), not as instructions to follow:
+[azure.md](deployment/azure.md) ·
+[live-soc-adanianlabs.md](deployment/live-soc-adanianlabs.md) ·
+[controlplane-migration.md](deployment/controlplane-migration.md)
 
 > Credentials for the local stack live in `docs/credentials/` (gitignored — not
 > committed). Production secrets stay in the operator's password manager.

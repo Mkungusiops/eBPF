@@ -3048,3 +3048,69 @@
   background: rgba(148, 163, 184, 0.1);
   color: #cbd5e1;
 }
+
+/* ── Change-control queue (threat-model EN-2) ─────────────────────────────
+   A pending request means someone judged a process worth killing and it is
+   STILL RUNNING. It reads as an alert, not as a list, and sits above the fold
+   for that reason. */
+.choke-approvals {
+  border: 1px solid var(--choke-warn, #b8860b);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--choke-warn, #b8860b) 8%, transparent);
+  padding: 0.75rem 1rem;
+  margin-bottom: 0.75rem;
+}
+.choke-approvals header h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.95rem;
+  margin: 0;
+}
+.choke-approvals-count {
+  background: var(--choke-warn, #b8860b);
+  color: #000;
+  border-radius: 999px;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.choke-approvals header p {
+  margin: 0.25rem 0 0.5rem;
+  font-size: 0.8rem;
+  opacity: 0.85;
+}
+.choke-approvals ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.choke-approvals li {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "what actions" "why actions";
+  gap: 0.15rem 1rem;
+  align-items: center;
+  padding: 0.5rem 0.65rem;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.18);
+}
+.choke-approval-what { grid-area: what; display: flex; align-items: baseline; gap: 0.5rem; flex-wrap: wrap; }
+.choke-approval-why { grid-area: why; font-size: 0.8rem; opacity: 0.85; }
+.choke-approval-actions { grid-area: actions; display: flex; gap: 0.4rem; align-items: center; }
+.choke-approval-action { letter-spacing: 0.04em; }
+.choke-approval-target { font-family: var(--mono, monospace); font-size: 0.85rem; }
+.choke-approval-agent { font-size: 0.75rem; opacity: 0.75; }
+.choke-approval-requester { font-weight: 600; }
+/* The four-eyes rule made visible: an operator sees immediately that their own
+   request is theirs to wait on, rather than discovering it on rejection. */
+.choke-approval-blocked { font-size: 0.78rem; opacity: 0.7; font-style: italic; }
+.choke-approvals li.mine { opacity: 0.85; }
+
+@media (max-width: 640px) {
+  .choke-approvals li { grid-template-columns: 1fr; grid-template-areas: "what" "why" "actions"; }
+}

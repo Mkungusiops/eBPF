@@ -36,12 +36,29 @@ export const EMPTY_SOC_SNAPSHOT: SocSnapshot = {
   health: EMPTY_HEALTH
 };
 
+// How many records the console holds in memory. These are also the caps the
+// live stream trims to (see applySocStreamBatch) — if the two disagree, the
+// first stream frame after a poll silently throws away everything the poll
+// fetched beyond the smaller cap.
+//
+// The buffers are finite, so a long range can ask for more history than the
+// console holds. That is disclosed rather than hidden: fetchSocSnapshot reports
+// `truncated` per feed and the dashboard renders a notice, because a window
+// quietly missing its oldest events looks exactly like a quiet window.
+export const MAX_BUFFERED_ALERTS = 1000;
+export const MAX_BUFFERED_EVENTS = 2000;
+
+// Decisions previously used `?limit=1`, which capped the "Response actions"
+// tile at 1 no matter how many containments a tenant had run — the number read
+// as "1 decision in this window" when it meant "at least one decision exists".
+export const MAX_BUFFERED_DECISIONS = 200;
+
 const ENDPOINTS = {
   whoami: "/api/whoami",
   version: "/api/version",
-  alerts: "/api/alerts",
-  events: "/api/events",
-  decisions: "/api/decisions?limit=1",
+  alerts: `/api/alerts?limit=${MAX_BUFFERED_ALERTS}`,
+  events: `/api/events?limit=${MAX_BUFFERED_EVENTS}`,
+  decisions: `/api/decisions?limit=${MAX_BUFFERED_DECISIONS}`,
   policies: "/api/policies",
   policyStats: "/api/policy-stats",
   attacks: "/api/attacks",
@@ -99,21 +116,109 @@ export async function fetchSocSnapshot(signal?: AbortSignal): Promise<SocSnapsho
     }
   }
 
+  const alerts = unwrapList(map.alerts.data, ["alerts", "items", "data"]).map(normalizeAlert);
+  const events = unwrapList(map.events.data, ["events", "items", "data"]).map(normalizeEvent);
+
   return {
     snapshot: {
       whoami: normalizeWhoami(map.whoami.data),
       version: normalizeVersion(map.version.data),
-      alerts: unwrapList(map.alerts.data, ["alerts", "items", "data"]).map(normalizeAlert).slice(0, 200),
-      events: unwrapList(map.events.data, ["events", "items", "data"]).map(normalizeEvent).slice(0, 500),
-      decisions: unwrapList(map.decisions.data, ["decisions", "items", "data"]).map(normalizeDecision).slice(0, 20),
+      alerts: alerts.slice(0, MAX_BUFFERED_ALERTS),
+      events: events.slice(0, MAX_BUFFERED_EVENTS),
+      decisions: unwrapList(map.decisions.data, ["decisions", "items", "data"]).map(normalizeDecision).slice(0, MAX_BUFFERED_DECISIONS),
       policies: unwrapList(map.policies.data, ["policies", "items", "data"]).map(normalizePolicy),
       policyStats: unwrapList(map.policyStats.data, ["stats", "policies", "items", "data"]).map(normalizePolicyStat),
       attacks: unwrapList(map.attacks.data, ["attacks", "items", "data"]).map(normalizeAttack),
       honeypots: unwrapList(map.honeypots.data, ["honeypots", "files", "items", "data"]).map(normalizeHoneypot),
       health: normalizeHealth(map.health.data)
     },
+    // A feed that came back exactly full is a feed the server had more of. The
+    // dashboard pairs this with the oldest record it holds to decide whether
+    // the selected range actually fits in the buffer.
+    truncated: {
+      alerts: alerts.length >= MAX_BUFFERED_ALERTS,
+      events: events.length >= MAX_BUFFERED_EVENTS
+    },
     errors,
     statuses
+  };
+}
+
+/* ------------------------------------------------- server-computed stats */
+
+/** Severity counts keyed by severity name; every key is always present. */
+export type SeverityCounts = Record<Severity, number>;
+
+export interface AlertStatsBucket {
+  at: string;
+  counts: SeverityCounts;
+  total: number;
+}
+
+/**
+ * Server-computed counts for a window.
+ *
+ * The console cannot derive these itself for any range longer than its record
+ * buffer spans (~20 minutes on a busy tenant), and the "vs prior" delta needs a
+ * preceding window that was never in the buffer at all. Both are computed where
+ * the rows are and shipped as counts.
+ */
+export interface AlertStats {
+  from: string;
+  to: string;
+  counts: SeverityCounts;
+  previous: SeverityCounts;
+  total: number;
+  buckets: AlertStatsBucket[];
+  /** The window held more alerts than the server would scan; counts are a floor. */
+  truncated?: boolean;
+}
+
+function normalizeCounts(value: unknown): SeverityCounts {
+  const record = asRecord(value);
+  const out: SeverityCounts = { critical: 0, high: 0, medium: 0, low: 0, info: 0 };
+  for (const key of Object.keys(out) as Severity[]) {
+    out[key] = asNumber(record[key], 0);
+  }
+  return out;
+}
+
+/**
+ * Fetch server-computed stats for a window.
+ *
+ * Returns null when the server does not provide the endpoint (an older build,
+ * or a store backend that cannot range-scan). The caller falls back to
+ * computing from the buffer, which is correct for short windows and is what the
+ * console did everywhere before this existed.
+ */
+export async function fetchAlertStats(
+  windowMin: number,
+  buckets: number,
+  signal?: AbortSignal
+): Promise<AlertStats | null> {
+  const result = await socApiGet<unknown>(
+    `/api/alert-stats?window_min=${windowMin}&buckets=${buckets}`,
+    null,
+    signal
+  );
+  if (!result.ok || !result.data) return null;
+  const record = asRecord(result.data);
+  const rawBuckets = unwrapList(record.buckets, ["buckets", "items"]);
+  return {
+    from: asOptionalString(record.from) || "",
+    to: asOptionalString(record.to) || "",
+    counts: normalizeCounts(record.counts),
+    previous: normalizeCounts(record.previous),
+    total: asNumber(record.total, 0),
+    truncated: asOptionalBoolean(record.truncated) ?? false,
+    buckets: rawBuckets.map((item) => {
+      const b = asRecord(item);
+      return {
+        at: asOptionalString(b.at) || "",
+        counts: normalizeCounts(b.counts),
+        total: asNumber(b.total, 0)
+      };
+    })
   };
 }
 
@@ -338,6 +443,11 @@ function normalizeHealth(value: unknown): SocSystemHealth {
     status: asOptionalString(pick(record, "status", "Status", "state", "State")) || EMPTY_HEALTH.status,
     host: asOptionalString(pick(record, "host", "Host", "hostname", "Hostname")),
     tetragon: asOptionalString(pick(record, "tetragon", "Tetragon")),
+    // The control plane reports the store as {ok, error}. It is the single
+    // fault that takes every other read endpoint down at once, so the console
+    // can name it instead of listing five anonymous HTTP 500s.
+    storeOk: asOptionalBoolean(pick(asRecord(pick(record, "store", "Store")), "ok", "OK")),
+    storeError: asOptionalString(pick(asRecord(pick(record, "store", "Store")), "error", "Error")),
     choke: asOptionalString(pick(record, "choke", "Choke")),
     kernel: asOptionalString(pick(record, "kernel", "Kernel")),
     uptime: asOptionalString(pick(record, "uptime", "Uptime")),

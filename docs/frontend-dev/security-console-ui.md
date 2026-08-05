@@ -83,7 +83,7 @@ PLAYWRIGHT_START_WEB_SERVER=1 npm run e2e -- --project=chromium soc.spec.ts chok
 After a production deploy, verify the deployed routes with the production URL:
 
 ```bash
-EBPF_WEB_BASE_URL=https://soc.adanianlabs.io \
+EBPF_WEB_BASE_URL=https://engine.adanianlabs.io \
 EBPF_E2E_USER=admin \
 EBPF_E2E_PASSWORD=... \
 npm run e2e -- --project=chromium auth.spec.ts choke.spec.ts

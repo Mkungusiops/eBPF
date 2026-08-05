@@ -1,6 +1,7 @@
 package uplink
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -194,5 +195,76 @@ func TestBufferBackpressureBatchSize(t *testing.T) {
 	empty := NewBuffer()
 	if empty.NextBatch(10) != nil {
 		t.Fatal("NextBatch on empty buffer should return nil")
+	}
+}
+
+// The buffer was unbounded: an agent whose control plane could not ack grew in
+// memory until the OOM killer took it, losing the ENTIRE backlog. It now sheds
+// the oldest records and counts what it shed, because a security agent that
+// drops telemetry silently is worse than one that reports a gap.
+func TestBufferEvictsOldestWhenFull(t *testing.T) {
+	b := NewBuffer()
+	b.MaxRecords(3)
+
+	for i := 0; i < 5; i++ {
+		rec := &ebpfsocv1.TelemetryRecord{DedupKey: fmt.Sprintf("evt:%d", i)}
+		if _, ok := b.Enqueue(rec); !ok {
+			t.Fatalf("record %d refused", i)
+		}
+	}
+
+	if got := b.PendingDepth(); got != 3 {
+		t.Fatalf("PendingDepth = %d, want 3 (the cap)", got)
+	}
+	if got := b.Dropped(); got != 2 {
+		t.Fatalf("Dropped = %d, want 2", got)
+	}
+
+	// The NEWEST records are the ones kept — during an outage the recent past
+	// is what an operator can still act on.
+	batch := b.NextBatch(10)
+	if batch == nil {
+		t.Fatal("NextBatch returned nil with 3 records buffered")
+	}
+	var keys []string
+	for _, r := range batch.GetRecords() {
+		keys = append(keys, r.GetDedupKey())
+	}
+	want := []string{"evt:2", "evt:3", "evt:4"}
+	if len(keys) != len(want) {
+		t.Fatalf("kept %v, want %v", keys, want)
+	}
+	for i := range want {
+		if keys[i] != want[i] {
+			t.Fatalf("kept %v, want %v", keys, want)
+		}
+	}
+}
+
+// An evicted record's dedup key must be released, or a recurring event could
+// never be re-buffered after its first copy was dropped.
+func TestEvictionReleasesDedupKey(t *testing.T) {
+	b := NewBuffer()
+	b.MaxRecords(1)
+
+	b.Enqueue(&ebpfsocv1.TelemetryRecord{DedupKey: "evt:1"})
+	b.Enqueue(&ebpfsocv1.TelemetryRecord{DedupKey: "evt:2"}) // evicts evt:1
+	if _, ok := b.Enqueue(&ebpfsocv1.TelemetryRecord{DedupKey: "evt:1"}); !ok {
+		t.Fatal("evt:1 was refused after eviction; its dedup key was never released")
+	}
+}
+
+// Under the cap, nothing is dropped — the common case must be untouched.
+func TestBufferBelowCapDropsNothing(t *testing.T) {
+	b := NewBuffer()
+	b.MaxRecords(100)
+	for i := 0; i < 50; i++ {
+		b.Enqueue(&ebpfsocv1.TelemetryRecord{DedupKey: fmt.Sprintf("evt:%d", i)})
+	}
+	if got := b.Dropped(); got != 0 {
+		t.Fatalf("Dropped = %d, want 0", got)
+	}
+	if got := b.PendingDepth(); got != 50 {
+		t.Fatalf("PendingDepth = %d, want 50", got)
 	}
 }

@@ -140,8 +140,8 @@ Target VM certification uses the deployed URL and credentials documented by the 
 operator:
 
 ```bash
-EBPF_TARGET_VM_URL=https://soc.adanianlabs.io \
-EBPF_WEB_BASE_URL=https://soc.adanianlabs.io \
+EBPF_TARGET_VM_URL=https://engine.adanianlabs.io \
+EBPF_WEB_BASE_URL=https://engine.adanianlabs.io \
 EBPF_E2E_USER=admin \
 EBPF_E2E_PASSWORD=... \
 npm run e2e -- --project=chromium target-vm-smoke.spec.ts

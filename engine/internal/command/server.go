@@ -116,6 +116,17 @@ func (d *Dispatcher) Enqueue(agentID string, c *ebpfsocv1.Command) string {
 	return cmd.GetCommandId()
 }
 
+// Pending is the number of commands queued for an agent that it has not yet
+// been sent. Zero for a connected, idle agent — Enqueue hands the command
+// straight to the parked stream. A non-zero, non-decreasing value means an agent
+// is not collecting its commands, which is also what change-control tests assert
+// against when proving a held action was never dispatched.
+func (d *Dispatcher) Pending(agentID string) int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.queues[agentID])
+}
+
 // Ack returns the recorded ack for a command id.
 func (d *Dispatcher) Ack(commandID string) (*ebpfsocv1.CommandAck, bool) {
 	d.mu.Lock()

@@ -42,6 +42,13 @@ type harness struct {
 	registry      *heartbeat.Registry
 	fleetSvc      *fleet.Service
 	fleetVerifier signing.Verifier
+
+	// Retained so the server can be stopped and brought back up on the SAME
+	// address, which is what lets a test simulate a control-plane outage rather
+	// than only ever exercising the happy path. See TestAgentAutonomy.
+	tlsCfg *tls.Config
+	sink   ingest.Sink
+	gs     *grpc.Server
 }
 
 // newHarness stands up the full control-plane server with the given telemetry
@@ -81,19 +88,58 @@ func newHarness(t *testing.T, sink ingest.Sink) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
-	ebpfsocv1.RegisterEnrollmentServiceServer(gs, enrollment.NewServer(ca, tokens, time.Hour, "127.0.0.1:uplink", "127.0.0.1:cmd"))
-	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(sink))
-	ebpfsocv1.RegisterCommandServiceServer(gs, dispatcher)
-	ebpfsocv1.RegisterHeartbeatServiceServer(gs, heartbeat.NewServer(registry, 30*time.Second))
-	ebpfsocv1.RegisterPolicyServiceServer(gs, fleet.NewPolicyServer(fleetSvc))
-	go func() { _ = gs.Serve(lis) }()
-	t.Cleanup(gs.Stop)
-
-	return &harness{
+	h := &harness{
 		ca: ca, addr: lis.Addr().String(), tokens: tokens, fleetSvc: fleetSvc,
 		dispatcher: dispatcher, registry: registry, fleetVerifier: fleetVerifier,
+		tlsCfg: tlsCfg, sink: sink,
 	}
+	h.serve(t, lis)
+	t.Cleanup(func() { h.stop() })
+	return h
+}
+
+// serve registers every agent-facing service on a new gRPC server over lis.
+// Split out of newHarness so bringUp can repeat it after an outage with the same
+// service instances — the registry, dispatcher and token store must survive a
+// restart exactly as they do in production, where they are backed by a database.
+func (h *harness) serve(t *testing.T, lis net.Listener) {
+	t.Helper()
+	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(h.tlsCfg)))
+	ebpfsocv1.RegisterEnrollmentServiceServer(gs, enrollment.NewServer(h.ca, h.tokens, time.Hour, "127.0.0.1:uplink", "127.0.0.1:cmd"))
+	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(h.sink))
+	ebpfsocv1.RegisterCommandServiceServer(gs, h.dispatcher)
+	ebpfsocv1.RegisterHeartbeatServiceServer(gs, heartbeat.NewServer(h.registry, 30*time.Second))
+	ebpfsocv1.RegisterPolicyServiceServer(gs, fleet.NewPolicyServer(h.fleetSvc))
+	h.gs = gs
+	go func() { _ = gs.Serve(lis) }()
+}
+
+// stop takes the control plane down, closing its listener. Agents must carry on.
+func (h *harness) stop() {
+	if h.gs != nil {
+		h.gs.Stop()
+		h.gs = nil
+	}
+}
+
+// bringUp restarts the control plane on the SAME address the agent is already
+// configured to dial, so reconnection is the agent's own doing rather than a
+// reconfiguration the test performed on its behalf.
+func (h *harness) bringUp(t *testing.T) {
+	t.Helper()
+	var lis net.Listener
+	var err error
+	// The port is briefly held after Stop; retry rather than flake.
+	for i := 0; i < 100; i++ {
+		if lis, err = net.Listen("tcp", h.addr); err == nil {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("could not rebind the control plane to %s: %v", h.addr, err)
+	}
+	h.serve(t, lis)
 }
 
 func (h *harness) enroll(t *testing.T, ctx context.Context, tenant string) *enrollment.Enrolled {

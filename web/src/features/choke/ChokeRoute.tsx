@@ -15,10 +15,13 @@ import {
   annotateCircuit,
   applyPreset as applyPresetApi,
   bulkManualAction,
+  chokeApplied,
   copyToClipboard,
+  decideApproval,
   forensicSnapshot,
   forgetCircuits,
   getAlerts,
+  getApprovals,
   getBuckets,
   getCgroups,
   getChokeState,
@@ -40,6 +43,7 @@ import {
   verifyChain,
   isDisabledError,
 } from "./api";
+import type { ApprovalRequest } from "./api";
 import { useStream } from "../../lib/stream";
 import { useOSTheme } from "../../lib/theme";
 import type {
@@ -212,6 +216,9 @@ export function ChokeRoute(): React.ReactElement {
   useEffect(() => writeJsonStorage("choke.viewMode", viewMode), [viewMode]);
   const [confirm, setConfirm] = useState<ConfirmRequest | null>(null);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  // EN-2 change-control queue: destructive actions awaiting a second operator.
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
+  const [approvalsMe, setApprovalsMe] = useState<string>("");
   const [popover, setPopover] = useState<PopoverName>(null);
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   // "Clear all" in the alerts drawer hides everything up to this instant; newer
@@ -347,6 +354,19 @@ export function ChokeRoute(): React.ReactElement {
     }
   }, []);
 
+  // The approvals queue is only served by the fleet control plane; the
+  // single-host engine has no such endpoint, so a 404 here is expected and must
+  // not surface as an error on that deployment.
+  const refreshApprovals = useCallback(async () => {
+    try {
+      const res = await getApprovals();
+      setApprovals(res.approvals || []);
+      setApprovalsMe(res.you || "");
+    } catch {
+      setApprovals([]);
+    }
+  }, []);
+
   const refreshAll = useCallback(async () => {
     setRefreshing(true);
     try {
@@ -359,6 +379,7 @@ export function ChokeRoute(): React.ReactElement {
         refreshAlerts(),
         refreshSystemHealth(),
         refreshWhoami(),
+        refreshApprovals(),
       ]);
     } finally {
       setRefreshing(false);
@@ -372,6 +393,7 @@ export function ChokeRoute(): React.ReactElement {
     refreshState,
     refreshSystemHealth,
     refreshWhoami,
+    refreshApprovals,
   ]);
 
   const scheduleSnapshotCatchup = useCallback(() => {
@@ -519,6 +541,7 @@ export function ChokeRoute(): React.ReactElement {
   const isFleetConsole = Boolean(kernel);
   const engineOnlyHint = "Engine-local action — open the single-tenant engine for this host. The fleet console has no host to evaluate it against.";
   const divergedAgents = kernel?.diverged_agents || [];
+  const pendingApprovals = approvals.filter((req) => req.status === "pending");
   const kernelFired = kernel?.enforce_actions || 0;
   // Only meaningful once at least one agent has answered; before that the
   // absence of a divergence says nothing at all.
@@ -689,6 +712,43 @@ export function ChokeRoute(): React.ReactElement {
     return next;
   }
 
+  // Approving is itself a destructive act — it is what finally sends the kill —
+  // so it goes through the same confirm dialog, with the requester and their
+  // stated reason in front of the approver. An approver who has not read what
+  // they are authorizing is a rubber stamp, which is worse than no control
+  // because it manufactures an audit trail that implies review.
+  async function decideOnApproval(req: ApprovalRequest, approve: boolean): Promise<void> {
+    if (!approve) {
+      try {
+        await decideApproval(req.id, false);
+        pushToast(`denied ${req.action} requested by ${req.requester}`, "ok");
+      } catch (error) {
+        pushToast((error as Error).message || "deny failed", "err");
+      }
+      await refreshApprovals();
+      return;
+    }
+    setConfirm({
+      title: `APPROVE ${req.action.toUpperCase()}`,
+      body:
+        `${req.requester} asked to ${req.action} ` +
+        `${req.scope === "fleet" ? "the entire tenant" : `${shortExec(req.exec_id || "")}${req.pid ? ` (pid ${req.pid})` : ""}`}` +
+        `${req.reason ? ` — “${req.reason}”` : ""}. Approving applies it now.`,
+      danger: true,
+      confirmLabel: "approve",
+      reasonRequired: true,
+      onConfirm: async ({ reason }) => {
+        const result = await decideApproval(req.id, true, reason);
+        if (chokeApplied(result)) {
+          pushToast(`${req.action} approved and applied${result.agent ? ` on ${result.agent}` : ""}`, "ok");
+        } else {
+          pushToast(`approved, but NOT applied: ${result?.detail || result?.status || "no agent applied it"}`, "err");
+        }
+        await refreshAll();
+      },
+    });
+  }
+
   function openManualConfirm(entry: CircuitEntry, action: ChokeAction): void {
     setConfirm({
       title: `${action.toUpperCase()} pid ${entry.pid || "-"}`,
@@ -714,8 +774,15 @@ export function ChokeRoute(): React.ReactElement {
         // told the operator a process was contained even when every agent
         // reported it was not theirs — the containment lie this whole path
         // exists to prevent.
-        if (result?.ok) {
-          const where = result.agent ? ` on ${result.agent}` : "";
+        if (result?.approval_required) {
+          // Held for change-control (EN-2). Deliberately a "warn", not an "ok":
+          // the operator must leave knowing the process is still running.
+          pushToast(
+            `${action} NOT applied — queued for a second operator to approve (${result.approval?.id || "pending"})`,
+            "warn",
+          );
+        } else if (chokeApplied(result)) {
+          const where = result?.agent ? ` on ${result.agent}` : "";
           pushToast(`${action} applied${where}`, "ok");
         } else {
           pushToast(`${action} NOT applied: ${result?.detail || result?.status || "no agent applied it"}`, "err");
@@ -1203,6 +1270,69 @@ export function ChokeRoute(): React.ReactElement {
             </>
           )}
         </Banner>
+      )}
+
+      {/* Change-control queue (threat-model EN-2). A quarantine/sever asked for
+          by one operator is HELD here until a second approves it. It sits above
+          the fold because a pending request means a threat someone judged worth
+          killing is still running — the operator needs to see that, not
+          discover it later. */}
+      {pendingApprovals.length > 0 && (
+        <section className="choke-approvals" data-panel="approvals-queue">
+          <header>
+            <h2>
+              Awaiting approval
+              <span className="choke-approvals-count">{pendingApprovals.length}</span>
+            </h2>
+            <p>
+              These destructive actions have <strong>not</strong> been applied. Each needs a second operator
+              to approve it — the operator who requested it cannot.
+            </p>
+          </header>
+          <ul>
+            {pendingApprovals.map((req) => (
+              <li key={req.id} className={req.mine ? "mine" : ""}>
+                <div className="choke-approval-what">
+                  <strong className="choke-approval-action">{req.action.toUpperCase()}</strong>
+                  <span className="choke-approval-target">
+                    {req.scope === "fleet"
+                      ? "the entire tenant"
+                      : `${req.exec_id ? shortExec(req.exec_id) : ""}${req.pid ? ` (pid ${req.pid})` : ""}`}
+                  </span>
+                  {req.agent_id && <code className="choke-approval-agent">{req.agent_id}</code>}
+                </div>
+                <div className="choke-approval-why">
+                  <span className="choke-approval-requester">{req.requester}</span>
+                  {req.reason ? <>: “{req.reason}”</> : null}
+                </div>
+                <div className="choke-approval-actions">
+                  {req.mine ? (
+                    <span className="choke-approval-blocked" title="Dual control: you requested this action">
+                      you requested this — another operator must approve
+                    </span>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        className="choke-action-button danger"
+                        onClick={() => void decideOnApproval(req, true)}
+                      >
+                        Approve &amp; apply
+                      </button>
+                      <button
+                        type="button"
+                        className="choke-action-button"
+                        onClick={() => void decideOnApproval(req, false)}
+                      >
+                        Deny
+                      </button>
+                    </>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
       {/* Silence is not safety. An agent that never reported its policies is
@@ -1888,7 +2018,14 @@ function buildEngineFacts(health: Record<string, unknown>): EngineFact[] {
   const auth = obj(health.auth);
   const obs = obj(health.observability);
 
+  // The kernel sensor lives on the agent. The single-tenant engine inspects it
+  // directly and answers `tetragon: {connected}`; the control plane cannot see
+  // it at all and says so via `kernel_sensor`. Treating a missing field as
+  // `false` painted a red "Disconnected" on every multi-tenant console — a
+  // claim about a host this server never probed. Absent is now its own state.
+  const sensorKnown = "connected" in tetra;
   const connected = tetra.connected === true;
+  const sensorNote = str(health.kernel_sensor);
   const bpfBackend = str(bpf.backend);
   const isNoop = bpfBackend === "" || bpfBackend === "noop";
   const attached = Number(bpf.attached_links ?? 0);
@@ -1900,9 +2037,13 @@ function buildEngineFacts(health: Record<string, unknown>): EngineFact[] {
   const facts: EngineFact[] = [
     {
       label: "Kernel sensor",
-      value: connected ? "Connected" : "Disconnected",
-      hint: connected ? "Tetragon eBPF event feed is live" : "No live syscall/exec events from the kernel",
-      status: connected ? "ok" : "danger"
+      value: !sensorKnown ? "Not reported" : connected ? "Connected" : "Disconnected",
+      hint: !sensorKnown
+        ? sensorNote || "This server does not observe agent kernel sensors — check Sensor Health per host"
+        : connected
+          ? "Tetragon eBPF event feed is live"
+          : "No live syscall/exec events from the kernel",
+      status: !sensorKnown ? "neutral" : connected ? "ok" : "danger"
     },
     {
       label: "Enforcement plane",
@@ -2525,7 +2666,13 @@ function ProcessDrill({
                   // as reached only when an agent reported it actually enforced,
                   // or the operator watches the ladder climb on a process no
                   // host is running.
-                  if (!result?.ok) {
+                  if (result?.approval_required) {
+                    return {
+                      ok: false,
+                      detail: `queued for approval (${result.approval?.id || "pending"}) — a second operator must approve it`,
+                    };
+                  }
+                  if (!chokeApplied(result)) {
                     return { ok: false, detail: result?.detail || result?.status || "no agent applied it" };
                   }
                   return {

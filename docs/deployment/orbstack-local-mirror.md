@@ -2,7 +2,7 @@
 
 A **durable, systemd-managed local mirror** of the multi-tenant SOC platform,
 running inside a single [OrbStack](https://orbstack.dev) Linux machine on macOS.
-It stands in for the Azure box (`soc.adanianlabs.io` / `console.adanianlabs.io` /
+It stands in for the deployed estate (`console.adanianlabs.io` /
 `auth.adanianlabs.io`) for development when that box is unavailable, and doubles
 as a rehearsal for the real deploy — the layout mirrors production
 (`systemd` units + nginx + Postgres + Keycloak + control plane).

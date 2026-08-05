@@ -29,7 +29,11 @@ import (
 
 func main() {
 	var (
-		dbPath = flag.String("db", "/home/azureuser/ebpf-poc/events.db", "path to the live SQLite database")
+		// Matches the path the deploy writes into the engine config
+		// (scripts/deploy/lib.sh: `db: /var/lib/ebpf-engine/events.db`). The old
+		// default pointed into a retired Azure host's home directory, so a
+		// backup run without -db silently targeted a file that exists nowhere.
+		dbPath = flag.String("db", "/var/lib/ebpf-engine/events.db", "path to the live SQLite database")
 		dest   = flag.String("dest", "/var/backups/ebpf-soc", "directory to write snapshots into")
 		keep   = flag.Int("keep", 3, "number of compressed snapshots to retain")
 	)

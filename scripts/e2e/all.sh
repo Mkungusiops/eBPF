@@ -106,6 +106,19 @@ if [[ -n "${MT_B_USER:-}" ]]; then
      bash "$ROOT/scripts/e2e/multi-tenant.sh"; then RESULTS+=("PASS multi-tenant/$MT_B_TENANT"); else RESULTS+=("FAIL multi-tenant/$MT_B_TENANT"); RC=1; fi
 fi
 
+# Containment must be ROUTED, not broadcast. Every suite above targets a process
+# on the one host it drives, so none of them would notice a sever ALSO landing on
+# other agents in the tenant — which is exactly what happened: the fan-out
+# SIGKILLed whatever local process shared that PID number on every other host and
+# acked APPLIED for it. This suite watches the BYSTANDER, so it needs a second
+# agent in the SAME tenant (AGENT_C_RSH, enrolled into MT_B_TENANT).
+if [[ -n "${AGENT_B_RSH:-}" && -n "${AGENT_C_RSH:-}" && -n "${MT_B_USER:-}" ]]; then
+  section "multi-agent containment routing (bystander safety)"
+  if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_B_USER" MT_PASS="$MT_B_PASS" \
+     MT_TENANT="$MT_B_TENANT" AGENT_RSH="$AGENT_B_RSH" AGENT_OTHER_RSH="$AGENT_C_RSH" \
+     bash "$ROOT/scripts/e2e/multi-agent-containment.sh"; then RESULTS+=("PASS multi-agent-containment"); else RESULTS+=("FAIL multi-agent-containment"); RC=1; fi
+fi
+
 if [[ -n "${VICTIM_IP:-}" && -n "${AGENT_RSH:-}" ]]; then
   section "device drop proof (kernel)"
   if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" \

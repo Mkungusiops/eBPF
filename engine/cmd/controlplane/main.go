@@ -52,6 +52,12 @@ func main() {
 
 		// Operator auth. Exactly one is required — no default credential ships.
 		adminToken = flag.String("admin-token", "", "bearer token mapped to an msoc-admin operator (headless/dev); REQUIRED unless -oidc-issuer is set")
+		// threat-model EN-2. Off by default: dual control needs two operators who
+		// can respond, and a tenant with one on-call engineer must not be locked
+		// out of containing a threat. Turn it on where a staffed SOC makes the
+		// second pair of eyes real rather than an obstacle.
+		requireApproval = flag.Bool("require-approval", false,
+			"hold quarantine/sever and fleet-wide arming until a SECOND operator approves (EN-2 change-control)")
 		oidcIssuer = flag.String("oidc-issuer", "", "OIDC issuer URL (Keycloak realm); enables the BFF login flow")
 		oidcClient = flag.String("oidc-client-id", "", "OIDC client id")
 		oidcSecret = flag.String("oidc-client-secret", "", "OIDC client secret")
@@ -193,6 +199,7 @@ func main() {
 		Store: store, Firehose: firehose, CertTTL: *certTTL, EnrollTTL: *enrollTTL,
 		UplinkEndpoint: *serverName + *grpcAddr, CommandEndpoint: *serverName + *grpcAddr,
 		AdminToken: *adminToken, BFF: bffH, Logf: log.Printf,
+		RequireApproval: *requireApproval || os.Getenv("CP_REQUIRE_APPROVAL") == "1",
 	})
 	if err != nil {
 		log.Fatalf("controlplane: %v", err)
