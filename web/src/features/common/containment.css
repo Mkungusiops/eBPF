@@ -1,6 +1,37 @@
 /* Containment Command — shared hero + ladder for the enforcement surfaces.
-   Uses the host page's CSS variables (--text, --muted, --border, --accent,
-   --danger) so it themes with either page, light or dark. */
+
+   THEMING CONTRACT. This component is mounted inside two host pages
+   (.choke-route and .devices-route) which each define a HEX palette:
+   --panel, --panel-2, --text, --muted, --border, --border-strong, --accent.
+   It must consume those and nothing else.
+
+   It previously claimed to "theme with either page" while hardcoding dark
+   surfaces like rgba(15,18,26,.4) and rgba(24,20,14,.42). Composited over a
+   white page those became the muddy grey-brown band the light console shipped
+   with: dark-theme furniture sitting in a light room.
+
+   Do NOT reach for --surface here. That token is defined at :root as an RGB
+   TRIPLET ("10 12 16") for use as rgb(var(--surface)); writing
+   `background: var(--surface, #10131b)` yields `background: 10 12 16`, which is
+   invalid, so the declaration is dropped AND the fallback never applies —
+   because the variable is defined, just not as a colour. That single line is
+   why the posture ring rendered as a filled pie instead of a donut in BOTH
+   themes: its inner disc was never painted.
+
+   Local elevation tokens below are derived with color-mix from the host's own
+   --panel/--text, so a new host page themes correctly by defining --panel
+   alone, and neither theme needs a parallel block that can drift. */
+
+.cc-scope,
+.choke-route,
+.devices-route {
+  /* Raised: the hero band. Slightly lifted off the page in both themes. */
+  --cc-raised: color-mix(in srgb, var(--panel, #12161f) 88%, var(--text, #000) 6%);
+  /* Sunken: recessed wells (view toggle, ladder, control cluster). */
+  --cc-sunken: color-mix(in srgb, var(--panel, #12161f) 82%, var(--text, #000) 10%);
+  /* The ring's inner disc — must be an opaque colour, see the note above. */
+  --cc-disc: var(--panel, #12161f);
+}
 
 .cc-header {
   display: grid;
@@ -12,28 +43,28 @@
   padding: 18px 22px;
   background:
     radial-gradient(120% 160% at 0% 0%, rgba(110, 139, 255, 0.1), transparent 60%),
-    rgba(15, 18, 26, 0.4);
+    var(--cc-raised);
 }
 
 .cc-header.tone-good {
   border-color: rgba(74, 222, 128, 0.4);
   background:
     radial-gradient(120% 160% at 0% 0%, rgba(74, 222, 128, 0.12), transparent 60%),
-    rgba(15, 22, 20, 0.42);
+    color-mix(in srgb, var(--cc-raised) 92%, var(--ok, #36c795) 8%);
 }
 
 .cc-header.tone-warn {
   border-color: rgba(245, 177, 61, 0.42);
   background:
     radial-gradient(120% 160% at 0% 0%, rgba(245, 177, 61, 0.12), transparent 60%),
-    rgba(24, 20, 14, 0.42);
+    color-mix(in srgb, var(--cc-raised) 92%, var(--warn, #e0a53b) 8%);
 }
 
 .cc-header.tone-bad {
   border-color: rgba(244, 85, 110, 0.46);
   background:
     radial-gradient(120% 160% at 0% 0%, rgba(244, 85, 110, 0.14), transparent 60%),
-    rgba(26, 15, 18, 0.44);
+    color-mix(in srgb, var(--cc-raised) 92%, var(--danger, #f2576b) 8%);
 }
 
 .cc-head-lead {
@@ -61,7 +92,7 @@
   position: absolute;
   inset: 7px;
   border-radius: 50%;
-  background: var(--surface, #10131b);
+  background: var(--cc-disc);
 }
 
 .cc-posture.ring-good {
@@ -175,7 +206,7 @@
   border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.32));
   border-radius: 999px;
   padding: 3px;
-  background: rgba(10, 12, 18, 0.4);
+  background: var(--cc-sunken);
 }
 
 .cc-viewtoggle button {
@@ -204,7 +235,7 @@
   border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.34));
   border-radius: 10px;
   overflow: hidden;
-  background: rgba(10, 12, 18, 0.42);
+  background: var(--cc-sunken);
 }
 
 .cc-ctl {
@@ -311,7 +342,7 @@
   border: 1px solid var(--border, rgba(127, 140, 165, 0.2));
   border-radius: 14px;
   padding: 16px 18px 12px;
-  background: rgba(15, 18, 26, 0.32);
+  background: var(--cc-sunken);
 }
 
 .cc-ladder-track {

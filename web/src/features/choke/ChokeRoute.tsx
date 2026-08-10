@@ -110,7 +110,7 @@ const PROC_RENDER_CAP = 300;
 const DECISION_CAP = 400;
 const CIRCUIT_CAP = 2000;
 const HOST_ENDPOINTS = ["/api/whoami", "/api/choke/state", "/api/choke/circuits", "/api/decisions?limit=1"];
-const WINDOW_OPTIONS = [5, 30, 60, 1440];
+const WINDOW_OPTIONS = [5, 30, 60, 1440, 10080];
 
 type PopoverName = "host" | "live" | "audit" | "mode" | null;
 
@@ -640,7 +640,12 @@ export function ChokeRoute(): React.ReactElement {
     [circuits, thresholds.throttle_at]
   );
   const enforceMode: "detect-only" | "enforcing" = chokeState?.mode === "enforcing" ? "enforcing" : "detect-only";
-  const auditOk = chokeState?.audit?.ok !== false;
+  // Three states, not two. supported=false means this deployment cannot verify
+  // the chain at all (the fleet control plane does not hash-chain centrally) —
+  // rendering that as a green "intact · 0 rows" claimed tamper-evidence that
+  // was never checked, and rendering it red would cry wolf.
+  const auditSupported = chokeState?.audit?.supported !== false;
+  const auditOk = auditSupported && chokeState?.audit?.ok !== false;
   const commandMetrics: CommandMetrics = {
     subject: "processes",
     mode: enforceMode,
@@ -648,6 +653,7 @@ export function ChokeRoute(): React.ReactElement {
     contained: containedCount,
     tracked: chokeState?.tracked || circuits.length,
     auditOk,
+    auditSupported,
     auditRows: chokeState?.audit?.total || 0,
     killSwitched: Boolean(chokeState?.kill_switched),
     headline: `${(currentWindowDecisions.length / Math.max(1, windowMin)).toFixed(1)} /min`,
@@ -1018,7 +1024,19 @@ export function ChokeRoute(): React.ReactElement {
     try {
       const response = await verifyChain();
       setChokeState((prev) => ({ ...(prev || {}), audit: response as ChokeState["audit"] }));
-      pushToast(response.ok === false ? "audit chain broken" : "audit chain verified", response.ok === false ? "err" : "ok");
+      // Three outcomes, not two. The fleet control plane does not hash-chain
+      // decisions centrally, and reporting an unrun check as "verified" is a
+      // false assurance about tamper-evidence — the one claim an audit control
+      // exists to make. It is equally wrong to shout "chain broken" at an
+      // operator when nothing is broken, so unavailability is its own state.
+      if (response.supported === false) {
+        pushToast(
+          String(response.detail || "audit chain verification is not available on this deployment"),
+          "warn"
+        );
+      } else {
+        pushToast(response.ok === false ? "audit chain broken" : "audit chain verified", response.ok === false ? "err" : "ok");
+      }
     } catch (error) {
       pushToast(error instanceof Error ? error.message : "audit verify failed", "err");
     }
@@ -3521,6 +3539,8 @@ function toggleNumber(set: Set<number>, value: number): Set<number> {
 function formatWindow(value: number): string {
   if (value < 60) return `${value}m`;
   if (value === 1440) return "24h";
+  // Days past a day: 10080 rendered as "168h" is technically true and unreadable.
+  if (value % 1440 === 0) return `${value / 1440}d`;
   return `${Math.floor(value / 60)}h`;
 }
 

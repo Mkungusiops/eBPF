@@ -56,6 +56,13 @@ type Record struct {
 	// Latest data-plane snapshot the agent reported (compact; may be empty).
 	Chokes  []*ebpfsocv1.ChokeSummary
 	Devices []*ebpfsocv1.DeviceSummary
+	// Drill detail behind the Choke Gateway page. Only the agent can see these
+	// — they are kernel and /proc state — so a control plane without them can
+	// only render those panels empty. Capped by the agent; empty from an agent
+	// predating the fields.
+	Buckets   []*ebpfsocv1.BucketSummary
+	Cgroups   []*ebpfsocv1.CgroupSummary
+	Processes []*ebpfsocv1.ProcessSummary
 }
 
 // KernelEnforcing reports whether this host has a kernel-level enforcement
@@ -117,6 +124,9 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 		AppliedPolicyVersion: req.GetAppliedPolicyVersion(),
 		Chokes:               req.GetChokes(),
 		Devices:              req.GetDevices(),
+		Buckets:              req.GetBuckets(),
+		Cgroups:              req.GetCgroups(),
+		Processes:            req.GetProcesses(),
 	}
 	if info := req.GetAgentInfo(); info != nil {
 		rec.Version = info.GetAgentVersion()

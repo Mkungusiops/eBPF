@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,12 +21,17 @@ import (
 // actual ChokeRoute/DevicesPage frontend, so it calls the same /api/choke/*
 // paths the single-host engine exposes. Here the READ endpoints are answered
 // tenant-scoped from the compact choke/device snapshots agents report on their
-// heartbeats (heartbeat.Registry). Detail the agents don't report yet (kernel
-// token buckets, cgroup map, full process table, per-device flows) returns a
-// valid-empty shape so the pages render without crashing. WRITE endpoints are
-// registered so they return a clean "not enabled yet" instead of a 404 — the
-// interactive command wiring (fleet-wide mode change, manual jail/thaw) is the
-// next increment and is deliberately gated because it changes live enforcement.
+// heartbeats (heartbeat.Registry), INCLUDING the drill detail — kernel token
+// buckets, the cgroup map and the host process table — which agents now report
+// alongside chokes/devices. Those three used to return hardcoded empty shapes
+// because the data lives only on the agent, which left the multi-tenant Choke
+// Gateway page permanently blank where the single-host console showed hundreds
+// of rows: the same product, visibly less working. Per-device flows remain
+// empty (agents do not report netflow centrally yet) and say so.
+//
+// Response shapes deliberately mirror the engine's byte-for-byte — the console
+// is the SAME bundle on both deployments, so a divergence here (a friendly
+// string where the engine sends a bitmask, say) renders one of them wrong.
 
 // registerChokeRoutes wires the Choke Gateway + Devices API onto the mux.
 func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
@@ -1026,7 +1032,11 @@ func (s *Server) handleChokeStateGW(w http.ResponseWriter, r *http.Request) {
 		// Agents don't report their thresholds on the heartbeat yet; surface the
 		// engine defaults so the panel renders. (Editing is the write increment.)
 		"thresholds": map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40},
-		"audit":      map[string]any{"ok": true, "total": 0},
+		// NOT {"ok":true}. The control plane does not hash-chain decisions
+		// centrally, so claiming the chain is intact renders a green "intact ·
+		// 0 rows" in the header for a check that never ran. supported=false is
+		// the third state: unverifiable here, as opposed to verified or broken.
+		"audit": map[string]any{"ok": false, "supported": false, "total": 0},
 		// "mode" above is only the ENGINE's half of this host's posture. Tetragon
 		// policies enforce independently of it, so ship the kernel's half too and
 		// let the console show the whole thing (threat-model EN-3).
@@ -1109,47 +1119,183 @@ func (s *Server) handleChokeCircuits(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, out)
 }
 
-// handleChokeBuckets — kernel token-bucket map. Agents don't report it on the
-// heartbeat; return an empty array (valid, page renders).
+// handleChokeBuckets — the kernel token buckets the tenant's agents installed.
+//
+// Served from the heartbeat snapshots. This used to return a hardcoded empty
+// array because agents did not report the map, so the console's "Choke Map
+// (kernel)" panel was blank on every tenant while the single-host engine showed
+// hundreds of live buckets — the panel that proves a throttle reached the
+// kernel rather than only being recorded as a decision.
 func (s *Server) handleChokeBuckets(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
+	tenant, ok := s.authorizeRead(w, r)
+	if !ok {
 		return
 	}
-	writeJSON(w, 200, []any{})
+	type bucket struct {
+		PID        uint32 `json:"pid"`
+		RatePerSec uint64 `json:"rate_per_sec"`
+		Burst      uint64 `json:"burst"`
+		Tokens     uint64 `json:"tokens"`
+		Flags      uint32 `json:"flags"`
+		Agent      string `json:"agent"`
+	}
+	out := []bucket{}
+	for _, rec := range s.registry.ListTenant(tenant) {
+		for _, b := range rec.Buckets {
+			out = append(out, bucket{
+				PID: b.GetPid(), RatePerSec: b.GetRatePerSec(), Burst: b.GetBurst(),
+				Tokens: b.GetTokens(), Flags: b.GetFlags(), Agent: rec.AgentID,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Agent != out[j].Agent {
+			return out[i].Agent < out[j].Agent
+		}
+		return out[i].PID < out[j].PID
+	})
+	writeJSON(w, 200, out)
 }
 
-// handleChokeCgroups — cgroup id→path map. Not reported; empty object.
+// handleChokeCgroups — which PIDs the kernel reports inside each choke cgroup,
+// merged across the tenant's agents.
+//
+// Previously a hardcoded empty object. This is what is ACTUALLY confined right
+// now, as distinct from what a decision row says should be; with it empty the
+// console could not show an operator that a quarantine had taken hold.
 func (s *Server) handleChokeCgroups(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
+	tenant, ok := s.authorizeRead(w, r)
+	if !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{})
+	// Shape matches the engine's: tier -> []pid, so the same panel renders on
+	// both deployments without a branch.
+	out := map[string][]uint32{}
+	for _, rec := range s.registry.ListTenant(tenant) {
+		for _, cg := range rec.Cgroups {
+			tier := cg.GetTier()
+			// Seed with a non-nil empty slice. A nil slice marshals to JSON
+			// `null`, and the console types this map as number[] | {pids,count}
+			// — null is in neither, so an empty tier would render as a broken
+			// cell instead of an empty one. The engine sends [] here.
+			if _, seen := out[tier]; !seen {
+				out[tier] = []uint32{}
+			}
+			out[tier] = append(out[tier], cg.GetPids()...)
+		}
+	}
+	writeJSON(w, 200, out)
 }
 
-// handleChokeProcesses — full /proc snapshot. Not reported centrally; empty.
+// handleChokeProcesses — the live host process table across the tenant's
+// agents, joined with choke state.
+//
+// Previously a hardcoded empty array, which left the console's process picker
+// with nothing to pick: an operator could not choose a process to contain
+// unless it had already alerted. Agents cap what they report (tracked first,
+// then by score), so this is a scan surface — the agent-local API stays
+// authoritative for a full table.
 func (s *Server) handleChokeProcesses(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
+	tenant, ok := s.authorizeRead(w, r)
+	if !ok {
 		return
 	}
-	writeJSON(w, 200, []any{})
+	type proc struct {
+		PID     uint32 `json:"pid"`
+		PPID    uint32 `json:"ppid"`
+		UID     uint32 `json:"uid"`
+		Comm    string `json:"comm,omitempty"`
+		Exe     string `json:"exe"`
+		Cmdline string `json:"cmdline,omitempty"`
+		Tracked bool   `json:"tracked,omitempty"`
+		State   string `json:"state,omitempty"`
+		Score   int32  `json:"score,omitempty"`
+		ExecID  string `json:"exec_id,omitempty"`
+		Agent   string `json:"agent"`
+	}
+	out := []proc{}
+	for _, rec := range s.registry.ListTenant(tenant) {
+		for _, p := range rec.Processes {
+			out = append(out, proc{
+				PID: p.GetPid(), PPID: p.GetPpid(), UID: p.GetUid(),
+				Comm: p.GetComm(), Exe: p.GetExe(),
+				Cmdline: p.GetCmdline(), Tracked: p.GetTracked(), State: p.GetState(),
+				Score: p.GetScore(), ExecID: p.GetExecId(), Agent: rec.AgentID,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Tracked != out[j].Tracked {
+			return out[i].Tracked
+		}
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
+		}
+		return out[i].PID < out[j].PID
+	})
+	writeJSON(w, 200, out)
 }
 
 // handleChokeProcDetail — per-PID /proc drill. Not reported centrally; empty.
 func (s *Server) handleChokeProcDetail(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
+	tenant, ok := s.authorizeRead(w, r)
+	if !ok {
 		return
 	}
-	pid := strings.TrimPrefix(r.URL.Path, "/api/choke/proc/")
-	writeJSON(w, 200, map[string]any{"pid": pid, "tracked": false})
+	pidStr := strings.TrimPrefix(r.URL.Path, "/api/choke/proc/")
+	pid64, err := strconv.ParseUint(pidStr, 10, 32)
+	if err != nil {
+		http.Error(w, "bad pid", http.StatusBadRequest)
+		return
+	}
+	// Answer from what the agents actually report. Previously a stub that always
+	// said {"pid":"<string>","tracked":false} — so the console's per-PID drill was
+	// blank on the fleet console AND typed pid as a string where the engine sends
+	// a number.
+	for _, rec := range s.registry.ListTenant(tenant) {
+		for _, p := range rec.Processes {
+			if p.GetPid() != uint32(pid64) {
+				continue
+			}
+			writeJSON(w, 200, map[string]any{
+				"pid": p.GetPid(), "ppid": p.GetPpid(), "uid": p.GetUid(),
+				"comm": p.GetComm(), "exe": p.GetExe(), "cmdline": p.GetCmdline(),
+				"tracked": p.GetTracked(), "state": p.GetState(),
+				"score": p.GetScore(), "exec_id": p.GetExecId(),
+				"agent": rec.AgentID,
+				// Named so the panel can say why it is thinner than the engine's:
+				// the agent reports a summary, not a full /proc scrape.
+				"source": "agent heartbeat summary",
+			})
+			return
+		}
+	}
+	writeJSON(w, 200, map[string]any{"pid": uint32(pid64), "tracked": false,
+		"detail": "no agent in this tenant reported that pid"})
 }
 
-// handleVerifyChain — decision hash-chain audit. The central store doesn't
-// chain per-tenant yet; report a clean ok.
+// handleVerifyChain — decision hash-chain audit.
+//
+// The central store does NOT hash-chain decisions per tenant yet, so there is
+// nothing here to verify. This used to answer {"ok":true,"total":0}, and the
+// console renders anything that is not ok=false as "audit chain verified" — so
+// pressing Verify on the fleet console told the operator their tamper-evidence
+// was intact after checking exactly zero records. A security product may report
+// that a control is unavailable; it may not report an unrun check as passed.
+//
+// supported=false is what the console keys on to say "not available here"
+// rather than either "verified" or the equally wrong "chain broken".
 func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizeRead(w, r); !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true, "total": 0})
+	writeJSON(w, 200, map[string]any{
+		"ok":        false,
+		"supported": false,
+		"total":     0,
+		"detail": "the control plane does not hash-chain decisions centrally yet — " +
+			"verify the chain on the agent, which does",
+	})
 }
 
 // aggregateDevicePlane reduces the agents' self-reported device data planes to

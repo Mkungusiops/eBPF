@@ -29,6 +29,10 @@ CREATE TABLE IF NOT EXISTS telemetry (
   "binary"  text NOT NULL DEFAULT '',
   at        bigint NOT NULL,
   payload   bytea NOT NULL,
+  -- Denormalised out of the payload so alert counts can be aggregated in SQL
+  -- (GROUP BY severity) instead of by shipping rows into Go under a scan limit.
+  -- Nullable: NULL means "not yet backfilled", distinct from an empty severity.
+  severity  text,
   PRIMARY KEY (tenant_id, agent_id, dedup_key)
 );
 -- Every operator read is "newest N rows for this tenant, optionally of one
@@ -47,6 +51,11 @@ CREATE TABLE IF NOT EXISTS telemetry (
 -- index took the same query from >10 minutes to 7 ms.
 CREATE INDEX IF NOT EXISTS telemetry_tenant_kind_at ON telemetry (tenant_id, kind, at DESC);
 CREATE INDEX IF NOT EXISTS telemetry_tenant_at      ON telemetry (tenant_id, at DESC);
+-- Covers the windowed severity aggregation end to end: the tenant+kind+time
+-- predicate AND the grouped column, so counting a week of alerts is an
+-- index-only scan that never touches the heap or a payload.
+CREATE INDEX IF NOT EXISTS telemetry_alert_sev ON telemetry (tenant_id, at DESC)
+  INCLUDE (severity) WHERE kind = 'alert';
 ALTER TABLE telemetry ENABLE ROW LEVEL SECURITY;
 -- FORCE so RLS applies even to the table owner; without it the owner bypasses.
 ALTER TABLE telemetry FORCE ROW LEVEL SECURITY;
@@ -254,6 +263,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	}
 	if provisioned {
 		go ensureIndexes(db)
+		go ensureSeverityColumn(db, "postgres")
 		return &PGStore{db: db}, nil
 	}
 
@@ -280,6 +290,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	// pgSchema just built these on an empty table, so this is a cheap no-op
 	// here; it runs anyway so there is exactly one path that guarantees them.
 	go ensureIndexes(db)
+	go ensureSeverityColumn(db, "postgres")
 	return &PGStore{db: db}, nil
 }
 
@@ -317,10 +328,11 @@ func (s *PGStore) Put(r ingest.StampedRecord) error {
 	}
 	return s.withTenant(r.TenantID, func(tx *sql.Tx) error {
 		_, err := tx.Exec(
-			`INSERT INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8)
+			`INSERT INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload,severity)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
 			 ON CONFLICT (tenant_id,agent_id,dedup_key) DO NOTHING`,
-			r.TenantID, r.AgentID, r.Record.GetDedupKey(), kind, execID, binary, time.Now().UnixNano(), payload)
+			r.TenantID, r.AgentID, r.Record.GetDedupKey(), kind, execID, binary, time.Now().UnixNano(), payload,
+			severityOf(r.Record))
 		return err
 	})
 }

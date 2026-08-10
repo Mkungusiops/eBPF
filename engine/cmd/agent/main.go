@@ -897,6 +897,12 @@ func main() {
 					BufferDepth: uint64(upBuf.PendingDepth()),
 					Chokes:      chokeSummaries(gw),
 					Devices:     deviceSummaries(deviceGW),
+					// Drill detail for the console's Choke Gateway page. Without
+					// these the multi-tenant console renders those panels empty
+					// on every tenant, permanently.
+					Buckets:   bucketSummaries(gw),
+					Cgroups:   cgroupSummaries(gw),
+					Processes: processSummaries(gw),
 				}
 			},
 
@@ -1289,6 +1295,104 @@ func chokeSummaries(g *choke.Gateway) []*ebpfsocv1.ChokeSummary {
 	for _, e := range snap {
 		out = append(out, &ebpfsocv1.ChokeSummary{
 			ExecId: e.ExecID, Pid: e.PID, Binary: e.Binary, State: e.State, Score: int32(e.Score),
+		})
+	}
+	return out
+}
+
+// Caps for the drill detail reported on each heartbeat. These panels are a
+// fleet SCAN surface — the agent-local API remains authoritative — so they are
+// bounded rather than complete. Uncapped, a busy host would ship its entire
+// process table to the control plane every 30 seconds, for every agent.
+const (
+	maxReportedBuckets   = 200
+	maxReportedProcesses = 200
+)
+
+// bucketSummaries reports the kernel token buckets the choke gateway installed.
+//
+// This is the evidence that a throttle actually reached the kernel rather than
+// only being written as a decision row. Without it the control plane's "Choke
+// Map (kernel)" panel is empty on every tenant while the single-host console
+// shows hundreds of live buckets.
+func bucketSummaries(g *choke.Gateway) []*ebpfsocv1.BucketSummary {
+	if g == nil {
+		return nil
+	}
+	snap, err := g.BucketsSnapshot()
+	if err != nil || len(snap) == 0 {
+		return nil
+	}
+	out := make([]*ebpfsocv1.BucketSummary, 0, len(snap))
+	for pid, b := range snap {
+		out = append(out, &ebpfsocv1.BucketSummary{
+			Pid: pid, RatePerSec: uint64(b.RatePerSec), Burst: uint64(b.Burst),
+			Tokens: uint64(b.Tokens), Flags: b.Flags,
+		})
+	}
+	// Deterministic order before truncating, so the reported subset is stable
+	// between heartbeats instead of flickering with Go's map iteration.
+	sort.Slice(out, func(i, j int) bool { return out[i].GetPid() < out[j].GetPid() })
+	if len(out) > maxReportedBuckets {
+		out = out[:maxReportedBuckets]
+	}
+	return out
+}
+
+// cgroupSummaries reports which PIDs the kernel says are inside each choke
+// cgroup — what is ACTUALLY confined, as opposed to what a decision row claims.
+func cgroupSummaries(g *choke.Gateway) []*ebpfsocv1.CgroupSummary {
+	if g == nil {
+		return nil
+	}
+	m, err := g.CgroupInhabitants()
+	if err != nil || len(m) == 0 {
+		return nil
+	}
+	tiers := make([]string, 0, len(m))
+	for tier := range m {
+		tiers = append(tiers, tier)
+	}
+	sort.Strings(tiers)
+	out := make([]*ebpfsocv1.CgroupSummary, 0, len(tiers))
+	for _, tier := range tiers {
+		out = append(out, &ebpfsocv1.CgroupSummary{Tier: tier, Pids: m[tier]})
+	}
+	return out
+}
+
+// processSummaries reports the live host process table joined with choke state,
+// which is what the console's process picker offers an operator. On the control
+// plane that picker had nothing to pick from.
+func processSummaries(g *choke.Gateway) []*ebpfsocv1.ProcessSummary {
+	if g == nil {
+		return nil
+	}
+	procs, err := g.HostProcesses()
+	if err != nil || len(procs) == 0 {
+		return nil
+	}
+	// Tracked processes first, then by score: an operator scanning a fleet cares
+	// about what the gateway is already acting on, and truncation must not drop
+	// exactly those rows.
+	sort.Slice(procs, func(i, j int) bool {
+		if procs[i].Tracked != procs[j].Tracked {
+			return procs[i].Tracked
+		}
+		if procs[i].Score != procs[j].Score {
+			return procs[i].Score > procs[j].Score
+		}
+		return procs[i].PID < procs[j].PID
+	})
+	if len(procs) > maxReportedProcesses {
+		procs = procs[:maxReportedProcesses]
+	}
+	out := make([]*ebpfsocv1.ProcessSummary, 0, len(procs))
+	for _, p := range procs {
+		out = append(out, &ebpfsocv1.ProcessSummary{
+			Pid: p.PID, Ppid: p.PPID, Uid: p.UID, Comm: p.Comm, Exe: p.Exe,
+			Cmdline: p.Cmdline, Tracked: p.Tracked, State: p.State,
+			Score: int32(p.Score), ExecId: p.ExecID,
 		})
 	}
 	return out

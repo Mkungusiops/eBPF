@@ -39,6 +39,14 @@ func newSeverityCounts() severityCounts {
 	return m
 }
 
+// addN adds a pre-aggregated count for a severity (the SQL GROUP BY path).
+func (c severityCounts) addN(sev string, n int) {
+	if _, known := c[sev]; !known {
+		sev = "info"
+	}
+	c[sev] += n
+}
+
 func (c severityCounts) add(sev string) {
 	if _, known := c[sev]; !known {
 		sev = "info" // an unrecognised severity is still an alert; never drop it
@@ -130,6 +138,27 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	to := time.Now().UTC()
+	span := time.Duration(windowMin) * time.Minute
+	from := to.Add(-span)
+
+	// Preferred path: aggregate in SQL, the way the single-tenant engine always
+	// has. Reads two narrow columns through a covering index, transfers no
+	// payloads, and has no scan limit to exceed — so a 7-day window returns an
+	// EXACT count where the Go-side tally returned a truncated floor (935,600
+	// alert rows against a 200k limit, measured on the live rig).
+	if counter, ok := s.cfg.Store.(centralstore.SeverityCounter); ok {
+		if out, err := s.sqlAlertStats(counter, tenant, from, to, span, buckets); err == nil {
+			s.stats.put(key, out)
+			writeJSON(w, 200, out)
+			return
+		} else {
+			// Fall through to the bounded scan rather than fail the dashboard.
+			slog.Warn("sql alert stats unavailable; falling back to a bounded scan",
+				"tenant", tenant, "error", err)
+		}
+	}
+
 	ranger, canRange := s.cfg.Store.(centralstore.RangeQuerier)
 	if !canRange {
 		// A backend without range reads cannot answer this honestly, and
@@ -137,10 +166,6 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "alert stats unsupported by this store backend", http.StatusNotImplemented)
 		return
 	}
-
-	to := time.Now().UTC()
-	span := time.Duration(windowMin) * time.Minute
-	from := to.Add(-span)
 
 	// One scan covering BOTH the window and the one before it, so the delta is
 	// a real comparison rather than a comparison against nothing.
@@ -213,4 +238,73 @@ func intParam(r *http.Request, name string, def, max int) int {
 		v = max
 	}
 	return v
+}
+
+// sqlAlertStats answers the window entirely in the database.
+//
+// Two queries for the counts (window and the preceding one, so the delta
+// compares like with like) plus one narrow stream for the timeline buckets. No
+// payload is decoded and no row limit applies, which is what makes long windows
+// exact rather than a floor.
+func (s *Server) sqlAlertStats(
+	counter centralstore.SeverityCounter, tenant string,
+	from, to time.Time, span time.Duration, buckets int,
+) (*alertStats, error) {
+	scope := centralstore.Scope{TenantID: tenant}
+
+	cur, err := counter.CountBySeverity(scope, from, to)
+	if err != nil {
+		return nil, err
+	}
+	prev, err := counter.CountBySeverity(scope, from.Add(-span), from)
+	if err != nil {
+		return nil, err
+	}
+
+	out := &alertStats{
+		From: from, To: to,
+		Counts: newSeverityCounts(), Previous: newSeverityCounts(),
+		Buckets: make([]alertBucket, buckets),
+	}
+	for sev, n := range cur {
+		out.Counts.addN(sev, n)
+		out.Total += n
+	}
+	for sev, n := range prev {
+		out.Previous.addN(sev, n)
+	}
+
+	width := span / time.Duration(buckets)
+	if width <= 0 {
+		width = time.Nanosecond
+	}
+	for i := range out.Buckets {
+		out.Buckets[i] = alertBucket{At: from.Add(time.Duration(i) * width), Counts: newSeverityCounts()}
+	}
+	// Bucketed in the database: ~150 rows back regardless of window size,
+	// instead of one row per alert (116k for a 7-day window on the live rig).
+	cols, err := counter.SeverityBuckets(scope, from, to, buckets)
+	if err != nil {
+		return nil, err
+	}
+	for i, col := range cols {
+		if i >= len(out.Buckets) {
+			break
+		}
+		for sev, n := range col {
+			out.Buckets[i].Counts.addN(sev, n)
+			out.Buckets[i].Total += n
+		}
+	}
+
+	// A backfill still in flight means older alert rows carry no severity yet,
+	// so the counts genuinely ARE a floor until it finishes. Reuse the existing
+	// Truncated flag rather than inventing a second "incomplete" signal the
+	// console would have to learn: it already renders exactly the right caveat.
+	if pending, err := counter.SeverityBackfillPending(scope); err == nil && pending > 0 {
+		out.Truncated = true
+		slog.Info("alert stats reported as a floor: severity backfill still running",
+			"tenant", tenant, "pending_rows", pending)
+	}
+	return out, nil
 }

@@ -30,6 +30,63 @@ message HeartbeatRequest {
   // agent; the authoritative interactive surface remains the agent-local API.
   repeated ChokeSummary chokes = 6;
   repeated DeviceSummary devices = 7;
+
+  // Kernel-side and host-side drill detail for the Choke Gateway page.
+  //
+  // Without these the multi-tenant console can only ever render the panels
+  // valid-EMPTY, because the data exists solely on the agent: the same page
+  // that shows 462 token buckets, a populated cgroup map and 122 host processes
+  // on the single-tenant engine showed 0 / {} / 0 on the control plane, for
+  // every tenant, permanently. That is not a quiet degradation — it reads as a
+  // broken product to anyone who has seen the single-host console.
+  //
+  // Capped like chokes/devices above: this is a fleet SCAN surface, not the
+  // authoritative interactive one, and an uncapped per-heartbeat dump of every
+  // process on every host would cost more than the panels are worth.
+  repeated BucketSummary buckets = 8;
+  repeated CgroupSummary cgroups = 9;
+  repeated ProcessSummary processes = 10;
+}
+
+// BucketSummary is one kernel token bucket — the per-PID rate limit the choke
+// gateway actually installed. It is the evidence that a throttle reached the
+// kernel rather than only being recorded as a decision.
+message BucketSummary {
+  uint32 pid = 1;
+  uint64 rate_per_sec = 2;
+  uint64 burst = 3;
+  uint64 tokens = 4;
+  // Raw bitmask, NOT a label: the single-host engine serves `"flags": 1` and the
+  // console types it as a number. Sending a friendly string here would render
+  // the fleet panel differently from the identical single-host one.
+  uint32 flags = 5;
+}
+
+// CgroupSummary is one choke tier and the PIDs the kernel reports inside it.
+// The console renders it as the cgroup map: which processes are actually
+// confined right now, as opposed to which ones a decision row claims are.
+message CgroupSummary {
+  string tier = 1; // choke-throttled | choke-tarpit | choke-quarantined
+  repeated uint32 pids = 2;
+}
+
+// ProcessSummary is one live host process, joined with its choke state where
+// the gateway is tracking it. Powers the console's process picker, which on the
+// control plane had nothing to pick from.
+message ProcessSummary {
+  uint32 pid = 1;
+  uint32 ppid = 2;
+  uint32 uid = 3;
+  // comm and exe are BOTH carried because the engine serves both and the
+  // console falls back between them; collapsing to one loses the short name
+  // for kernel threads, which have no exe path at all.
+  string comm = 4;
+  string exe = 10;
+  string cmdline = 5;
+  bool tracked = 6;
+  string state = 7;
+  int32 score = 8;
+  string exec_id = 9;
 }
 
 // ChokeSummary is one process the agent is currently choking (or watching),

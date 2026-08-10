@@ -83,9 +83,13 @@ CREATE TABLE IF NOT EXISTS telemetry (
   binary    TEXT,
   at        INTEGER NOT NULL,
   payload   BLOB NOT NULL,
+  -- See severity.go: denormalised so alert counts aggregate in SQL rather than
+  -- by shipping rows into Go under a scan limit. NULL = not yet backfilled.
+  severity  TEXT,
   PRIMARY KEY (tenant_id, agent_id, dedup_key)
 );
 CREATE INDEX IF NOT EXISTS idx_telemetry_tenant_at ON telemetry(tenant_id, at);
+CREATE INDEX IF NOT EXISTS idx_telemetry_alert_sev ON telemetry(tenant_id, at) WHERE kind = 'alert';
 `
 
 // Open opens (creating if needed) a central store at path. Use a file path for
@@ -118,9 +122,10 @@ func (s *Store) Put(r ingest.StampedRecord) error {
 		return err
 	}
 	_, err = s.db.Exec(
-		`INSERT OR IGNORE INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,binary,at,payload)
-		 VALUES(?,?,?,?,?,?,?,?)`,
-		r.TenantID, r.AgentID, r.Record.GetDedupKey(), kind, execID, binary, time.Now().UnixNano(), payload)
+		`INSERT OR IGNORE INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,binary,at,payload,severity)
+		 VALUES(?,?,?,?,?,?,?,?,?)`,
+		r.TenantID, r.AgentID, r.Record.GetDedupKey(), kind, execID, binary, time.Now().UnixNano(), payload,
+		severityOf(r.Record))
 	return err
 }
 

@@ -12,6 +12,13 @@ export interface Thresholds {
 }
 
 export interface AuditChainStatus {
+  /**
+   * False when the deployment cannot verify the chain at all (the fleet control
+   * plane does not hash-chain decisions centrally). Distinct from ok=false,
+   * which means a chain exists and is BROKEN.
+   */
+  supported?: boolean;
+  detail?: string;
   ok?: boolean;
   total?: number;
   bad_at?: number | string;

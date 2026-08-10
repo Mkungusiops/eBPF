@@ -185,6 +185,30 @@ interface HoverPreviewState {
   y: number;
 }
 
+
+/**
+ * Half-scale rate: the weighted alerts/hour at which posture reads 50.
+ *
+ * Weighted means critical*8 + high*3 + medium, so 200/hr is roughly 25 criticals
+ * an hour sustained — a genuinely bad day, not a busy one.
+ */
+export const RISK_HALF_SCALE_PER_HOUR = 200;
+
+/**
+ * Map a weighted alert RATE onto the 0..100 dial.
+ *
+ * Soft knee (`r / (r + k)`) rather than a hard `min(100, …)` clamp. The clamp
+ * was the reason the gauge read "Critical 100/100" on every window of every
+ * busy tenant: once past the ceiling, a tenfold worsening looked identical to
+ * scraping over the line. This curve is asymptotic, so it never quite reaches
+ * 100 and there is always headroom for "worse" to be visible — which is the
+ * whole job of a posture dial.
+ */
+export function riskScoreFromRate(perHour: number): number {
+  if (!Number.isFinite(perHour) || perHour <= 0) return 0;
+  return Math.round((100 * perHour) / (perHour + RISK_HALF_SCALE_PER_HOUR));
+}
+
 export function SocRoute() {
   const { snapshot, setSnapshot, loading, errors, statuses, truncated, refresh } = useSocData();
   const sharedStream = useStream();
@@ -364,19 +388,31 @@ export function SocRoute() {
     return groupAlerts ? groupAlertList(filtered) : filtered.map((alert) => ({ ...alert, groupCount: 1, members: [alert] }));
   }, [ackStates, filterUnack, groupAlerts, hideBaseline, pinnedAlerts, query, rangeAlerts, sortField]);
 
-  // Risk is a weighted alert count, so it runs well past 100 on a busy window —
-  // 19 criticals alone saturate it. The gauge still reads 0..100, but the TREND
-  // is computed on the raw scores: comparing two clamped values printed "no
-  // change vs prior 5m" while criticals were climbing, which is the opposite of
-  // what the number was there to tell you. `riskSaturated` lets the band say the
-  // gauge is pegged instead of implying 100 is the top of the observed range.
-  const rawRiskScore = useMemo(() => counts.critical * 8 + counts.high * 3 + counts.medium, [counts]);
-  const previousRawRiskScore = useMemo(
+  // Posture is a RATE — weighted alerts per hour — not a cumulative count.
+  //
+  // It used to be `critical*8 + high*3 + medium` clamped to 100, which measured
+  // the window selector as much as the estate: the same host at the same instant
+  // read 0 / 3 / 31 / 100 as the range widened 5m → 24h, because a longer window
+  // simply contains more alerts. It also saturated at THIRTEEN criticals
+  // (13 * 8 = 104), so any busy tenant sat pegged at "Critical 100/100"
+  // permanently and the gauge distinguished nothing.
+  //
+  // Dividing by the window makes the number a property of the estate, so the
+  // four ranges agree when the estate is steady and disagree only when the rate
+  // genuinely changed.
+  const weightedAlerts = useMemo(() => counts.critical * 8 + counts.high * 3 + counts.medium, [counts]);
+  const previousWeightedAlerts = useMemo(
     () => previousCounts.critical * 8 + previousCounts.high * 3 + previousCounts.medium,
     [previousCounts]
   );
-  const riskScore = Math.min(100, rawRiskScore);
-  const riskSaturated = rawRiskScore > 100;
+  const riskPerHour = rangeMin > 0 ? (weightedAlerts * 60) / rangeMin : 0;
+  const previousRiskPerHour = rangeMin > 0 ? (previousWeightedAlerts * 60) / rangeMin : 0;
+  const riskScore = riskScoreFromRate(riskPerHour);
+  // Nothing "pegs" any more — the curve is asymptotic, so there is always
+  // headroom and a worsening estate always moves the dial. Saturated now means
+  // the rate is an order of magnitude past half-scale, which is a real reading
+  // rather than an artefact of the clamp.
+  const riskSaturated = riskPerHour >= RISK_HALF_SCALE_PER_HOUR * 10;
   const riskLabel = riskScore >= 80 ? "critical" : riskScore >= 45 ? "high" : riskScore >= 18 ? "elevated" : "low";
   const openContainment = useMemo(() => {
     let critical = 0;
@@ -467,13 +503,32 @@ export function SocRoute() {
     // is both self-contradictory and the opposite of the truth.
     const shortMs = Math.max(eventsShortMs, alertsShortMs);
     const shortFeeds = [eventsShortMs ? "events" : "", alertsShortMs ? "alerts" : ""].filter(Boolean);
+    // Coverage is reported PER FEED, because the two panels groups are bound by
+    // different buffers and they run out at very different distances: alerts are
+    // far rarer than events, so 1000 alerts routinely span an hour or more while
+    // 2000 events span ~25 minutes. Collapsing them into one worst-case number
+    // told the operator their alert queue was truncated to 25m of a 30m window
+    // when it in fact held 319 of 320 alerts — a disclosure that fires when
+    // nothing is missing is one operators learn to dismiss, which costs them the
+    // times it is real.
     return {
       complete: shortMs === 0,
       shortFeeds,
-      // What the limiting feed actually covers.
-      coveredMs: Math.max(0, windowMs - shortMs)
+      // What the limiting feed covers — kept for the no-serverStats notice,
+      // which is about the counts as a whole rather than any one panel.
+      coveredMs: Math.max(0, windowMs - shortMs),
+      // Alerts drive the alert queue and the top-process rows.
+      alerts: { short: alertsShortMs > 0, coveredMs: Math.max(0, windowMs - alertsShortMs) },
+      // Events drive the network/IOC panels.
+      events: { short: eventsShortMs > 0, coveredMs: Math.max(0, windowMs - eventsShortMs) }
     };
   }, [now, rangeMin, snapshot.alerts, snapshot.events, truncated.alerts, truncated.events]);
+
+  // A panel whose feed cannot reach the whole window says so in its own header,
+  // rather than the page carrying a permanent band about it. Returns null when
+  // the panel's feed covers the range, so a complete panel is unmarked.
+  const coveragePill = (feed: { short: boolean; coveredMs: number }) =>
+    feed.short ? <StatusPill label={`last ${formatDuration(feed.coveredMs)}`} tone="warn" /> : null;
 
   const staleSeconds = stream.lastMessageAt ? Math.max(0, Math.floor((now - stream.lastMessageAt) / 1000)) : undefined;
   const streamStale = staleSeconds === undefined || staleSeconds > 30;
@@ -677,14 +732,18 @@ export function SocRoute() {
              Posture is no longer duplicated here — the executive band below owns it. */}
           <div className="soc-top-actions">
             <div className="soc-range" role="group" aria-label="Time range">
-              {[5, 30, 60, 1440].map((value) => (
+              {[5, 30, 60, 1440, 10080].map((value) => (
                 <button
                   key={value}
                   type="button"
                   className={value === rangeMin ? "is-active" : ""}
                   onClick={() => setRangeMin(value)}
                 >
-                  {value === 1440 ? "24h" : `${value}m`}
+                  {/* rangeLabel, not a second inline formatter. This button had
+                      its own `${value}m` rule, so adding a 7-day range rendered
+                      it as "10080m" here while every notice on the page called
+                      the same window "7d". One formatter, no drift. */}
+                  {rangeLabel(value)}
                 </button>
               ))}
             </div>
@@ -762,13 +821,16 @@ export function SocRoute() {
           {!windowCoverage.complete ? (
             serverStats ? (
               // Counts, deltas and the timeline are server-computed and cover the
-              // whole window; only the row-level panels are buffer-bound. Saying
-              // "counts are a floor" here would now be the inaccurate statement.
-              <InlineNotice tone="info" title="Counts cover the full window. The lists below do not.">
-                Severity counts, deltas, posture and the timeline are computed over the full {rangeLabel(rangeMin)}. The
-                alert queue, process and IOC panels show only the most recent {formatDuration(windowCoverage.coveredMs)}{" "}
-                the console holds in memory.
-              </InlineNotice>
+              // whole window; only the row-level panels are buffer-bound.
+              //
+              // This used to be a full-width band on every load, which is the
+              // wrong shape for the message: it is not a page-level condition,
+              // it is a property of three specific panels, and a permanent
+              // interstitial is one operators stop reading. The disclosure now
+              // rides on the affected panels' own headers (see coveragePill),
+              // where it is visible at the moment the rows are being read and
+              // absent from the panels it never applied to.
+              null
             ) : (
               <InlineNotice tone="warn" title="Partial window — counts below are a floor, not a total.">
                 The console holds only the most recent {formatDuration(windowCoverage.coveredMs)} of this{" "}
@@ -786,7 +848,7 @@ export function SocRoute() {
             onToggleBriefing={() => setBriefingOpen((value) => !value)}
             riskScore={riskScore}
             riskLabel={riskLabel}
-            riskDelta={rawRiskScore - previousRawRiskScore}
+            riskDelta={Math.round(riskPerHour - previousRiskPerHour)}
             riskSaturated={riskSaturated}
             countsUnfounded={countsUnfounded}
             windowLabel={rangeLabel(rangeMin)}
@@ -893,7 +955,12 @@ export function SocRoute() {
             <PanelFrame
               panel={PANELS["alert-triage-queue"]}
               className="soc-alert-panel"
-              status={<StatusPill label={`${filteredAlerts.length} shown`} tone="info" />}
+              status={
+                <>
+                  {coveragePill(windowCoverage.alerts)}
+                  <StatusPill label={`${filteredAlerts.length} shown`} tone="info" />
+                </>
+              }
               actions={
                 <div className="soc-control-row">
                   <ToggleChip label="Hide baseline" active={hideBaseline} onChange={setHideBaseline} />
@@ -959,7 +1026,7 @@ export function SocRoute() {
                   }
                 />
               </PanelFrame>
-              <PanelFrame panel={PANELS["top-processes"]}>
+              <PanelFrame panel={PANELS["top-processes"]} status={coveragePill(windowCoverage.alerts)}>
                 <MiniBarList
                   rows={topProcesses.map((row) => ({
                     label: row.process,
@@ -974,10 +1041,10 @@ export function SocRoute() {
                   }}
                 />
               </PanelFrame>
-              <PanelFrame panel={PANELS["iocs-observed"]}>
+              <PanelFrame panel={PANELS["iocs-observed"]} status={coveragePill(windowCoverage.events)}>
                 <IocList files={iocs.files} peers={iocs.peers} />
               </PanelFrame>
-              <PanelFrame panel={PANELS["network-connections"]}>
+              <PanelFrame panel={PANELS["network-connections"]} status={coveragePill(windowCoverage.events)}>
                 <NetworkList rows={networkRows} />
               </PanelFrame>
             </div>
@@ -1036,7 +1103,7 @@ export function SocRoute() {
         <PillRiskContent
           counts={counts}
           riskScore={riskScore}
-          rawRiskScore={rawRiskScore}
+          riskPerHour={riskPerHour}
           alerts={rangeAlerts}
           windowLabel={`last ${rangeLabel(rangeMin)}`}
         />
@@ -1501,11 +1568,11 @@ function techniqueName(label: string) {
   return label.replace(/^T\d{4}(?:\.\d+)?\s*/, "").trim() || "technique";
 }
 
-// `saturated` means the underlying weighted score ran past the top of the
-// scale. The dial still reads 100/100 — a saturating gauge is a normal reading
-// and both consoles show it identically — but the band beneath states that it
-// is pegged, and the trend is computed on the UNCAPPED score so movement stays
-// visible while the dial cannot move.
+// `saturated` means the alert RATE is an order of magnitude past half-scale —
+// a real reading about the estate, not the old artefact where any tenant with
+// more than thirteen criticals pinned the dial at 100 forever. The curve is
+// asymptotic, so the dial never actually runs out of room and a worsening
+// estate always moves it.
 function ExecPostureGauge({
   score,
   label,
@@ -1532,7 +1599,7 @@ function ExecPostureGauge({
           unavailable
             ? "Security posture unavailable: the telemetry feed is down"
             : saturated
-              ? `Security posture ${label}, score above the 100 point scale maximum`
+              ? `Security posture ${label}, sustained extreme alert rate`
               : `Security posture ${label} score ${score} of 100`
         }
       >
@@ -1756,7 +1823,9 @@ function ExecutiveBand({
               {countsUnfounded ? "unavailable" : riskLabel}
             </strong>
             <span className={cx("soc-exec-trend", `is-${trend}`)}>{trendText}</span>
-            {riskSaturated ? <span className="soc-exec-cell-sub">gauge pegged · trend tracks the uncapped score</span> : null}
+            {riskSaturated ? (
+              <span className="soc-exec-cell-sub">sustained extreme alert rate · check for a noisy source</span>
+            ) : null}
           </div>
         </button>
         <div className="soc-exec-cells">
@@ -4897,13 +4966,13 @@ function PillHostContent({
 function PillRiskContent({
   counts,
   riskScore,
-  rawRiskScore,
+  riskPerHour,
   alerts,
   windowLabel
 }: {
   counts: Record<Severity, number>;
   riskScore: number;
-  rawRiskScore: number;
+  riskPerHour: number;
   alerts: SocAlert[];
   windowLabel: string;
 }) {
@@ -4918,7 +4987,7 @@ function PillRiskContent({
   );
   return (
     <div className="soc-popover-body soc-popover-risk">
-      <RiskGauge score={riskScore} rawScore={rawRiskScore} counts={counts} contributors={contributors} window={windowLabel} />
+      <RiskGauge score={riskScore} ratePerHour={riskPerHour} counts={counts} contributors={contributors} window={windowLabel} />
     </div>
   );
 }
@@ -4988,7 +5057,15 @@ function AlertContextMenu({
 
 // The window selector's own vocabulary — "5m", "60m", "24h".
 function rangeLabel(rangeMin: number): string {
-  return rangeMin >= 1440 ? "24h" : `${rangeMin}m`;
+  // Days once past a day. The old form returned "24h" for ANY range >= 1440,
+  // so a 7-day window would have been labelled 24h everywhere the label is
+  // used — including the notices that state which window a number covers.
+  if (rangeMin >= 1440) {
+    const days = Math.round(rangeMin / 1440);
+    return days === 1 ? "24h" : `${days}d`;
+  }
+  if (rangeMin >= 60) return `${Math.round(rangeMin / 60)}h`;
+  return `${rangeMin}m`;
 }
 
 // A span in plain words: "45s", "3m", "1h 12m".

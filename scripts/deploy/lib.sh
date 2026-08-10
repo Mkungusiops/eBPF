@@ -758,7 +758,14 @@ EOF"
     # with 'Invalid parameter: redirect_uri' — a 400 on the login page, with the
     # console itself serving fine, which reads like a broken app rather than a
     # stale client registration.
-    K update clients/\$CID -r ebpf-soc -s 'redirectUris=[\"$redirect\",\"$base/*\"]' -s 'webOrigins=[\"$base\"]' -s 'rootUrl=$base' >/dev/null 2>&1 || true
+    # baseUrl is NOT redundant with rootUrl. Keycloak's error template renders
+    # its recovery link only when client.baseUrl has content, so with baseUrl
+    # unset every Keycloak-side login error is a DEAD END: branded page, no
+    # link, no way back except hand-editing the address bar. The common one is
+    # "Cookie not found", which any reload of the one-shot
+    # /login-actions/authenticate URL produces. rootUrl does not satisfy that
+    # check -- it has to be baseUrl.
+    K update clients/\$CID -r ebpf-soc -s 'redirectUris=[\"$redirect\",\"$base/*\"]' -s 'webOrigins=[\"$base\"]' -s 'rootUrl=$base' -s 'baseUrl=$base/' >/dev/null 2>&1 || true
     K create clients/\$CID/protocol-mappers/models -r ebpf-soc -s name=tenant -s protocol=openid-connect -s protocolMapper=oidc-usermodel-attribute-mapper -s 'config.\"user.attribute\"=tenant' -s 'config.\"claim.name\"=tenant' -s 'config.\"jsonType.label\"=String' -s 'config.\"id.token.claim\"=true' -s 'config.\"access.token.claim\"=true' -s 'config.\"userinfo.token.claim\"=true' >/dev/null 2>&1 || true
     K get clients/\$CID/client-secret -r ebpf-soc | grep value | sed -E 's/.*\"value\" *: *\"([^\"]+)\".*/\1/'")"
 

@@ -41,8 +41,23 @@ type HeartbeatRequest struct {
 	// Compact snapshot of the agent's data-plane state so the central console can
 	// render Choke/Devices per tenant without a second channel. Capped by the
 	// agent; the authoritative interactive surface remains the agent-local API.
-	Chokes        []*ChokeSummary  `protobuf:"bytes,6,rep,name=chokes,proto3" json:"chokes,omitempty"`
-	Devices       []*DeviceSummary `protobuf:"bytes,7,rep,name=devices,proto3" json:"devices,omitempty"`
+	Chokes  []*ChokeSummary  `protobuf:"bytes,6,rep,name=chokes,proto3" json:"chokes,omitempty"`
+	Devices []*DeviceSummary `protobuf:"bytes,7,rep,name=devices,proto3" json:"devices,omitempty"`
+	// Kernel-side and host-side drill detail for the Choke Gateway page.
+	//
+	// Without these the multi-tenant console can only ever render the panels
+	// valid-EMPTY, because the data exists solely on the agent: the same page
+	// that shows 462 token buckets, a populated cgroup map and 122 host processes
+	// on the single-tenant engine showed 0 / {} / 0 on the control plane, for
+	// every tenant, permanently. That is not a quiet degradation — it reads as a
+	// broken product to anyone who has seen the single-host console.
+	//
+	// Capped like chokes/devices above: this is a fleet SCAN surface, not the
+	// authoritative interactive one, and an uncapped per-heartbeat dump of every
+	// process on every host would cost more than the panels are worth.
+	Buckets       []*BucketSummary  `protobuf:"bytes,8,rep,name=buckets,proto3" json:"buckets,omitempty"`
+	Cgroups       []*CgroupSummary  `protobuf:"bytes,9,rep,name=cgroups,proto3" json:"cgroups,omitempty"`
+	Processes     []*ProcessSummary `protobuf:"bytes,10,rep,name=processes,proto3" json:"processes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -126,6 +141,286 @@ func (x *HeartbeatRequest) GetDevices() []*DeviceSummary {
 	return nil
 }
 
+func (x *HeartbeatRequest) GetBuckets() []*BucketSummary {
+	if x != nil {
+		return x.Buckets
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetCgroups() []*CgroupSummary {
+	if x != nil {
+		return x.Cgroups
+	}
+	return nil
+}
+
+func (x *HeartbeatRequest) GetProcesses() []*ProcessSummary {
+	if x != nil {
+		return x.Processes
+	}
+	return nil
+}
+
+// BucketSummary is one kernel token bucket — the per-PID rate limit the choke
+// gateway actually installed. It is the evidence that a throttle reached the
+// kernel rather than only being recorded as a decision.
+type BucketSummary struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	Pid        uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
+	RatePerSec uint64                 `protobuf:"varint,2,opt,name=rate_per_sec,json=ratePerSec,proto3" json:"rate_per_sec,omitempty"`
+	Burst      uint64                 `protobuf:"varint,3,opt,name=burst,proto3" json:"burst,omitempty"`
+	Tokens     uint64                 `protobuf:"varint,4,opt,name=tokens,proto3" json:"tokens,omitempty"`
+	// Raw bitmask, NOT a label: the single-host engine serves `"flags": 1` and the
+	// console types it as a number. Sending a friendly string here would render
+	// the fleet panel differently from the identical single-host one.
+	Flags         uint32 `protobuf:"varint,5,opt,name=flags,proto3" json:"flags,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BucketSummary) Reset() {
+	*x = BucketSummary{}
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BucketSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BucketSummary) ProtoMessage() {}
+
+func (x *BucketSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BucketSummary.ProtoReflect.Descriptor instead.
+func (*BucketSummary) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *BucketSummary) GetPid() uint32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *BucketSummary) GetRatePerSec() uint64 {
+	if x != nil {
+		return x.RatePerSec
+	}
+	return 0
+}
+
+func (x *BucketSummary) GetBurst() uint64 {
+	if x != nil {
+		return x.Burst
+	}
+	return 0
+}
+
+func (x *BucketSummary) GetTokens() uint64 {
+	if x != nil {
+		return x.Tokens
+	}
+	return 0
+}
+
+func (x *BucketSummary) GetFlags() uint32 {
+	if x != nil {
+		return x.Flags
+	}
+	return 0
+}
+
+// CgroupSummary is one choke tier and the PIDs the kernel reports inside it.
+// The console renders it as the cgroup map: which processes are actually
+// confined right now, as opposed to which ones a decision row claims are.
+type CgroupSummary struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Tier          string                 `protobuf:"bytes,1,opt,name=tier,proto3" json:"tier,omitempty"` // choke-throttled | choke-tarpit | choke-quarantined
+	Pids          []uint32               `protobuf:"varint,2,rep,packed,name=pids,proto3" json:"pids,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CgroupSummary) Reset() {
+	*x = CgroupSummary{}
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CgroupSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CgroupSummary) ProtoMessage() {}
+
+func (x *CgroupSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CgroupSummary.ProtoReflect.Descriptor instead.
+func (*CgroupSummary) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CgroupSummary) GetTier() string {
+	if x != nil {
+		return x.Tier
+	}
+	return ""
+}
+
+func (x *CgroupSummary) GetPids() []uint32 {
+	if x != nil {
+		return x.Pids
+	}
+	return nil
+}
+
+// ProcessSummary is one live host process, joined with its choke state where
+// the gateway is tracking it. Powers the console's process picker, which on the
+// control plane had nothing to pick from.
+type ProcessSummary struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Pid   uint32                 `protobuf:"varint,1,opt,name=pid,proto3" json:"pid,omitempty"`
+	Ppid  uint32                 `protobuf:"varint,2,opt,name=ppid,proto3" json:"ppid,omitempty"`
+	Uid   uint32                 `protobuf:"varint,3,opt,name=uid,proto3" json:"uid,omitempty"`
+	// comm and exe are BOTH carried because the engine serves both and the
+	// console falls back between them; collapsing to one loses the short name
+	// for kernel threads, which have no exe path at all.
+	Comm          string `protobuf:"bytes,4,opt,name=comm,proto3" json:"comm,omitempty"`
+	Exe           string `protobuf:"bytes,10,opt,name=exe,proto3" json:"exe,omitempty"`
+	Cmdline       string `protobuf:"bytes,5,opt,name=cmdline,proto3" json:"cmdline,omitempty"`
+	Tracked       bool   `protobuf:"varint,6,opt,name=tracked,proto3" json:"tracked,omitempty"`
+	State         string `protobuf:"bytes,7,opt,name=state,proto3" json:"state,omitempty"`
+	Score         int32  `protobuf:"varint,8,opt,name=score,proto3" json:"score,omitempty"`
+	ExecId        string `protobuf:"bytes,9,opt,name=exec_id,json=execId,proto3" json:"exec_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProcessSummary) Reset() {
+	*x = ProcessSummary{}
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProcessSummary) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProcessSummary) ProtoMessage() {}
+
+func (x *ProcessSummary) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProcessSummary.ProtoReflect.Descriptor instead.
+func (*ProcessSummary) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *ProcessSummary) GetPid() uint32 {
+	if x != nil {
+		return x.Pid
+	}
+	return 0
+}
+
+func (x *ProcessSummary) GetPpid() uint32 {
+	if x != nil {
+		return x.Ppid
+	}
+	return 0
+}
+
+func (x *ProcessSummary) GetUid() uint32 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *ProcessSummary) GetComm() string {
+	if x != nil {
+		return x.Comm
+	}
+	return ""
+}
+
+func (x *ProcessSummary) GetExe() string {
+	if x != nil {
+		return x.Exe
+	}
+	return ""
+}
+
+func (x *ProcessSummary) GetCmdline() string {
+	if x != nil {
+		return x.Cmdline
+	}
+	return ""
+}
+
+func (x *ProcessSummary) GetTracked() bool {
+	if x != nil {
+		return x.Tracked
+	}
+	return false
+}
+
+func (x *ProcessSummary) GetState() string {
+	if x != nil {
+		return x.State
+	}
+	return ""
+}
+
+func (x *ProcessSummary) GetScore() int32 {
+	if x != nil {
+		return x.Score
+	}
+	return 0
+}
+
+func (x *ProcessSummary) GetExecId() string {
+	if x != nil {
+		return x.ExecId
+	}
+	return ""
+}
+
 // ChokeSummary is one process the agent is currently choking (or watching),
 // trimmed to what an operator scans in a fleet-wide view.
 type ChokeSummary struct {
@@ -141,7 +436,7 @@ type ChokeSummary struct {
 
 func (x *ChokeSummary) Reset() {
 	*x = ChokeSummary{}
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -153,7 +448,7 @@ func (x *ChokeSummary) String() string {
 func (*ChokeSummary) ProtoMessage() {}
 
 func (x *ChokeSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[1]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -166,7 +461,7 @@ func (x *ChokeSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChokeSummary.ProtoReflect.Descriptor instead.
 func (*ChokeSummary) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{1}
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ChokeSummary) GetExecId() string {
@@ -227,7 +522,7 @@ type DeviceSummary struct {
 
 func (x *DeviceSummary) Reset() {
 	*x = DeviceSummary{}
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -239,7 +534,7 @@ func (x *DeviceSummary) String() string {
 func (*DeviceSummary) ProtoMessage() {}
 
 func (x *DeviceSummary) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -252,7 +547,7 @@ func (x *DeviceSummary) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceSummary.ProtoReflect.Descriptor instead.
 func (*DeviceSummary) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{2}
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *DeviceSummary) GetMac() string {
@@ -305,7 +600,7 @@ type HeartbeatResponse struct {
 
 func (x *HeartbeatResponse) Reset() {
 	*x = HeartbeatResponse{}
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -317,7 +612,7 @@ func (x *HeartbeatResponse) String() string {
 func (*HeartbeatResponse) ProtoMessage() {}
 
 func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_heartbeat_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -330,7 +625,7 @@ func (x *HeartbeatResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResponse.ProtoReflect.Descriptor instead.
 func (*HeartbeatResponse) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{3}
+	return file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *HeartbeatResponse) GetServerTime() *timestamppb.Timestamp {
@@ -366,7 +661,7 @@ var File_ebpfsoc_v1_heartbeat_proto protoreflect.FileDescriptor
 const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\n" +
 	"\x1aebpfsoc/v1/heartbeat.proto\x12\n" +
-	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe9\x02\n" +
+	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8d\x04\n" +
 	"\x10HeartbeatRequest\x124\n" +
 	"\n" +
 	"agent_info\x18\x01 \x01(\v2\x15.ebpfsoc.v1.AgentInfoR\tagentInfo\x129\n" +
@@ -376,7 +671,33 @@ const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\x0elast_acked_seq\x18\x04 \x01(\x04R\flastAckedSeq\x124\n" +
 	"\x16applied_policy_version\x18\x05 \x01(\tR\x14appliedPolicyVersion\x120\n" +
 	"\x06chokes\x18\x06 \x03(\v2\x18.ebpfsoc.v1.ChokeSummaryR\x06chokes\x123\n" +
-	"\adevices\x18\a \x03(\v2\x19.ebpfsoc.v1.DeviceSummaryR\adevices\"}\n" +
+	"\adevices\x18\a \x03(\v2\x19.ebpfsoc.v1.DeviceSummaryR\adevices\x123\n" +
+	"\abuckets\x18\b \x03(\v2\x19.ebpfsoc.v1.BucketSummaryR\abuckets\x123\n" +
+	"\acgroups\x18\t \x03(\v2\x19.ebpfsoc.v1.CgroupSummaryR\acgroups\x128\n" +
+	"\tprocesses\x18\n" +
+	" \x03(\v2\x1a.ebpfsoc.v1.ProcessSummaryR\tprocesses\"\x87\x01\n" +
+	"\rBucketSummary\x12\x10\n" +
+	"\x03pid\x18\x01 \x01(\rR\x03pid\x12 \n" +
+	"\frate_per_sec\x18\x02 \x01(\x04R\n" +
+	"ratePerSec\x12\x14\n" +
+	"\x05burst\x18\x03 \x01(\x04R\x05burst\x12\x16\n" +
+	"\x06tokens\x18\x04 \x01(\x04R\x06tokens\x12\x14\n" +
+	"\x05flags\x18\x05 \x01(\rR\x05flags\"7\n" +
+	"\rCgroupSummary\x12\x12\n" +
+	"\x04tier\x18\x01 \x01(\tR\x04tier\x12\x12\n" +
+	"\x04pids\x18\x02 \x03(\rR\x04pids\"\xe7\x01\n" +
+	"\x0eProcessSummary\x12\x10\n" +
+	"\x03pid\x18\x01 \x01(\rR\x03pid\x12\x12\n" +
+	"\x04ppid\x18\x02 \x01(\rR\x04ppid\x12\x10\n" +
+	"\x03uid\x18\x03 \x01(\rR\x03uid\x12\x12\n" +
+	"\x04comm\x18\x04 \x01(\tR\x04comm\x12\x10\n" +
+	"\x03exe\x18\n" +
+	" \x01(\tR\x03exe\x12\x18\n" +
+	"\acmdline\x18\x05 \x01(\tR\acmdline\x12\x18\n" +
+	"\atracked\x18\x06 \x01(\bR\atracked\x12\x14\n" +
+	"\x05state\x18\a \x01(\tR\x05state\x12\x14\n" +
+	"\x05score\x18\b \x01(\x05R\x05score\x12\x17\n" +
+	"\aexec_id\x18\t \x01(\tR\x06execId\"}\n" +
 	"\fChokeSummary\x12\x17\n" +
 	"\aexec_id\x18\x01 \x01(\tR\x06execId\x12\x10\n" +
 	"\x03pid\x18\x02 \x01(\rR\x03pid\x12\x16\n" +
@@ -410,29 +731,35 @@ func file_ebpfsoc_v1_heartbeat_proto_rawDescGZIP() []byte {
 	return file_ebpfsoc_v1_heartbeat_proto_rawDescData
 }
 
-var file_ebpfsoc_v1_heartbeat_proto_msgTypes = make([]protoimpl.MessageInfo, 4)
+var file_ebpfsoc_v1_heartbeat_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_ebpfsoc_v1_heartbeat_proto_goTypes = []any{
 	(*HeartbeatRequest)(nil),      // 0: ebpfsoc.v1.HeartbeatRequest
-	(*ChokeSummary)(nil),          // 1: ebpfsoc.v1.ChokeSummary
-	(*DeviceSummary)(nil),         // 2: ebpfsoc.v1.DeviceSummary
-	(*HeartbeatResponse)(nil),     // 3: ebpfsoc.v1.HeartbeatResponse
-	(*AgentInfo)(nil),             // 4: ebpfsoc.v1.AgentInfo
-	(*DataPlaneState)(nil),        // 5: ebpfsoc.v1.DataPlaneState
-	(*timestamppb.Timestamp)(nil), // 6: google.protobuf.Timestamp
+	(*BucketSummary)(nil),         // 1: ebpfsoc.v1.BucketSummary
+	(*CgroupSummary)(nil),         // 2: ebpfsoc.v1.CgroupSummary
+	(*ProcessSummary)(nil),        // 3: ebpfsoc.v1.ProcessSummary
+	(*ChokeSummary)(nil),          // 4: ebpfsoc.v1.ChokeSummary
+	(*DeviceSummary)(nil),         // 5: ebpfsoc.v1.DeviceSummary
+	(*HeartbeatResponse)(nil),     // 6: ebpfsoc.v1.HeartbeatResponse
+	(*AgentInfo)(nil),             // 7: ebpfsoc.v1.AgentInfo
+	(*DataPlaneState)(nil),        // 8: ebpfsoc.v1.DataPlaneState
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
 }
 var file_ebpfsoc_v1_heartbeat_proto_depIdxs = []int32{
-	4, // 0: ebpfsoc.v1.HeartbeatRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
-	5, // 1: ebpfsoc.v1.HeartbeatRequest.data_plane:type_name -> ebpfsoc.v1.DataPlaneState
-	1, // 2: ebpfsoc.v1.HeartbeatRequest.chokes:type_name -> ebpfsoc.v1.ChokeSummary
-	2, // 3: ebpfsoc.v1.HeartbeatRequest.devices:type_name -> ebpfsoc.v1.DeviceSummary
-	6, // 4: ebpfsoc.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
-	0, // 5: ebpfsoc.v1.HeartbeatService.Heartbeat:input_type -> ebpfsoc.v1.HeartbeatRequest
-	3, // 6: ebpfsoc.v1.HeartbeatService.Heartbeat:output_type -> ebpfsoc.v1.HeartbeatResponse
-	6, // [6:7] is the sub-list for method output_type
-	5, // [5:6] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	7, // 0: ebpfsoc.v1.HeartbeatRequest.agent_info:type_name -> ebpfsoc.v1.AgentInfo
+	8, // 1: ebpfsoc.v1.HeartbeatRequest.data_plane:type_name -> ebpfsoc.v1.DataPlaneState
+	4, // 2: ebpfsoc.v1.HeartbeatRequest.chokes:type_name -> ebpfsoc.v1.ChokeSummary
+	5, // 3: ebpfsoc.v1.HeartbeatRequest.devices:type_name -> ebpfsoc.v1.DeviceSummary
+	1, // 4: ebpfsoc.v1.HeartbeatRequest.buckets:type_name -> ebpfsoc.v1.BucketSummary
+	2, // 5: ebpfsoc.v1.HeartbeatRequest.cgroups:type_name -> ebpfsoc.v1.CgroupSummary
+	3, // 6: ebpfsoc.v1.HeartbeatRequest.processes:type_name -> ebpfsoc.v1.ProcessSummary
+	9, // 7: ebpfsoc.v1.HeartbeatResponse.server_time:type_name -> google.protobuf.Timestamp
+	0, // 8: ebpfsoc.v1.HeartbeatService.Heartbeat:input_type -> ebpfsoc.v1.HeartbeatRequest
+	6, // 9: ebpfsoc.v1.HeartbeatService.Heartbeat:output_type -> ebpfsoc.v1.HeartbeatResponse
+	9, // [9:10] is the sub-list for method output_type
+	8, // [8:9] is the sub-list for method input_type
+	8, // [8:8] is the sub-list for extension type_name
+	8, // [8:8] is the sub-list for extension extendee
+	0, // [0:8] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_heartbeat_proto_init() }
@@ -447,7 +774,7 @@ func file_ebpfsoc_v1_heartbeat_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_heartbeat_proto_rawDesc), len(file_ebpfsoc_v1_heartbeat_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   4,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

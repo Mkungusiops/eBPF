@@ -1593,14 +1593,19 @@ const RISK_TONE_COLOR: Record<string, string> = {
 
 export function RiskGauge({
   score,
-  rawScore,
+  ratePerHour,
   counts,
   contributors,
   window: windowLabel
 }: {
   score: number;
-  /** The uncapped weighted score. The dial only goes to 100; the breakdown below it routinely sums past that, so say when the two differ. */
-  rawScore?: number;
+  /**
+   * The weighted alert RATE the score is derived from. Shown because the dial is
+   * a normalised 0..100 and the breakdown below it is a raw count for the
+   * window — the rate is what ties them together, and it is the figure that is
+   * actually comparable between one window and the next.
+   */
+  ratePerHour?: number;
   counts: Record<Severity, number>;
   contributors: Array<{ title: string; score: number; severity: Severity }>;
   window?: string;
@@ -1645,7 +1650,7 @@ export function RiskGauge({
             {meta.label}
           </span>
           {windowLabel ? <em>window: {windowLabel}</em> : null}
-          {rawScore !== undefined && rawScore > score ? <em>capped from {rawScore}</em> : null}
+          {ratePerHour !== undefined && ratePerHour > 0 ? <em>{Math.round(ratePerHour)} weighted/hr</em> : null}
         </div>
       </div>
 

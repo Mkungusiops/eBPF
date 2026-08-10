@@ -31,6 +31,9 @@ export function osTheme(): Theme {
  * keyed off .theme-dark / .theme-light, and the favicon has a light variant so
  * the tab icon stays legible on a light chrome.
  */
+/** Bump when the favicon artwork changes, to defeat the browser's icon cache. */
+export const FAVICON_V = "2";
+
 export function applyTheme(theme: Theme): void {
   const light = theme === "light";
   for (const el of [document.documentElement, document.body]) {
@@ -38,7 +41,13 @@ export function applyTheme(theme: Theme): void {
     el?.classList.toggle("theme-dark", !light);
   }
   const favicon = document.getElementById("appFavicon") as HTMLLinkElement | null;
-  if (favicon) favicon.href = light ? "/favicon-light.svg" : "/favicon.svg";
+  // The ?v= is a cache-buster, and it is load-bearing. Until these two SVGs
+  // shipped, the console answered both paths from the SPA catch-all with
+  // index.html — and browsers cache favicons hard, keyed by URL, including that
+  // bad text/html response. Fixing the server alone therefore changed nothing
+  // for anyone who had already loaded the page: the icon stayed dark because
+  // the browser never re-fetched. Bump FAVICON_V whenever the artwork changes.
+  if (favicon) favicon.href = `${light ? "/favicon-light.svg" : "/favicon.svg"}?v=${FAVICON_V}`;
 }
 
 /**

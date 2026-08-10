@@ -4270,7 +4270,13 @@ button.soc-metric:hover {
   display: inline-flex;
   gap: 4px;
   padding: 4px;
-  background: rgba(15, 17, 23, 0.82);
+  /* Themed token, not a hardcoded dark pill.
+     The sidebar and topbar above hardcode a dark background and then correct it
+     with a .theme-light override; this dock was added the same way but never got
+     its override, so Fit/Reset sat on a near-black pill in the middle of a white
+     page. Using --soc-panel (translucent panel, defined in BOTH palettes) means
+     there is no second declaration to forget. */
+  background: var(--soc-panel);
   border: 1px solid var(--soc-line);
   border-radius: 8px;
   backdrop-filter: blur(8px);
@@ -4286,7 +4292,10 @@ button.soc-metric:hover {
   font-size: 13px;
   cursor: pointer;
 }
-.soc-graph-zoomdock button:hover { color: var(--soc-text); background: var(--soc-panel); }
+/* --soc-panel-soft, not --soc-panel: the latter is the DOCK's own background,
+   so hovering painted a button the same colour as the surface behind it and the
+   affordance simply did not appear. */
+.soc-graph-zoomdock button:hover { color: var(--soc-text); background: var(--soc-panel-soft); }
 
 .soc-graph-selection {
   display: grid;

@@ -31,6 +31,14 @@ export interface CommandMetrics {
   contained: number;
   tracked: number;
   auditOk: boolean;
+  /**
+   * False when this deployment cannot verify the chain at all (the fleet
+   * control plane does not hash-chain decisions centrally). Distinct from
+   * auditOk=false, which means a chain exists and is BROKEN — that is an
+   * incident; this is a capability gap, and conflating them either invents a
+   * breach or hides one.
+   */
+  auditSupported?: boolean;
   auditRows: number;
   /** Override the integrity tile (defaults to the audit-chain framing). Devices
    *  reuse it as "Data plane" without a second header component. */
@@ -56,13 +64,18 @@ export function computePosture(m: {
   activeThreats: number;
   contained: number;
   auditOk: boolean;
+  auditSupported?: boolean;
   killSwitched?: boolean;
 }): number {
   const needing = m.activeThreats + m.contained;
   const coverage = needing === 0 ? 1 : m.contained / needing;
   let score = 55 + coverage * 45; // 55..100 from containment coverage
   if (m.mode === "detect-only") score -= 22; // watching, not stopping
-  if (!m.auditOk) score -= 30; // the evidence chain is the product's trust anchor
+  // Only a BROKEN chain is a posture penalty. Docking 30 points because this
+  // deployment cannot verify centrally would report a capability gap as
+  // tampering, and would make the fleet console permanently score worse than
+  // the identical single-host one for a reason that is not about the estate.
+  if (m.auditSupported !== false && !m.auditOk) score -= 30;
   if (m.killSwitched) score -= 10; // enforcement globally bypassed
   return Math.max(0, Math.min(100, Math.round(score)));
 }
@@ -142,9 +155,17 @@ export function ContainmentCommandHeader({
         <Metric label={`Tracked ${m.subject}`} value={m.tracked.toLocaleString()} />
         <Metric
           label={m.integrityLabel ?? "Audit chain"}
-          value={m.integrityValue ?? (m.auditOk ? "intact" : "BROKEN")}
-          sub={m.integritySub ?? `${m.auditRows.toLocaleString()} rows`}
-          tone={m.auditOk ? "good" : "bad"}
+          value={
+            m.integrityValue ??
+            (m.auditSupported === false ? "not verified here" : m.auditOk ? "intact" : "BROKEN")
+          }
+          sub={
+            m.integritySub ??
+            (m.auditSupported === false
+              ? "chained on the agent, not centrally"
+              : `${m.auditRows.toLocaleString()} rows`)
+          }
+          tone={m.auditSupported === false ? "muted" : m.auditOk ? "good" : "bad"}
         />
         {m.headline ? <Metric label={m.headlineLabel || ""} value={m.headline} tone="muted" /> : null}
       </div>
