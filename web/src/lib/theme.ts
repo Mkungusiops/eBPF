@@ -32,7 +32,7 @@ export function osTheme(): Theme {
  * the tab icon stays legible on a light chrome.
  */
 /** Bump when the favicon artwork changes, to defeat the browser's icon cache. */
-export const FAVICON_V = "2";
+export const FAVICON_V = "3";
 
 export function applyTheme(theme: Theme): void {
   const light = theme === "light";

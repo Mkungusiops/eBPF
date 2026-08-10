@@ -1,12 +1,35 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <!-- NO tile. The Keycloak login pages never run the console's JS, so they
-       cannot swap icons by theme, and a .ico cannot carry a media query — this
-       one artwork has to be legible on a near-black tab strip AND a white one.
-       A solid dark tile fails the second; a solid light tile fails the first.
-       A tile-less mark in mid-cyan clears ~3:1 against both. -->
-  <path d="M16 4 L27 10 V22 L16 28 L5 22 V10 Z"
-        fill="none" stroke="#0aa5c4" stroke-width="2.4" stroke-linejoin="round"/>
-  <path d="M16 10 L21.5 13.2 V19.8 L16 23 L10.5 19.8 V13.2 Z"
-        fill="none" stroke="#0aa5c4" stroke-width="1.8" stroke-linejoin="round"/>
-  <circle cx="16" cy="16" r="2.6" fill="#0aa5c4"/>
+  <!-- NO tile. A favicon is composited onto a tab strip we do not control, so a
+       filled plate is a second background fighting the first: near-black reads
+       as a heavy blob on a light strip, white reads as a bright chip on a dark
+       one, and the two treatments looked like two different products sitting
+       side by side in the same window. A tile-less mark inherits whatever strip
+       it lands on and stays one identity everywhere.
+
+       The default ink is the mid-cyan, which clears ~5.6:1 on a dark strip and
+       ~2.9:1 on white — legible on BOTH, because this file is also what renders
+       where nothing can swap it: before any JS runs, on pages that run none,
+       and in Chromium, which ignores prefers-color-scheme inside an SVG
+       favicon. Browsers that do honour it get the per-theme ink below; Chromium
+       gets it via applyTheme() swapping to favicon-light.svg. Every path lands
+       on the same artwork, so they cannot disagree about the mark, only about
+       how deep the cyan is. -->
+  <style>
+    .mark { stroke: #0aa5c4; }
+    .dot  { fill:   #0aa5c4; }
+    @media (prefers-color-scheme: dark) {
+      .mark { stroke: #22d3ee; }
+      .dot  { fill:   #22d3ee; }
+    }
+    @media (prefers-color-scheme: light) {
+      /* #22d3ee on white is ~1.9:1 and vanishes at 16px. */
+      .mark { stroke: #0891b2; }
+      .dot  { fill:   #0891b2; }
+    }
+  </style>
+  <path class="mark" d="M16 4 L27 10 V22 L16 28 L5 22 V10 Z"
+        fill="none" stroke-width="2.4" stroke-linejoin="round"/>
+  <path class="mark" d="M16 10 L21.5 13.2 V19.8 L16 23 L10.5 19.8 V13.2 Z"
+        fill="none" stroke-width="1.8" stroke-linejoin="round"/>
+  <circle class="dot" cx="16" cy="16" r="2.6"/>
 </svg>

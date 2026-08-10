@@ -19,7 +19,7 @@
  * Bump V when the artwork changes.
  */
 (function () {
-  var V = "2";
+  var V = "3";
   function resourcesPath() {
     // Derive it from the tag Keycloak already rendered rather than hardcoding
     // the version segment, which changes with the Keycloak release.

@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Choke Gateway Console</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<link id="appFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link id="appFavicon" rel="icon" type="image/svg+xml" href="/favicon.svg?v=3">
 <!-- No-FOUC theme bootstrap. Must run BEFORE the body paints. The SOC
      dashboard stores `soc.theme` as JSON ("light" / "dark", with quotes)
      via its lsSet helper, so we have to JSON-parse the value to read it
@@ -2810,7 +2810,7 @@ function applyTheme(theme) {
   if (dark)  dark.style.display  = isLight ? 'none'  : 'inline';
   if (light) light.style.display = isLight ? 'inline' : 'none';
   const fav = $('appFavicon');
-  if (fav) fav.href = isLight ? '/favicon-light.svg' : '/favicon.svg';
+  if (fav) fav.href = isLight ? '/favicon-light.svg?v=3' : '/favicon.svg?v=3';
   try { localStorage.setItem('soc.theme', JSON.stringify(theme)); } catch (e) {}
 }
 function getInitialTheme() {

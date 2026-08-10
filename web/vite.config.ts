@@ -33,14 +33,14 @@ export default defineConfig({
         categories: ["security", "productivity", "utilities"],
         prefer_related_applications: false,
         shortcuts: [
-          { name: "SOC dashboard", short_name: "SOC", url: "/", icons: [{ src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" }] },
-          { name: "Choke Gateway", short_name: "Choke", url: "/choke", icons: [{ src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" }] },
-          { name: "Devices", short_name: "Devices", url: "/devices", icons: [{ src: "/pwa-192x192.png", sizes: "192x192", type: "image/png" }] }
+          { name: "SOC dashboard", short_name: "SOC", url: "/", icons: [{ src: "/pwa-192x192.png?v=3", sizes: "192x192", type: "image/png" }] },
+          { name: "Choke Gateway", short_name: "Choke", url: "/choke", icons: [{ src: "/pwa-192x192.png?v=3", sizes: "192x192", type: "image/png" }] },
+          { name: "Devices", short_name: "Devices", url: "/devices", icons: [{ src: "/pwa-192x192.png?v=3", sizes: "192x192", type: "image/png" }] }
         ],
         icons: [
-          { src: "/pwa-192x192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-          { src: "/pwa-512x512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-          { src: "/pwa-maskable-512x512.png", sizes: "512x512", type: "image/png", purpose: "maskable" }
+          { src: "/pwa-192x192.png?v=3", sizes: "192x192", type: "image/png", purpose: "any" },
+          { src: "/pwa-512x512.png?v=3", sizes: "512x512", type: "image/png", purpose: "any" },
+          { src: "/pwa-maskable-512x512.png?v=3", sizes: "512x512", type: "image/png", purpose: "maskable" }
         ]
       },
       workbox: {
