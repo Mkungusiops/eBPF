@@ -84,6 +84,25 @@ export interface DevicesRouteProps {
 
 const DISABLED_MESSAGE = "device choke disabled (start with -devchoke-iface)";
 
+/**
+ * Can this data plane actually drop a packet?
+ *
+ * "noop" means no tc program is attached — the ladder still moves and the
+ * device table still reads back "severed", but nothing touches traffic. That is
+ * the correct configuration for a host with no bridge to sit inline on, so it
+ * is not an error; claiming otherwise is.
+ *
+ * This existed twice with two different answers. One version excluded "noop"
+ * and drove a single status dot; the other treated "noop" as healthy and drove
+ * the header's integrity readout, `auditOk`, AND the exported evidence bundle —
+ * which recorded `data_plane: "active"` for a plane that cannot enforce. An
+ * unknown value is treated as inactive for the same reason: on an artefact
+ * someone may hand to an auditor, "I could not tell" must never render as "yes".
+ */
+export function planeIsActive(dataPlane: string | undefined | null): boolean {
+  return Boolean(dataPlane) && dataPlane !== "noop" && dataPlane !== "disabled";
+}
+
 export function DevicesRoute({
   api: providedApi,
   pollMs = 4000,
@@ -411,7 +430,7 @@ export function DevicesRoute({
   const containedDevices = LADDER.filter((r) => r !== "pristine").reduce((sum, r) => sum + (countsByRung[r] || 0), 0);
   const protectedCount = devices.filter((d) => d.protected).length;
   const deviceMode: "detect-only" | "enforcing" = state?.enforcing ? "enforcing" : "detect-only";
-  const planeHealthy = !disabledMessage && (state?.data_plane ? state.data_plane !== "disabled" : Boolean(state));
+  const planeHealthy = !disabledMessage && planeIsActive(state?.data_plane);
   const deviceMetrics: CommandMetrics = {
     subject: "devices",
     mode: deviceMode,
@@ -456,7 +475,11 @@ export function DevicesRoute({
         posture: deviceMetrics.posture,
         mode: deviceMetrics.mode,
         kill_switch: deviceMetrics.killSwitched ? "engaged" : "standby",
+        // Both: the verdict AND what it was derived from. An evidence bundle
+        // that flattens "noop" to "offline" is honest but lossy — a reader
+        // cannot tell an unattached plane from a broken one.
         data_plane: planeHealthy ? "active" : "offline",
+        data_plane_reported: state?.data_plane ?? "unknown",
         links_attached: state?.links_attached ?? 0,
         frames_seen: state?.frames_seen ?? 0,
         contained: deviceMetrics.contained,
@@ -990,7 +1013,7 @@ function PlaneStateStrip({
     );
   }
 
-  const planeActive = Boolean(state?.data_plane) && state?.data_plane !== "noop" && state?.data_plane !== "disabled";
+  const planeActive = planeIsActive(state?.data_plane);
   const mode = state?.mode ?? "unknown";
   return (
     <div className="devices-status-cluster" aria-label="Device data-plane state">

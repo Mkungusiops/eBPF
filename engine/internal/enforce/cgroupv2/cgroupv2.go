@@ -186,6 +186,11 @@ func (m *Manager) Setup() error {
 			}
 		}
 	}
+	// A previous run can leave the quarantine tier frozen with nobody in it —
+	// the flag is tier-wide and per-process release never cleared it. Setup is
+	// the one place guaranteed to run on every boot, so reconcile here too and
+	// the residue heals itself on restart rather than needing a manual write.
+	m.reconcileQuarantineFreeze()
 	return nil
 }
 
@@ -230,8 +235,50 @@ func (m *Manager) MoveTo(pid uint32, a circuit.Action) error {
 	}
 	if a == circuit.ActQuarantine {
 		_ = os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("1"), 0o644)
+	} else {
+		// A process just moved to another tier. If it was the last one held in
+		// quarantine, the tier should stop being frozen — see
+		// reconcileQuarantineFreeze.
+		m.reconcileQuarantineFreeze()
 	}
 	return nil
+}
+
+// quarantineEmpty reports whether the quarantine tier currently holds nobody.
+// An unreadable tier returns false: never act on a guess about enforcement.
+func (m *Manager) quarantineEmpty() bool {
+	path := m.paths[circuit.ActQuarantine]
+	if path == "" {
+		return true
+	}
+	b, err := os.ReadFile(filepath.Join(path, "cgroup.procs"))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == ""
+}
+
+// reconcileQuarantineFreeze drops the tier back to unfrozen once the last
+// process has left it.
+//
+// cgroup.freeze is a property of the TIER, but the ladder is per-process.
+// Releasing a process moves it OUT of the quarantine cgroup and never touched
+// the flag, so after the first quarantine the tier stayed frozen for the
+// lifetime of the host. Measured on all three production hosts: freeze=1 with
+// zero pids.
+//
+// Empty-and-frozen suspends nothing, so it is not harmful in itself. What it
+// costs is falsifiability: the next quarantine's `freeze=1` write lands on a
+// tier that is already frozen, so a write that FAILS looks exactly like one
+// that succeeded. That write's error is deliberately discarded — the tier's
+// 0.1% CPU cap is the designed fallback — which only works as a safety net if
+// the flag's resting state is 0 and the write therefore means something.
+func (m *Manager) reconcileQuarantineFreeze() {
+	path := m.paths[circuit.ActQuarantine]
+	if path == "" || !m.quarantineEmpty() {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("0"), 0o644)
 }
 
 // Thaw releases a quarantined cgroup so its members can run again. Used

@@ -369,8 +369,25 @@ function normalizeDecision(value: unknown, index: number): SocDecision {
     target: asOptionalString(pick(record, "target", "Target", "exec_id", "ExecID", "binary", "Binary")),
     reason: asOptionalString(pick(record, "reason", "Reason")),
     timestamp,
-    ok: asOptionalBoolean(pick(record, "ok", "OK", "success", "Success"))
+    ok: asOptionalBoolean(pick(record, "ok", "OK", "success", "Success")),
+    outcome: asOptionalString(pick(record, "outcome", "Outcome"))
   };
+}
+
+/**
+ * What actually happened to a decision, as text an operator can rely on.
+ *
+ * Preference order matters. An explicit boolean wins if a backend ever sends
+ * one; otherwise the engine's own `outcome` string is the record of truth; and
+ * when neither exists the answer is "unknown" — never "ok". Exports used to
+ * synthesise `ok: d.ok !== false`, and since no backend sends `ok`, every row
+ * exported as successful, including ones whose outcome literally began
+ * "skipped:".
+ */
+export function decisionOutcome(d: { ok?: boolean; outcome?: string }): string {
+  if (typeof d.ok === "boolean") return d.ok ? "ok" : "failed";
+  const text = (d.outcome || "").trim();
+  return text || "unknown";
 }
 
 function normalizeWhoami(value: unknown): SocWhoami {

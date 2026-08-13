@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/edge"
 	"golang.org/x/crypto/bcrypt"
 )
 
@@ -268,7 +269,7 @@ func (a *Auth) rateAllowed(remote string) bool {
 // (login, login submit, favicon) pass through unguarded.
 func (a *Auth) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if isPublicPath(r.URL.Path) {
+		if isPublicPath(r.URL.Path) || (r.URL.Path == "/api/version" && edge.LocalUnproxied(r)) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -410,17 +411,10 @@ func (a *Auth) HandleLogout(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
-// HandleLoginPage serves the embedded HTML form. ?err=1 surfaces the failure
-// message inline.
-func (a *Auth) HandleLoginPage(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	page := loginHTML
-	if r.URL.Query().Get("err") == "1" {
-		page = strings.Replace(page, "<!--ERR-->", `<div class="err">Invalid credentials</div>`, 1)
-	}
-	_, _ = w.Write([]byte(page))
-}
+// The login page is served by handleLoginPage in web_assets.go, from the Vite
+// bundle. An Auth.HandleLoginPage rendering a separate embedded form used to
+// live here and was never wired to a route — it was the sole reason the legacy
+// login.html stayed compiled into the binary.
 
 // HandleWhoami exposes the current session's username for the dashboard
 // header. Returns 401 if not logged in.

@@ -19,6 +19,7 @@ package buildinfo
 
 import (
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 )
@@ -30,11 +31,23 @@ import (
 // When empty, it is read from the binary's embedded VCS stamp.
 var revision string
 
+// version is the release name — the annotated tag this binary was cut from,
+// as `git describe --tags --dirty` renders it (e.g. "v1.0.0", or
+// "v1.0.0-3-gabc1234-dirty" off-tag). Set at link time:
+//
+//	go build -ldflags "-X github.com/jeffmk/ebpf-poc-engine/internal/buildinfo.version=$(git describe --tags --dirty --always)"
+//
+// A revision alone answers "which commit"; a customer asks "which VERSION", and
+// only a tag answers that. Empty when built outside a release, which is itself
+// the honest answer.
+var version string
+
 // Info describes the build. Dirty means the work tree had uncommitted changes
 // when the binary was built — worth surfacing, because deploying an uncommitted
 // tree is exactly how a production box ends up running code that exists nowhere
 // else.
 type Info struct {
+	Version  string // release tag from `git describe`, or "" when not a release build
 	Revision string // full commit sha, or "unknown"
 	Short    string // first 12 chars of Revision, or "unknown"
 	Dirty    bool   // work tree had uncommitted changes at build time
@@ -53,7 +66,7 @@ func Get() Info {
 }
 
 func read() Info {
-	out := Info{Revision: "unknown", Short: "unknown"}
+	out := Info{Version: version, Revision: "unknown", Short: "unknown"}
 	if revision != "" {
 		out.Revision = revision
 		out.Short = short(revision)
@@ -88,10 +101,21 @@ func short(s string) string {
 	return s
 }
 
-// String renders the revision for logs: "a1b2c3d4e5f6" or "a1b2c3d4e5f6-dirty".
+// String renders the build for logs. A release build names its tag, because
+// "v1.0.0" is what a customer can act on; an untagged build falls back to the
+// revision so the output is never empty.
 func (i Info) String() string {
-	if i.Dirty {
-		return i.Short + "-dirty"
+	name := i.Short
+	if i.Version != "" {
+		name = i.Version
 	}
-	return i.Short
+	if i.Dirty && !strings.HasSuffix(name, "-dirty") {
+		return name + "-dirty"
+	}
+	return name
 }
+
+// Released reports whether this binary was cut from a clean tag. Deploy tooling
+// gates on it: a box running an uncommitted tree is running code that exists
+// nowhere else, which is unsupportable for a customer.
+func (i Info) Released() bool { return i.Version != "" && !i.Dirty }

@@ -1,16 +1,12 @@
 package api
 
 import (
-	_ "embed"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 )
-
-//go:embed devices.html
-var devicesHTML string
 
 // SetDeviceGateway hands the network choke gateway to the server so the
 // /api/choke/device-* endpoints can call it. Wired from main(); separate

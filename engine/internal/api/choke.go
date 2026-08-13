@@ -1,7 +1,6 @@
 package api
 
 import (
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,9 +17,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed choke.html
-var chokeHTML string
 
 // SetGateway hands the gateway pointer to the server so the /api/choke/*
 // endpoints can call it. Wired from main(); separate from NewServer so the

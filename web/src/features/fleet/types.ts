@@ -40,6 +40,13 @@ export interface AuditState {
   ok?: boolean;
   total?: number;
   bad_at?: number;
+  /**
+   * Whether this host maintains a hash chain AT ALL. The multi-tenant control
+   * plane does not — each agent chains its own — and answers
+   * {ok: false, supported: false}. Without this field the fleet view could only
+   * see "not ok" and reported such a host as having a BROKEN chain.
+   */
+  supported?: boolean;
 }
 
 export interface ChokeState {
@@ -116,6 +123,10 @@ export interface FleetKpis {
   killed: number;
   drift: number;
   auditOk: number;
+  /** Hosts that maintain a chain and report it broken. */
+  auditBroken: number;
+  /** Hosts that do not maintain a chain centrally. Not a failure. */
+  auditUnsupported: number;
   auditTotal: number;
   tracked: number;
   quarantined: number;

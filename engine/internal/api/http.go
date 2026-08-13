@@ -91,7 +91,7 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/login", s.handleLoginPage)
 	mux.HandleFunc("/api/login", s.auth.HandleLogin)
 	mux.HandleFunc("/favicon.svg", s.handleFavicon)
-	mux.HandleFunc("/favicon.ico", s.handleFavicon)
+	mux.HandleFunc("/favicon.ico", s.handleFaviconICO)
 	mux.HandleFunc("/favicon-light.svg", s.handleFaviconLight)
 	mux.HandleFunc("/assets/", s.handleWebAssets)
 
@@ -305,7 +305,12 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	b := buildinfo.Get()
 	writeJSON(w, map[string]interface{}{
-		"sha":        versionSHA, // asset hash — drives the reload toast
+		"sha": versionSHA, // asset hash — drives the reload toast
+		// The release name. A revision answers "which commit"; a customer asks
+		// "which version", and only a tag answers that. Empty on a non-release
+		// build, which is the honest answer rather than a fabricated number.
+		"version":    b.Version,
+		"released":   b.Released(),
 		"revision":   b.Revision,
 		"build":      b.String(),
 		"dirty":      b.Dirty,
@@ -375,16 +380,72 @@ func (s *Server) handleReadyz(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]interface{}{"status": "ready", "store": "ok"})
 }
 
+// Icon assets fall into two cacheability classes, and conflating them is what
+// let a corrected icon sit unseen in a browser for a day.
+//
+// The SVGs are only ever requested with a ?v= the app controls, so a change of
+// artwork is a change of URL and they can be cached hard. /favicon.ico cannot
+// be: browsers request that exact path by convention, with no query, and
+// several surfaces — vertical tab strips, bookmark and history lists — prefer
+// it. There is no way to invalidate it by URL, so the only lever is
+// revalidation. It shipped with a blind max-age=86400 and NO validator, so a
+// client had no way to ask "is this still current?" and no reason to.
+const (
+	cacheVersioned = "public, max-age=86400"
+	// Store it, but check every time. The 304 costs a round trip and no body.
+	cacheRevalidate = "public, no-cache"
+)
+
+var (
+	faviconSVGETag      = assetETag(faviconSVG)
+	faviconLightSVGETag = assetETag(faviconLightSVG)
+	faviconICOETag      = assetETag(faviconICO)
+)
+
+// assetETag is a strong validator over the bytes themselves, computed once at
+// startup. Content-derived, so it changes exactly when the artwork does.
+func assetETag(body []byte) string {
+	sum := sha256.Sum256(body)
+	return `"` + hex.EncodeToString(sum[:16]) + `"`
+}
+
+// etagMatches reports whether an If-None-Match header covers etag. The header
+// is a comma-separated list and may use the weak "W/" prefix, which for our
+// purposes compares equal — we never serve two variants under one URL.
+func etagMatches(header, etag string) bool {
+	for _, candidate := range strings.Split(header, ",") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "*" {
+			return true
+		}
+		if strings.TrimPrefix(candidate, "W/") == strings.TrimPrefix(etag, "W/") {
+			return true
+		}
+	}
+	return false
+}
+
+func serveAsset(w http.ResponseWriter, r *http.Request, body []byte, etag, contentType, cacheControl string) {
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Cache-Control", cacheControl)
+	w.Header().Set("ETag", etag)
+	if match := r.Header.Get("If-None-Match"); match != "" && etagMatches(match, etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+	_, _ = w.Write(body)
+}
+
 func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "image/svg+xml")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write(faviconSVG)
+	serveAsset(w, r, faviconSVG, faviconSVGETag, "image/svg+xml", cacheVersioned)
+}
+
+func (s *Server) handleFaviconICO(w http.ResponseWriter, r *http.Request) {
+	serveAsset(w, r, faviconICO, faviconICOETag, "image/x-icon", cacheRevalidate)
 }
 
 func (s *Server) handleFaviconLight(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "image/svg+xml")
-	w.Header().Set("Cache-Control", "public, max-age=86400")
-	_, _ = w.Write(faviconLightSVG)
+	serveAsset(w, r, faviconLightSVG, faviconLightSVGETag, "image/svg+xml", cacheVersioned)
 }
 
 // intParam reads a named positive integer query parameter, falling back to def

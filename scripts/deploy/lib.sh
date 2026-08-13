@@ -204,10 +204,47 @@ chmod 0600 "$ARCHIVE"
 # Fail loudly on a degenerate archive: a backup job that "succeeds" while
 # writing nothing is worse than no job, because it is trusted.
 [ -s "$ARCHIVE" ] || { echo 'backup archive is empty' >&2; exit 1; }
+# `set -o pipefail` + `grep -q` is a trap: grep exits at the first match and
+# closes the pipe, the producer takes SIGPIPE, and the pipeline reports failure
+# even though the check PASSED. It only bites once the producer is slow enough
+# to still be writing — so it passes on a small archive and fails on a real one.
+set +o pipefail
 tar -tzf "$ARCHIVE" | grep -q 'var/lib/ebpf-soc/ca.key' || {
   echo 'backup is missing the CA key — refusing to report success' >&2; exit 1; }
+set -o pipefail
 ls -1t "$DEST"/cp-pki-config-*.tar.gz 2>/dev/null | tail -n +$((KEEP+1)) | xargs -r rm -f
 echo "wrote $ARCHIVE"
+
+# ── The database ────────────────────────────────────────────────────────────
+# The other irreplaceable thing on this host, and it was never captured. A PKI
+# backup restores the platform's IDENTITY; it does not restore the record of
+# what the platform DID. Measured the day this was added: 5.24M rows including
+# 1,645 hash-chained decision rows, and no dump had ever been taken — the job
+# above had been reporting success nightly while backing up 1,572 bytes.
+#
+# Fewer copies than the PKI archive because each is ~370 MB compressed, and the
+# PKI tarball is small enough to keep many of.
+DB=${EBPF_SOC_DB:-ebpf_soc}
+KEEP_DB=3
+DUMP="$DEST/db-$STAMP.sql.gz"
+if command -v pg_dump >/dev/null 2>&1 && su -s /bin/sh postgres -c "psql -lqt" 2>/dev/null | cut -d'|' -f1 | grep -qw "$DB"; then
+  su -s /bin/sh postgres -c "pg_dump --no-owner --no-privileges '$DB'" | gzip -1 > "$DUMP"
+  chmod 0600 "$DUMP"
+  # Same rule as above: a dump that exists but restores nothing is worse than
+  # no dump, because it is trusted. Require the schema AND the payload table.
+  [ -s "$DUMP" ] || { echo 'db dump is empty' >&2; exit 1; }
+  gzip -t "$DUMP" || { echo 'db dump is not a valid gzip stream' >&2; exit 1; }
+  set +o pipefail   # see the note on the CA-key check above
+  gunzip -c "$DUMP" | grep -q 'CREATE TABLE public.telemetry' || {
+    echo 'db dump has no telemetry schema — refusing to report success' >&2; exit 1; }
+  set -o pipefail
+  ls -1t "$DEST"/db-*.sql.gz 2>/dev/null | tail -n +$((KEEP_DB+1)) | xargs -r rm -f
+  echo "wrote $DUMP ($(du -h "$DUMP" | cut -f1))"
+else
+  # Loud, not silent: a control plane whose database is not being backed up
+  # must say so every night rather than look healthy.
+  echo "WARNING: pg_dump unavailable or database '$DB' not found — NO DATABASE BACKUP TAKEN" >&2
+fi
 SH
   PUT "$BUILD_DIR/ebpf-soc-cp-backup" /usr/local/bin/ebpf-soc-cp-backup
   RUN "chmod 0700 /usr/local/bin/ebpf-soc-cp-backup; install -d -m 0700 /var/backups/ebpf-soc"
@@ -870,6 +907,22 @@ cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
         proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header X-Forwarded-Port \$server_port;
     }
+    # /favicon.ico is the one icon URL the app cannot version: browsers request
+    # that exact path by convention, with no query, and several surfaces
+    # (vertical tab strips, bookmark and history lists) prefer it over the
+    # <link>. With no explicit Cache-Control nginx leaves it to heuristic
+    # freshness, which for an old file can be days. Revalidate instead — the
+    # ETag makes that a 304, and a corrected icon lands on the next load.
+    # The =404 matters too: without it this path falls through to the SPA
+    # catch-all and answers index.html, which the browser discards as an icon.
+    location = /favicon.ico { try_files \$uri =404; add_header Cache-Control "public, no-cache" always; }
+    # nginx's stock mime.types has no entry for .webmanifest, so this went out
+    # as application/octet-stream — the engine, which serves its own copy from
+    # Go, sent application/manifest+json for the identical bytes. This is the
+    # file that carries theme_color and the whole icon list, so a client that
+    # holds the spec to the letter ignores all of it and an installed console
+    # keeps whatever icon it already had.
+    location = /manifest.webmanifest { types {} default_type application/manifest+json; try_files \$uri =404; }
     location / { try_files \$uri \$uri.html /index.html; }
 NGINX"
 

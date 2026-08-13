@@ -57,6 +57,8 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 | [docs/deployment/azure.md](docs/deployment/azure.md) | Azure deployment guide |
 | [docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md) | Durable local mirror of the multi-tenant console (OrbStack + systemd) |
 | [docs/production-rollout/README.md](docs/production-rollout/README.md) | Mass-deployment + day-2 operating model for many gateways |
+| [CHANGELOG.md](CHANGELOG.md) | Release history, and what `/api/version` reports |
+| [docs/operations/backup-and-restore.md](docs/operations/backup-and-restore.md) | **Backup, restore, data-plane wipe and full rebuild** — every procedure verified live |
 | [docs/operations/reset-engine-and-policies.md](docs/operations/reset-engine-and-policies.md) | Reset the engine and reload policies |
 | [docs/reference/chokectl.md](docs/reference/chokectl.md) | `chokectl` fleet CLI reference |
 | [docs/frontend-dev/README.md](docs/frontend-dev/README.md) | The embedded React console (stack, entries, parity gate) |

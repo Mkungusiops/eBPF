@@ -60,7 +60,7 @@ import {
   runSocAttack
 } from "./api";
 import { useStream } from "../../lib/stream";
-import { applyChokeAction, fetchChokeCircuits, type ChokeAction, type ChokeCircuit } from "./api";
+import { applyChokeAction, decisionOutcome, fetchChokeCircuits, type ChokeAction, type ChokeCircuit } from "./api";
 import { EnforcementLadder } from "../common/EnforcementLadder";
 import { ACTION_FOR_RUNG, PROCESS_TERMINAL, ladderIndex, type Rung } from "../common/enforcement";
 import { useOSTheme } from "../../lib/theme";
@@ -873,7 +873,7 @@ export function SocRoute() {
               label="Critical"
               value={counts.critical}
               sub="Containment priority"
-              meta={`${rangeMin}m window`}
+              meta={`${rangeLabel(rangeMin)} window`}
               delta={countsUnfounded ? undefined : counts.critical - previousCounts.critical}
               badge="P1"
               tone="critical"
@@ -885,7 +885,7 @@ export function SocRoute() {
               label="High"
               value={counts.high}
               sub="Escalation watch"
-              meta={`${rangeMin}m window`}
+              meta={`${rangeLabel(rangeMin)} window`}
               delta={countsUnfounded ? undefined : counts.high - previousCounts.high}
               badge="P2"
               tone="high"
@@ -897,7 +897,7 @@ export function SocRoute() {
               label="Medium"
               value={counts.medium}
               sub="Analyst triage"
-              meta={`${rangeMin}m window`}
+              meta={`${rangeLabel(rangeMin)} window`}
               delta={countsUnfounded ? undefined : counts.medium - previousCounts.medium}
               badge="P3"
               tone="medium"
@@ -1859,7 +1859,12 @@ function ExecutiveBand({
             <span className="soc-exec-cell-sub">{activeProcesses} processes seen</span>
           </div>
           <div className="soc-exec-cell">
-            <span className="soc-exec-cell-label">Operations</span>
+            {/* "Telemetry", not "Operations". This measures whether the data is
+                arriving — endpoints answering, stream live — and nothing about
+                whether the estate is secure. Under the old label an executive
+                read "Operations: Healthy" on a box with thousands of open
+                criticals, because the feed was fine. */}
+            <span className="soc-exec-cell-label">Telemetry</span>
             <strong className={cx("soc-exec-health", healthy ? "is-ok" : "is-warn")}>{healthy ? "Healthy" : hostOk ? "Degraded" : "Check"}</strong>
             <span className="soc-exec-cell-sub">host {hostOk ? "reachable" : "errors"} · stream {streamState}</span>
           </div>
@@ -2632,6 +2637,11 @@ interface GraphHandle {
   setLayout: (layout: GraphLayout) => void;
   setSearch: (query: string) => void;
   setSelected: (id: string | null) => void;
+  // Mark nodes whose processes are already held on the ladder. Keyed by node id,
+  // valued by the HIGHEST rung among that node's processes. Applied through the
+  // same restyle pass as selection, so a 5s containment refresh never disturbs
+  // the running simulation.
+  setContained: (byNode: Map<string, Rung>) => void;
 }
 
 type GraphLinkSel = D3Selection<SVGLineElement, GraphLink, SVGGElement, unknown>;
@@ -2676,6 +2686,7 @@ function renderForceGraph(
   let layout: GraphLayout = "force";
   let selectedId: string | null = null;
   let searchQuery = "";
+  let containedByNode = new Map<string, Rung>();
 
   const searchableNodeText = (node: GraphNode) => `${node.label} ${node.fullLabel || ""}`.toLowerCase();
 
@@ -2845,6 +2856,13 @@ function renderForceGraph(
     const neighbours = selectedId ? new Set<string>([selectedId, ...(adjacency.get(selectedId) ?? [])]) : null;
     const q = searchQuery.trim().toLowerCase();
     node
+      // Containment was previously legible only after clicking a node and
+      // reading its process list, so on a graph of any size an operator could
+      // not see WHICH processes were already held — the question they ask first
+      // during triage. The rung rides on the node as a data attribute so the
+      // marker is styled in CSS per rung, in both themes.
+      .classed("is-contained", (d) => containedByNode.has(d.id))
+      .attr("data-rung", (d) => containedByNode.get(d.id) ?? null)
       .classed("is-selected", (d) => d.id === selectedId)
       .classed("is-neighbour", (d) => Boolean(neighbours && neighbours.has(d.id) && d.id !== selectedId))
       .classed("is-match", (d) => Boolean(q) && searchableNodeText(d).includes(q))
@@ -2994,6 +3012,10 @@ function renderForceGraph(
       restyle();
     },
     setSelected: (id: string | null) => select(id),
+    setContained: (byNode: Map<string, Rung>) => {
+      containedByNode = byNode;
+      restyle();
+    },
     controls: {
       zoomIn: () => void svg.transition().duration(200).call(zoom.scaleBy, 1.3),
       zoomOut: () => void svg.transition().duration(200).call(zoom.scaleBy, 1 / 1.3),
@@ -3389,6 +3411,32 @@ function CorrelationGraph({
     return () => window.clearInterval(timer);
   }, [active, refreshCircuits]);
 
+  // Put containment on the CANVAS, not only in the drill-in.
+  //
+  // The rung was already fetched above and every node already carries its
+  // processes, so this is a join rather than another request. Without it the
+  // only way to learn which processes are held is to click each node in turn
+  // and read its list — on a graph of any size that is the first question an
+  // operator has and the slowest one to answer. Pushed through the handle's
+  // restyle path (like selection and search) so a 5s refresh re-marks nodes
+  // without restarting the force simulation and scattering the layout.
+  useEffect(() => {
+    if (phase !== "ready") return;
+    const byNode = new Map<string, Rung>();
+    for (const graphNode of lastDataRef.current.nodes) {
+      for (const proc of graphNode.processes ?? []) {
+        const state = circuits.get(proc.execId)?.state;
+        if (!state || state === "pristine") continue;
+        // A binary node stands for many processes; the node reports the most
+        // severe rung among them, so a single severed child is never hidden
+        // behind a dozen merely-throttled siblings.
+        const current = byNode.get(graphNode.id);
+        if (!current || ladderIndex(state) > ladderIndex(current)) byNode.set(graphNode.id, state as Rung);
+      }
+    }
+    handleRef.current?.setContained(byNode);
+  }, [circuits, phase]);
+
   useEffect(() => {
     setProcFilter("");
     setContainedOnly(false);
@@ -3647,6 +3695,12 @@ function CorrelationGraph({
           <span className="node-file"><i />file</span>
           <span className="node-device"><i />device</span>
           <span className="node-peer"><i />peer</span>
+          {/* The ring is a different kind of fact from the fills above — those
+              say how suspicious a node looks, this says what has been DONE to
+              it. Named "contained" rather than by rung because one swatch
+              stands for the whole ladder; the exact rung is on the node and in
+              the detail panel. */}
+          <span className="node-contained"><i />contained</span>
         </div>
       </div>
 
@@ -4200,15 +4254,29 @@ type ExportFormat = "pdf" | "csv" | "json";
 type ExportSection = "summary" | "alerts" | "events" | "decisions" | "iocs" | "mitre";
 const EXPORT_SECTIONS: ExportSection[] = ["summary", "alerts", "events", "decisions", "iocs", "mitre"];
 
+/**
+ * ATT&CK coverage as text. "n/a" when no policy carries a mapping.
+ *
+ * Coverage is derived from policies tagged with a technique. A fleet can run
+ * policies this build has never heard of — the control plane maps by name and
+ * returns empty rather than guessing — and then nothing maps and the percentage
+ * computes to 0. Printing "0%" asserts the estate detects nothing; the truth is
+ * that coverage cannot be computed. In a document handed to a customer that is
+ * the difference between "we cannot tell you" and "you are completely exposed".
+ */
+function coverageLabel(m: { coveragePct: number; coverageMeasurable: boolean }): string {
+  return m.coverageMeasurable ? `${m.coveragePct}%` : "n/a";
+}
+
 interface ExportModel {
   meta: { generated: string; host: string; user: string; sha: string; scope: string; rangeFrom: string; rangeTo: string };
-  summary: { risk: number; total: number; counts: Record<Severity, number>; events: number; decisions: number; iocs: number; coveragePct: number };
+  summary: { risk: number; total: number; counts: Record<Severity, number>; events: number; decisions: number; iocs: number; coveragePct: number; coverageMeasurable: boolean };
   alerts: Array<{ severity: string; score: number; title: string; process: string; policy: string; timestamp: string }>;
   events: Array<{ type: string; process: string; policy: string; detail: string; timestamp: string }>;
-  decisions: Array<{ action: string; state: string; target: string; reason: string; ok: boolean; timestamp: string }>;
+  decisions: Array<{ action: string; state: string; target: string; reason: string; outcome: string; timestamp: string }>;
   iocs: { ips: Array<[string, number]>; files: Array<[string, number]>; binaries: Array<[string, number]> };
   mitre: {
-    coveragePct: number; coveredCount: number; total: number; observedCount: number; gapCount: number;
+    coveragePct: number; coverageMeasurable: boolean; coveredCount: number; total: number; observedCount: number; gapCount: number;
     observed: Array<{ id: string; name: string; hits: number; policy: string }>;
     gaps: Array<{ id: string; name: string; tactic: string }>;
     tactics: Array<{ name: string; covered: number; observed: number; total: number }>;
@@ -4265,12 +4333,16 @@ function buildExportModel(
 
   return {
     meta: { generated: new Date().toLocaleString(), host: whoami.host || "—", user: whoami.user || "—", sha: version.sha || "n/a", scope: scopeLabel, rangeFrom, rangeTo },
-    summary: { risk, total: scopeAlerts.length, counts, events: events.length, decisions: decisions.length, iocs: ips.length + files.length + binaries.length, coveragePct: model.coveragePct },
+    summary: { risk, total: scopeAlerts.length, counts, events: events.length, decisions: decisions.length, iocs: ips.length + files.length + binaries.length, coveragePct: model.coveragePct, coverageMeasurable: model.mappingAvailable },
     alerts: scopeAlerts.map((a) => ({ severity: a.severity, score: a.score, title: a.title, process: a.process || "", policy: a.policyName || "", timestamp: a.timestamp })),
     events: events.slice(0, 500).map((e) => ({ type: e.eventType, process: e.process || "", policy: e.policyName || "", detail: e.path || e.args || peerFromEvent(e) || "", timestamp: e.timestamp })),
-    decisions: decisions.map((d) => ({ action: d.action, state: d.state || "", target: d.target || "", reason: d.reason || "", ok: d.ok !== false, timestamp: d.timestamp })),
+    // `ok: d.ok !== false` exported EVERY decision as successful, because no
+    // backend sends a boolean `ok` — they send `outcome`. Rows whose outcome
+    // read "skipped: system-critical chain" were exported as ok:true. Carry the
+    // engine's own words instead of manufacturing a verdict.
+    decisions: decisions.map((d) => ({ action: d.action, state: d.state || "", target: d.target || "", reason: d.reason || "", outcome: decisionOutcome(d), timestamp: d.timestamp })),
     iocs: { ips, files, binaries },
-    mitre: { coveragePct: model.coveragePct, coveredCount: model.coveredCount, total: model.total, observedCount: model.observedCount, gapCount: model.gapCount, observed, gaps, tactics }
+    mitre: { coveragePct: model.coveragePct, coverageMeasurable: model.mappingAvailable, coveredCount: model.coveredCount, total: model.total, observedCount: model.observedCount, gapCount: model.gapCount, observed, gaps, tactics }
   };
 }
 
@@ -4302,12 +4374,12 @@ function exportCsv(model: ExportModel, sections: Set<ExportSection>) {
       ["generated", model.meta.generated], ["host", model.meta.host], ["scope", model.meta.scope],
       ["risk", model.summary.risk], ["alerts", model.summary.total],
       ["critical", c.critical], ["high", c.high], ["medium", c.medium], ["low", c.low], ["info", c.info],
-      ["mitre_coverage_pct", model.summary.coveragePct]
+      ["mitre_coverage_pct", coverageLabel(model.summary)]
     ]));
   }
   if (sections.has("alerts")) blocks.push(csvBlock("ALERTS", ["severity", "score", "title", "process", "policy", "timestamp"], model.alerts.map((a) => [a.severity, a.score, a.title, a.process, a.policy, a.timestamp])));
   if (sections.has("events")) blocks.push(csvBlock("EVENTS", ["type", "process", "policy", "detail", "timestamp"], model.events.map((e) => [e.type, e.process, e.policy, e.detail, e.timestamp])));
-  if (sections.has("decisions")) blocks.push(csvBlock("DECISIONS", ["action", "state", "target", "reason", "ok", "timestamp"], model.decisions.map((d) => [d.action, d.state, d.target, d.reason, String(d.ok), d.timestamp])));
+  if (sections.has("decisions")) blocks.push(csvBlock("DECISIONS", ["action", "state", "target", "reason", "outcome", "timestamp"], model.decisions.map((d) => [d.action, d.state, d.target, d.reason, d.outcome, d.timestamp])));
   if (sections.has("iocs")) blocks.push(csvBlock("IOCS", ["type", "value", "count"], [
     ...model.iocs.ips.map(([v, n]) => ["ip", v, n] as Array<string | number>),
     ...model.iocs.files.map(([v, n]) => ["file", v, n] as Array<string | number>),
@@ -4344,7 +4416,7 @@ async function exportPdf(model: ExportModel, sections: Set<ExportSection>) {
     const tiles: Array<[string, string, [number, number, number]]> = [
       [`${model.summary.risk}`, "Risk score / 100", model.summary.risk >= 45 ? RED : BLUE],
       [`${model.summary.total}`, `Alerts · ${model.summary.counts.critical} crit`, RED],
-      [`${model.summary.coveragePct}%`, "ATT&CK coverage", BLUE],
+      [coverageLabel(model.summary), "ATT&CK coverage", BLUE],
       [`${model.summary.iocs}`, "IOCs extracted", AMBER]
     ];
     const tileW = (W - M * 2 - 30) / 4;
@@ -4477,7 +4549,7 @@ function ExportStudioBody({
   );
 
   const sectionMeta: Array<{ key: ExportSection; label: string; count: number; note: string }> = [
-    { key: "summary", label: "Executive summary", count: 1, note: `risk ${model.summary.risk} · ${model.summary.coveragePct}% coverage` },
+    { key: "summary", label: "Executive summary", count: 1, note: `risk ${model.summary.risk} · ${coverageLabel(model.summary)} coverage` },
     { key: "alerts", label: "Alerts", count: model.summary.total, note: `${model.summary.counts.critical} critical` },
     { key: "events", label: "Events", count: model.events.length, note: "raw telemetry" },
     { key: "decisions", label: "Enforcement decisions", count: model.decisions.length, note: "audit trail" },
@@ -4510,7 +4582,7 @@ function ExportStudioBody({
         `- Host: ${model.meta.host} · Scope: ${model.meta.scope}`,
         `- Risk: **${model.summary.risk}/100**`,
         `- Alerts: ${model.summary.total} (${c.critical} critical, ${c.high} high, ${c.medium} medium)`,
-        `- ATT&CK coverage: ${model.summary.coveragePct}% · ${model.mitre.gapCount} blind spots`,
+        `- ATT&CK coverage: ${coverageLabel(model.summary)} · ${model.mitre.gapCount} blind spots`,
         `- IOCs: ${model.iocs.ips.length} IP, ${model.iocs.files.length} file, ${model.iocs.binaries.length} binary`,
         model.mitre.observed.length ? `- Top technique: ${model.mitre.observed[0].id} ${model.mitre.observed[0].name} (${model.mitre.observed[0].hits} hits)` : ""
       ].filter(Boolean).join("\n");
@@ -5725,7 +5797,13 @@ async function downloadMitrePdf(
 
   // ── Executive summary tiles ──────────────────────────────────────────────
   const tiles: Array<[string, string, [number, number, number]]> = [
-    [`${model.coveragePct}%`, `Coverage · ${model.coveredCount}/${model.total} techniques`, BLUE],
+    [
+      model.mappingAvailable ? `${model.coveragePct}%` : "n/a",
+      model.mappingAvailable
+        ? `Coverage · ${model.coveredCount}/${model.total} techniques`
+        : "Coverage · no ATT&CK mapping published",
+      BLUE
+    ],
     [`${model.observedCount}`, `Observed · ${model.hitTotal.toLocaleString()} hits`, RED],
     [`${model.gapCount}`, "Blind spots · no policy", AMBER]
   ];

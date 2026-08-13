@@ -18,6 +18,8 @@ export const EMPTY_KPIS: FleetKpis = {
   killed: 0,
   drift: 0,
   auditOk: 0,
+  auditBroken: 0,
+  auditUnsupported: 0,
   auditTotal: 0,
   tracked: 0,
   quarantined: 0,
@@ -100,8 +102,16 @@ export function deriveFleet(
       if (data.kill_switched) {
         kpis.killed += 1;
       }
-      if (data.audit?.ok) {
+      // Three outcomes, not two. A host that does not chain centrally, or
+      // reports no audit block at all, is NOT a host with a broken chain —
+      // counting it as one told an operator their tamper-evidence had failed.
+      const audit = data.audit;
+      if (!audit || audit.supported === false) {
+        kpis.auditUnsupported += 1;
+      } else if (audit.ok) {
         kpis.auditOk += 1;
+      } else {
+        kpis.auditBroken += 1;
       }
       if (typeof data.audit?.total === "number") {
         kpis.auditTotal += data.audit.total;

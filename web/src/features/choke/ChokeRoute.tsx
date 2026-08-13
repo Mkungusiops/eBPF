@@ -1725,7 +1725,16 @@ function AssuranceView({
           <div className="choke-assur-drivers">
             <DriverPill label="Containment coverage" value={`${coverage}%`} good={coverage >= 80} />
             <DriverPill label="Enforcement" value={enforcing ? "Enforcing" : "Detect-only"} good={enforcing} />
-            <DriverPill label="Audit chain" value={metrics.auditOk ? "Intact" : "Broken"} good={metrics.auditOk} />
+            {/* Three states, not two. The control plane does not hash-chain
+                centrally — each agent chains its own decisions — so `supported:
+                false` means "not maintained here", NOT "broken". Collapsing
+                them told a fleet operator their tamper-evidence had failed,
+                which is both false and alarming. */}
+            <DriverPill
+              label="Audit chain"
+              value={metrics.auditSupported === false ? "Not verified here" : metrics.auditOk ? "Intact" : "Broken"}
+              good={metrics.auditSupported === false ? true : metrics.auditOk}
+            />
             <DriverPill label="Kill-switch" value={metrics.killSwitched ? "Engaged" : "Standby"} good={!metrics.killSwitched} />
           </div>
           <p className="choke-assur-note">
@@ -1901,7 +1910,7 @@ function buildAssuranceReportHtml(args: {
   <div class="tile"><div class="v" style="color:${m.activeThreats ? "#d23a4f" : "#2f9e5e"}">${m.activeThreats}</div><div class="l">Active threats</div></div>
   <div class="tile"><div class="v">${m.contained}</div><div class="l">Contained</div></div>
   <div class="tile"><div class="v">${coverage}%</div><div class="l">Threats contained</div></div>
-  <div class="tile"><div class="v" style="color:${m.auditOk ? "#2f9e5e" : "#d23a4f"}">${m.auditOk ? "Intact" : "BROKEN"}</div><div class="l">Audit chain</div></div>
+  <div class="tile"><div class="v" style="color:${m.auditSupported === false ? "#6b7a8c" : m.auditOk ? "#2f9e5e" : "#d23a4f"}">${m.auditSupported === false ? "Not verified here" : m.auditOk ? "Intact" : "BROKEN"}</div><div class="l">Audit chain</div></div>
 </div>
 <h2>Containment ladder</h2>
 <div class="ladder">
@@ -3064,7 +3073,19 @@ function LayeredPanels({
         <>
           <PopoverHeader title="Audit chain" onClose={onClose} />
           <div className="choke-kv-list">
-            <div><span>status</span><strong>{chokeState?.audit?.ok === false ? "broken" : "verified"}</strong></div>
+            {/* "verified" for a check that never ran is the worst of the three
+                answers, and "broken" for a capability this deployment does not
+                have is the second worst. Both were reachable here. */}
+            <div>
+              <span>status</span>
+              <strong>
+                {chokeState?.audit?.supported === false
+                  ? "not maintained here"
+                  : chokeState?.audit?.ok === false
+                    ? "broken"
+                    : "verified"}
+              </strong>
+            </div>
             <div><span>decisions</span><strong>{chokeState?.audit?.total || 0}</strong></div>
             <div><span>head</span><strong>{String(chokeState?.audit?.head_hash || chokeState?.audit?.head || chokeState?.audit?.tip || "-").slice(0, 32)}</strong></div>
             {chokeState?.audit?.ok === false ? <div><span>bad at</span><strong>{chokeState.audit.bad_at}</strong></div> : null}

@@ -85,6 +85,15 @@ export interface SocDecision {
   reason?: string;
   timestamp: string;
   ok?: boolean;
+  /**
+   * What the engine actually recorded, verbatim — "ok", or "skipped: system-critical
+   * chain (auto-only; manual override allowed)", or a failure string.
+   *
+   * No backend sends a boolean `ok` on a decision; they send this. So `ok` above
+   * is almost always undefined, and any code that reads absence as success is
+   * asserting an outcome nobody reported.
+   */
+  outcome?: string;
 }
 
 export interface SocPolicy {

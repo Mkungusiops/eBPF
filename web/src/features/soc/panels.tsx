@@ -400,7 +400,21 @@ export function buildMitreCoverageModel(
     gapCount: gaps.length,
     gapIds: gaps,
     hitTotal,
-    coveragePct: Math.round((covered.length / total) * 100)
+    coveragePct: Math.round((covered.length / total) * 100),
+    /**
+     * Whether coverage can be COMPUTED here at all.
+     *
+     * Coverage is derived from policies carrying an ATT&CK mapping. A fleet may
+     * run policies this build has never heard of — the control plane maps by
+     * name lookup and returns empty strings rather than guessing — and then
+     * nothing maps, `covered` is empty, and the percentage comes out 0.
+     *
+     * "0% coverage" is a definitive claim that the estate detects nothing. The
+     * truth is that coverage is unmeasurable here. Reporting the former, in a
+     * document handed to a customer, is the difference between "we cannot tell
+     * you" and "you are completely exposed".
+     */
+    mappingAvailable: policies.length === 0 || policiesByTech.size > 0
   };
 }
 
@@ -452,8 +466,12 @@ export function MitreNavigatorBody({
             onClick={() => setFilter(filter === "covered" ? "all" : "covered")}
           >
             <span className="soc-stat-label"><ShieldCheck size={12} aria-hidden="true" /> Coverage</span>
-            <strong>{model.coveragePct}%</strong>
-            <em>{model.coveredCount} / {model.total} techniques</em>
+            <strong>{model.mappingAvailable ? `${model.coveragePct}%` : "n/a"}</strong>
+            <em>
+              {model.mappingAvailable
+                ? `${model.coveredCount} / ${model.total} techniques`
+                : "no ATT&CK mapping published"}
+            </em>
           </button>
           <button
             type="button"

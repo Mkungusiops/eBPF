@@ -264,6 +264,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	if provisioned {
 		go ensureIndexes(db)
 		go ensureSeverityColumn(db, "postgres")
+		go RunRetention(db, "postgres")
 		return &PGStore{db: db}, nil
 	}
 
@@ -291,6 +292,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	// here; it runs anyway so there is exactly one path that guarantees them.
 	go ensureIndexes(db)
 	go ensureSeverityColumn(db, "postgres")
+	go RunRetention(db, "postgres")
 	return &PGStore{db: db}, nil
 }
 

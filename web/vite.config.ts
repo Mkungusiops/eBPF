@@ -24,6 +24,17 @@ export default defineConfig({
         name: "eBPF Security Console",
         short_name: "eBPF SOC",
         description: "Realtime eBPF threat observability and response console",
+        // A manifest carries ONE value for each of these and cannot express a
+        // media query, unlike the <meta name="theme-color"> pair in every entry
+        // HTML, which does have light and dark variants. That meta overrides
+        // this for browser UI once the page paints, so these two govern only
+        // the install splash and the window chrome before first paint.
+        //
+        // They stay dark deliberately: the app's initial theme follows the OS
+        // (see lib/theme.ts) and dark is the product's primary presentation, so
+        // this is the least-wrong single value. The residual is a light-mode
+        // operator seeing a dark splash for one frame on an installed app —
+        // a platform limitation, not something a different constant fixes.
         theme_color: "#0a0f1c",
         background_color: "#0a0f1c",
         display: "standalone",

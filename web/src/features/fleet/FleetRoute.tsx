@@ -426,7 +426,11 @@ export default function FleetRoute() {
 
       <section className="fleet-kpis" aria-label="Fleet KPI strip">
         <KpiTile label="Fleet size" value={derived.kpis.total} sub={`${derived.kpis.devices} fleet devices`} icon={<Server size={17} />} />
-        <KpiTile label="Healthy" value={derived.kpis.healthy} sub={`of ${derived.kpis.total} configured`} tone="good" />
+        {/* "Reachable", because that is what is counted — a host answers or it
+            does not. It was labelled "Healthy", which claims something about
+            the host's condition that this number does not measure: a reachable
+            host can be kill-switched, drifted, or sitting on a broken chain. */}
+        <KpiTile label="Reachable" value={derived.kpis.healthy} sub={`of ${derived.kpis.total} configured`} tone="good" />
         <KpiTile label="Enforcing" value={derived.kpis.enforcing} sub={`${derived.kpis.tracked} tracked processes`} />
         <KpiTile label="Kill-switched" value={derived.kpis.killed} sub="enforcement bypass" tone="danger" />
         <KpiTile
@@ -435,10 +439,29 @@ export default function FleetRoute() {
           sub={derived.kpis.drift === 0 ? "fleet aligned" : "investigate highlighted rows"}
           tone="warn"
         />
+        {/* The denominator is hosts that actually MAINTAIN a chain, not every
+            reachable host. Dividing by reachable counted a host that does not
+            chain centrally as a missing chain, and the caption then read
+            "broken chain on a host" — a false alarm about tamper-evidence on a
+            fleet where nothing was wrong. */}
         <KpiTile
           label="Audit chain"
-          value={derived.kpis.healthy === 0 ? "—" : `${derived.kpis.auditOk}/${derived.kpis.healthy}`}
-          sub={derived.kpis.healthy === 0 ? "no data" : derived.kpis.auditOk === derived.kpis.healthy ? "all chains intact" : "broken chain on a host"}
+          value={
+            derived.kpis.auditOk + derived.kpis.auditBroken === 0
+              ? "—"
+              : `${derived.kpis.auditOk}/${derived.kpis.auditOk + derived.kpis.auditBroken}`
+          }
+          sub={
+            derived.kpis.auditBroken > 0
+              ? `broken on ${derived.kpis.auditBroken} host${derived.kpis.auditBroken === 1 ? "" : "s"}`
+              : derived.kpis.auditOk + derived.kpis.auditBroken === 0
+                ? derived.kpis.auditUnsupported > 0
+                  ? "not maintained on these hosts"
+                  : "no data"
+                : derived.kpis.auditUnsupported > 0
+                  ? `all intact · ${derived.kpis.auditUnsupported} not maintained here`
+                  : "all chains intact"
+          }
         />
       </section>
 

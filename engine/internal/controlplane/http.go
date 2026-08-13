@@ -15,6 +15,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/buildinfo"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
+	"github.com/jeffmk/ebpf-poc-engine/internal/edge"
 	"github.com/jeffmk/ebpf-poc-engine/internal/mitre"
 )
 
@@ -442,13 +443,33 @@ const agentFreshWindow = 90 * time.Second
 // `sha` was the constant "0.3.0-controlplane" and had never changed, so the
 // endpoint could not answer the one question it exists for: which code is this
 // box running? It now reports the source revision the binary was built from.
+// handleVersion reports the running build. It was completely ungated, which on
+// an internet-facing multi-tenant console meant anyone could read the exact
+// revision, dirty flag and build time of an enterprise security control plane —
+// a free answer to "is this box behind on patches?", and it was live, returning
+// dirty=true against a public hostname.
+//
+// The console needs it too (the sha drives the build-change reload toast), so
+// it stays available to an authenticated session. Everyone else has to be on
+// the box: see internal/edge for why a loopback peer alone is not sufficient
+// evidence of that.
 func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.principal(r); !ok && !edge.LocalUnproxied(r) {
+		http.Error(w, "unauthenticated", http.StatusUnauthorized)
+		return
+	}
 	b := buildinfo.Get()
 	out := map[string]any{
 		"sha":      b.String(), // the console's build-change signal
 		"revision": b.Revision,
 		"dirty":    b.Dirty,
-		"version":  cpProduct,
+		// The release tag this binary was cut from. This used to report
+		// cpProduct, a hardcoded literal that had never changed and could not
+		// track a release — so the field named "version" was the one thing here
+		// that could not tell you the version.
+		"version":  b.Version,
+		"released": b.Released(),
+		"product":  cpProduct,
 	}
 	if b.BuiltAt != "" {
 		out["built_at"] = b.BuiltAt

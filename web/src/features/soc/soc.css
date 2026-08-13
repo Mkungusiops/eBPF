@@ -3077,27 +3077,32 @@ button.soc-metric:hover {
 /* Process nodes are coloured by the alert score touching them. */
 .soc-correlation-graph .score-attack circle,
 .soc-graph-legend .cls-attack i {
-  fill: #f0556b;
+  --swatch: #f0556b;
+  fill: var(--swatch);
 }
 
 .soc-correlation-graph .score-threat circle,
 .soc-graph-legend .cls-threat i {
-  fill: #ff8a4c;
+  --swatch: #ff8a4c;
+  fill: var(--swatch);
 }
 
 .soc-correlation-graph .score-baseline circle,
 .soc-graph-legend .cls-baseline i {
-  fill: #7f8aa3;
+  --swatch: #7f8aa3;
+  fill: var(--swatch);
 }
 
 .soc-correlation-graph .node-policy circle,
 .soc-graph-legend .node-policy i {
-  fill: #a78bfa;
+  --swatch: #a78bfa;
+  fill: var(--swatch);
 }
 
 .soc-correlation-graph .node-peer circle,
 .soc-graph-legend .node-peer i {
-  fill: #18b67a;
+  --swatch: #18b67a;
+  fill: var(--swatch);
 }
 
 /* Device nodes: a LAN host this process connected to. Cyan sets them apart from
@@ -3105,12 +3110,14 @@ button.soc-metric:hover {
  * glance. These are the same entities the Devices page inventories. */
 .soc-correlation-graph .node-device circle,
 .soc-graph-legend .node-device i {
-  fill: #22d3ee;
+  --swatch: #22d3ee;
+  fill: var(--swatch);
 }
 
 .soc-correlation-graph .node-file circle,
 .soc-graph-legend .node-file i {
-  fill: #e1b53e;
+  --swatch: #e1b53e;
+  fill: var(--swatch);
 }
 
 /* Selection + search states layered on top of the base node colours. */
@@ -3130,6 +3137,30 @@ button.soc-metric:hover {
 .soc-correlation-graph .soc-graph-node.is-match circle {
   stroke: var(--soc-warn);
   stroke-width: 2.5;
+}
+
+/* Containment, on the canvas rather than only in the drill-in.
+ *
+ * Selection and search already own `stroke` on the disc, so the rung ring only
+ * paints when neither is active — a selected node keeps its white ring and
+ * reports its rung in the detail panel, which is more specific anyway. Colour
+ * comes from the shared semantic tokens, so both themes are covered by their
+ * existing definitions rather than a second hardcoded palette. */
+.soc-correlation-graph .soc-graph-node.is-contained:not(.is-selected):not(.is-match) circle.soc-graph-disc {
+  stroke: var(--soc-warn);
+  stroke-width: 2.5;
+}
+
+.soc-correlation-graph .soc-graph-node.is-contained[data-rung="quarantined"]:not(.is-selected):not(.is-match) circle.soc-graph-disc,
+.soc-correlation-graph .soc-graph-node.is-contained[data-rung="severed"]:not(.is-selected):not(.is-match) circle.soc-graph-disc {
+  stroke: var(--soc-danger);
+}
+
+/* Severed is terminal. A broken ring reads as "gone" rather than "held", so the
+ * irreversible rung is not mistaken for a reversible one at a glance. Applied
+ * regardless of selection, because dash pattern does not collide with colour. */
+.soc-correlation-graph .soc-graph-node.is-contained[data-rung="severed"] circle.soc-graph-disc {
+  stroke-dasharray: 3 2;
 }
 
 .soc-correlation-graph line.is-active {
@@ -3157,6 +3188,17 @@ button.soc-metric:hover {
   width: 9px;
   height: 9px;
   border-radius: 999px;
+  /* The swatch is an HTML element, so `fill` never reached it and every key in
+     this legend rendered as a blank gap. Each class declares --swatch once and
+     it drives both the SVG circle's fill and this background. */
+  background: var(--swatch, transparent);
+}
+
+/* Containment is drawn on the canvas as a RING, not a fill — it says what was
+   done to a node, not how suspicious it looks — so its key is a ring too. */
+.soc-graph-legend .node-contained i {
+  background: transparent;
+  box-shadow: inset 0 0 0 2px var(--soc-danger);
 }
 
 @media (max-width: 1180px) {

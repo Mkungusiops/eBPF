@@ -20,6 +20,23 @@ describe("window selector labels", () => {
     expect(soc).not.toMatch(/value === 1440 \? "24h" : `\$\{value\}m`/);
   });
 
+  it("no caption anywhere renders the raw minute count", () => {
+    // The button was only the first of five. Three KPI tiles kept their own
+    // `${rangeMin}m window`, so a 7-day view showed "10080m window" under
+    // Critical, High and Medium while the selector above them said "7d" — the
+    // exact drift the button fix was supposed to end, still on screen.
+    expect(soc).not.toMatch(/\$\{rangeMin\}m\s*window/);
+    expect(soc).not.toMatch(/\$\{value\}m\s*window/);
+  });
+
+  it("every window caption goes through rangeLabel", () => {
+    const captions = [...soc.matchAll(/meta=\{`([^`]*window)`\}/g)].map((m) => m[1]);
+    expect(captions.length, "expected the KPI tiles to declare a window caption").toBeGreaterThan(0);
+    for (const c of captions) {
+      expect(c, `caption "${c}" bypasses rangeLabel`).toMatch(/rangeLabel\(/);
+    }
+  });
+
   it("both selectors offer the 7-day range", () => {
     expect(soc).toMatch(/\[5, 30, 60, 1440, 10080\]/);
     expect(choke).toMatch(/WINDOW_OPTIONS = \[5, 30, 60, 1440, 10080\]/);

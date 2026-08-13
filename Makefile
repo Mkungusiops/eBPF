@@ -62,11 +62,47 @@ web:
 	@echo "→ staging Vite dist into $(EMBED_DIR)"
 	@cp -R "$(WEB_DIR)/dist/." "$(EMBED_DIR)/"
 
+# ─────────────────────────────────────────────────────────────────────────
+# Release identity.
+#
+# A revision answers "which commit"; a customer asks "which VERSION", and only a
+# tag answers that. `git describe` gives both: "v1.0.0" on a tag,
+# "v1.0.0-3-gabc1234" off it, and a "-dirty" suffix when the tree is uncommitted.
+#
+# Go stamps vcs.revision/vcs.modified into the binary automatically, so the SHA
+# and dirty flag work with no help. This adds the human-facing release name.
+VERSION    ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo "")
+LDFLAGS    := -X github.com/jeffmk/ebpf-poc-engine/internal/buildinfo.version=$(VERSION)
+GOBUILD    := go build -ldflags "$(LDFLAGS)"
+
+# Refuse to produce a RELEASE artefact from an uncommitted tree.
+#
+# A box running a dirty build is running code that exists nowhere else: it
+# cannot be reproduced, diffed, or patched, and /api/version says so with a
+# "-dirty" suffix that nobody reads until an incident. Ordinary `make
+# build-linux` still works — this gate is opt-in via `make release`, so
+# day-to-day iteration is unaffected while a handover build cannot be dirty.
+.PHONY: require-clean
+require-clean:
+	@case "$(VERSION)" in \
+	  "")        echo "release: no git tag reachable — tag first (git tag -a v1.0.0 -m ...)"; exit 1;; \
+	  *-dirty)   echo "release: work tree is dirty ($(VERSION)) — commit or stash before cutting a release"; exit 1;; \
+	  *)         echo "release: building $(VERSION)";; \
+	esac
+
+# Every artefact a handover ships, from one tag, with hashes to match.
+.PHONY: release
+release: require-clean build-linux build-agent-linux build-controlplane-linux
+	@echo
+	@echo "release $(VERSION) — artefact digests:"
+	@cd $(ENGINE_DIR) && shasum -a 256 engine-linux-$(LINUX_ARCH) agent-linux-$(LINUX_ARCH) controlplane-linux-$(LINUX_ARCH) | sed 's/^/  /'
+	@cd $(WEB_DIR)/dist && find . -type f | sort | xargs shasum -a 256 | shasum -a 256 | sed 's/^/  console bundle: /'
+
 build: web
-	cd $(ENGINE_DIR) && go build -o engine ./cmd/engine
+	cd $(ENGINE_DIR) && $(GOBUILD) -o engine ./cmd/engine
 
 build-linux: web
-	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o engine-linux-$(LINUX_ARCH) ./cmd/engine
+	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 $(GOBUILD) -o engine-linux-$(LINUX_ARCH) ./cmd/engine
 	@echo "→ $(LINUX_BIN)"
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -85,7 +121,7 @@ build-agent: web
 # Static linux agent — the shipping form. CGO_ENABLED=0 keeps it a single
 # dependency-free binary (the agent-ergonomics invariant, architecture.md §6).
 build-agent-linux: web
-	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o agent-linux-$(LINUX_ARCH) ./cmd/agent
+	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 $(GOBUILD) -o agent-linux-$(LINUX_ARCH) ./cmd/agent
 	@echo "→ $(AGENT_LINUX_BIN)"
 
 # The control-plane stub (native). Minimal HTTP over internal/api + internal/store;
@@ -96,7 +132,7 @@ build-controlplane:
 
 # Static linux control plane — it runs in a container/K8s (architecture.md §3).
 build-controlplane-linux:
-	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 go build -o controlplane-linux-$(LINUX_ARCH) ./cmd/controlplane
+	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 $(GOBUILD) -o controlplane-linux-$(LINUX_ARCH) ./cmd/controlplane
 	@echo "→ $(CP_LINUX_BIN)"
 
 # ─────────────────────────────────────────────────────────────────────────

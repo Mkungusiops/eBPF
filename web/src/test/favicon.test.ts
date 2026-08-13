@@ -116,6 +116,35 @@ describe("the raster set carries no tile either", () => {
   });
 });
 
+describe("the /favicon.ico slot answers with an actual icon", () => {
+  // Browsers request /favicon.ico by convention even when a <link> names an
+  // SVG, and vertical tab strips, bookmark bars and history lists often prefer
+  // it. The console shipped no such file, so nginx answered from the SPA
+  // catch-all with index.html and the browser discarded it; the engine answered
+  // with SVG bytes under image/svg+xml, unusable to anything that trusts the
+  // extension. Both fell back to whatever icon was already cached.
+  const ico = "public/favicon.ico";
+
+  it("ships, and is a real ICO", () => {
+    expect(existsSync(ico), "public/favicon.ico missing").toBe(true);
+    const buf = readFileSync(ico);
+    expect(buf.readUInt16LE(0), "not an ICO header").toBe(0);
+    expect(buf.readUInt16LE(2), "not an ICO header").toBe(1);
+    expect(buf.readUInt16LE(4), "expected 16/32/48 entries").toBe(3);
+  });
+
+  it("carries alpha, so it has no plate either", () => {
+    const buf = readFileSync(ico);
+    const off = buf.readUInt32LE(6 + 12); // first directory entry's data offset
+    const bitCount = buf.readUInt16LE(off + 14); // BITMAPINFOHEADER.biBitCount
+    expect(bitCount, "expected 32bpp BGRA").toBe(32);
+    // Pixel data follows the 40-byte header, bottom-up: the first stored pixel
+    // is the bottom-left corner, which a plate would fill and the mark leaves
+    // empty.
+    expect(buf[off + 40 + 3], "the ICO paints a plate").toBe(0);
+  });
+});
+
 describe("ink stays legible on the strip it lands on", () => {
   it("the light variant uses ink that holds up on white", () => {
     // #22d3ee on white is ~1.9:1 — invisible at 16px. The light variant must
@@ -175,9 +204,11 @@ describe("the swap cannot point at a URL that does not exist", () => {
     const want = theme.match(/FAVICON_V\s*=\s*"(\d+)"/)?.[1];
     expect(want, "FAVICON_V not found").toBeDefined();
 
-    const pages = [
-      "index.html", "login.html", "choke.html", "fleet.html", "devices.html",
-    ].flatMap((p) => [p, `../engine/internal/api/${p}`]);
+    // The Vite entries are the only shipped pages. The engine used to embed five
+    // standalone HTML consoles alongside these and they were checked here too —
+    // they have since been deleted as unreachable (nothing routed to them; /login
+    // is served from this bundle), so there is one set of pages again.
+    const pages = ["index.html", "login.html", "choke.html", "fleet.html", "devices.html"];
 
     for (const p of pages) {
       const body = readFileSync(p, "utf8");

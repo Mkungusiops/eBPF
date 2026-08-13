@@ -242,3 +242,85 @@ func TestMoveToReleaseUsesPristineTier(t *testing.T) {
 		}
 	}
 }
+
+// The quarantine freeze flag is tier-wide but the ladder is per-process:
+// releasing a process moves it OUT of the cgroup and never cleared the flag, so
+// after the first quarantine the tier stayed frozen for the life of the host.
+// Measured on all three production hosts: freeze=1 with zero pids.
+//
+// Empty-and-frozen suspends nothing. What it costs is falsifiability — the next
+// quarantine's freeze write lands on an already-frozen tier, so a failed write
+// is indistinguishable from a successful one.
+
+func TestSetupClearsResidualFreezeOnEmptyTier(t *testing.T) {
+	root := fakeRoot(t)
+	m := NewManager(root)
+	if err := m.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	q := filepath.Join(root, NameQuarantined)
+	// Exactly the production residue: frozen, nobody in it.
+	if err := os.WriteFile(filepath.Join(q, "cgroup.freeze"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(q, "cgroup.procs"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Setup(); err != nil { // a restart
+		t.Fatal(err)
+	}
+
+	freeze, err := os.ReadFile(filepath.Join(q, "cgroup.freeze"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(string(freeze)) != "0" {
+		t.Errorf("cgroup.freeze=%q after restart with an empty tier, want %q", string(freeze), "0")
+	}
+}
+
+func TestSetupLeavesFreezeWhenTierStillHoldsSomeone(t *testing.T) {
+	root := fakeRoot(t)
+	m := NewManager(root)
+	if err := m.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MoveTo(4242, circuit.ActQuarantine); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.Setup(); err != nil { // a restart while a process is held
+		t.Fatal(err)
+	}
+
+	freeze, _ := os.ReadFile(filepath.Join(root, NameQuarantined, "cgroup.freeze"))
+	if strings.TrimSpace(string(freeze)) != "1" {
+		t.Fatalf("restart unfroze a tier that still holds a process: freeze=%q — that releases a contained process", string(freeze))
+	}
+}
+
+func TestReleaseClearsFreezeOnceTierEmpties(t *testing.T) {
+	root := fakeRoot(t)
+	m := NewManager(root)
+	if err := m.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.MoveTo(777, circuit.ActQuarantine); err != nil {
+		t.Fatal(err)
+	}
+	// The kernel removes a pid from its previous cgroup when it joins another;
+	// the fake root does not, so empty it explicitly to model the release.
+	if err := os.WriteFile(filepath.Join(root, NameQuarantined, "cgroup.procs"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := m.MoveTo(777, circuit.ActThrottle); err != nil {
+		t.Fatal(err)
+	}
+
+	freeze, _ := os.ReadFile(filepath.Join(root, NameQuarantined, "cgroup.freeze"))
+	if strings.TrimSpace(string(freeze)) != "0" {
+		t.Errorf("cgroup.freeze=%q after the last process left quarantine, want %q", string(freeze), "0")
+	}
+}

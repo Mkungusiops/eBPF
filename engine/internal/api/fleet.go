@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,9 +15,6 @@ import (
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/fleetprobe"
 )
-
-//go:embed fleet.html
-var fleetHTML string
 
 // FleetPeer is one entry from the hosts file: a friendly name and a base
 // URL. The local engine itself is also represented as a peer so the fleet
