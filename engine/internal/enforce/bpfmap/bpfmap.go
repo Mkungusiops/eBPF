@@ -3,9 +3,9 @@
 // The data plane that actually shapes traffic lives in a small CO-RE BPF
 // program (cgroup_skb / cgroup/connect4 / lsm hooks) that:
 //
-//   1. reads bpf_get_current_pid_tgid() on every syscall/packet,
-//   2. looks up that PID in a BPF_MAP_TYPE_HASH keyed by u32 pid,
-//   3. consumes a token from the per-PID bucket; on empty -> drop/EPERM.
+//  1. reads bpf_get_current_pid_tgid() on every syscall/packet,
+//  2. looks up that PID in a BPF_MAP_TYPE_HASH keyed by u32 pid,
+//  3. consumes a token from the per-PID bucket; on empty -> drop/EPERM.
 //
 // The userspace gateway updates this map: on circuit transitions it calls
 // Backend.Update(pid, bucket); on process exit it calls Delete(pid).
@@ -24,12 +24,16 @@ import (
 
 // PIDBucket is the kernel-side struct laid out exactly as the BPF program
 // reads it. Field order and types must not change without also bumping
-// the BPF program's matching struct.
+// the BPF program's matching struct in bpf/choke.c.
+//
+// LastNs comes first so the natural alignment of u64 doesn't insert
+// padding between it and the surrounding u32 fields — this keeps
+// encoding/binary.Size() in lockstep with C sizeof(): 24 bytes flat.
 type PIDBucket struct {
+	LastNs     uint64 // last refill timestamp (ns since boot)
 	RatePerSec uint32 // tokens added per second
 	Burst      uint32 // max accumulated tokens
 	Tokens     uint32 // current token count (kernel-side, written by BPF)
-	LastNs     uint64 // last refill timestamp (ns since boot)
 	Flags      uint32 // bit 0: throttle, 1: tarpit, 2: quarantine, 3: sever
 }
 
@@ -65,9 +69,9 @@ var ErrClosed = errors.New("bpfmap: backend closed")
 // Useful for tests, dry-run, and dev hosts. The engine wires it in by
 // default; production deployments swap it for the real loader.
 type NoopBackend struct {
-	mu     sync.RWMutex
-	open   bool
-	state  map[uint32]PIDBucket
+	mu    sync.RWMutex
+	open  bool
+	state map[uint32]PIDBucket
 }
 
 func NewNoopBackend() *NoopBackend {

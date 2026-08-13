@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root,
+.theme-dark {
+  color-scheme: dark;
+  /* Cool neutral-slate dark palette: deep ink surfaces, cool ivory text, one disciplined
+     indigo accent. Red/amber/green are reserved for severity and state only. */
+  --surface: 10 12 16;
+  --panel: 18 22 31;
+  --row: 26 31 43;
+  --text: 230 234 241;
+  --muted: 155 167 184;
+  --dim: 92 102 117;
+  --accent: 110 139 255;
+  --good: 54 199 149;
+  --warn: 224 165 59;
+  --danger: 242 87 107;
+  --info: 110 139 255;
+}
+
+.theme-light {
+  color-scheme: light;
+  --surface: 245 247 250;
+  --panel: 255 255 255;
+  --row: 238 242 247;
+  --text: 26 34 48;
+  --muted: 81 96 122;
+  --dim: 121 133 154;
+  --accent: 79 107 239;
+  --good: 14 159 110;
+  --warn: 194 130 10;
+  --danger: 225 29 72;
+  --info: 37 99 235;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(var(--accent) / 0.06), transparent 38rem),
+    linear-gradient(180deg, rgb(var(--surface)), rgb(7 9 13));
+  color: rgb(var(--text));
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.theme-light body,
+body:has(.theme-light) {
+  background:
+    radial-gradient(circle at top right, rgb(var(--accent) / 0.05), transparent 36rem),
+    linear-gradient(180deg, rgb(var(--surface)), rgb(228 233 240));
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+.mono {
+  font-family: "JetBrains Mono", SFMono-Regular, ui-monospace, monospace;
+}
+
+.scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--dim) / 0.7) transparent;
+}
+
+.state-pristine {
+  color: rgb(var(--muted));
+}
+
+.state-throttled {
+  color: rgb(var(--info));
+}
+
+.state-tarpit {
+  color: rgb(var(--warn));
+}
+
+.state-quarantined,
+.state-severed,
+.severity-critical,
+.severity-high {
+  color: rgb(var(--danger));
+}
+
+.severity-medium {
+  color: rgb(var(--warn));
+}
+
+.severity-low,
+.severity-info {
+  color: rgb(var(--muted));
+}

@@ -61,6 +61,12 @@ func (t *Throttler) Apply(_ context.Context, target Target, action circuit.Actio
 		bk = bpfmap.PIDBucket{RatePerSec: cfg.TarpitRate, Burst: cfg.TarpitBurst, Flags: bpfmap.FlagTarpit}
 	case circuit.ActQuarantine:
 		bk = bpfmap.PIDBucket{RatePerSec: cfg.QuarantineRate, Burst: cfg.QuarantineBurst, Flags: bpfmap.FlagQuarantine}
+	case circuit.ActNone:
+		// Release: drop the kernel bucket entirely. Moving the pid to the
+		// pristine cgroup lifts the cgroup limits, but the token bucket lives
+		// in the BPF data plane and would otherwise keep rate-limiting a
+		// process the operator believes is fully released.
+		return t.Backend.Delete(target.PID)
 	default:
 		return ErrUnsupported
 	}

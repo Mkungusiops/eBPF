@@ -1,0 +1,1100 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>eBPF-SOC — Technical Reference</title>
+<style>
+  :root {
+    --ink: #14181f;
+    --muted: #55606f;
+    --faint: #8a94a3;
+    --line: #dce1e8;
+    --line-strong: #b9c1cc;
+    --accent: #2f4bd6;
+    --accent-soft: #eef1fd;
+    --danger: #c02b45;
+    --good: #1f8a55;
+    --warn: #b7791f;
+    --code-bg: #f5f7fa;
+    --page: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--page);
+    font: 10.5pt/1.5 "Helvetica Neue", Arial, "Segoe UI", sans-serif;
+  }
+
+  /* ── Page setup ──────────────────────────────────────────────────── */
+  @page {
+    size: A4;
+    margin: 20mm 16mm 18mm 16mm;
+  }
+  .cover, .section { break-before: page; }
+  .no-break { break-inside: avoid; }
+  h1, h2, h3, h4 { break-after: avoid; }
+  table, figure, pre, .diagram, .callout { break-inside: avoid; }
+
+  /* ── Cover ───────────────────────────────────────────────────────── */
+  .cover {
+    break-before: avoid;
+    min-height: 245mm;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 0 6mm;
+  }
+  .cover .kicker {
+    font-size: 10pt; letter-spacing: 0.32em; text-transform: uppercase;
+    color: var(--accent); font-weight: 700; margin-bottom: 14mm;
+  }
+  .cover h1 {
+    font-size: 40pt; line-height: 1.05; margin: 0 0 6mm; letter-spacing: -0.5pt;
+  }
+  .cover .sub { font-size: 15pt; color: var(--muted); max-width: 150mm; line-height: 1.4; }
+  .cover .shield { font-size: 34pt; margin-bottom: 8mm; }
+  .cover .meta {
+    margin-top: 22mm; border-top: 2px solid var(--ink); padding-top: 6mm;
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 4mm 12mm; max-width: 150mm;
+  }
+  .cover .meta div { font-size: 9.5pt; }
+  .cover .meta .k { color: var(--faint); text-transform: uppercase; letter-spacing: 0.1em; font-size: 8pt; }
+  .cover .meta .v { color: var(--ink); font-weight: 600; margin-top: 1mm; }
+  .classification {
+    display: inline-block; margin-top: 10mm; padding: 2mm 4mm; border: 1px solid var(--line-strong);
+    border-radius: 3px; font-size: 8.5pt; letter-spacing: 0.14em; text-transform: uppercase; color: var(--muted);
+  }
+
+  /* ── Typography ──────────────────────────────────────────────────── */
+  h1.part {
+    font-size: 22pt; margin: 0 0 2mm; padding-bottom: 3mm; border-bottom: 3px solid var(--ink);
+    letter-spacing: -0.3pt;
+  }
+  .part-no { color: var(--accent); font-weight: 800; }
+  h2 { font-size: 14pt; margin: 8mm 0 2mm; color: var(--ink); }
+  h3 { font-size: 11.5pt; margin: 6mm 0 1.5mm; color: var(--ink); }
+  h4 { font-size: 10.5pt; margin: 4mm 0 1mm; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
+  p { margin: 0 0 2.5mm; }
+  .lead { font-size: 11.5pt; color: var(--muted); line-height: 1.55; }
+  strong { font-weight: 700; }
+  code { font-family: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace; font-size: 9pt; background: var(--code-bg); padding: 0.4mm 1.2mm; border-radius: 2px; color: #2a3550; }
+  a { color: var(--accent); text-decoration: none; }
+  ul, ol { margin: 0 0 3mm; padding-left: 6mm; }
+  li { margin: 0 0 1.2mm; }
+  .muted { color: var(--muted); }
+  .small { font-size: 9pt; }
+
+  /* ── Tables ──────────────────────────────────────────────────────── */
+  table { width: 100%; border-collapse: collapse; margin: 3mm 0 4mm; font-size: 9pt; }
+  th, td { text-align: left; padding: 2mm 2.5mm; border-bottom: 0.5pt solid var(--line); vertical-align: top; }
+  thead th { border-bottom: 1.2pt solid var(--line-strong); font-size: 8pt; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  tbody tr:nth-child(even) { background: #fafbfc; }
+  td code { font-size: 8.2pt; }
+
+  /* ── Callouts ────────────────────────────────────────────────────── */
+  .callout {
+    border-left: 3px solid var(--accent); background: var(--accent-soft);
+    padding: 3mm 4mm; margin: 3mm 0; border-radius: 0 4px 4px 0; font-size: 9.5pt;
+  }
+  .callout.warn { border-left-color: var(--warn); background: #fdf6ea; }
+  .callout.good { border-left-color: var(--good); background: #eef7f1; }
+  .callout.danger { border-left-color: var(--danger); background: #fbecef; }
+  .callout .t { font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; font-size: 8pt; margin-bottom: 1mm; display: block; }
+
+  /* ── Diagrams ────────────────────────────────────────────────────── */
+  .diagram { margin: 4mm 0 5mm; text-align: center; }
+  .diagram .mermaid { display: flex; justify-content: center; }
+  .diagram svg { max-width: 100%; height: auto; }
+  .figcap { font-size: 8.5pt; color: var(--faint); text-align: center; margin-top: 1.5mm; font-style: italic; }
+  figure { margin: 0; }
+
+  pre.code {
+    background: var(--code-bg); border: 0.5pt solid var(--line); border-radius: 4px;
+    padding: 3mm 4mm; font-family: "SFMono-Regular", ui-monospace, Menlo, monospace; font-size: 8.3pt;
+    line-height: 1.45; overflow-x: auto; color: #26324a; white-space: pre;
+  }
+
+  /* ── TOC ─────────────────────────────────────────────────────────── */
+  .toc { break-before: page; }
+  .toc h1 { font-size: 18pt; border-bottom: 2px solid var(--ink); padding-bottom: 2mm; }
+  .toc ol { list-style: none; padding: 0; margin: 4mm 0 0; counter-reset: toc; }
+  .toc > ol > li { counter-increment: toc; margin: 0 0 1.5mm; font-weight: 600; font-size: 10.5pt; display: flex; }
+  .toc > ol > li::before { content: counter(toc) ".  "; color: var(--accent); font-weight: 800; min-width: 8mm; }
+  .toc .sub { list-style: none; padding: 0 0 0 8mm; margin: 1mm 0 0; font-weight: 400; font-size: 9pt; color: var(--muted); }
+  .toc .sub li { margin: 0.4mm 0; }
+
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 3mm; margin: 4mm 0; }
+  .kpi { border: 0.5pt solid var(--line); border-radius: 5px; padding: 3mm; }
+  .kpi .n { font-size: 17pt; font-weight: 800; color: var(--accent); line-height: 1; }
+  .kpi .l { font-size: 8pt; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; margin-top: 1.5mm; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8mm; }
+  .tag { display: inline-block; font-size: 7.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; padding: 0.4mm 1.6mm; border-radius: 3px; }
+  .tag.impl { background: #eef7f1; color: var(--good); }
+  .tag.plan { background: #fdf6ea; color: var(--warn); }
+</style>
+</head>
+<body>
+
+<!-- ╔══════════════════════════════════════ COVER ══════════════════════════════════════╗ -->
+<section class="cover">
+  <div class="shield">🛡️</div>
+  <div class="kicker">Technical Reference · System Architecture</div>
+  <h1>eBPF-SOC</h1>
+  <div class="sub">A kernel-level threat detection <em>and</em> graduated enforcement platform — from a single-binary host sensor to a multi-tenant, MSSP-grade security operations control plane.</div>
+  <div class="meta">
+    <div><div class="k">Document</div><div class="v">System &amp; Enforcement Architecture</div></div>
+    <div><div class="k">Audience</div><div class="v">Engineering · Security · Architecture</div></div>
+    <div><div class="k">Scale</div><div class="v">~25k LOC Go · ~19k LOC TypeScript</div></div>
+    <div><div class="k">Kernel floor</div><div class="v">Linux ≥ 5.15 · cgroup v2 · eBPF CO-RE</div></div>
+    <div><div class="k">Sources</div><div class="v">Code + /docs (31 documents)</div></div>
+    <div><div class="k">Status</div><div class="v">Phase 0–1 implemented; roadmap noted</div></div>
+  </div>
+  <span class="classification">Internal · Technical</span>
+</section>
+
+<!-- ╔══════════════════════════════════════ TOC ══════════════════════════════════════╗ -->
+<section class="toc">
+  <h1>Contents</h1>
+  <ol>
+    <li><div>Introduction &amp; system overview</div></li>
+    <li><div>Architectural evolution: monolith → agent + control plane</div></li>
+    <li><div>Kernel telemetry layer — Tetragon &amp; the eBPF program inventory</div></li>
+    <li><div>The correlation engine — process tree &amp; scoring</div></li>
+    <li><div>The Choke Gateway — graduated <em>process</em> enforcement (UVP)</div></li>
+    <li><div>The Network Choke Gateway — <em>device</em> enforcement (UVP)</div></li>
+    <li><div>The tamper-evident audit chain</div></li>
+    <li><div>Data &amp; storage architecture</div></li>
+    <li><div>The multi-tenant control plane</div></li>
+    <li><div>Agent ↔ control-plane wire contract</div></li>
+    <li><div>Tenant isolation — the invariant</div></li>
+    <li><div>Security model &amp; threat coverage</div></li>
+    <li><div>The operator console — SOC &amp; dual-mode containment</div></li>
+    <li><div>End-to-end event lifecycle</div></li>
+    <li><div>Deployment topologies &amp; modes</div></li>
+    <li><div>Technology stack</div></li>
+    <li><div>Limitations &amp; roadmap</div></li>
+    <li><div>Appendices — API surface, BPF map layouts, glossary</div></li>
+  </ol>
+</section>
+
+<!-- ╔════════════════════════════════ 1 · OVERVIEW ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">1</span> &nbsp;Introduction &amp; system overview</h1>
+
+  <p class="lead">eBPF-SOC is a proactive, kernel-level threat detection <em>and enforcement</em> platform. It observes syscall- and kprobe-level behaviour from inside the Linux kernel using eBPF, correlates chains of activity per process, and — the property that separates it from a passive SOC dashboard — converts risk into <strong>graduated, reversible, cryptographically-audited containment</strong>: throttle → tarpit → quarantine → sever.</p>
+
+  <div class="kpis">
+    <div class="kpi"><div class="n">2</div><div class="l">Enforcement data planes (process + device)</div></div>
+    <div class="kpi"><div class="n">5</div><div class="l">Graduated containment rungs</div></div>
+    <div class="kpi"><div class="n">12</div><div class="l">eBPF programs in-kernel</div></div>
+    <div class="kpi"><div class="n">5</div><div class="l">gRPC control-plane services</div></div>
+  </div>
+
+  <h2>1.1 &nbsp;What makes it different</h2>
+  <p>Most security tooling stops at <em>detect-and-alert</em>, or offers only binary <em>allow/kill</em>. eBPF-SOC's unique value is the pair of <strong>Choke Gateways</strong>:</p>
+  <ul>
+    <li><strong>Process Choke Gateway</strong> — a per-process state machine keyed on Tetragon's stable <code>exec_id</code>. Risk score drives a monotonic climb up a five-rung ladder, each rung a stronger kernel action (cgroup CPU/PID caps → cgroup freeze → SIGKILL).</li>
+    <li><strong>Network / Device Choke Gateway</strong> — the same graduated model applied per <strong>MAC address</strong> on an inline transparent bridge, using hand-written <code>tc</code> eBPF to shape or cut a LAN device's <em>forwarded</em> traffic (an IoT camera, a laptop) that the host's own cgroup hooks never see.</li>
+  </ul>
+  <p>Both are <strong>reversible where it matters</strong> (throttle/tarpit/quarantine and — for devices — even sever), and every decision is written to a <strong>hash-chained, tamper-evident audit log</strong> that a compliance or cyber-insurance reviewer can independently verify.</p>
+
+  <h2>1.2 &nbsp;System context</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  attacker([Adversary / malware<br/>on protected host]):::ext
+  operator([SOC operator / MSSP analyst]):::ext
+  exec([Executive / auditor / cyber-insurer]):::ext
+
+  subgraph HOST["Protected Linux host (kernel ≥ 5.15)"]
+    kernel[/"Kernel — eBPF kprobes,<br/>cgroup &amp; tc BPF programs"/]:::k
+    tetra["Tetragon<br/>(CO-RE eBPF runtime)"]:::c
+    agent["Choke Agent / Engine<br/>(single static Go binary)"]:::c
+  end
+
+  subgraph CP["Control plane (multi-tenant, MSSP)"]
+    ingest["Ingest · Detection · Fleet<br/>Identity · Cases · Console API"]:::cp
+    stores[("Postgres · ClickHouse<br/>Object store")]:::db
+  end
+
+  console["Operator console<br/>(React SPA)"]:::c
+
+  attacker -. syscalls .-> kernel
+  kernel -- events --> tetra --> agent
+  agent -- "cgroup move · freeze · SIGKILL · tc shaping" --> kernel
+  agent == "mTLS gRPC · telemetry / commands" ==> ingest
+  ingest --- stores
+  operator --> console --> ingest
+  ingest -. "signed commands / policy" .-> agent
+  exec -. "assurance reports · audit" .-> console
+
+  classDef ext fill:#eef1fd,stroke:#2f4bd6,color:#14181f;
+  classDef k fill:#fbecef,stroke:#c02b45,color:#14181f;
+  classDef c fill:#ffffff,stroke:#55606f,color:#14181f;
+  classDef cp fill:#eef7f1,stroke:#1f8a55,color:#14181f;
+  classDef db fill:#f5f7fa,stroke:#8a94a3,color:#14181f;
+  </pre>
+  <div class="figcap">Figure 1.1 — System context. The agent enforces locally and autonomously; the control plane coordinates a fleet across tenants.</div>
+  </figure>
+  </div>
+
+  <h2>1.3 &nbsp;Two deployment shapes, one core</h2>
+  <p>The same <code>internal/</code> sensing-and-enforcing core powers two shapes:</p>
+  <table>
+    <thead><tr><th>Shape</th><th>Binary</th><th>Best for</th><th>Storage</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Single-host</strong></td><td><code>cmd/engine</code></td><td>One box; self-contained sensor + console; air-gapped labs</td><td>SQLite (WAL)</td></tr>
+      <tr><td><strong>Fleet agent</strong></td><td><code>cmd/agent</code></td><td>Many hosts reporting to a shared control plane</td><td>SQLite WAL as offline buffer → uplink</td></tr>
+      <tr><td><strong>Control plane</strong></td><td><code>cmd/controlplane</code></td><td>Multi-tenant MSSP / enterprise SOC coordination</td><td>Postgres + ClickHouse + object store</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">Two further binaries support development and operations: <code>cmd/simagent</code> (synthetic telemetry generator for UI/load work) and <code>cmd/socbackup</code> (backup tooling).</p>
+
+  <div class="callout"><span class="t">Design north star</span> <strong>Autonomous by default, coordinated when connected.</strong> Kernel containment must never depend on the cloud being reachable. If the control plane is down, the agent keeps enforcing its last-applied signed policy and buffers evidence locally until it can drain upstream.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 2 · EVOLUTION ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">2</span> &nbsp;Architectural evolution</h1>
+  <p class="lead">The platform began as a single root process on one host and is being cut, along one clean seam, into an autonomous per-host <strong>agent</strong> and a horizontally-scalable multi-tenant <strong>control plane</strong> — without regressing any of the properties that make it valuable.</p>
+
+  <h2>2.1 &nbsp;The seam</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart LR
+  subgraph MONO["Yesterday — monolith (one host)"]
+    direction TB
+    m1["Tetragon client"] --> m2["scorer · process tree"]
+    m2 --> m3["choke gateways"]
+    m3 --> m4["store (SQLite)"]
+    m4 --> m5["HTTP console + fleet fan-out"]
+  end
+
+  subgraph SPLIT["Today — two build targets over shared internal/"]
+    direction TB
+    subgraph AG["choke-agent (root, per host)"]
+      a1["Tetragon client · scorer · tree"] --> a2["choke gateways"]
+      a2 --> a3["local WAL buffer"] --> a4["uplink client"]
+    end
+    subgraph CPX["control plane (HA, multi-tenant)"]
+      c1["ingest / detection"] --> c2["fleet · identity · cases"]
+      c2 --> c3["console API / BFF"]
+    end
+    a4 == "mTLS gRPC" ==> c1
+    c2 -. "signed commands / policy" .-> a4
+  end
+
+  MONO ==>|strangler migration| SPLIT
+  classDef d fill:#ffffff,stroke:#55606f;
+  </pre>
+  <div class="figcap">Figure 2.1 — Strangler migration. New <code>cmd/agent</code> and <code>cmd/controlplane</code> entrypoints wrap the same <code>internal/</code> packages; <code>cmd/engine</code> keeps building throughout.</div>
+  </figure>
+  </div>
+
+  <h2>2.2 &nbsp;What moved where</h2>
+  <table>
+    <thead><tr><th>Package(s)</th><th>Destination</th><th>Role after the split</th></tr></thead>
+    <tbody>
+      <tr><td><code>choke</code> · <code>enforce</code> · <code>score</code> · <code>tree</code> · <code>device</code> · <code>origin</code> · <code>sysproc</code></td><td>Agent</td><td>The sensing + enforcing core — ships largely intact.</td></tr>
+      <tr><td><code>store</code> (SQLite path)</td><td>Agent + control plane</td><td>Agent: durable offline buffer. CP: central mirror on Postgres/ClickHouse.</td></tr>
+      <tr><td><code>uplink</code> · <code>cpclient</code> · <code>policypull</code> · <code>mtls</code> · <code>signing</code></td><td>Agent</td><td>The client half of the wire contract (§10).</td></tr>
+      <tr><td><code>ingest</code> · <code>controlplane</code> · <code>fleet</code> · <code>command</code> · <code>enrollment</code> · <code>heartbeat</code></td><td>Control plane</td><td>The server half — fan-in, registry, command dispatch, enrollment.</td></tr>
+      <tr><td><code>identity</code> · <code>authz</code> · <code>bff</code></td><td>Control plane</td><td>OIDC/Keycloak identity, RBAC, and the console backend-for-frontend.</td></tr>
+      <tr><td><code>centralstore</code> · <code>bus</code></td><td>Control plane</td><td>Postgres + ClickHouse dialects; NATS event bus.</td></tr>
+    </tbody>
+  </table>
+
+  <div class="callout good"><span class="t">Sacred invariants — do not regress</span>
+    In-kernel graduated enforcement keyed on <code>exec_id</code>; offline autonomy; the hash-chained verifiable audit; the device (MAC) choke as a second enforcer class; and single-binary agent ergonomics (statically linked, dependency-free). Only the <em>console/data</em> tier is allowed to get heavier.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 3 · KERNEL TELEMETRY ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">3</span> &nbsp;Kernel telemetry layer</h1>
+  <p class="lead">Two categories of eBPF program run in the kernel: <strong>Tetragon-generated</strong> programs (from declarative TracingPolicy YAML) that <em>detect</em> and feed the scorer, and <strong>hand-written</strong> eBPF C that forms the two <em>enforcement</em> data planes. Twelve programs in total.</p>
+
+  <h2>3.1 &nbsp;Tetragon — the detection sensor</h2>
+  <p>Tetragon (pinned to <code>quay.io/cilium/tetragon:v1.6.1</code>) runs as a <code>--privileged --pid=host</code> container. It loads each TracingPolicy as one or more CO-RE eBPF programs and streams structured <code>process_exec</code> / <code>process_kprobe</code> events to the agent over a Unix-socket gRPC stream. <code>process_exec</code> fires for every <code>execve</code> — the free spine of the process tree.</p>
+
+  <h3>Detection policies (Post-only → feed the scorer)</h3>
+  <table>
+    <thead><tr><th>Policy</th><th>Hook</th><th>Catches</th><th>MITRE</th></tr></thead>
+    <tbody>
+      <tr><td><code>outbound-connections</code></td><td>kprobe <code>tcp_connect</code></td><td>Outbound TCP from shells / netcat family (<code>bash sh zsh dash nc ncat socat</code>) — reverse-shell &amp; C2 beacon</td><td>T1071</td></tr>
+      <tr><td><code>privilege-escalation</code></td><td>kprobe <code>sys_setuid/setreuid</code></td><td><code>setuid(0)</code> — escalation to root, filtered in-kernel to uid 0</td><td>T1548</td></tr>
+      <tr><td><code>sensitive-file-access</code></td><td>kretprobe <code>security_file_permission</code> (LSM)</td><td>Reads/writes of <code>/etc/shadow</code>, <code>passwd</code>, <code>sudoers</code>, <code>/root/.ssh/</code>, and the honeypot dir</td><td>T1003</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Why Tetragon never enforces</h3>
+  <p>All four policies above declare <code>policy-mode: monitor</code>, under which Tetragon suppresses enforcing actions (<code>Sigkill</code>, <code>Override</code>, <code>Signal</code>) inside the kernel while leaving <code>Post</code> untouched. Enforcement belongs to the engine&rsquo;s choke gateway instead, which matches the process it actually scored, honours the operator&rsquo;s mode, is reversible, and writes an audit row.</p>
+  <p>This is not a stylistic preference. A Tetragon <code>Sigkill</code> fires regardless of what the console says the host&rsquo;s mode is, and it cost this project two incidents: an SSH lockout (OpenSSH &ge;9.8 re-execs <code>sshd-session</code>, which the allow-list did not name), and <code>debconf</code> killed mid-configure on three hosts, blocking <code>apt</code> fleet-wide &mdash; <code>matchBinaries</code> matches the <em>executable</em>, so allow-listing an interpreted script has no effect. A third policy, <code>sever-pipe-to-shell</code>, shipped <code>Sigkill</code> and was found never to fire at all; it was removed, and the engine scores that pattern from the exec chain instead.</p>
+  <p>Because the mode is declarative it survives a Tetragon restart, and the daemon reports it over gRPC &mdash; so the agent carries the host&rsquo;s real kernel posture on its heartbeat and the console flags any divergence rather than presenting the engine&rsquo;s mode as the whole picture.</p>
+
+  <div class="callout warn"><span class="t">Honeypot signal</span> The engine seeds five decoy credential files (<code>_passwd _shadow _id_rsa _aws_credentials _db_backup.sql</code>) under a watched prefix on startup. No legitimate process ever reads them, so <strong>any hit is a high-confidence signal</strong>, surfaced with a 🍯 badge.</div>
+
+  <h2>3.2 &nbsp;The two hand-written enforcement data planes</h2>
+  <p>Tetragon can detect and <code>Sigkill</code>, but cannot do per-PID token-bucket rate limiting, nor MAC-keyed shaping of <em>forwarded</em> traffic. Those two planes are custom eBPF C compiled with <code>clang -target bpf</code> and loaded by the pure-Go <code>cilium/ebpf</code> library (no libbpf at runtime — the binary stays static).</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  subgraph K["Kernel attach points"]
+    direction TB
+    subgraph P["Process plane — choke.o (cgroup v2 root)"]
+      c4["choke_connect4<br/>cgroup/connect4"]:::hp
+      c6["choke_connect6<br/>cgroup/connect6"]:::hp
+      s4["choke_sendmsg4<br/>cgroup/sendmsg4"]:::hp
+      s6["choke_sendmsg6<br/>cgroup/sendmsg6"]:::hp
+    end
+    subgraph D["Device plane — devchoke.o (tc clsact on bridge)"]
+      di["devchoke_ingress<br/>tc ingress · keys eth h_source"]:::hd
+      de["devchoke_egress<br/>tc egress · keys eth h_dest"]:::hd
+    end
+  end
+
+  m1[("choke_pids<br/>HASH 65536<br/>pid → bucket")]:::m
+  m2[("choke_devs<br/>HASH 4096<br/>mac → bucket")]:::m
+  m3[("choke_devs_seen<br/>LRU 4096<br/>discovery")]:::m
+  m4[("choke_flows<br/>LRU 8192<br/>per-device flows")]:::m
+
+  us["Agent userspace<br/>(bpfmap / devbpf writers)"]:::u
+
+  us -- write verdict+bucket --> m1
+  us -- write verdict+bucket --> m2
+  c4 & c6 & s4 & s6 -- read --> m1
+  di & de -- read --> m2
+  di -- observe / record_flow --> m3 & m4
+  m3 & m4 -- read --> us
+
+  classDef hp fill:#eef1fd,stroke:#2f4bd6;
+  classDef hd fill:#fdf6ea,stroke:#b7791f;
+  classDef m fill:#f5f7fa,stroke:#8a94a3;
+  classDef u fill:#ffffff,stroke:#55606f;
+  </pre>
+  <div class="figcap">Figure 3.1 — The two enforcement data planes and their BPF maps. Userspace writes verdicts; kernel programs read them on the hot path.</div>
+  </figure>
+  </div>
+
+  <h3>Process plane (<code>choke.o</code>, 4 programs)</h3>
+  <p>All four attach at the cgroup-v2 root and gate socket egress for the calling PID by reading <code>choke_pids</code>: <code>SEVER</code>/<code>QUARANTINE</code> deny outright; <code>THROTTLE</code>/<code>TARPIT</code> run a lazy-refill token bucket and deny when empty. <code>connect4/6</code> cover connected TCP/UDP; <code>sendmsg4/6</code> close the <em>connectionless</em> UDP gap (DNS tunnelling) that never calls <code>connect()</code>. This is what makes throttling <em>actually rate-limit exfiltration</em> rather than merely log it.</p>
+
+  <h3>Device plane (<code>devchoke.o</code>, 2 programs)</h3>
+  <p>Attached to <code>tc</code> clsact on an inline bridge interface. <code>devchoke_ingress</code> keys on <code>eth-&gt;h_source</code> (the device MAC) to shape LAN→WAN; <code>devchoke_egress</code> keys on <code>eth-&gt;h_dest</code> for WAN→LAN. Attaching <em>both</em> directions is what lets <code>sever</code> cut a device off entirely rather than only choking uploads. Quarantine deliberately still passes DHCP/DNS (<code>is_infra()</code>) so a device can re-lease and recover — the very distinction between quarantine and sever. The ingress program also runs passive discovery (<code>observe()</code>) and per-device flow recording (<code>record_flow()</code>).</p>
+
+  <div class="callout"><span class="t">Byte-for-byte map layout</span> The 24-byte bucket struct is identical across <code>choke.c</code>, <code>devchoke.c</code> and the Go structs (<code>bpfmap.PIDBucket</code> / <code>devbpf.DeviceBucket</code>); <code>last_ns</code> is declared first so u64 alignment introduces no padding Go's <code>encoding/binary</code> would not emit.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 4 · ENGINE ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">4</span> &nbsp;The correlation engine</h1>
+  <p class="lead">The agent consumes the Tetragon stream, maintains an in-memory process tree keyed by <code>exec_id</code>, scores each event, and sums scores along the ancestor walk to a <strong>chain score</strong> — the number that drives both alerting and enforcement.</p>
+
+  <h2>4.1 &nbsp;Process tree &amp; chain scoring</h2>
+  <p>The tree (<code>internal/tree</code>) is keyed on Tetragon's <code>exec_id</code>, which survives PID reuse, and is TTL-bounded (~10 min). Per-event scores accumulate down the tree; the chain score is the sum over the ancestor walk (≤ 10 hops). Calibration ensures any single event is at most "low" — "high"/"critical" requires a <em>chain</em>, which is what makes detection proactive rather than signature-reactive.</p>
+
+  <div class="two-col">
+  <div>
+  <h4>Per-event score contributions</h4>
+  <table>
+    <tbody>
+      <tr><td><code>curl|sh</code> / <code>wget|sh</code></td><td>+25</td></tr>
+      <tr><td><code>nc -e</code> / shell-arg netcat</td><td>+20</td></tr>
+      <tr><td>credential file (shadow, .ssh)</td><td>+20</td></tr>
+      <tr><td><code>base64 -d</code> in args</td><td>+15</td></tr>
+      <tr><td><code>setuid(0)</code> kprobe</td><td>+15</td></tr>
+      <tr><td>outbound TCP from a shell</td><td>+12</td></tr>
+      <tr><td>sensitive file (other)</td><td>+8</td></tr>
+      <tr><td><code>chmod +x</code></td><td>+5</td></tr>
+      <tr><td>network tool exec</td><td>+5</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <div>
+  <h4>Alert severity thresholds</h4>
+  <table>
+    <tbody>
+      <tr><td>low</td><td>chain ≥ 5</td></tr>
+      <tr><td>medium</td><td>chain ≥ 10</td></tr>
+      <tr><td>high</td><td>chain ≥ 20</td></tr>
+      <tr><td>critical</td><td>chain ≥ 40</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">Alert severity is <em>separate</em> from choke thresholds (§5). An alert is raised at chain ≥ 10; enforcement transitions can begin earlier or later depending on the deployment's choke thresholds.</p>
+  </div>
+  </div>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart LR
+  ev["Tetragon event<br/>(exec / kprobe)"]:::a --> ins["insert event<br/>+ update tree node"]:::a
+  ins --> sc["add per-event score<br/>to node"]:::a
+  sc --> walk["walk ancestors ≤10 hops<br/>sum → chain score"]:::a
+  walk --> disp{"chain crossed<br/>a choke rung?"}:::d
+  disp -- yes --> gw["Choke Gateway<br/>circuit.Evaluate()"]:::e
+  disp -- "≥10" --> al["write alert<br/>classify severity"]:::e
+  gw --> br["SSE broadcast<br/>to consoles"]:::b
+  al --> br
+  classDef a fill:#ffffff,stroke:#55606f;
+  classDef d fill:#eef1fd,stroke:#2f4bd6;
+  classDef e fill:#fbecef,stroke:#c02b45;
+  classDef b fill:#eef7f1,stroke:#1f8a55;
+  </pre>
+  <div class="figcap">Figure 4.1 — Every event is scored and dispatched to the gateway, not only alert-worthy ones — a process can be throttled before it ever raises an alert.</div>
+  </figure>
+  </div>
+</section>
+
+<!-- ╔════════════════════════════════ 5 · CHOKE GATEWAY ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">5</span> &nbsp;The Choke Gateway — graduated process enforcement</h1>
+  <p class="lead">The platform's flagship capability. A monotonic five-rung state machine turns a chain score into a graded, reversible-where-it-matters kernel action, one process (<code>exec_id</code>) at a time — a "speed bump → roadblock → freeze → kill" gradient rather than binary block/allow.</p>
+
+  <h2>5.1 &nbsp;The five-rung ladder</h2>
+  <table>
+    <thead><tr><th>Rung</th><th>Default threshold</th><th>Kernel effect</th><th>Reversible</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><strong>pristine</strong></td><td>&lt; 20</td><td>nothing</td><td>—</td><td>Normal behaviour, no choke</td></tr>
+      <tr><td><strong>throttled</strong></td><td>≥ 20</td><td><code>choke-throttled</code> cgroup: 5% CPU, 200 max pids, low IO weight + token-bucket egress</td><td>yes</td><td>Gentle nudge — capped bandwidth to do harm</td></tr>
+      <tr><td><strong>tarpit</strong></td><td>≥ 50</td><td><code>choke-tarpit</code> cgroup: 1% CPU, 50 max pids, lowest IO</td><td>yes</td><td>Severely degraded — let the attacker reveal their playbook</td></tr>
+      <tr><td><strong>quarantined</strong></td><td>≥ 120</td><td><code>choke-quarantined</code> cgroup + <code>cgroup.freeze = 1</code></td><td>yes (Thaw)</td><td>Frozen mid-syscall — forensics-friendly, state preserved</td></tr>
+      <tr><td><strong>severed</strong></td><td>≥ 200</td><td><code>kill(pid, SIGKILL)</code> + bpfmap entry cleared</td><td><strong>no</strong></td><td>Terminal — process gone, PID-reuse safe</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">The <em>binary</em> defaults are 5/15/25/40; the deploy path raises them to <strong>20 / 50 / 120 / 200</strong> so Ubuntu's sshd MOTD churn (which scores ~84) reaches only tarpit — never quarantine (which would freeze sshd and lock the operator out) or sever.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> pristine
+  pristine --> throttled: chain ≥ 20
+  throttled --> tarpit: chain ≥ 50
+  tarpit --> quarantined: chain ≥ 120
+  quarantined --> severed: chain ≥ 200
+
+  throttled --> pristine: operator release / auto-revert
+  tarpit --> pristine: operator release / auto-revert
+  quarantined --> pristine: Thaw (operator)
+  severed --> [*]: terminal (SIGKILL)
+
+  note right of severed
+    One-way. Reversal only
+    exists below sever.
+  end note
+  note left of pristine
+    Monotonic climb —
+    never slides down
+    automatically.
+  end note
+  </pre>
+  <div class="figcap">Figure 5.1 — The process choke state machine. Climbs are score-driven and automatic; descents require an audited operator action or a pre-scheduled auto-revert.</div>
+  </figure>
+  </div>
+
+  <h2>5.2 &nbsp;Two design principles</h2>
+  <p><strong>Monotonic.</strong> Once a process reaches a rung it never slides back automatically — a transient false-positive spike is not silently undone; the audit trail records "this was suspicious, here is what we did, here is what an operator changed." The only ways down are: an <em>operator override</em> (records actor + mandatory reason), a pre-scheduled <em>auto-revert</em> ("tarpit for 5 minutes"), a <em>forget</em> (drops live state, keeps history), or a <em>Thaw</em> (clears the freeze on the whole quarantine tier).</p>
+  <p><strong>Graduated, not binary.</strong> Each tier matches the <em>cost of being wrong</em>: throttle is reversible and cheap (a false positive recovers in seconds); sever is unrecoverable and used only when the chain score is unambiguous.</p>
+
+  <h2>5.3 &nbsp;Composition — circuit, enforcers, store, broadcast</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  gw["Choke Gateway<br/>(internal/choke/gateway.go)"]:::g
+  circ["circuit — 5-rung state machine<br/>(Evaluate / Force / Snapshot)"]:::g
+  subgraph ENF["Enforcer chain (Multi)"]
+    cg["cgroupv2 — move PID,<br/>freeze on quarantine"]:::e
+    sv["severer — SIGKILL on sever"]:::e
+    bm["bpfmap — write choke_pids<br/>(token buckets, telemetry mirror)"]:::e
+  end
+  st[("store — hash-chained<br/>decisions table")]:::d
+  sse["SSE fanout → consoles"]:::b
+
+  score["chain score / manual action"] --> gw --> circ
+  circ -- "rung transition" --> ENF
+  ENF -- "kernel action" --> kern[/"Linux kernel"/]:::k
+  gw -- "append decision (actor + reason)" --> st
+  gw -- "broadcast" --> sse
+  classDef g fill:#eef1fd,stroke:#2f4bd6;
+  classDef e fill:#fbecef,stroke:#c02b45;
+  classDef d fill:#f5f7fa,stroke:#8a94a3;
+  classDef b fill:#eef7f1,stroke:#1f8a55;
+  classDef k fill:#fff,stroke:#14181f;
+  </pre>
+  <div class="figcap">Figure 5.2 — Gateway composition. The circuit decides the rung; the <code>Multi</code> enforcer chain actuates it; every transition is audited and broadcast.</div>
+  </figure>
+  </div>
+
+  <p>Score-driven transitions enter through <code>gateway.OnEvent()</code>; operator actions enter through <code>gateway.Manual()</code>. Both append a hash-chained row to <code>decisions</code> (§7). The enforcer chain is composed via <code>Multi</code>: <code>cgroupv2</code> physically moves the PID into <code>/sys/fs/cgroup/choke-&lt;tier&gt;/cgroup.procs</code> (and sets <code>cgroup.freeze=1</code> for quarantine), <code>severer</code> issues the SIGKILL for the top rung, and <code>bpfmap</code> writes the per-PID token bucket into <code>choke_pids</code>. From kprobe firing to PID moved into the matching cgroup is typically sub-millisecond.</p>
+</section>
+
+<!-- ╔════════════════════════════════ 6 · DEVICE CHOKE ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">6</span> &nbsp;The Network Choke Gateway — device enforcement</h1>
+  <p class="lead">A second, parallel data plane extends the same graduated model from <em>per-process</em> to <em>per-device</em>. On an inline transparent bridge it throttles or blocks a LAN device's forwarded traffic keyed by MAC address — reaching an IoT camera or laptop that has no agent and that the host's own cgroup hooks can never see.</p>
+
+  <h2>6.1 &nbsp;Inline-bridge topology</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart LR
+  subgraph LAN["LAN devices (no agent)"]
+    cam["📷 IP camera"]:::dev
+    lap["💻 laptop"]:::dev
+    iot["🔌 IoT sensor"]:::dev
+  end
+  subgraph BR["Forwarding host — inline transparent bridge"]
+    direction TB
+    eth0(("eth0 (LAN)")):::nic
+    br0["br0 (bridge)<br/>tc clsact ingress+egress<br/>devchoke.o"]:::brdev
+    eth1(("eth1 (WAN)")):::nic
+    gw2["Device Gateway<br/>+ device table<br/>(MAC↔IP↔host)"]:::g
+    eth0 --- br0 --- eth1
+    br0 -. "observe / flows" .-> gw2
+    gw2 -. "write choke_devs verdict" .-> br0
+  end
+  wan(("🌐 WAN / Internet")):::nic
+  cam & lap & iot --- eth0
+  eth1 --- wan
+  classDef dev fill:#eef1fd,stroke:#2f4bd6;
+  classDef nic fill:#f5f7fa,stroke:#8a94a3;
+  classDef brdev fill:#fdf6ea,stroke:#b7791f;
+  classDef g fill:#eef7f1,stroke:#1f8a55;
+  </pre>
+  <div class="figcap">Figure 6.1 — The device choke sits inline on a 2-NIC bridge. All LAN↔WAN frames traverse the tc-attached <code>devchoke.o</code>, keyed on device MAC.</div>
+  </figure>
+  </div>
+
+  <h2>6.2 &nbsp;Discovery, flows, and the operator loop</h2>
+  <p>Because a forwarding node has no per-device Tetragon telemetry, there is (today) no automatic score path for the MAC gateway — it is <strong>operator-driven jail/thaw with a full audit trail</strong>. To make that decision informed, the ingress program passively discovers devices (<code>choke_devs_seen</code> — last-seen, packet count, sampled source IPv4) and records per-device destination flows (<code>choke_flows</code> — MAC, dest addr, dport, proto → packets/bytes). The console's "what is this device talking to?" view reads those maps before an operator chokes.</p>
+  <p>The device gateway reuses the <em>same</em> five-rung circuit as the process gateway. The crucial difference at the top rung: a device <code>sever</code> is a <strong>reversible drop rule</strong> — sever cuts the device off, and <code>thaw</code> restores it — whereas a process sever is a terminal SIGKILL. Protected MACs (infrastructure, the operator's own management device) refuse quarantine and sever.</p>
+
+  <div class="callout"><span class="t">Independent postures</span> The two chokes have independent enforcement postures. The process choke follows <code>-enforce</code> (flippable at runtime via <code>/api/choke/mode</code>); the device choke enforces whenever it has the tc backend and is neither dry-run nor kill-switched. "Observe processes, enforce on devices" is a valid, common posture.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 7 · AUDIT CHAIN ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">7</span> &nbsp;The tamper-evident audit chain</h1>
+  <p class="lead">Every enforcement decision — automatic or operator-driven, on either gateway — is appended to a hash-chained <code>decisions</code> table. Each row's hash incorporates the previous row's hash, so silent deletion or modification of any historical decision breaks verification. This is the compliance and cyber-insurance anchor.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart LR
+  d0["Decision N-1<br/>action, exec_id, actor,<br/>reason, ts"]:::d --> h0["hash N-1 =<br/>H(fields ‖ hash N-2)"]:::h
+  h0 --> d1["Decision N<br/>throttle · pid 4821 · admin ·<br/>'reverse-shell chain'"]:::d
+  d1 --> h1["hash N =<br/>H(fields ‖ hash N-1)"]:::h
+  h1 --> d2["Decision N+1<br/>quarantine · …"]:::d
+  d2 --> h2["hash N+1 =<br/>H(fields ‖ hash N)"]:::h
+  h2 --> verify{{"GET /api/verify-chain<br/>re-walks &amp; recomputes"}}:::v
+  verify -->|"any mismatch"| broken["✗ CHAIN BROKEN<br/>@ row k"]:::bad
+  verify -->|"all match"| ok["✓ intact · N rows"]:::good
+  classDef d fill:#eef1fd,stroke:#2f4bd6;
+  classDef h fill:#f5f7fa,stroke:#8a94a3;
+  classDef v fill:#fdf6ea,stroke:#b7791f;
+  classDef bad fill:#fbecef,stroke:#c02b45;
+  classDef good fill:#eef7f1,stroke:#1f8a55;
+  </pre>
+  <div class="figcap">Figure 7.1 — Hash-chained decisions. Deleting or editing any row invalidates every subsequent hash; <code>/api/verify-chain</code> pinpoints the first break.</div>
+  </figure>
+  </div>
+
+  <p>Each decision row records the <strong>actor</strong> (which operator or "system"), a <strong>mandatory reason</strong> for destructive actions (quarantine/sever), the target <code>exec_id</code> or MAC, the from/to rung, timestamp, and dry-run flag. In the multi-tenant deployment the chain is mirrored centrally <em>per tenant</em>, with the <code>seq</code>/<code>prev_hash</code>/<code>hash</code> fields carried verbatim over the wire so the control plane re-verifies the chain without trusting transport order (§10).</p>
+
+  <div class="callout good"><span class="t">Assurance surface</span> The console's Assurance lens turns this into board-ready evidence: an integrity badge (intact / broken), the record count, the head hash, and a one-click printable report + JSON "evidence bundle" anchored to the head hash.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 8 · DATA ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">8</span> &nbsp;Data &amp; storage architecture</h1>
+  <p class="lead">Storage tiers by role: a pure-Go embedded store at the edge (keeps the agent a single static binary), a relational system-of-record and a columnar analytics store centrally, and object storage for cold/forensic data.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  subgraph EDGE["Edge (per agent)"]
+    wal[("SQLite WAL<br/>events · alerts · decisions<br/>= durable offline buffer")]:::edge
+  end
+  subgraph CENTRAL["Control plane"]
+    pg[("PostgreSQL 16<br/>tenants · users · roles · agents<br/>enrollment · cases · policies<br/>central decisions mirror")]:::pg
+    ch[("ClickHouse 24.8<br/>high-volume events / telemetry<br/>partitioned by tenant+time · TTL tiers")]:::ch
+    obj[("Object store (S3 / SeaweedFS)<br/>forensic snapshots · exports · cold archive")]:::obj
+  end
+  bus{{"NATS event bus<br/>(fan-out, replay)"}}:::bus
+
+  wal == "uplink (resume/dedup)" ==> ingest["Ingest / Collector"]:::i
+  ingest --> bus
+  bus --> pg
+  bus --> ch
+  ingest -.-> obj
+  classDef edge fill:#eef1fd,stroke:#2f4bd6;
+  classDef pg fill:#eef7f1,stroke:#1f8a55;
+  classDef ch fill:#fdf6ea,stroke:#b7791f;
+  classDef obj fill:#f5f7fa,stroke:#8a94a3;
+  classDef bus fill:#fff,stroke:#55606f;
+  classDef i fill:#fff,stroke:#55606f;
+  </pre>
+  <div class="figcap">Figure 8.1 — Storage tiers. The <code>store</code> dialect seam lets the same schema target SQLite (edge) or Postgres/ClickHouse (central).</div>
+  </figure>
+  </div>
+
+  <h2>8.1 &nbsp;Control-plane relational model (Postgres)</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+erDiagram
+  TENANT ||--o{ USER : has
+  TENANT ||--o{ AGENT : enrolls
+  TENANT ||--o{ POLICY_BUNDLE : owns
+  TENANT ||--o{ CASE : scopes
+  TENANT ||--o{ DECISION : mirrors
+  USER ||--o{ ROLE_BINDING : granted
+  AGENT ||--o{ DEVICE : observes
+  AGENT ||--o{ DECISION : emits
+  CASE ||--o{ ALERT : groups
+  ALERT ||--o{ DECISION : may_trigger
+
+  TENANT { uuid id PK }
+  USER { uuid id PK }
+  AGENT { uuid id PK }
+  ROLE_BINDING { string role }
+  POLICY_BUNDLE { string etag }
+  DEVICE { string mac }
+  CASE { string status }
+  ALERT { int severity }
+  DECISION { bigint seq }
+  </pre>
+  <div class="figcap">Figure 8.2 — Simplified control-plane entity model. Every row is keyed by <code>tenant_id</code>; the shared data-access layer tenant-filters all queries.</div>
+  </figure>
+  </div>
+
+  <p>The <code>store</code> package's <code>dialect</code> seam splits cleanly: the agent uses the SQLite path (pure-Go <code>modernc.org/sqlite</code>, cgo-free) as an <em>offline buffer</em> — events/alerts/decisions are written locally, drained upstream, and survive restarts and partitions; the control plane uses the Postgres dialect (<code>pgx/v5</code>) for the relational system-of-record and a ClickHouse dialect (<code>clickhouse-go/v2</code>) for firehose-scale event analytics.</p>
+</section>
+
+<!-- ╔════════════════════════════════ 9 · CONTROL PLANE ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">9</span> &nbsp;The multi-tenant control plane</h1>
+  <p class="lead">A set of independently-scalable, tenant-aware services behind an API gateway. Each is stateless where it can be; all derive tenant scope from verified identity, never from a client-supplied field.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  agents["Agent fleet (mTLS)"]:::a
+
+  subgraph EDGE2["Control-plane edge"]
+    gwapi["API gateway / LB<br/>(TLS, tenant scope injection)"]:::edge
+  end
+
+  subgraph SVC["Services (tenant-aware)"]
+    ingest["① Ingest / Collector<br/>derive tenant from cert · stamp · publish"]:::svc
+    detect["④ Detection engine<br/>cross-host correlation · Sigma · MITRE · TI"]:::svc
+    fleet["⑤ Fleet / Command<br/>registry · signed policy · command dispatch"]:::svc
+    ident["⑥ Identity &amp; tenancy<br/>OIDC/Keycloak · RBAC · SCIM · API tokens"]:::svc
+    cases["⑦ Cases &amp; response (SOAR-lite)<br/>incidents · SLA · playbooks · approvals"]:::svc
+    integ["⑧ Integrations<br/>SIEM(OCSF) · Slack/PagerDuty · Jira/ServiceNow"]:::svc
+    bff["⑨ Console API / BFF"]:::svc
+  end
+
+  bus{{"② Message bus (NATS)"}}:::bus
+  data[("③ Postgres · ClickHouse · Object store")]:::db
+  console["Multi-tenant React console"]:::c
+
+  agents --> gwapi --> ingest --> bus
+  bus --> detect --> data
+  detect --> cases
+  fleet -. "signed commands / policy" .-> agents
+  console --> gwapi --> bff --> data
+  ident -. "tenant-scoped tokens" .-> gwapi
+  cases --> integ
+  classDef a fill:#eef1fd,stroke:#2f4bd6;
+  classDef edge fill:#f5f7fa,stroke:#8a94a3;
+  classDef svc fill:#ffffff,stroke:#55606f;
+  classDef bus fill:#fdf6ea,stroke:#b7791f;
+  classDef db fill:#eef7f1,stroke:#1f8a55;
+  classDef c fill:#eef1fd,stroke:#2f4bd6;
+  </pre>
+  <div class="figcap">Figure 9.1 — Control-plane services. Numbering follows the architecture spec; the ingest collector is the central fan-in the single-host model lacked.</div>
+  </figure>
+  </div>
+
+  <table>
+    <thead><tr><th>Service</th><th>Responsibility</th><th>Status</th></tr></thead>
+    <tbody>
+      <tr><td>Ingest / Collector</td><td>Terminate agent mTLS; derive <code>tenant_id</code>+<code>agent_id</code> from the cert; validate, stamp tenant, publish to bus; per-tenant backpressure.</td><td><span class="tag impl">implemented</span></td></tr>
+      <tr><td>Identity &amp; tenancy</td><td>OIDC via Keycloak 26; RBAC (MSOC-admin, tenant-analyst, read-only, cross-tenant responder); tenant-scoped tokens.</td><td><span class="tag impl">implemented</span></td></tr>
+      <tr><td>Fleet / Command</td><td>Agent registry; build + Ed25519-sign policy bundles; dispatch jail/thaw/kill-switch/preset/threshold with approval + audit.</td><td><span class="tag impl">implemented</span></td></tr>
+      <tr><td>Console API / BFF</td><td>Backend-for-frontend for the React console; every call tenant-scoped by the gateway.</td><td><span class="tag impl">implemented</span></td></tr>
+      <tr><td>Detection engine</td><td>Cross-host correlation within a tenant; Sigma→rule translation; ML/baseline anomaly.</td><td><span class="tag plan">partial / roadmap</span></td></tr>
+      <tr><td>Cases &amp; response, Integrations</td><td>Case management + SLA; SIEM/SOAR/ticketing connectors.</td><td><span class="tag plan">roadmap</span></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ╔════════════════════════════════ 10 · WIRE CONTRACT ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">10</span> &nbsp;Agent ↔ control-plane wire contract</h1>
+  <p class="lead">Five gRPC services (<code>ebpfsoc.v1</code>) define the protocol. All channels are gRPC over mTLS except the single bootstrap enrollment call. Identity is derived from the client certificate — <strong>no request message carries <code>tenant_id</code></strong>, and that omission is load-bearing.</p>
+
+  <table>
+    <thead><tr><th>Channel</th><th>Service / RPC</th><th>Dir</th><th>Shape</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td>Enroll</td><td><code>EnrollmentService.Enroll / Renew</code></td><td>agent→CP</td><td>unary (bootstrap TLS)</td><td>One-time cert issuance; binds tenant+agent</td></tr>
+      <tr><td>Telemetry</td><td><code>TelemetryService.StreamTelemetry</code></td><td>agent→CP</td><td>bidi stream</td><td>Events/alerts/decisions; batched, deduped, resumable</td></tr>
+      <tr><td>Command</td><td><code>CommandService.Commands</code></td><td>CP→agent</td><td>bidi stream</td><td>mode/jail/thaw/thresholds/preset/kill-switch; signed, acked</td></tr>
+      <tr><td>Policy</td><td><code>PolicyService.GetBundle</code></td><td>agent→CP</td><td>unary</td><td>Signed policy bundle by etag; verify before apply</td></tr>
+      <tr><td>Heartbeat</td><td><code>HeartbeatService.Heartbeat</code></td><td>agent→CP</td><td>unary</td><td>Health, version, kernel, data-plane state, buffer depth</td></tr>
+    </tbody>
+  </table>
+  <p class="small muted">The command stream is <em>agent-initiated</em> (the agent dials out and holds the stream) so commands reach hosts behind customer NAT/firewalls without inbound connectivity.</p>
+
+  <h2>10.1 &nbsp;Enrollment (mTLS bootstrap)</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant O as Operator (console)
+  participant A as Agent
+  participant E as EnrollmentService
+  O->>O: create one-time, tenant-scoped bootstrap token
+  O-->>A: bootstrap token
+  A->>A: generate keypair, build CSR
+  A->>E: Enroll{ bootstrap_token, csr_pem, agent_info }
+  E->>E: verify token (unexpired, one-time, tenant X)
+  E->>E: sign cert — subject: tenant=X, agent=id
+  E-->>A: EnrollResponse{ cert, ca, agent_id, not_after, endpoints }
+  Note over A,E: all later channels: mTLS with the issued client cert
+  </pre>
+  <div class="figcap">Figure 10.1 — Enrollment. Bootstrap tokens are short-lived, one-time and tenant-scoped; issued certs are short-lived and auto-rotated. An agent cannot change its tenant by re-issuing a CSR.</div>
+  </figure>
+  </div>
+
+  <h2>10.2 &nbsp;Telemetry uplink — at-least-once, idempotent, resumable</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant A as Agent (WAL buffer)
+  participant C as Collector
+  A->>C: TelemetryBatch{ agent_seq=N, records[dedup_key…] }
+  C->>C: derive (tenant, agent) from cert · dedup on (agent, dedup_key)
+  C-->>A: TelemetryAck{ acked_through_seq=N, backpressure? }
+  A->>A: free WAL rows ≤ N
+  Note over A,C: reconnect after partition ↓
+  A->>C: resume from last acked seq (replay is safe — dedup)
+  C-->>A: TelemetryAck{ backpressure: max_in_flight, pause_ms }
+  A->>A: throttle send rate
+  </pre>
+  <div class="figcap">Figure 10.2 — Uplink semantics. Agent-assigned <code>dedup_key</code> makes replays harmless; cumulative <code>acked_through_seq</code> drives WAL truncation; per-agent backpressure protects other tenants.</div>
+  </figure>
+  </div>
+
+  <h2>10.3 &nbsp;Command channel — signed, guard-railed, acked</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant F as Fleet / Command (CP)
+  participant A as Agent
+  participant K as Kernel enforcers
+  A->>F: open Commands stream (agent-initiated)
+  F->>F: sign command (Ed25519) · issued_at / expires_at
+  F-->>A: Command{ jail exec_id, signature, signer_key_id }
+  A->>A: verify signature vs fleet public key
+  A->>A: reject if expired (STATUS_EXPIRED)
+  A->>A: apply LOCAL guardrails (protected list · kill-switch)
+  A->>K: cgroup move / freeze / SIGKILL
+  A-->>F: CommandAck{ APPLIED } (audited both ends)
+  </pre>
+  <div class="figcap">Figure 10.3 — "Signed-everything-downstream." Local guardrails override any command — a command cannot remove <code>sudo</code>/<code>sshd</code> from the protected set (the sudo-lockout trap).</div>
+  </figure>
+  </div>
+</section>
+
+<!-- ╔════════════════════════════════ 11 · TENANT ISOLATION ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">11</span> &nbsp;Tenant isolation — the invariant</h1>
+  <p class="lead">In an MSSP, one bug leaking another customer's data is existential. Isolation is therefore enforced at four independent layers, so no single defect breaches it.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  subgraph L1["Layer 1 · Identity"]
+    i1["tenant_id derived from mTLS client cert subject —<br/>never from a payload field.<br/>Operators get scope from RBAC role."]:::l
+  end
+  subgraph L2["Layer 2 · Ingest"]
+    i2["Collector stamps the derived tenant_id on every<br/>record before it hits the bus · per-tenant rate limits"]:::l
+  end
+  subgraph L3["Layer 3 · Storage"]
+    i3["ClickHouse partitions &amp; Postgres rows keyed by tenant_id;<br/>shared data-access layer tenant-filters every query;<br/>per-tenant encryption context at rest"]:::l
+  end
+  subgraph L4["Layer 4 · API"]
+    i4["Gateway injects tenant scope per request;<br/>handlers cannot widen it except via an explicit,<br/>audited cross-tenant MSOC role"]:::l
+  end
+  L1 --> L2 --> L3 --> L4
+  L4 --> test{{"CI: attempt cross-tenant reads<br/>through every path → assert denial"}}:::t
+  classDef l fill:#eef1fd,stroke:#2f4bd6;
+  classDef t fill:#fdf6ea,stroke:#b7791f;
+  </pre>
+  <div class="figcap">Figure 11.1 — Four-layer isolation. The invariant is verified by automated cross-tenant denial tests and an external pen-test before GA.</div>
+  </figure>
+  </div>
+
+  <div class="callout danger"><span class="t">Load-bearing omission</span> No request message in the wire contract carries an authoritative <code>tenant_id</code>. A record that <em>did</em> could only ever be tamper-detection telemetry — never authorization. Tenant identity always comes from the verified certificate or the RBAC role.</div>
+</section>
+
+<!-- ╔════════════════════════════════ 12 · SECURITY ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">12</span> &nbsp;Security model &amp; threat coverage</h1>
+
+  <h2>12.1 &nbsp;Cryptographic posture</h2>
+  <table>
+    <thead><tr><th>Concern</th><th>Mechanism</th><th>Where</th></tr></thead>
+    <tbody>
+      <tr><td>Agent ↔ CP transport &amp; identity</td><td>mTLS; identity from cert subject</td><td><code>internal/mtls</code></td></tr>
+      <tr><td>Command / policy integrity</td><td>Ed25519 "signed-everything-downstream"; agents hold only the public key</td><td><code>internal/signing</code></td></tr>
+      <tr><td>Audit integrity</td><td>Hash-chained decisions; <code>/api/verify-chain</code></td><td><code>internal/store/decisions.go</code></td></tr>
+      <tr><td>Operator identity (single-host)</td><td>bcrypt creds, HMAC-signed stateless cookie sessions, CSRF, login rate-limit</td><td><code>internal/api/auth.go</code></td></tr>
+      <tr><td>Operator identity (multi-tenant)</td><td>OIDC via Keycloak; RBAC; SCIM; API tokens</td><td><code>internal/identity</code>, <code>internal/authz</code></td></tr>
+    </tbody>
+  </table>
+
+  <h2>12.2 &nbsp;The autonomy contract (the moat)</h2>
+  <p>Nothing in the protocol makes enforcement depend on the channel being up. If the control plane is unreachable, the agent keeps enforcing its last-applied signed policy and keeps buffering telemetry in the WAL, draining on reconnect via the resume semantics. Heartbeat/command/policy timeouts degrade to "operate on last known good" — <em>never</em> to "stop enforcing." This property is a required CI test (Phase-1 exit criterion: "still enforces when disconnected").</p>
+
+  <h2>12.3 &nbsp;Local guardrails that override the cloud</h2>
+  <ul>
+    <li><strong>Protected process/MAC lists</strong> — <code>sudo</code>, <code>sshd</code>, the operator's management device, and infrastructure cannot be quarantined/severed, even by a signed command that tries to remove them from the set. This is the <em>sudo-lockout trap</em> defence.</li>
+    <li><strong>Kill-switch</strong> — a fleet-wide (and per-host) emergency halt of all enforcement.</li>
+    <li><strong>Threshold calibration</strong> — deploy defaults keep routine noise (sshd MOTD ~84) below quarantine so the operator never freezes their own access.</li>
+  </ul>
+
+  <div class="callout"><span class="t">Threat traceability</span> The wire contract maps each decision to a threat ID: cert-derived tenant (CH-2), dedup+resume (CH-3), backpressure (CH-4), signed+acked commands (CH-5), local guardrails (EN-1/EN-4), signed policy (SC-4), one-time bootstrap + short-lived certs (SC-7/CH-6), and "no channel is a prerequisite for enforcement" (CH-7).</div>
+</section>
+
+<!-- ╔════════════════════════════════ 13 · CONSOLE ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">13</span> &nbsp;The operator console</h1>
+  <p class="lead">A Vite multi-entry React SPA (TypeScript, Tailwind, Radix, D3, Zustand), built to a static bundle and embedded into the engine via <code>go:embed</code> in the single-host build, or served by nginx in the multi-tenant build. The information architecture follows the SOC lifecycle: detect → investigate → respond → report.</p>
+
+  <h2>13.1 &nbsp;Surfaces</h2>
+  <table>
+    <thead><tr><th>Route</th><th>Console</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>/</code></td><td>SOC dashboard</td><td>Executive summary, alert triage, MITRE coverage, IOCs, live event stream, correlation graph</td></tr>
+      <tr><td><code>/choke</code></td><td>Choke Gateway</td><td>State ladder, tracked processes, thresholds, manual override, kill-switch, policy workbench</td></tr>
+      <tr><td><code>/devices</code></td><td>Network Choke</td><td>Per-device (MAC) discovery, flows, jail/thaw, enforcement mode</td></tr>
+      <tr><td><code>/fleet</code></td><td>Fleet console</td><td>Drive N hosts as a unit (status, presets, thresholds, kill-switch)</td></tr>
+    </tbody>
+  </table>
+
+  <h2>13.2 &nbsp;Dual-mode containment surfaces (Command ⇄ Assurance)</h2>
+  <p>The two Choke Gateways — the product's UVP — present the same live data through two lenses on one page, sharing a single <code>ContainmentCommand</code> header and ladder so the process plane and the network plane read as one product:</p>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart LR
+  data[("Live containment state<br/>(circuits · decisions · audit)")]:::d
+  toggle{{"View toggle"}}:::t
+  data --> toggle
+  toggle -->|Command| cmd["<b>Command lens</b> — operator war-room<br/>• containment ladder (populations per rung)<br/>• threat-first tracked table<br/>• one-click contain + blast-radius<br/>• kill-switch / mode instrument cluster"]:::cmd
+  toggle -->|Assurance| ass["<b>Assurance lens</b> — CISO / board<br/>• posture score (transparent formula)<br/>• control effectiveness · audit integrity<br/>• enforcement + reversibility<br/>• board report + JSON evidence bundle"]:::ass
+  classDef d fill:#f5f7fa,stroke:#8a94a3;
+  classDef t fill:#fdf6ea,stroke:#b7791f;
+  classDef cmd fill:#eef1fd,stroke:#2f4bd6;
+  classDef ass fill:#eef7f1,stroke:#1f8a55;
+  </pre>
+  <div class="figcap">Figure 13.1 — One surface, two audiences. The Command lens serves the operator during an incident; the Assurance lens serves the buyer/board during review.</div>
+  </figure>
+  </div>
+  <p>Process and alert drill-downs carry <strong>dual narratives</strong> — a plain-English summary (severity, behaviour, MITRE technique, recommended action) beside the technical detail — so the same evidence reads for both an analyst and a non-technical stakeholder. Real-time updates arrive over Server-Sent Events; every alert, event and decision fans out to all connected consoles.</p>
+</section>
+
+<!-- ╔════════════════════════════════ 14 · LIFECYCLE ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">14</span> &nbsp;End-to-end event lifecycle</h1>
+  <p class="lead">From an attacker's syscall to a kernel containment action and a live console update — typically in well under a second.</p>
+
+  <div class="diagram no-break">
+  <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  participant X as Adversary process
+  participant K as Kernel (eBPF)
+  participant T as Tetragon
+  participant E as Agent / engine
+  participant G as Choke Gateway
+  participant S as Store (WAL)
+  participant U as Console (SSE)
+  X->>K: connect() / setuid(0) / read /etc/shadow
+  K->>T: kprobe fires → process_kprobe event
+  T->>E: gRPC event (policy, args, exec_id)
+  E->>E: insert event · update tree node · add score
+  E->>E: walk ancestors ≤10 → chain score
+  E->>G: dispatchGateway(exec_id, pid, score)
+  alt score crossed a rung
+    G->>K: enforcer chain — cgroup move / freeze / SIGKILL
+    G->>S: append hash-chained decision (actor+reason)
+  end
+  alt chain ≥ 10
+    E->>S: write alert · classify severity
+  end
+  E->>U: SSE broadcast (event / alert / decision)
+  U->>U: update KPIs · timeline · ladder · panels
+  </pre>
+  <div class="figcap">Figure 14.1 — The full path. Note the gateway is called on <em>every</em> event, so a process can be throttled before it ever raises an alert.</div>
+  </figure>
+  </div>
+</section>
+
+<!-- ╔════════════════════════════════ 15 · DEPLOYMENT ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">15</span> &nbsp;Deployment topologies &amp; modes</h1>
+
+  <h2>15.1 &nbsp;Enforcement / operating modes</h2>
+  <table>
+    <thead><tr><th>Mode</th><th>Flag</th><th>Behaviour</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Detect-only</strong></td><td><code>enforce: false</code></td><td>Decisions audited, kernel untouched. The safe default.</td></tr>
+      <tr><td><strong>Enforcing (process)</strong></td><td><code>-enforce</code></td><td>Real cgroup throttle/freeze + SIGKILL on this host; flippable at runtime via <code>/api/choke/mode</code>.</td></tr>
+      <tr><td><strong>Enforcing (device)</strong></td><td><code>-devchoke-obj/-iface</code></td><td>Inline-bridge tc data plane; independent of <code>-enforce</code>.</td></tr>
+      <tr><td><strong>Dry-run</strong></td><td><code>-dry-run</code></td><td>Records decisions, executes nothing — shadow a new policy safely.</td></tr>
+      <tr><td><strong>Fake</strong></td><td><code>-fake</code></td><td>Synthesizes events, no Tetragon — UI iteration / unit tests only.</td></tr>
+    </tbody>
+  </table>
+
+  <h2>15.2 &nbsp;Topologies</h2>
+  <div class="diagram no-break">
+  <pre class="mermaid">
+flowchart TB
+  subgraph T1["① Single host (self-contained)"]
+    h1["engine + Tetragon + embedded console<br/>SQLite WAL · nginx TLS"]:::t
+  end
+  subgraph T2["② Local prod-mirror (OrbStack, dev)"]
+    cp2["control plane + Keycloak + Postgres + nginx"]:::t
+    ag2["real per-tenant agent VMs<br/>(Tetragon + agent, mTLS-enrolled)"]:::t
+    ag2 == mTLS ==> cp2
+  end
+  subgraph T3["③ Multi-tenant cluster (target)"]
+    k8s["Kubernetes · multi-AZ · API gateway<br/>ingest / detection / fleet / identity / cases"]:::t
+    dp3["Postgres · ClickHouse · NATS · object store"]:::t
+    k8s --- dp3
+    fleet3["agent fleet across many tenants"]:::t
+    fleet3 == mTLS ==> k8s
+  end
+  classDef t fill:#ffffff,stroke:#55606f;
+  </pre>
+  <div class="figcap">Figure 15.1 — Three topologies over the same core: a single self-contained host, a local prod-mirror (used for development), and the target multi-tenant cluster.</div>
+  </figure>
+  </div>
+  <p class="small muted">The reference environment runs a local prod-mirror: a control plane (Keycloak + Postgres + nginx) with real per-tenant Alpine agent VMs running Tetragon and the agent binary, mTLS-enrolled and streaming genuine kernel telemetry — the same code paths as the target cluster, at laptop scale.</p>
+</section>
+
+<!-- ╔════════════════════════════════ 16 · STACK ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">16</span> &nbsp;Technology stack</h1>
+  <table>
+    <thead><tr><th>Layer</th><th>Technology</th><th>Why</th></tr></thead>
+    <tbody>
+      <tr><td>Kernel telemetry</td><td>Tetragon v1.6.1 (CO-RE eBPF) + Go client</td><td>Pre-written CO-RE programs, declarative TracingPolicy, stable exec_id, gRPC stream</td></tr>
+      <tr><td>Kernel enforcement</td><td>Hand-written eBPF C (clang) + <code>cilium/ebpf</code> v0.21 (pure-Go loader)</td><td>Per-PID token buckets &amp; MAC-keyed shaping Tetragon can't express; keeps binary static</td></tr>
+      <tr><td>Non-BPF enforcement</td><td>cgroup v2 (cpu.max, freezer), seccomp, SIGKILL</td><td>CPU throttle, full freeze, syscall denial — the rungs below sever</td></tr>
+      <tr><td>Engine / agent / CP</td><td>Go 1.25 · 5 binaries</td><td>Single static binary per role, trivial cross-compile</td></tr>
+      <tr><td>Wire protocol</td><td>gRPC 1.80 + Protobuf 1.36 · <code>ebpfsoc.v1</code></td><td>Five typed services with streaming telemetry</td></tr>
+      <tr><td>Transport auth / integrity</td><td>mTLS · Ed25519 signing</td><td>Unspoofable agent identity; forge-proof commands/policy</td></tr>
+      <tr><td>Identity / SSO</td><td>Keycloak 26 + OIDC · RBAC</td><td>Multi-tenant realms, token lifecycle, MSSP model</td></tr>
+      <tr><td>Storage</td><td>SQLite WAL (edge) · Postgres 16 · ClickHouse 24.8 · NATS · object store</td><td>Pure-Go edge buffer; relational SoR; columnar analytics; fan-out bus</td></tr>
+      <tr><td>Console</td><td>React 18 · TS 5.7 · Vite 6 · Tailwind · Radix · D3 · Zustand</td><td>Static bundle embeddable via go:embed; small, accessible</td></tr>
+      <tr><td>Observability</td><td>OpenTelemetry SDK + OTLP/HTTP</td><td>Vendor-neutral metrics export</td></tr>
+      <tr><td>Packaging</td><td>Docker/compose · systemd · OrbStack · Terraform</td><td>OSS compose stack; bare-metal units; local mirror; IaC clusters</td></tr>
+      <tr><td>Testing</td><td>Vitest · Playwright 1.49 e2e · Go testing</td><td>Unit both sides + real-browser E2E against the deployed stack</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ╔════════════════════════════════ 17 · LIMITATIONS ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">17</span> &nbsp;Limitations &amp; roadmap</h1>
+  <h2>17.1 &nbsp;Current limitations</h2>
+  <ul>
+    <li><strong>Device choke is operator-driven.</strong> A forwarding node has no per-device Tetragon telemetry, so there is no automatic score path for the MAC gateway yet — manual jail/thaw with an audit trail.</li>
+    <li><strong>One L2 hop for device choke.</strong> MAC keying assumes the gateway is the device's L2 neighbour; devices behind a downstream router collapse to that router's MAC.</li>
+    <li><strong>Device IP/hostname enrichment.</strong> The central <code>DeviceSummary</code> does not yet serialize <code>last_ip</code>; the console uses a LAN-IP heuristic until the proto is extended.</li>
+    <li><strong>Fixed scoring rules.</strong> No baseline learning yet; tuning is manual in <code>scorer.go</code> and via thresholds.</li>
+  </ul>
+  <h2>17.2 &nbsp;Roadmap themes</h2>
+  <ul>
+    <li>Cross-host correlation and Sigma→rule detection-as-code; ML/baseline anomaly models.</li>
+    <li>Case management + SLA, and outbound integrations (SIEM via OCSF, SOAR, ticketing).</li>
+    <li>Admin/governance surfaces: RBAC management, tenant administration, an admin/user action audit log, data-retention/residency controls.</li>
+    <li>Device risk scoring so the MAC gateway gains an automatic score path.</li>
+  </ul>
+
+  <div class="callout good"><span class="t">The through-line</span> Every roadmap item is additive to a core that already does the hard, differentiating thing: <strong>graduated, reversible, cryptographically-audited enforcement at the kernel and network layer</strong> — the capability the rest of the market largely leaves at detect-and-alert.</div>
+</section>
+
+<!-- ╔════════════════════════════════ APPENDIX ════════════════════════════════╗ -->
+<section class="section">
+  <h1 class="part"><span class="part-no">A</span> &nbsp;Appendices</h1>
+
+  <h2>A.1 &nbsp;HTTP API surface (single-host engine)</h2>
+  <h4>Core / SOC</h4>
+  <p class="small"><code>GET /api/{whoami,events,alerts,process/&lt;exec_id&gt;,stream,policies,attacks,honeypots,policy-stats,origin,version,system-health,decisions,verify-chain}</code> · <code>POST /api/{login,run-attack}</code> · <code>GET /api/logout</code>. All non-public paths require the <code>soc_session</code> cookie; unsafe writes require the CSRF header.</p>
+  <h4>Process Choke (<code>/choke</code>)</h4>
+  <p class="small"><code>GET /api/choke/{state,circuits,buckets,thresholds,policies,cgroups,processes,process/&lt;id&gt;,proc/&lt;pid&gt;}</code> · <code>POST /api/choke/{manual,bulk-manual,jail,forget,thaw,annotate,kill-switch,preset,mode,forensic-snapshot}</code> · <code>PUT /api/choke/thresholds</code> · <code>POST /api/choke/policy/preview</code>.</p>
+  <h4>Device Choke (<code>/devices</code>)</h4>
+  <p class="small"><code>GET /api/choke/{devices,device-state,device-flows}</code> · <code>POST /api/choke/{device-jail,device-thaw,device-mode,device-kill-switch}</code>.</p>
+  <h4>Fleet (<code>/fleet</code>)</h4>
+  <p class="small"><code>GET /api/fleet/{hosts,state,cgroups,decisions,alerts,devices}</code> · <code>POST /api/fleet/{preset,kill-switch,thaw,device-jail}</code> · <code>PUT /api/fleet/thresholds</code>.</p>
+
+  <h2>A.2 &nbsp;Supporting BPF maps</h2>
+  <table>
+    <thead><tr><th>Map</th><th>Type / size</th><th>Purpose</th></tr></thead>
+    <tbody>
+      <tr><td><code>choke_pids</code></td><td>HASH · 65,536</td><td><code>u32 pid</code> → 24-byte bucket (flags + token bucket). Read by programs 1–4.</td></tr>
+      <tr><td><code>choke_devs</code></td><td>HASH · 4,096</td><td><code>dev_key{mac[6]+pad}</code> → 24-byte bucket. Read by programs 5–6.</td></tr>
+      <tr><td><code>choke_devs_seen</code></td><td>LRU_HASH · 4,096</td><td>Passive discovery — last-seen, packet count, sampled source IPv4.</td></tr>
+      <tr><td><code>choke_flows</code></td><td>LRU_HASH · 8,192</td><td>Per-device destination flows (mac, daddr, dport, proto → pkts/bytes/last-seen).</td></tr>
+    </tbody>
+  </table>
+
+  <h2>A.3 &nbsp;Glossary</h2>
+  <table>
+    <tbody>
+      <tr><td><code>exec_id</code></td><td>Tetragon's stable per-execution process identifier; survives PID reuse. The unit of process control.</td></tr>
+      <tr><td>Chain score</td><td>Sum of per-event scores along the ancestor walk (≤10 hops) — the risk number driving alerting and choke.</td></tr>
+      <tr><td>Rung</td><td>One of the five choke states: pristine · throttled · tarpit · quarantined · severed.</td></tr>
+      <tr><td>Choke</td><td>The graduated, reversible-where-it-matters enforcement action applied to a process or device.</td></tr>
+      <tr><td>Autonomy contract</td><td>The guarantee that kernel enforcement never depends on the control plane being reachable.</td></tr>
+      <tr><td>Dedup key</td><td>Agent-assigned, resend-stable telemetry id enabling at-least-once + idempotent uplink.</td></tr>
+      <tr><td>Honeypot signal</td><td>A read of a seeded decoy credential file — a high-confidence indicator with no benign explanation.</td></tr>
+    </tbody>
+  </table>
+
+  <p class="small muted" style="margin-top:8mm; border-top:1px solid var(--line); padding-top:3mm;">
+    Generated from the eBPF-SOC source tree and the <code>/docs</code> corpus (31 documents). Diagrams rendered with Mermaid. For deeper detail on any subsystem, the cited source paths (<code>engine/internal/…</code>) and companion docs (<code>docs/architecture/</code>, <code>docs/plan/</code>) are the authoritative references.
+  </p>
+</section>
+
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "neutral",
+    securityLevel: "loose",
+    fontFamily: "Helvetica Neue, Arial, sans-serif",
+    flowchart: { htmlLabels: true, useMaxWidth: true, curve: "basis" },
+    sequence: { useMaxWidth: true, mirrorActors: false },
+    state: { useMaxWidth: true },
+    er: { useMaxWidth: true }
+  });
+  (async () => {
+    try {
+      await mermaid.run({ querySelector: ".mermaid" });
+      window.__mermaidDone = true;
+    } catch (e) {
+      window.__mermaidError = String(e && e.stack ? e.stack : e);
+      window.__mermaidDone = true;
+    }
+  })();
+</script>
+</body>
+</html>

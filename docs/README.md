@@ -1,52 +1,120 @@
 # Documentation
 
-Project docs are organized by audience and lifecycle. Start at the top
-of the relevant section.
+Project docs, organized by audience.
 
-## [Architecture](architecture/)
+> **New to the project?** Start with
+> **[getting-started/developer-onboarding.md](getting-started/developer-onboarding.md)** —
+> what it is, repo layout, build, test, and how to run it locally. Then read the
+> [tenant-isolation invariant](plan/tenant-isolation-invariant.md) and the
+> [architecture overview](architecture/overview.md).
 
-Design, components, and the gateway's runtime model.
-
-- [overview.md](architecture/overview.md) — system overview, components,
-  data flow, scoring, dashboard.
-- [state-ladder.md](architecture/state-ladder.md) — the per-process
-  five-rung state machine (pristine → throttled → tarpit → quarantined
-  → severed).
+---
 
 ## [Getting started](getting-started/)
 
-First-run setup for new contributors.
+- [developer-onboarding.md](getting-started/developer-onboarding.md) — **read
+  first**: the whole picture for a new developer (binaries, layout, build/test,
+  local-run options, key concepts).
 
-- [multipass-vm-setup.md](getting-started/multipass-vm-setup.md) —
-  bring up a local Linux VM on macOS via Multipass.
+Local dev runs on the **OrbStack mirror** —
+[deployment/orbstack-local-mirror.md](deployment/orbstack-local-mirror.md). The
+full multi-host platform (control plane + engine + one real agent per tenant +
+a device to contain, both gateways enforcing for real) is
+[deployment/aws-multi-host.md](deployment/aws-multi-host.md). Also
+at the repo root: **[CONTRIBUTING.md](../CONTRIBUTING.md)** (branch/commit/PR
+conventions + local gates).
+
+## [Architecture](architecture/)
+
+- [overview.md](architecture/overview.md) — system overview, components, data
+  flow, scoring, dashboard.
+- [state-ladder.md](architecture/state-ladder.md) — the per-process five-rung
+  enforcement machine (pristine → throttled → tarpit → quarantined → severed).
+- [network-choke-gateway.md](architecture/network-choke-gateway.md) — per-device
+  (MAC) enforcement via a TC clsact data plane on an inline Linux bridge.
+- [tech-stack-and-ebpf-programs.md](architecture/tech-stack-and-ebpf-programs.md)
+  — reference tables: every technology and why it was chosen, plus every eBPF
+  program, its hook, and the function it serves.
+
+## [Plan](plan/) — the multi-tenant SOC conversion
+
+The strategy and design for turning the single-host engine into a multi-tenant
+SaaS/MSSP platform. Design references (not status reports).
+
+- [plan.md](plan/plan.md) — the enterprise conversion plan (strategy, gap
+  analysis, migration, GA criteria).
+- [roadmap.md](plan/roadmap.md) — phased execution roadmap with exit gates.
+- [architecture.md](plan/architecture.md) — the target multi-tenant architecture.
+- [tenant-isolation-invariant.md](plan/tenant-isolation-invariant.md) — **the
+  core rule**: four-layer isolation, no cross-tenant reads.
+- [threat-model.md](plan/threat-model.md) — what the platform defends against.
+- [wire-contract.md](plan/wire-contract.md) — the agent ↔ control-plane protocol.
+- [d4c-tech-decisions.md](plan/d4c-tech-decisions.md) — infrastructure ADRs (bus,
+  store, RLS).
+- [console-v2-parity.md](plan/console-v2-parity.md) — **active work "C"**: folding
+  the engine's rich UI into the multi-tenant console (finalized status inside).
+- [kickoff-prompt.md](plan/kickoff-prompt.md) — the Phase 0 charter.
 
 ## [Deployment](deployment/)
 
-Production deployment paths.
+**Which guide?**
 
-- [linux-server.md](deployment/linux-server.md) — fresh Linux server
-  (cloud VM, bare metal, hypervisor guest).
-- [azure.md](deployment/azure.md) — Azure-specific deployment.
-- [commands.md](deployment/commands.md) — deployment command reference.
+| Scenario | Guide |
+| --- | --- |
+| **The reference deployment** — full platform across AWS hosts | [aws-multi-host.md](deployment/aws-multi-host.md) |
+| Before shipping to a customer — readiness, gaps, known traps | [pre-deployment-checklist.md](deployment/pre-deployment-checklist.md) |
+| Local dev of the **multi-tenant console** (durable, systemd, mirrors prod) | [orbstack-local-mirror.md](deployment/orbstack-local-mirror.md) |
+| Deploy the **engine** to a fresh Ubuntu server | [ubuntu-server.md](deployment/ubuntu-server.md) |
+| Fastest engine deploy (build → scp → run) | [tarball-quickstart.md](deployment/tarball-quickstart.md) |
+| Deep, manual engine walkthrough (rationale + hardening checklist) | [linux-server.md](deployment/linux-server.md) |
+| The **network / device choke** inline-bridge gateway | [network-choke-gateway.md](deployment/network-choke-gateway.md) |
+
+**Historical — the infrastructure these describe no longer exists.** The Azure
+deployment (`soc.adanianlabs.io`, VM `safeai-security-client`) was retired when
+the estate moved wholesale to AWS; the domain no longer resolves. Kept for the
+transferable runbook detail (systemd hardening, WAL-safe backups, the strangler
+sequence), not as instructions to follow:
+[azure.md](deployment/azure.md) ·
+[live-soc-adanianlabs.md](deployment/live-soc-adanianlabs.md) ·
+[controlplane-migration.md](deployment/controlplane-migration.md)
+
+> Credentials for the local stack live in `docs/credentials/` (gitignored — not
+> committed). Production secrets stay in the operator's password manager.
+
+## [Production rollout](production-rollout/)
+
+- [README.md](production-rollout/README.md) — mass-deployment + day-2 operating
+  model for many inline device-choke gateways (hardware, provisioning, fleet
+  enrollment, staged rollout, monitoring, upgrades, rollback, audit, privacy).
 
 ## [Operations](operations/)
 
-Day-2 ops once a deployment is live.
-
-- [run-on-multipass-vm.md](operations/run-on-multipass-vm.md) —
-  day-to-day runbook for the Multipass deployment.
-- [reset-engine-and-policies.md](operations/reset-engine-and-policies.md)
-  — reset the engine and reload policies.
+- [reset-engine-and-policies.md](operations/reset-engine-and-policies.md) — reset
+  the engine and reload policies (demo-prep / clean slate).
 
 ## [Reference](reference/)
 
-CLI / API reference material.
-
 - [chokectl.md](reference/chokectl.md) — the `chokectl` fleet CLI.
 
-## [Development](development/)
+## [Frontend](frontend-dev/)
 
-Project history and the original build plan.
+The dashboard: a **Vite multi-entry React** app (TypeScript, Tailwind, Zustand,
+Radix, D3, Vitest + Playwright), built to a static bundle and embedded into the Go
+binary with `go:embed` — no Node runtime in production.
 
-- [build-plan.md](development/build-plan.md) — the original 5-day build
-  plan that produced this codebase.
+- [README.md](frontend-dev/README.md) — stack, scope, the five console entries
+  (SOC, Choke, Devices, Fleet, Login), and the parity gate.
+- [recommended-stack.md](frontend-dev/recommended-stack.md) — why this stack.
+- [security-console-ui.md](frontend-dev/security-console-ui.md) — SOC briefing,
+  Choke table, and drilldown UI contracts.
+- [78-panel-redesign-target-vm-e2e-certification-plan.md](frontend-dev/78-panel-redesign-target-vm-e2e-certification-plan.md)
+  — the release certification plan.
+
+## [Development](development/) — historical
+
+Preserved *how it was built* records; the code has since shipped past them.
+
+- [build-plan.md](development/build-plan.md) — the original 5-day plan that
+  produced the first version of the codebase.
+- [network-choke-build-plan.md](development/network-choke-build-plan.md) — the
+  staged plan that built per-device (MAC) network enforcement.

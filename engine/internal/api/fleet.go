@@ -2,7 +2,6 @@ package api
 
 import (
 	"bytes"
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,10 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-)
 
-//go:embed fleet.html
-var fleetHTML string
+	"github.com/jeffmk/ebpf-poc-engine/internal/fleetprobe"
+)
 
 // FleetPeer is one entry from the hosts file: a friendly name and a base
 // URL. The local engine itself is also represented as a peer so the fleet
@@ -269,9 +267,10 @@ func truncate(s string, n int) string {
 
 // handleFleetConsole serves the embedded HTML.
 func (s *Server) handleFleetConsole(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(fleetHTML))
+	if s.serveEmbeddedWebPage(w, "fleet.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // requireFleet 503s when the feature is not configured. Centralises the
@@ -388,4 +387,56 @@ func (s *Server) handleFleetThaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.fanoutJSON(w, http.MethodPost, "/api/choke/thaw", body)
+}
+
+// handleFleetProbe answers "are these peers up?" on behalf of the browser.
+//
+// Deliberately NOT behind requireFleet: the hosts file is the fan-out control
+// set, whereas this serves the console's ad-hoc peer directory, which is
+// useful precisely on engines that have no hosts file configured. It performs
+// no fan-out and carries no credentials, so it grants nothing the operator's
+// session did not already imply.
+func (s *Server) handleFleetProbe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var req struct {
+		URLs []string `json:"urls"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"hosts": fleetprobe.New().Probe(r.Context(), req.URLs),
+	})
+}
+
+// handleFleetDevices fans the device snapshot out across every gateway so
+// one operator sees all LAN devices choked anywhere in the fleet.
+func (s *Server) handleFleetDevices(w http.ResponseWriter, r *http.Request) {
+	s.fanoutJSON(w, http.MethodGet, "/api/choke/devices", nil)
+}
+
+// handleFleetDeviceJail chokes a device by MAC across every gateway. A MAC
+// only enforces on the gateway(s) actually in its traffic path; the others
+// record the decision and report no-op, which the per-host envelope makes
+// visible.
+func (s *Server) handleFleetDeviceJail(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	body, err := readBody(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	s.fanoutJSON(w, http.MethodPost, "/api/choke/device-jail", body)
 }

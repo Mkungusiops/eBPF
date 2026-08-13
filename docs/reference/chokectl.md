@@ -10,9 +10,13 @@ The per-host web UIs at `http://<host>:8080/` and `/choke` are
 unchanged — `chokectl` is the way to operate the **fleet** as a unit
 without juggling 7 browser tabs.
 
-> Tier 1 in [docs/architecture/overview.md](../architecture/overview.md) — terminal only,
-> no central web UI. Tier 2 (a fleet aggregator with a single SOC
-> dashboard) is documented but not yet built.
+> `chokectl` is the terminal-native way to operate the fleet. There is
+> **also** a browser `/fleet` console (enable it by starting the engine
+> with `-fleet-hosts <file>`), which fans the same operations out to peers
+> server-side. Use whichever fits — `chokectl` for scripting/CI and
+> single-command sweeps, `/fleet` for a point-and-click control plane.
+> Bring up `/fleet` by starting the engine with `-fleet-hosts <file>` (a
+> `chokectl.hosts`-format peer list; see `chokectl.hosts.example`).
 
 ---
 
@@ -114,6 +118,18 @@ keeps you under the limit even when running `chokectl` in tight loops.
 | `kill-switch on \| off`       | Toggle global enforcement bypass |
 | `thaw`                        | Release the quarantined cgroup (un-freeze every paused process) |
 | `jail HOST PID ACTION REASON` | Manual override on **one specific host**. Action: `throttle` / `tarpit` / `quarantine` / `sever` |
+
+### Device choke (per-MAC)
+
+For hosts running the inline network choke
+([network-choke-gateway.md](../deployment/network-choke-gateway.md)). These
+handle the login + CSRF dance for you, so you avoid the raw `curl` sequence.
+
+| Command | What it does |
+|---|---|
+| `device-status HOST`                | Enforcement state for one host: `plane` (tc/noop), links attached, frames seen, mode, kill-switch |
+| `device-jail HOST MAC ACTION REASON`| Choke one device by MAC on one host. Action: `throttle` / `tarpit` / `quarantine` / `sever` |
+| `device-thaw HOST MAC`              | Precise per-device release (clears the device's kernel bucket) |
 
 ---
 
@@ -410,7 +426,7 @@ You're on an older `chokectl`. The script self-documents:
 - [Architecture overview](../architecture/overview.md) — where the gateway fits in
   the engine
 - [State ladder](../architecture/state-ladder.md) — what each transition action means
-- [Multipass deploy](../operations/run-on-multipass-vm.md) — single-host setup that
+- [Single-host deploy](../deployment/ubuntu-server.md) — the single-host setup that
   the fleet is built on
 - [`scripts/chokectl`](../../scripts/chokectl) — the script itself
 - [`chokectl.hosts.example`](../../chokectl.hosts.example) — sample config

@@ -31,7 +31,13 @@ log "kernel $KREL with BTF — ok"
 # ───── apt deps ─────────────────────────────────────────────────────────────
 log "installing apt packages"
 sudo apt-get update -y
-sudo apt-get install -y git curl make jq build-essential ca-certificates
+# clang + libbpf-dev + linux-headers are needed to compile the cilium/ebpf
+# data plane (engine/internal/enforce/bpfmap/bpf/choke.c). They're tiny on
+# top of the existing build-essential install (~80MB total).
+sudo apt-get install -y git curl make jq build-essential ca-certificates \
+                        clang llvm libbpf-dev "linux-headers-$(uname -r)" || \
+sudo apt-get install -y git curl make jq build-essential ca-certificates \
+                        clang llvm libbpf-dev linux-headers-generic
 
 # ───── Docker ───────────────────────────────────────────────────────────────
 if ! command -v docker >/dev/null 2>&1; then
@@ -143,6 +149,54 @@ else
   log "         The engine will still sever (SIGKILL) and will still record decisions."
 fi
 
+# ───── BPF data plane compile ───────────────────────────────────────────────
+# Compile the cilium/ebpf data plane (choke.c) to choke.o. The deploy
+# bundle ships the .c source; we build the .o here so it's matched to the
+# VM's kernel headers. Output goes next to the source so the engine can
+# load it via -bpf-obj.
+BPF_SRC_DIR="$(pwd)/engine/internal/enforce/bpfmap/bpf"
+if [[ ! -d "$BPF_SRC_DIR" ]]; then
+  # When run from the deploy bundle layout, the source sits under the
+  # bundle root rather than alongside the engine package tree.
+  BPF_SRC_DIR="$(pwd)/bpf"
+fi
+# devchoke.c (the network/per-device data plane) ships from the same bundle
+# dir; when the engine package tree is present it lives one package over.
+DEV_BPF_SRC_DIR="$(pwd)/engine/internal/enforce/devbpf/bpf"
+if [[ ! -d "$DEV_BPF_SRC_DIR" ]]; then
+  DEV_BPF_SRC_DIR="$BPF_SRC_DIR"   # bundle layout: both .c sit under ./bpf
+fi
+
+# compile_bpf SRC OUT [extra clang args...] — build one CO-RE-free BPF
+# object with the shared clang recipe.
+compile_bpf() {
+  local src="$1" out="$2"; shift 2
+  declare -a CLANG_ARGS=(-O2 -g -target bpf)
+  case "$(uname -m)" in
+    x86_64)  CLANG_ARGS+=(-D__TARGET_ARCH_x86) ;;
+    aarch64) CLANG_ARGS+=(-D__TARGET_ARCH_arm64) ;;
+  esac
+  CLANG_ARGS+=(-I"/usr/include/$(uname -m)-linux-gnu" "$@")
+  log "compiling BPF data plane: $src -> $out"
+  clang "${CLANG_ARGS[@]}" -c "$src" -o "$out"
+  log "→ $out"
+}
+
+if [[ -f "$BPF_SRC_DIR/choke.c" ]]; then
+  compile_bpf "$BPF_SRC_DIR/choke.c" "$BPF_SRC_DIR/choke.o"
+else
+  log "WARNING: $BPF_SRC_DIR/choke.c not found — skipping BPF compile (engine will run with the noop backend)"
+fi
+
+# devchoke.o is optional: only the network choke gateway uses it. It needs
+# the if_ether.h / ip.h / pkt_cls.h uapi headers (covered by linux-headers).
+if [[ -f "$DEV_BPF_SRC_DIR/devchoke.c" ]]; then
+  command -v tc >/dev/null 2>&1 || { log "installing iproute2 (tc) for the device choke"; sudo apt-get install -y iproute2 || true; }
+  compile_bpf "$DEV_BPF_SRC_DIR/devchoke.c" "$DEV_BPF_SRC_DIR/devchoke.o"
+else
+  log "note: $DEV_BPF_SRC_DIR/devchoke.c not found — skipping network device choke compile"
+fi
+
 log "──────────────────────────────────────────────────────────────"
 log " Day 1 done. Suggested next steps:"
 log "   sudo make policies-apply                # apply TracingPolicies (incl. enforce/)"
@@ -151,6 +205,7 @@ log "       -tetragon unix:///var/run/tetragon/tetragon.sock \\"
 log "       -policies policies \\"
 log "       -choke-policies policies/choke \\"
 log "       -enforce \\"
+log "       -pass 'choose-a-strong-password'   # REQUIRED: no default; engine fails fast without it \\"
 log "       -http :8080"
 log ""
 log "   then open the choke console:"

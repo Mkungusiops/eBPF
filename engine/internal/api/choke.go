@@ -1,12 +1,12 @@
 package api
 
 import (
-	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
@@ -17,9 +17,6 @@ import (
 
 	"gopkg.in/yaml.v3"
 )
-
-//go:embed choke.html
-var chokeHTML string
 
 // SetGateway hands the gateway pointer to the server so the /api/choke/*
 // endpoints can call it. Wired from main(); separate from NewServer so the
@@ -39,9 +36,10 @@ func (s *Server) gatewayOrErr(w http.ResponseWriter) *choke.Gateway {
 
 // GET /choke — the embedded console.
 func (s *Server) handleChokeConsole(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	_, _ = w.Write([]byte(chokeHTML))
+	if s.serveEmbeddedWebPage(w, "choke.html") {
+		return
+	}
+	serveMissingEmbeddedWeb(w)
 }
 
 // GET /api/choke/state — single-call dashboard hydrate. Returns mode,
@@ -157,6 +155,25 @@ func validateThresholds(c circuit.Config) error {
 // to the prior state after the given delay. Useful for "tarpit this for
 // 5 minutes while I investigate" — frees the operator from having to
 // remember to undo it.
+// requireReasonForDestructive rejects an unjustified quarantine/sever.
+//
+// Those two rungs are the ones an audit asks about: quarantine freezes a
+// process and sever SIGKILLs it (terminal — thaw cannot bring it back). A
+// reason that is merely OPTIONAL becomes an empty reason under time pressure,
+// leaving the audit chain recording that something drastic happened with no
+// statement of why. Enforced server-side so it cannot be skipped by calling the
+// API directly. The reversible rungs stay frictionless on purpose.
+func requireReasonForDestructive(action, reason string) error {
+	switch action {
+	case "quarantine", "sever":
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("a reason is required to %s (this action is %s)", action,
+				map[string]string{"quarantine": "disruptive", "sever": "irreversible"}[action])
+		}
+	}
+	return nil
+}
+
 func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 	g := s.gatewayOrErr(w)
 	if g == nil {
@@ -180,6 +197,10 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 	}
 	action, err := parseAction(body.Action)
 	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := requireReasonForDestructive(body.Action, body.Reason); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -309,15 +330,76 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		ExecID string `json:"exec_id"`
+		PID    uint32 `json:"pid"`
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	actor := s.auth.Username()
+
+	// Targeted release. Without this branch the only thing thaw could do was
+	// unfreeze the whole quarantine TIER without moving anyone out of it or
+	// updating any circuit state — so a per-process "release" reported success
+	// and left the process quarantined forever. ActNone moves the pid into the
+	// limit-free pristine cgroup and drives the circuit to pristine, which is
+	// what the caller is actually asking for. Matches the control plane, where
+	// thaw has always been per-process.
+	if body.ExecID != "" {
+		d, err := g.Manual(r.Context(), choke.ManualRequest{
+			ExecID: body.ExecID,
+			PID:    body.PID,
+			Action: circuit.ActNone,
+			Reason: body.Reason,
+			Actor:  actor,
+		})
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, map[string]interface{}{
+			"thawed": "ok",
+			"scope":  "process",
+			"state":  d.To.String(),
+		})
+		return
+	}
+
+	// No target: the legacy tier-wide unfreeze. Kept because chokectl and the
+	// "Thaw quarantine" control both rely on it.
 	if err := g.ThawQuarantine(actor, body.Reason); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"thawed": "ok"})
+	writeJSON(w, map[string]string{"thawed": "ok", "scope": "tier"})
+}
+
+// POST /api/choke/mode — runtime swap between detect-only and enforcing.
+// Body: {enforcing: bool, reason: string}. Returns the mode that was in
+// effect before the swap so the caller can detect no-ops. The change
+// applies immediately to all subsequent decisions; in-flight Apply() calls
+// are unaffected (they hold their own enforcer reference).
+func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
+	g := s.gatewayOrErr(w)
+	if g == nil {
+		return
+	}
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Enforcing bool   `json:"enforcing"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	prev := g.SetEnforcing(body.Enforcing, s.auth.Username(), body.Reason)
+	writeJSON(w, map[string]interface{}{
+		"mode":     string(g.Mode()),
+		"previous": string(prev),
+	})
 }
 
 // POST /api/choke/preset — atomically apply a named operational mode.
@@ -408,18 +490,18 @@ func (s *Server) handleChokeForensicSnapshot(w http.ResponseWriter, r *http.Requ
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="choke-forensic-snapshot.json"`)
 	writeJSON(w, map[string]interface{}{
-		"taken_at":     time.Now().UTC().Format(time.RFC3339Nano),
-		"mode":         string(g.Mode()),
-		"dry_run":      g.DryRun(),
-		"kill_switch":  g.KillSwitched(),
-		"thresholds":   thr,
-		"counts":       g.StateCounts(),
-		"circuits":     g.Snapshot(),
-		"decisions":    decisions,
-		"cgroups":      cgroups,
-		"bpf_buckets":  buckets,
-		"audit_chain":  chain,
-		"annotations":  g.AllAnnotations(),
+		"taken_at":        time.Now().UTC().Format(time.RFC3339Nano),
+		"mode":            string(g.Mode()),
+		"dry_run":         g.DryRun(),
+		"kill_switch":     g.KillSwitched(),
+		"thresholds":      thr,
+		"counts":          g.StateCounts(),
+		"circuits":        g.Snapshot(),
+		"decisions":       decisions,
+		"cgroups":         cgroups,
+		"bpf_buckets":     buckets,
+		"audit_chain":     chain,
+		"annotations":     g.AllAnnotations(),
 		"pending_reverts": g.PendingReverts(),
 	})
 }
@@ -734,5 +816,9 @@ func (s *Server) handleChokePolicyPreview(w http.ResponseWriter, r *http.Request
 		"valid":   true,
 		"policy":  p,
 		"matches": matches,
+		// scanned is the size of the live tracked snapshot the policy was
+		// evaluated against, so the UI can show "N matched of M scanned"
+		// and explain an empty match set instead of looking broken.
+		"scanned": len(g.Snapshot()),
 	})
 }

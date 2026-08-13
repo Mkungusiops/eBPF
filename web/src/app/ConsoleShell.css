@@ -1,0 +1,71 @@
+.console-shell {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.console-shell__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.6rem 1rem;
+  border-bottom: 1px solid var(--border, #2a2f3a);
+}
+
+.console-shell__brand {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+/* Identity + session controls sit together on the right of the header. */
+.console-shell__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.console-shell__signout {
+  appearance: none;
+  cursor: pointer;
+  padding: 0.35rem 0.7rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted, #94a3b8);
+  background: transparent;
+  border: 1px solid var(--border, #2a2f3a);
+  border-radius: 6px;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.console-shell__signout:hover:not(:disabled),
+.console-shell__signout:focus-visible {
+  color: var(--text, #e2e8f0);
+  border-color: var(--accent, #22d3ee);
+  background: rgba(34, 211, 238, 0.08);
+  outline: none;
+}
+
+.console-shell__signout:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.console-shell__main {
+  flex: 1;
+  min-height: 0;
+}
+
+.console-shell__status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 60vh;
+  opacity: 0.75;
+}
+
+.console-shell__status--error {
+  color: var(--danger, #ff6b6b);
+  opacity: 1;
+}

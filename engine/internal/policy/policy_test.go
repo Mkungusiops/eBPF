@@ -77,11 +77,11 @@ func TestMatchesBinaryRules(t *testing.T) {
 		bin  string
 		want bool
 	}{
-		{"/bin/bash", true},          // exact
-		{"/usr/bin/python", true},    // basename match
-		{"/opt/app/main.py", true},   // prefix match (trailing slash)
-		{"/usr/bin/sh", false},       // no match
-		{"/bin/python", true},        // basename
+		{"/bin/bash", true},        // exact
+		{"/usr/bin/python", true},  // basename match
+		{"/opt/app/main.py", true}, // prefix match (trailing slash)
+		{"/usr/bin/sh", false},     // no match
+		{"/bin/python", true},      // basename
 		{"/etc/passwd", false},
 	}
 	for _, tc := range cases {
@@ -106,9 +106,9 @@ func TestSetMatchPreservesOrder(t *testing.T) {
 	for i, name := range []string{"a", "b", "c"} {
 		_ = s.Add(Policy{
 			APIVersion: APIVersion, Kind: Kind,
-			Metadata:   Metadata{Name: name},
-			Match:      Match{Binaries: []string{"/bin/x"}},
-			Buckets:    []Bucket{{Dimension: "d", RatePerSec: float64(i + 1)}},
+			Metadata: Metadata{Name: name},
+			Match:    Match{Binaries: []string{"/bin/x"}},
+			Buckets:  []Bucket{{Dimension: "d", RatePerSec: float64(i + 1)}},
 		})
 	}
 	got := s.Match("/bin/x")

@@ -1,6 +1,9 @@
 package score
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestScoreExec(t *testing.T) {
 	cases := []struct {
@@ -21,7 +24,7 @@ func TestScoreExec(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := Score("process_exec", tc.binary, tc.args, "", 0)
+			got, _, _ := Score("process_exec", tc.binary, tc.args, "", 0)
 			if got < tc.minWant {
 				t.Fatalf("got=%d want>=%d", got, tc.minWant)
 			}
@@ -45,7 +48,7 @@ func TestScoreKprobe(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _ := Score("process_kprobe", "/bin/bash", tc.args, tc.policy, 0)
+			got, _, _ := Score("process_kprobe", "/bin/bash", tc.args, tc.policy, 0)
 			if got < tc.wantMin {
 				t.Fatalf("got=%d want>=%d", got, tc.wantMin)
 			}
@@ -77,8 +80,64 @@ func TestSeverity(t *testing.T) {
 }
 
 func TestUnknownEventType(t *testing.T) {
-	got, _ := Score("not_a_thing", "/bin/bash", "", "", 0)
+	got, _, _ := Score("not_a_thing", "/bin/bash", "", "", 0)
 	if got != 0 {
 		t.Fatalf("unknown event type should score 0, got %d", got)
+	}
+}
+
+// The credential policy had no case in scoreKprobe at all, so every event it
+// produced scored 0 and never raised an alert. Verified against the live rig:
+// a read of ~/.aws/credentials produced no alerts in the same command where
+// /etc/shadow produced four.
+func TestCredentialStoreReadIsScored(t *testing.T) {
+	for _, path := range []string{
+		"/home/ubuntu/.aws/credentials",
+		"/home/ubuntu/.kube/config",
+		"/home/ubuntu/.gnupg/secring.gpg",
+		"/home/ubuntu/.netrc",
+		"/etc/gshadow",
+	} {
+		got, reason, _ := Score("process_kprobe", "/bin/cat", path+" 4", "override-credential-read", 0)
+		if got <= 0 {
+			t.Fatalf("%s scored %d — credential theft would raise no alert", path, got)
+		}
+		if reason == "" {
+			t.Fatalf("%s scored %d with no reason — an alert with no description is not triageable", path, got)
+		}
+	}
+}
+
+// The mask the policy matched on was being joined into the args and ending up
+// verbatim in the description ("Sensitive file accessed: /etc/passwd 4").
+func TestDescriptionDoesNotLeakTheArgMask(t *testing.T) {
+	for _, policy := range []string{"sensitive-file-access", "override-credential-read"} {
+		_, reason, _ := Score("process_kprobe", "/bin/cat", "/etc/shadow 4", policy, 0)
+		if strings.HasSuffix(reason, " 4") || strings.Contains(reason, "shadow 4") {
+			t.Fatalf("%s leaked the permission mask into the description: %q", policy, reason)
+		}
+	}
+}
+
+// Band must order the same way Severity labels do, or alerting on an increase
+// in band would not correspond to an increase in reported severity.
+func TestBandOrderingMatchesSeverity(t *testing.T) {
+	cases := []struct {
+		score int
+		band  int
+		sev   string
+	}{{0, 0, "info"}, {5, 1, "low"}, {10, 2, "medium"}, {20, 3, "high"}, {40, 4, "critical"}, {179, 4, "critical"}}
+	for _, c := range cases {
+		if got := Band(c.score); got != c.band {
+			t.Fatalf("Band(%d)=%d want %d", c.score, got, c.band)
+		}
+		if got := Severity(c.score); got != c.sev {
+			t.Fatalf("Severity(%d)=%q want %q", c.score, got, c.sev)
+		}
+	}
+	for i := 1; i < 200; i++ {
+		if Band(i) < Band(i-1) {
+			t.Fatalf("Band is not monotonic at %d", i)
+		}
 	}
 }

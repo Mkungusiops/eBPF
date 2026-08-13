@@ -1,0 +1,19 @@
+/*
+ * context.css — the ONLY difference between the admin login and the SOC console
+ * login.
+ *
+ * Both realms share one brand (hexagon + eBPF SOC) so the platform feels like a
+ * single product, but signing into the identity/admin plane is a rarer, more
+ * privileged act than signing into the SOC console. Amber carries that warning
+ * weight without shouting, and the label removes any doubt about which of the
+ * two identical-looking pages you are on.
+ *
+ * Amber is the console's own --warn token (#e0a53b), so this stays inside the
+ * platform palette rather than introducing a new colour.
+ */
+:root {
+  --ebpf-context: "Platform Admin";
+  --ebpf-context-fg: #e0a53b;
+  --ebpf-context-bg: rgba(224, 165, 59, 0.10);
+  --ebpf-context-bd: rgba(224, 165, 59, 0.30);
+}

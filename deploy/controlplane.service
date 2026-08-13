@@ -1,0 +1,49 @@
+[Unit]
+Description=eBPF-SOC control plane (multi-tenant)
+Documentation=https://github.com/jeffmk/ebpf-poc-engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# -state-dir persists the CA + fleet signing key across restarts so enrolled
+# agents keep trusting this control plane (production keeps these in KMS/Vault).
+# Auth: -oidc-issuer for Keycloak, or -admin-token for headless. No default cred.
+ExecStart=/opt/ebpf-soc/controlplane \
+  -store postgres \
+  -pg-dsn ${CP_PG_DSN} \
+  -grpc :9443 \
+  -http :9090 \
+  -oidc-issuer ${CP_OIDC_ISSUER} \
+  -state-dir /var/lib/ebpf-soc-controlplane
+EnvironmentFile=/etc/ebpf-soc/controlplane.env
+Restart=always
+RestartSec=2
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ebpf-soc-controlplane
+
+# Dedicated unprivileged user + persistent state dir (holds the CA + fleet key).
+DynamicUser=yes
+StateDirectory=ebpf-soc-controlplane
+StateDirectoryMode=0700
+WorkingDirectory=/var/lib/ebpf-soc-controlplane
+
+# Hardening — the control plane needs no special privileges (unlike the agent).
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,37 @@
+// PolicyService — the agent pulls SIGNED policy bundles (TracingPolicies +
+// ChokePolicy DSL + thresholds + protected lists) and verifies the signature
+// before applying. Local files remain bootstrap/fallback. The agent keeps
+// enforcing its last-applied bundle if the control plane is unreachable
+// (autonomy invariant). See docs/plan/wire-contract.md §5-6.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service PolicyService {
+  // Agent presents its current etag; the server returns a new signed bundle or
+  // not_modified. Verify-before-apply (threat-model SC-4).
+  rpc GetBundle(PolicyPullRequest) returns (PolicyBundle);
+}
+
+message PolicyPullRequest {
+  // The etag of the bundle the agent currently has applied. Empty on first pull.
+  string current_etag = 1;
+}
+
+message PolicyBundle {
+  // True => the agent's current bundle is still current; content is empty.
+  bool not_modified = 1;
+  string version = 2;
+  string etag = 3;
+  // Signature over `content` and the key id that produced it. The agent MUST
+  // verify before applying; an unverifiable bundle is ignored and the last-good
+  // bundle stays in force.
+  bytes signature = 4;
+  string signer_key_id = 5;
+  // Opaque signed archive of the bundle (TracingPolicies, ChokePolicy DSL,
+  // thresholds, protected-process/MAC lists). Format defined with the fleet
+  // service in a later deliverable.
+  bytes content = 6;
+}

@@ -1,0 +1,1067 @@
+.devices-route {
+  /* Cool neutral-slate dark palette (shared with the SOC console). */
+  --devices-bg: #0a0c10;
+  --devices-panel: #12161f;
+  --devices-panel-strong: #0e121a;
+  --devices-panel-soft: #1a1f2b;
+  --devices-border: rgba(148, 163, 184, 0.12);
+  --devices-border-strong: rgba(148, 163, 184, 0.22);
+  --devices-text: #e6eaf1;
+  --devices-muted: #9ba7b8;
+  --devices-dim: #5c6675;
+  --devices-accent: #6e8bff;
+  --devices-good: #36c795;
+  --devices-warn: #e0a53b;
+  --devices-danger: #f2576b;
+  --devices-info: #6e8bff;
+  /* Bridge the SHARED ContainmentCommand header (.cc-*) to this page's palette
+     so it renders pixel-identical to the Choke Gateway header. Those shared
+     classes read the bare --accent/--text/etc. names (which the Choke page
+     defines); without these aliases they hit slightly-off fallback defaults.
+     Only the shared header/ladder use these — the rest of the device page uses
+     --devices-*, so nothing else changes. */
+  --accent: var(--devices-accent);
+  --text: var(--devices-text);
+  --muted: var(--devices-muted);
+  --border: var(--devices-border);
+  --border-strong: var(--devices-border-strong);
+  --danger: var(--devices-danger);
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 100% 0%, rgb(110 139 255 / 0.06), transparent 36rem),
+    radial-gradient(circle at 0% 100%, rgb(110 139 255 / 0.03), transparent 32rem),
+    linear-gradient(180deg, #0b0e14 0%, #0a0c10 100%);
+  color: var(--devices-text);
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.devices-route * {
+  box-sizing: border-box;
+}
+
+.devices-layout {
+  /* Full-width to match the Choke Gateway (which has no max-width) — the 1320px
+     cap made this page read as "compressed" next to it. 20px side inset mirrors
+     the choke toolbar/grid gutters. */
+  width: 100%;
+  margin: 0;
+  padding: 24px 20px 40px;
+}
+
+.devices-panel,
+.devices-modal-card {
+  border: 1px solid var(--devices-border);
+  background: rgb(18 22 31 / 0.86);
+  box-shadow: 0 24px 80px rgb(0 0 0 / 0.4);
+  backdrop-filter: blur(16px);
+}
+
+/* Uniform platform header — full-width sticky bar (matches the Choke gateway). */
+.devices-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  border-bottom: 1px solid var(--devices-border);
+  background: rgb(14 18 26 / 0.82);
+  backdrop-filter: blur(16px);
+}
+
+.devices-topbar-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  width: 100%;
+  margin: 0;
+  padding: 8px 20px;
+  min-width: 0;
+}
+
+.devices-topbar-spacer {
+  flex: 1 1 auto;
+}
+
+.devices-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 5px 11px 5px 9px;
+  border-radius: 7px;
+  color: var(--devices-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  font-weight: 600;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.devices-back:hover {
+  color: var(--devices-text);
+  background: var(--devices-panel-soft);
+  border-color: var(--devices-border);
+}
+
+.devices-back svg {
+  color: var(--devices-accent);
+}
+
+.devices-brand-divider {
+  width: 1px;
+  height: 20px;
+  flex-shrink: 0;
+  background: var(--devices-border);
+}
+
+.devices-brand-mark {
+  margin: 0;
+  color: var(--devices-text);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Choke-Gateway header standard: brand · search · status-pills grid. */
+.devices-topbar-primary {
+  display: grid;
+  grid-template-columns: auto minmax(200px, 1fr) auto;
+  gap: 12px;
+  flex-wrap: nowrap;
+}
+
+.devices-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.devices-search {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  border: 1px solid var(--devices-border);
+  border-radius: 6px;
+  background: rgb(10 13 20 / 0.3);
+  padding: 0 10px;
+}
+
+.devices-search svg {
+  flex: 0 0 auto;
+  color: var(--devices-muted);
+}
+
+.devices-search input {
+  flex: 1 1 auto;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: var(--devices-text);
+  padding: 9px 0;
+  outline: none;
+  font: inherit;
+}
+
+.devices-search:focus-within {
+  border-color: var(--devices-accent);
+  box-shadow: 0 0 0 3px rgb(107 138 253 / 0.16);
+}
+
+.devices-status-cluster {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* Quiet dot+label chrome; boxed pill only appears on hover — mirrors the Choke
+   Gateway status cluster. */
+.devices-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 9px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--devices-muted);
+  background: transparent;
+  font-size: 0.72rem;
+  text-transform: capitalize;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.devices-status-pill strong {
+  color: var(--devices-text);
+  font-weight: 700;
+}
+
+.devices-status-pill:hover {
+  color: var(--devices-text);
+  background: var(--devices-panel-soft);
+  border-color: var(--devices-border);
+}
+
+.devices-status-pill.is-warn strong {
+  color: var(--devices-warn);
+}
+
+.devices-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--devices-good);
+  box-shadow: 0 0 12px var(--devices-good);
+}
+
+.devices-status-dot.idle {
+  background: var(--devices-muted);
+  box-shadow: none;
+}
+
+.devices-status-dot.down {
+  background: var(--devices-danger);
+  box-shadow: 0 0 12px var(--devices-danger);
+}
+
+/* Enforcement-mode glance dot: amber detect-only, green enforcing, red kill-switch. */
+.devices-status-cluster .devices-status-pill.mode-detect-only .devices-status-dot {
+  background: var(--devices-warn);
+  box-shadow: 0 0 12px var(--devices-warn);
+}
+.devices-status-cluster .devices-status-pill.mode-enforcing .devices-status-dot {
+  background: var(--devices-good);
+  box-shadow: 0 0 12px var(--devices-good);
+}
+.devices-status-cluster .devices-status-pill.mode-kill-switched .devices-status-dot {
+  background: var(--devices-danger);
+  box-shadow: 0 0 12px var(--devices-danger);
+}
+
+@media (max-width: 760px) {
+  .devices-topbar-primary {
+    grid-template-columns: 1fr;
+  }
+  .devices-status-cluster {
+    justify-content: flex-start;
+  }
+}
+
+.devices-plane-strip,
+.devices-mode-actions,
+.devices-bulk-row,
+.devices-inline,
+.devices-row-main,
+.devices-flow-line {
+  display: flex;
+  align-items: center;
+}
+
+.devices-button,
+.devices-icon-button,
+.devices-select,
+.devices-input {
+  border-radius: 7px;
+  border: 1px solid rgb(148 163 184 / 0.22);
+  background: rgb(24 28 38 / 0.78);
+  color: var(--devices-text);
+}
+
+.devices-button,
+.devices-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  padding: 0 11px;
+  font-size: 0.78rem;
+  font-weight: 690;
+  text-decoration: none;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.devices-button:hover:not(:disabled),
+.devices-icon-button:hover:not(:disabled) {
+  border-color: rgb(107 138 253 / 0.52);
+  background: rgb(30 41 59 / 0.86);
+}
+
+.devices-button:disabled,
+.devices-icon-button:disabled,
+.devices-select:disabled,
+.devices-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+/* Refresh affordance: spin the icon while a refetch is in flight. */
+.devices-button.is-refreshing {
+  opacity: 1;
+}
+
+.devices-button.is-refreshing svg {
+  animation: devices-spin 0.7s linear infinite;
+}
+
+@keyframes devices-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.devices-button--primary {
+  border-color: rgb(107 138 253 / 0.45);
+  background: rgb(107 138 253 / 0.82);
+}
+
+.devices-button--danger {
+  border-color: rgb(251 113 133 / 0.42);
+  background: rgb(159 18 57 / 0.75);
+}
+
+.devices-button--good {
+  border-color: rgb(52 211 153 / 0.42);
+  background: rgb(4 120 87 / 0.78);
+}
+
+.devices-icon-button {
+  width: 34px;
+  padding: 0;
+}
+
+.devices-plane-strip {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  color: var(--devices-muted);
+  font-size: 0.74rem;
+}
+
+/* Quiet, grouped data-plane telemetry — muted text instead of competing pills. */
+.devices-diag {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-size: 0.72rem;
+  color: var(--devices-dim);
+}
+
+.devices-diag strong {
+  margin-left: 4px;
+  color: var(--devices-muted);
+  font-weight: 600;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.devices-diag .is-warn strong {
+  color: var(--devices-warn);
+}
+
+/* Styled hover/focus tooltip explaining each jargon term. */
+.devices-diag span[data-tip] {
+  position: relative;
+  outline: none;
+  cursor: help;
+}
+
+.devices-diag span[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  z-index: 60;
+  width: max-content;
+  max-width: 264px;
+  padding: 9px 11px;
+  border-radius: 8px;
+  border: 1px solid var(--devices-border-strong);
+  background: #0d111a;
+  color: var(--devices-text);
+  font-size: 0.72rem;
+  font-weight: 400;
+  line-height: 1.45;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: normal;
+  box-shadow: 0 14px 36px rgb(0 0 0 / 0.55);
+  opacity: 0;
+  transform: translateY(-4px);
+  pointer-events: none;
+  transition: opacity 130ms ease, transform 130ms ease;
+}
+
+.devices-diag span[data-tip]:hover::after,
+.devices-diag span[data-tip]:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.devices-route.theme-light .devices-diag span[data-tip]::after {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  box-shadow: 0 14px 36px rgb(24 34 50 / 0.16);
+}
+
+/* Live beacon — steady dot + a radar ping ripple on each poll. */
+.devices-beacon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding-left: 2px;
+  font-size: 0.72rem;
+  color: var(--devices-muted);
+}
+
+.devices-beacon-core {
+  position: relative;
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--devices-good);
+  box-shadow: 0 0 8px color-mix(in srgb, var(--devices-good) 65%, transparent);
+}
+
+.devices-beacon-ping {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  width: 7px;
+  height: 7px;
+  margin-top: -3.5px;
+  border-radius: 50%;
+  border: 1.5px solid var(--devices-good);
+  pointer-events: none;
+  animation: devices-ping 1.1s cubic-bezier(0, 0, 0.2, 1) forwards;
+}
+
+.devices-beacon-label {
+  letter-spacing: 0.04em;
+}
+
+@keyframes devices-ping {
+  0% {
+    transform: scale(0.6);
+    opacity: 0.85;
+  }
+  100% {
+    transform: scale(3.4);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .devices-beacon-ping {
+    animation: none;
+  }
+}
+
+.devices-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 24px;
+  border-radius: 999px;
+  padding: 0 8px;
+  border: 1px solid rgb(148 163 184 / 0.18);
+  background: rgb(24 28 38 / 0.8);
+  color: var(--devices-muted);
+  font-size: 0.69rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.devices-pill--plain {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 620;
+}
+
+.devices-pill--good {
+  background: rgb(6 78 59 / 0.72);
+  color: #bbf7d0;
+}
+
+.devices-pill--info {
+  background: rgb(30 64 175 / 0.58);
+  color: #bfdbfe;
+}
+
+.devices-pill--warn {
+  background: rgb(146 64 14 / 0.7);
+  color: #fde68a;
+}
+
+.devices-pill--danger {
+  background: rgb(127 29 29 / 0.72);
+  color: #fecaca;
+}
+
+.devices-pill--muted {
+  background: rgb(51 65 85 / 0.68);
+  color: #cbd5e1;
+}
+
+.devices-grid {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.devices-counts {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+/* State tiles: subtle slate cards with a semantic top-rail and tone-coloured value,
+   rather than heavy saturated fills (matches the SOC KPI tiles). */
+.devices-count {
+  position: relative;
+  min-height: 92px;
+  border-radius: 10px;
+  padding: 14px 16px;
+  overflow: hidden;
+  border: 1px solid var(--devices-border);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--count-tone, var(--devices-dim)) 8%, transparent), transparent),
+    rgb(18 22 31 / 0.6);
+}
+
+.devices-count::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 2px;
+  background: var(--count-tone, var(--devices-dim));
+  opacity: 0.85;
+}
+
+.devices-count-value {
+  font-size: 1.7rem;
+  line-height: 1;
+  font-weight: 720;
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  color: var(--count-tone, var(--devices-text));
+}
+
+.devices-count-label {
+  margin-top: 10px;
+  font-size: 0.64rem;
+  color: var(--devices-muted);
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.devices-count--pristine { --count-tone: var(--devices-dim); }
+.devices-count--throttled { --count-tone: var(--devices-info); }
+.devices-count--tarpit { --count-tone: var(--devices-warn); }
+.devices-count--quarantined { --count-tone: #ff8a4c; }
+.devices-count--severed { --count-tone: var(--devices-danger); }
+
+.devices-panel {
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.devices-panel--padded {
+  padding: 14px;
+}
+
+.devices-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+
+.devices-panel-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 760;
+}
+
+.devices-panel-copy {
+  margin: 4px 0 0;
+  color: var(--devices-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.devices-banner {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  padding: 13px 14px;
+  border: 1px solid rgb(251 113 133 / 0.32);
+  border-radius: 8px;
+  background: rgb(127 29 29 / 0.28);
+  color: #fecdd3;
+}
+
+.devices-banner--warn {
+  border-color: rgb(245 158 11 / 0.35);
+  background: rgb(120 53 15 / 0.25);
+  color: #fde68a;
+}
+
+.devices-mode-actions {
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.devices-bulk-row {
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.devices-selected {
+  min-width: 96px;
+  color: var(--devices-muted);
+  font-size: 0.82rem;
+}
+
+.devices-select,
+.devices-input {
+  min-height: 36px;
+  padding: 0 10px;
+  font: inherit;
+  font-size: 0.82rem;
+  outline: none;
+}
+
+.devices-select:focus,
+.devices-input:focus,
+.devices-button:focus-visible,
+.devices-icon-button:focus-visible {
+  border-color: rgb(107 138 253 / 0.74);
+  box-shadow: 0 0 0 3px rgb(107 138 253 / 0.18);
+}
+
+.devices-reason-input {
+  flex: 1 1 260px;
+}
+
+.devices-revert-input {
+  width: 150px;
+}
+
+.devices-toast {
+  min-height: 24px;
+  padding: 5px 0;
+  font-size: 0.78rem;
+  color: var(--devices-muted);
+}
+
+.devices-toast--ok {
+  color: #86efac;
+}
+
+.devices-toast--error {
+  color: #fda4af;
+}
+
+.devices-toast--warn {
+  color: #fbbf24;
+}
+
+.devices-table-wrap {
+  overflow-x: auto;
+}
+
+.devices-table {
+  width: 100%;
+  min-width: 940px;
+  border-collapse: collapse;
+  font-size: 0.84rem;
+}
+
+.devices-table th,
+.devices-table td {
+  padding: 10px 11px;
+  text-align: left;
+  border-top: 1px solid rgb(148 163 184 / 0.12);
+  vertical-align: middle;
+}
+
+.devices-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #0d1627;
+  color: var(--devices-muted);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.devices-table tbody tr:hover > td {
+  background: rgb(20 29 47 / 0.74);
+}
+
+.devices-checkbox {
+  width: 16px;
+  height: 16px;
+  accent-color: #06b6d4;
+}
+
+.devices-mono {
+  font-family: "JetBrains Mono", "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
+}
+
+.devices-device-cell {
+  min-width: 250px;
+}
+
+.devices-row-main {
+  gap: 7px;
+}
+
+.devices-device-id {
+  margin-top: 4px;
+  padding-left: 34px;
+  color: var(--devices-dim);
+  font-size: 0.68rem;
+}
+
+.devices-state {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 0 8px;
+  font-size: 0.68rem;
+  font-weight: 790;
+  text-transform: uppercase;
+}
+
+.devices-state--pristine {
+  background: #1e293b;
+  color: #cbd5e1;
+}
+
+.devices-state--throttled {
+  background: #1e3a8a;
+  color: #bfdbfe;
+}
+
+.devices-state--tarpit {
+  background: #854d0e;
+  color: #fde68a;
+}
+
+.devices-state--quarantined {
+  background: #9a3412;
+  color: #fed7aa;
+}
+
+.devices-state--severed {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.devices-state--unknown {
+  background: #334155;
+  color: #cbd5e1;
+}
+
+.devices-revert {
+  margin-left: 6px;
+  color: var(--devices-accent);
+  vertical-align: middle;
+}
+
+.devices-flow-row td {
+  background: rgb(8 13 24 / 0.5);
+}
+
+.devices-flow-panel {
+  display: grid;
+  gap: 7px;
+  padding: 2px 0 4px 35px;
+  color: #cbd5e1;
+  font-size: 0.77rem;
+}
+
+.devices-flow-title {
+  color: var(--devices-muted);
+  font-weight: 760;
+}
+
+.devices-flow-line {
+  gap: 8px;
+}
+
+.devices-flow-proto {
+  color: #67e8f9;
+}
+
+.devices-empty {
+  padding: 36px 14px;
+  text-align: center;
+  color: var(--devices-dim);
+  font-size: 0.86rem;
+}
+
+.devices-footnote {
+  margin: 14px 2px 0;
+  color: var(--devices-dim);
+  font-size: 0.74rem;
+  line-height: 1.45;
+}
+
+.devices-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background:
+    radial-gradient(circle at 70% 18%, color-mix(in srgb, var(--devices-accent) 18%, transparent), transparent 30%),
+    rgb(0 0 0 / 0.68);
+  backdrop-filter: blur(10px) saturate(120%);
+}
+
+.devices-modal-card {
+  width: min(100%, 460px);
+  border: 1px solid color-mix(in srgb, var(--devices-accent) 20%, var(--devices-border));
+  border-radius: 12px;
+  overflow: hidden;
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--devices-accent) 8%, transparent), transparent 44%),
+    linear-gradient(180deg, color-mix(in srgb, var(--devices-panel-strong) 82%, transparent), var(--devices-panel)),
+    var(--devices-panel);
+  box-shadow: 0 28px 80px rgb(0 0 0 / 0.38), inset 0 1px 0 rgb(255 255 255 / 0.045);
+}
+
+.devices-modal-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 18px 13px;
+  border-bottom: 1px solid rgb(148 163 184 / 0.12);
+}
+
+.devices-modal-icon {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: rgb(107 138 253 / 0.14);
+  color: #67e8f9;
+}
+
+.devices-modal-icon--danger {
+  background: rgb(251 113 133 / 0.14);
+  color: #fda4af;
+}
+
+.devices-modal-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.devices-modal-message {
+  margin: 5px 0 0;
+  color: var(--devices-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.devices-modal-body {
+  padding: 15px 18px;
+}
+
+.devices-label {
+  display: grid;
+  gap: 6px;
+  color: var(--devices-muted);
+  font-size: 0.68rem;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+
+.devices-field-error {
+  margin-top: 6px;
+  color: #fda4af;
+  font-size: 0.72rem;
+}
+
+.devices-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 18px 17px;
+}
+
+@media (max-width: 860px) {
+  .devices-layout {
+    padding: 14px 12px 40px;
+  }
+
+  .devices-panel-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .devices-plane-strip {
+    justify-content: flex-start;
+  }
+
+  .devices-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 520px) {
+  .devices-counts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .devices-button {
+    width: 100%;
+  }
+
+  .devices-bulk-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .devices-select,
+  .devices-input {
+    width: 100%;
+  }
+}
+
+
+/* ── Light theme ─────────────────────────────────────────────────────────
+   Shared with the SOC dashboard via the "soc.theme" localStorage key. The
+   Devices console hardcodes several dark surfaces, so the light variant
+   re-states them here to keep the two pages in visual sync. */
+.devices-route.theme-light {
+  --devices-bg: #f3f6f9;
+  --devices-panel: #ffffff;
+  --devices-panel-strong: #f7fafc;
+  --devices-panel-soft: #eef3f8;
+  --devices-border: #d6deea;
+  --devices-border-strong: #c2cdde;
+  --devices-text: #121a27;
+  --devices-muted: #536173;
+  --devices-dim: #7a8797;
+  --devices-accent: #4f6fe0;
+  --devices-good: #1a9b6c;
+  --devices-warn: #c0850f;
+  --devices-danger: #d6455a;
+  --devices-info: #3b74d4;
+  background:
+    radial-gradient(circle at top left, rgb(79 111 224 / 0.06), transparent 34rem),
+    linear-gradient(135deg, #f7fafc 0%, #eef2f7 100%);
+}
+
+.devices-route.theme-light .devices-topbar {
+  background: rgb(255 255 255 / 0.85);
+  border-bottom-color: #dbe2ee;
+  box-shadow: none;
+}
+
+.devices-route.theme-light .devices-panel,
+.devices-route.theme-light .devices-modal-card {
+  background: #ffffff;
+  border-color: #dbe2ee;
+  box-shadow: 0 12px 34px rgb(24 34 50 / 0.08);
+}
+
+.devices-route.theme-light .devices-button,
+.devices-route.theme-light .devices-icon-button,
+.devices-route.theme-light .devices-select,
+.devices-route.theme-light .devices-input,
+.devices-route.theme-light .devices-pill {
+  background: #f4f7fb;
+  border-color: #dbe2ee;
+}
+
+.devices-route.theme-light .devices-button:hover:not(:disabled),
+.devices-route.theme-light .devices-icon-button:hover:not(:disabled) {
+  background: #e8eef6;
+}
+
+.devices-route.theme-light .devices-count-label {
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-count {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--count-tone, var(--devices-dim)) 12%, transparent), transparent),
+    #ffffff;
+  border-color: #dbe2ee;
+}
+
+.devices-route.theme-light .devices-pill--muted {
+  background: #e8eef6;
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-table thead th {
+  background: #eef2f7;
+  color: #475569;
+}
+
+.devices-route.theme-light .devices-table tbody tr:hover > td {
+  background: rgb(79 111 224 / 0.07);
+}
+
+.devices-route.theme-light .devices-table th,
+.devices-route.theme-light .devices-table td {
+  border-top-color: rgb(100 116 139 / 0.16);
+}
+
+/* Compact modal treatment shared with SOC/Choke popups. */
+.devices-modal-card {
+  width: min(100%, 420px);
+  border-radius: 10px;
+}
+
+.devices-modal-head {
+  gap: 10px;
+  padding: 13px 15px 11px;
+}
+
+.devices-modal-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+}
+
+.devices-modal-title {
+  font-size: 0.95rem;
+}
+
+.devices-modal-message {
+  margin-top: 4px;
+  font-size: 0.76rem;
+  line-height: 1.42;
+}
+
+.devices-modal-body {
+  padding: 12px 15px;
+}
+
+.devices-modal-actions {
+  gap: 7px;
+  padding: 0 15px 14px;
+}

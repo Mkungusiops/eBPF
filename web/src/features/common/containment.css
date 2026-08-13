@@ -1,0 +1,645 @@
+/* Containment Command — shared hero + ladder for the enforcement surfaces.
+
+   THEMING CONTRACT. This component is mounted inside two host pages
+   (.choke-route and .devices-route) which each define a HEX palette:
+   --panel, --panel-2, --text, --muted, --border, --border-strong, --accent.
+   It must consume those and nothing else.
+
+   It previously claimed to "theme with either page" while hardcoding dark
+   surfaces like rgba(15,18,26,.4) and rgba(24,20,14,.42). Composited over a
+   white page those became the muddy grey-brown band the light console shipped
+   with: dark-theme furniture sitting in a light room.
+
+   Do NOT reach for --surface here. That token is defined at :root as an RGB
+   TRIPLET ("10 12 16") for use as rgb(var(--surface)); writing
+   `background: var(--surface, #10131b)` yields `background: 10 12 16`, which is
+   invalid, so the declaration is dropped AND the fallback never applies —
+   because the variable is defined, just not as a colour. That single line is
+   why the posture ring rendered as a filled pie instead of a donut in BOTH
+   themes: its inner disc was never painted.
+
+   Local elevation tokens below are derived with color-mix from the host's own
+   --panel/--text, so a new host page themes correctly by defining --panel
+   alone, and neither theme needs a parallel block that can drift. */
+
+.cc-scope,
+.choke-route,
+.devices-route {
+  /* Raised: the hero band. Slightly lifted off the page in both themes. */
+  --cc-raised: color-mix(in srgb, var(--panel, #12161f) 88%, var(--text, #000) 6%);
+  /* Sunken: recessed wells (view toggle, ladder, control cluster). */
+  --cc-sunken: color-mix(in srgb, var(--panel, #12161f) 82%, var(--text, #000) 10%);
+  /* The ring's inner disc — must be an opaque colour, see the note above. */
+  --cc-disc: var(--panel, #12161f);
+}
+
+.cc-header {
+  display: grid;
+  grid-template-columns: minmax(260px, 1.1fr) minmax(0, 1.6fr) auto;
+  gap: 20px;
+  align-items: center;
+  border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.28));
+  border-radius: 14px;
+  padding: 18px 22px;
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(110, 139, 255, 0.1), transparent 60%),
+    var(--cc-raised);
+}
+
+.cc-header.tone-good {
+  border-color: rgba(74, 222, 128, 0.4);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(74, 222, 128, 0.12), transparent 60%),
+    color-mix(in srgb, var(--cc-raised) 92%, var(--ok, #36c795) 8%);
+}
+
+.cc-header.tone-warn {
+  border-color: rgba(245, 177, 61, 0.42);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(245, 177, 61, 0.12), transparent 60%),
+    color-mix(in srgb, var(--cc-raised) 92%, var(--warn, #e0a53b) 8%);
+}
+
+.cc-header.tone-bad {
+  border-color: rgba(244, 85, 110, 0.46);
+  background:
+    radial-gradient(120% 160% at 0% 0%, rgba(244, 85, 110, 0.14), transparent 60%),
+    color-mix(in srgb, var(--cc-raised) 92%, var(--danger, #f2576b) 8%);
+}
+
+.cc-head-lead {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+}
+
+/* Posture ring — the composite score as a conic gauge. */
+.cc-posture {
+  --pct: 0;
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 78px;
+  height: 78px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: conic-gradient(var(--ring-c, #6e8bff) calc(var(--pct) * 1%), rgba(127, 140, 165, 0.18) 0);
+}
+
+.cc-posture::after {
+  content: "";
+  position: absolute;
+  inset: 7px;
+  border-radius: 50%;
+  background: var(--cc-disc);
+}
+
+.cc-posture.ring-good {
+  --ring-c: #4ade80;
+}
+.cc-posture.ring-warn {
+  --ring-c: #f5b13d;
+}
+.cc-posture.ring-bad {
+  --ring-c: #f4556e;
+}
+
+.cc-posture-face {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  line-height: 1;
+}
+
+.cc-posture-face strong {
+  font-size: 24px;
+  color: var(--text, #e8ecf4);
+}
+
+.cc-posture-face span {
+  margin-top: 2px;
+  color: var(--muted, #8b98b0);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.cc-head-title {
+  min-width: 0;
+}
+
+.cc-head-title h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0.01em;
+  color: var(--text, #e8ecf4);
+}
+
+.cc-head-title p {
+  margin: 4px 0 0;
+  color: var(--muted, #8b98b0);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+/* Metric strip. */
+.cc-head-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 26px;
+  align-items: center;
+  min-width: 0;
+}
+
+.cc-metric {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.cc-metric-value {
+  color: var(--text, #e8ecf4);
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1;
+}
+
+.cc-metric-label {
+  color: var(--muted, #8b98b0);
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.cc-metric-sub {
+  color: var(--muted, #8b98b0);
+  font-size: 10.5px;
+  opacity: 0.85;
+}
+
+.cc-metric.tone-good .cc-metric-value {
+  color: #6fe0a2;
+}
+.cc-metric.tone-bad .cc-metric-value {
+  color: #ff6b83;
+}
+.cc-metric.tone-accent .cc-metric-value {
+  color: var(--accent, #6e8bff);
+}
+.cc-metric.tone-muted .cc-metric-value {
+  font-size: 16px;
+  color: var(--muted, #8b98b0);
+}
+
+/* Controls: view toggle, mode, kill-switch. */
+.cc-head-controls {
+  display: grid;
+  gap: 8px;
+  justify-items: end;
+  align-content: center;
+}
+
+.cc-viewtoggle {
+  display: inline-flex;
+  border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.32));
+  border-radius: 999px;
+  padding: 3px;
+  background: var(--cc-sunken);
+}
+
+.cc-viewtoggle button {
+  border: 0;
+  border-radius: 999px;
+  padding: 6px 16px;
+  background: transparent;
+  color: var(--muted, #8b98b0);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.cc-viewtoggle button.on {
+  background: var(--accent, #6e8bff);
+  color: #fff;
+}
+
+/* Instrument cluster: the two consequential controls in one bordered housing,
+   side by side, split by a hairline — reads as a deliberate control surface
+   rather than two loose buttons. */
+.cc-plane-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.34));
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--cc-sunken);
+}
+
+.cc-ctl {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  min-width: 148px;
+  padding: 9px 15px;
+  border: 0;
+  background: transparent;
+  color: var(--text, #e8ecf4);
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.14s ease, color 0.14s ease;
+}
+
+.cc-ctl + .cc-ctl {
+  border-left: 1px solid var(--border-strong, rgba(127, 140, 165, 0.28));
+}
+
+.cc-ctl svg {
+  flex: 0 0 auto;
+}
+
+.cc-ctl-body {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cc-ctl-label {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--muted, #8b98b0);
+}
+
+.cc-ctl-value {
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1.2;
+}
+
+/* Mode = state. Amber while only watching, green once armed. */
+.cc-ctl-mode.enforcing,
+.cc-ctl-mode.enforcing svg {
+  color: #6fe0a2;
+}
+.cc-ctl-mode.enforcing {
+  background: rgba(74, 222, 128, 0.08);
+}
+.cc-ctl-mode.detect,
+.cc-ctl-mode.detect svg {
+  color: #f5c67a;
+}
+.cc-ctl-mode:not(:disabled):hover {
+  background: rgba(127, 140, 165, 0.14);
+}
+
+/* Kill-switch = break-glass action. Danger outline idle; solid red + pulse
+   when engaged so a globally-bypassed plane can never be missed. */
+.cc-ctl-kill,
+.cc-ctl-kill svg {
+  color: #ff8296;
+}
+.cc-ctl-kill:not(:disabled):hover {
+  background: rgba(244, 85, 110, 0.12);
+}
+.cc-ctl-kill.engaged {
+  background: var(--danger, #f4556e);
+  animation: cc-kill-pulse 2s ease-in-out infinite;
+}
+.cc-ctl-kill.engaged,
+.cc-ctl-kill.engaged svg,
+.cc-ctl-kill.engaged .cc-ctl-label,
+.cc-ctl-kill.engaged .cc-ctl-value {
+  color: #fff;
+}
+
+.cc-ctl:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes cc-kill-pulse {
+  0%,
+  100% {
+    box-shadow: inset 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    box-shadow: inset 0 0 22px -4px rgba(255, 255, 255, 0.45);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-ctl-kill.engaged {
+    animation: none;
+  }
+}
+
+/* ── Containment ladder ─────────────────────────────────────────────── */
+.cc-ladder {
+  border: 1px solid var(--border, rgba(127, 140, 165, 0.2));
+  border-radius: 14px;
+  padding: 16px 18px 12px;
+  background: var(--cc-sunken);
+}
+
+.cc-ladder-track {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.cc-ladder-cell {
+  display: flex;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.cc-ladder-arrow {
+  flex: 0 0 auto;
+  color: var(--muted, #8b98b0);
+  font-size: 22px;
+  opacity: 0.5;
+}
+
+.cc-rung {
+  --rung: #8b98b0;
+  position: relative;
+  display: grid;
+  gap: 4px;
+  flex: 1 1 0;
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--rung) 42%, transparent);
+  border-radius: 11px;
+  padding: 14px 12px;
+  background: color-mix(in srgb, var(--rung) 12%, transparent);
+  color: var(--text, #e8ecf4);
+  text-align: left;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, background 0.12s ease;
+}
+
+.cc-rung:disabled {
+  cursor: default;
+}
+
+.cc-rung.has-pop {
+  border-color: color-mix(in srgb, var(--rung) 72%, transparent);
+  background: color-mix(in srgb, var(--rung) 20%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--rung) 30%, transparent), 0 8px 24px -14px var(--rung);
+}
+
+.cc-rung:not(:disabled):hover {
+  transform: translateY(-2px);
+  background: color-mix(in srgb, var(--rung) 26%, transparent);
+}
+
+.cc-rung.is-active {
+  border-color: var(--rung);
+  box-shadow: 0 0 0 2px var(--rung);
+}
+
+.cc-rung-count {
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1;
+  color: color-mix(in srgb, var(--rung) 60%, var(--text, #e8ecf4));
+}
+
+.cc-rung-label {
+  font-size: 10.5px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted, #8b98b0);
+}
+
+.cc-ladder-legend {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 10px;
+  color: var(--muted, #8b98b0);
+  font-size: 11px;
+}
+
+.cc-ladder-escalation {
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  opacity: 0.72;
+}
+
+.cc-ladder-summary strong {
+  color: var(--text, #e8ecf4);
+}
+
+@media (max-width: 1180px) {
+  .cc-header {
+    grid-template-columns: 1fr;
+    gap: 14px;
+  }
+  .cc-head-controls {
+    justify-items: stretch;
+    grid-auto-flow: column;
+    justify-content: start;
+  }
+}
+
+@media (max-width: 720px) {
+  .cc-ladder-track {
+    flex-wrap: wrap;
+  }
+  .cc-ladder-cell {
+    flex-basis: 46%;
+  }
+  .cc-head-controls {
+    grid-auto-flow: row;
+  }
+}
+
+/* ── Shared Assurance-lens cards (used by the Devices assurance view) ─── */
+.cc-assur-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+  width: 100%;
+}
+
+.cc-assur-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  border: 1px solid var(--border, rgba(127, 140, 165, 0.2));
+  border-radius: 12px;
+  padding: 16px;
+  background: rgba(127, 140, 165, 0.05);
+}
+
+.cc-assur-card.span2 {
+  grid-column: span 2;
+}
+
+.cc-assur-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.cc-assur-card h3 {
+  margin: 0;
+  font-size: 12px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted, #8b98b0);
+}
+
+.cc-assur-score {
+  font-size: 34px;
+  font-weight: 750;
+  color: var(--text, #e8ecf4);
+  line-height: 1;
+}
+
+.cc-assur-score small {
+  font-size: 15px;
+  color: var(--muted, #8b98b0);
+}
+
+.cc-assur-card.tone-good .cc-assur-score {
+  color: #6fe0a2;
+}
+.cc-assur-card.tone-warn .cc-assur-score {
+  color: #f5c67a;
+}
+.cc-assur-card.tone-bad .cc-assur-score {
+  color: #ff6b83;
+}
+
+.cc-assur-drivers {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.cc-assur-driver {
+  display: grid;
+  gap: 3px;
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(127, 140, 165, 0.08);
+  border-left: 3px solid var(--muted, #8b98b0);
+}
+
+.cc-assur-driver.good {
+  border-left-color: #4ade80;
+}
+.cc-assur-driver.warn {
+  border-left-color: #f5b13d;
+}
+
+.cc-assur-driver span {
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted, #8b98b0);
+}
+
+.cc-assur-driver strong {
+  font-size: 15px;
+  color: var(--text, #e8ecf4);
+}
+
+.cc-assur-note {
+  margin: 0;
+  color: var(--muted, #8b98b0);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.cc-assur-kv {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 6px 12px;
+  font-size: 12.5px;
+}
+
+.cc-assur-kv span {
+  color: var(--muted, #8b98b0);
+  text-transform: capitalize;
+}
+
+.cc-assur-kv strong {
+  color: var(--text, #e8ecf4);
+  text-align: right;
+}
+
+.cc-assur-audit {
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.cc-assur-audit.ok {
+  color: #6fe0a2;
+  background: rgba(74, 222, 128, 0.12);
+}
+
+.cc-assur-audit.bad {
+  color: #ff6b83;
+  background: rgba(244, 85, 110, 0.14);
+}
+
+.cc-assur-top {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.cc-assur-top li {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  font-size: 12.5px;
+  color: var(--text, #e8ecf4);
+}
+
+.cc-assur-top li span {
+  color: var(--muted, #8b98b0);
+  text-transform: capitalize;
+}
+
+.cc-assur-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.cc-assur-export p {
+  margin: 0;
+  color: var(--muted, #8b98b0);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1180px) {
+  .cc-assur-grid,
+  .cc-assur-drivers {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 720px) {
+  .cc-assur-grid,
+  .cc-assur-drivers {
+    grid-template-columns: 1fr;
+  }
+  .cc-assur-card.span2 {
+    grid-column: span 1;
+  }
+}

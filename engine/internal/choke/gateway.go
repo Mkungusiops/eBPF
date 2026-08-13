@@ -18,6 +18,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/tokens"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enforce/bpfmap"
+	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
 	"github.com/jeffmk/ebpf-poc-engine/internal/policy"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
@@ -46,13 +47,19 @@ type Broadcaster interface {
 // Gateway is the userspace choke point. One instance per engine.
 type Gateway struct {
 	circuit  *circuit.Circuit
-	enforcer enforce.Enforcer
 	store    *store.Store
 	bcast    Broadcaster
 	tokens   *tokens.Manager
 	policies *policy.Set
 	tree     *tree.Tree
 	bpfmap   bpfmap.Backend
+
+	// enfMu guards enforcer + mode together. Both are swapped atomically by
+	// SetEnforcing so /api/choke/mode flips don't race the act() path.
+	enfMu          sync.RWMutex
+	enforcer       enforce.Enforcer
+	realEnforcer   enforce.Enforcer // wired-up Multi (cgroup+severer+throttler)
+	loggerEnforcer enforce.Enforcer // detect-only stand-in (no kernel calls)
 
 	// dryRun reports whether enforcement is shadow-only. Decisions are
 	// recorded but the underlying backends are not invoked. Useful for
@@ -84,6 +91,8 @@ type Gateway struct {
 	thawFn          ThawFn
 	sysProcFn       SysProcListFn
 	sysProcDetailFn SysProcDetailFn
+	originFn        OriginLookupFn
+	pidLiveFn       PIDLiveFn
 
 	// systemCritical: auto-enforce exemption set. Looked up by exact
 	// binary path; manual overrides bypass it.
@@ -96,9 +105,41 @@ type Gateway struct {
 // for "score-driven" suspicion (their MOTD/auth chains routinely look
 // suspicious). The list is intentionally narrow — too broad an exemption
 // would let attackers hide inside it.
+// Matching is by EXACT binary path, so a wrong or missing path silently
+// protects nothing. That is why the ssh family below lists every layout we
+// might land on rather than the one this repo was written against: a redundant
+// entry costs nothing (it simply never matches), a missing one is an operator
+// locked out of the host the product is supposed to be protecting.
 func DefaultSystemCriticalBinaries() []string {
 	return []string{
-		"/usr/sbin/sshd", "/usr/sbin/sshd-session",
+		// ── The login path ──────────────────────────────────────────────────
+		// OpenSSH >= 9.8 (Ubuntu 24.10+, Debian 13, RHEL 10) SPLIT the daemon:
+		// /usr/sbin/sshd is only the listener, each connection is handled by a
+		// re-exec'd sshd-session, and auth is split again into sshd-auth. The
+		// per-session binaries are the ones that actually do the credential
+		// reads, so they are the ones enforcement would kill. Debian/Ubuntu put
+		// them under /usr/lib/openssh, RHEL-family under /usr/libexec/openssh,
+		// and some builds alongside sshd in /usr/sbin.
+		"/usr/sbin/sshd",
+		"/usr/sbin/sshd-session",
+		"/usr/sbin/sshd-auth",
+		"/usr/lib/openssh/sshd-session",
+		"/usr/lib/openssh/sshd-auth",
+		"/usr/libexec/openssh/sshd-session",
+		"/usr/libexec/openssh/sshd-auth",
+		// Console / serial-console login — the out-of-band recovery path. If
+		// enforcement can kill this too, a mistake becomes unrecoverable
+		// without detaching the root disk.
+		"/usr/bin/login",
+		"/bin/login",
+		// Privilege escalation used for RECOVERY. Threat-model EN-1 calls for
+		// sudo/ssh/init/pkg-mgmt to be covered; sudo and su were missing, so a
+		// box in enforcing mode would score /usr/bin/sudo all the way to sever
+		// and take administration with it. This exempts the SCORE-DRIVEN path
+		// only — an operator can still contain a genuinely malicious sudo by
+		// manual override, which deliberately bypasses this list.
+		"/usr/bin/sudo",
+		"/usr/bin/su",
 		"/usr/lib/systemd/systemd",
 		"/usr/lib/systemd/systemd-logind",
 		"/usr/lib/systemd/systemd-journald",
@@ -118,6 +159,13 @@ type knownProc struct {
 	Binary    string
 	FirstSeen time.Time
 	LastSeen  time.Time
+	// FromTelemetry marks an exec_id this host actually OBSERVED, as opposed to
+	// one it only learned because a control-plane command named it. Manual()
+	// caches every target it is handed, so without this flag a fleet-wide
+	// command would teach an innocent agent the exec_id and that agent would
+	// then claim definitive ownership of it on the next command. Ownership must
+	// only ever be evidenced by this host's own telemetry.
+	FromTelemetry bool
 }
 
 // Config bundles the inputs to NewGateway. Only Store is required; the
@@ -133,11 +181,18 @@ type Config struct {
 	BPFMap     bpfmap.Backend
 	Thresholds circuit.Config
 	DryRun     bool
-	// Enforcing is true when the real enforcer chain is wired. When false,
-	// the engine is in detect-only mode (the enforcer is a Logger). The
-	// gateway uses this only to compute Mode() — it does not change
-	// behaviour.
+	// Enforcing is true when the real enforcer chain is wired at boot. When
+	// false, the engine starts in detect-only mode (the enforcer is a
+	// Logger). The gateway uses this for the initial Mode() value and for
+	// SetEnforcing's "back to enforcing" path.
 	Enforcing bool
+	// RealEnforcer + LoggerEnforcer are the two enforcers that SetEnforcing
+	// swaps between at runtime. Wiring both up at boot lets the operator
+	// flip mode without restarting the service. If either is nil, the
+	// gateway will populate sensible defaults: the active Enforcer becomes
+	// the real one, and a Logger fills the detect-only slot.
+	RealEnforcer   enforce.Enforcer
+	LoggerEnforcer enforce.Enforcer
 	// SystemCriticalBinaries is the auto-enforce exemption list. Binaries
 	// in this list are still observed and scored — alerts fire and the
 	// audit chain records "would-have" decisions — but the enforcer chain
@@ -166,6 +221,19 @@ func NewGateway(cfg Config) *Gateway {
 	} else if !cfg.Enforcing {
 		mode = ModeDetectOnly
 	}
+	// Both enforcer slots are always populated so SetEnforcing can swap
+	// without re-allocating backends. If main.go didn't pass them, fall
+	// back: assume the active enforcer IS the real one, and synthesize a
+	// logger for the detect-only slot. That keeps single-binary tests
+	// (which only build a Logger) working without contortions.
+	realEnf := cfg.RealEnforcer
+	if realEnf == nil {
+		realEnf = enf
+	}
+	loggerEnf := cfg.LoggerEnforcer
+	if loggerEnf == nil {
+		loggerEnf = &enforce.Logger{Prefix: "[enforce-disabled]"}
+	}
 	critical := map[string]bool{}
 	bins := cfg.SystemCriticalBinaries
 	if bins == nil {
@@ -177,6 +245,8 @@ func NewGateway(cfg Config) *Gateway {
 	return &Gateway{
 		circuit:        circuit.New(cfg.Thresholds),
 		enforcer:       enf,
+		realEnforcer:   realEnf,
+		loggerEnforcer: loggerEnf,
 		store:          cfg.Store,
 		bcast:          cfg.Broadcast,
 		tokens:         cfg.Tokens,
@@ -246,7 +316,9 @@ type Observation struct {
 // been updated. It is safe to call frequently; if no transition occurs
 // nothing happens. Returns the Decision (nil if no transition) for tests.
 func (g *Gateway) OnEvent(ctx context.Context, obs Observation) *circuit.Decision {
-	g.remember(obs.ExecID, obs.PID, obs.Binary)
+	// observed=true: this is the host's own telemetry, the only thing that
+	// establishes ownership of an exec_id (see Owns).
+	g.remember(obs.ExecID, obs.PID, obs.Binary, true)
 
 	d := g.circuit.Evaluate(obs.ExecID, obs.PID, obs.Binary, obs.Score, obs.Reason)
 	if d == nil {
@@ -257,8 +329,11 @@ func (g *Gateway) OnEvent(ctx context.Context, obs Observation) *circuit.Decisio
 }
 
 // remember updates the known-proc cache so Manual/Snapshot have a fall-
-// back when the tree has GC'd the node.
-func (g *Gateway) remember(execID string, pid uint32, binary string) {
+// back when the tree has GC'd the node. observed says whether this host saw
+// the process itself (an exec event) rather than merely being told about it
+// by a command — see knownProc.FromTelemetry. It is sticky: once observed,
+// always observed.
+func (g *Gateway) remember(execID string, pid uint32, binary string, observed bool) {
 	if execID == "" {
 		return
 	}
@@ -273,23 +348,120 @@ func (g *Gateway) remember(execID string, pid uint32, binary string) {
 		if binary != "" {
 			k.Binary = binary
 		}
+		k.FromTelemetry = k.FromTelemetry || observed
 		g.known[execID] = k
 		return
 	}
 	g.known[execID] = knownProc{
 		PID: pid, Binary: binary, FirstSeen: now, LastSeen: now,
+		FromTelemetry: observed,
 	}
+}
+
+// TargetMatch grades how strongly a Jail/Thaw target belongs to THIS host.
+//
+// A fleet command may reach several agents at once — the control plane cannot
+// always tell in advance which one is running a given process — so the answer
+// cannot be a bare bool. PID numbers are per-host and collide freely across a
+// fleet, so "I have a live process numbered 4021" is a guess, while "I observed
+// this exec_id" is proof. Grading them apart is what lets the control plane
+// refuse to SIGKILL on a guess.
+type TargetMatch int
+
+const (
+	// MatchNone — neither the exec_id nor the pid belongs to this host.
+	MatchNone TargetMatch = iota
+	// MatchPID — only the pid is live here and the exec_id was never observed.
+	// WEAK: an unrelated process can hold that number.
+	MatchPID
+	// MatchExecID — this host observed the exec_id in its own telemetry.
+	// Tetragon exec_ids encode the node, so this is proof of ownership.
+	MatchExecID
+)
+
+func (m TargetMatch) String() string {
+	switch m {
+	case MatchPID:
+		return "pid"
+	case MatchExecID:
+		return "exec_id"
+	}
+	return "none"
+}
+
+// PIDLiveFn reports whether a PID is a live process on this host. Injected so
+// the gateway stays testable and platform-agnostic; main.go wires the real one.
+type PIDLiveFn func(pid uint32) bool
+
+// SetPIDLiveFn wires the liveness probe used by Owns.
+func (g *Gateway) SetPIDLiveFn(fn PIDLiveFn) { g.pidLiveFn = fn }
+
+// Owns grades whether (execID, pid) is a process this host is actually running.
+//
+// This is the agent's half of the multi-agent false-containment defense. The
+// control plane may dispatch one containment command to every agent in a tenant
+// because it does not yet know which one holds the target; each agent answers
+// with what it can prove, and only a genuine owner may report the action as
+// applied. An agent that no-ops MUST NOT ack APPLIED — that is what tells an
+// operator a process was severed while it keeps running.
+//
+// Evidence, strongest first:
+//
+//	MatchExecID — the exec_id appears in this host's own telemetry (the known
+//	              cache populated by OnEvent, or a circuit already tracking it).
+//	MatchPID    — no exec_id evidence, but the pid is live here. A guess.
+//	MatchNone   — nothing to act on.
+func (g *Gateway) Owns(execID string, pid uint32) TargetMatch {
+	if execID != "" {
+		g.knownMu.RLock()
+		k, ok := g.known[execID]
+		g.knownMu.RUnlock()
+		if ok && k.FromTelemetry {
+			return MatchExecID
+		}
+		// A circuit exists only for an exec_id this gateway scored or was told
+		// to force. Scored ones are telemetry; forced ones were remembered
+		// above, so a tracked-but-unobserved exec_id is not proof of anything.
+		if g.tree != nil {
+			if _, inTree := g.tree.Get(execID); inTree {
+				return MatchExecID
+			}
+		}
+	}
+	if pid != 0 && g.pidLiveFn != nil && g.pidLiveFn(pid) {
+		return MatchPID
+	}
+	return MatchNone
 }
 
 // act runs an emitted Decision through the enforcer + store + broadcast.
 // Shared between OnEvent (automatic) and Manual (operator-driven). The
 // manual flag annotates the resulting audit row.
+//
+// Manual overrides always run through the real enforcer chain, even when
+// the gateway is in detect-only mode. -enforce / /api/choke/mode only
+// gate the SCORE-DRIVEN path; an explicit human "kill this process"
+// reaches the kernel immediately. Dry-run and kill-switch remain global
+// stops and still suppress the kernel call.
 func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 	g.installTokenBuckets(d.Binary, d.PID)
+	metrics.IncTransition(d.From.String(), d.To.String())
 
 	target := enforce.Target{ExecID: d.ExecID, PID: d.PID, Binary: d.Binary}
 	outcome := "ok"
-	backend := g.enforcer.Name()
+	// Snapshot the enforcer under the read lock so SetEnforcing can swap
+	// it concurrently without tearing the per-decision view. For manual
+	// overrides we deliberately bypass detect-only mode and reach for the
+	// real enforcer chain — see the function doc comment for the rule.
+	// Dry-run is honored: when set, the active enforcer is already a
+	// DryRun{...} wrapper and we leave it in place.
+	g.enfMu.RLock()
+	enf := g.enforcer
+	if manual && !g.dryRun && g.realEnforcer != nil {
+		enf = g.realEnforcer
+	}
+	g.enfMu.RUnlock()
+	backend := enf.Name()
 
 	if g.killSwitch.Load() {
 		outcome = "skipped: kill-switch engaged"
@@ -305,7 +477,7 @@ func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 		// operator overrides bypass this check.
 		outcome = "skipped: system-critical chain (auto-only; manual override allowed)"
 		backend = "system-critical-exempt"
-	} else if err := g.enforcer.Apply(ctx, target, d.Action, d.Reason); err != nil {
+	} else if err := enf.Apply(ctx, target, d.Action, d.Reason); err != nil {
 		outcome = "error: " + err.Error()
 		log.Printf("[gateway] enforce action=%s exec_id=%s pid=%d: %v",
 			d.Action, d.ExecID, d.PID, err)
@@ -336,6 +508,15 @@ func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 		DryRun:    g.dryRun,
 		Backend:   backend,
 		Outcome:   outcome,
+	}
+	if g.originFn != nil && d.PID != 0 {
+		if o, ok := g.originFn(d.PID, d.ExecID); ok {
+			rec.OriginKind = o.Kind
+			rec.OriginIP = o.RemoteIP
+			rec.OriginPort = o.RemotePort
+			rec.OriginUser = o.User
+			rec.OriginFingerprint = o.Fingerprint
+		}
 	}
 	if _, err := g.store.InsertDecision(rec); err != nil {
 		log.Printf("[gateway] insert decision: %v", err)
@@ -417,7 +598,49 @@ func (g *Gateway) Mode() Mode {
 	if g.killSwitch.Load() {
 		return Mode("kill-switched")
 	}
+	g.enfMu.RLock()
+	defer g.enfMu.RUnlock()
 	return g.mode
+}
+
+// SetEnforcing swaps the active enforcer between the real Multi-backend
+// chain and the detect-only Logger. It returns the prior mode so the API
+// can surface "no-op" toggles (and so the audit log can record them
+// either way). actor + reason are logged for the audit trail.
+//
+// Dry-run mode is left untouched: the wrapper sits OUTSIDE the swap, so a
+// gateway started with -dry-run stays in dry-run-of-detect-only or
+// dry-run-of-enforcing depending on which slot is active.
+func (g *Gateway) SetEnforcing(on bool, actor, reason string) Mode {
+	g.enfMu.Lock()
+	prev := g.mode
+	if on {
+		enf := g.realEnforcer
+		if g.dryRun {
+			enf = &enforce.DryRun{Wrapped: enf}
+		}
+		g.enforcer = enf
+		if g.dryRun {
+			g.mode = ModeDryRun
+		} else {
+			g.mode = ModeEnforcing
+		}
+	} else {
+		enf := g.loggerEnforcer
+		if g.dryRun {
+			enf = &enforce.DryRun{Wrapped: enf}
+		}
+		g.enforcer = enf
+		// In detect-only the Logger does the right "no kernel call"
+		// thing on its own, so we report ModeDetectOnly even if dry-run
+		// is on (the user's choice was "don't enforce" — that's what we
+		// surface).
+		g.mode = ModeDetectOnly
+	}
+	newMode := g.mode
+	g.enfMu.Unlock()
+	log.Printf("[gateway] mode %s → %s (actor=%s reason=%q)", prev, newMode, actor, reason)
+	return prev
 }
 
 // DryRun reports whether decisions are shadow-only.
@@ -457,18 +680,19 @@ func (g *Gateway) SetThresholds(cfg circuit.Config) circuit.Config {
 // Entry is one row of the gateway snapshot — joined view of circuit state
 // + tree info + cached known-proc data.
 type Entry struct {
-	ExecID         string      `json:"exec_id"`
-	PID            uint32      `json:"pid"`
-	Binary         string      `json:"binary"`
-	State          string      `json:"state"`
-	Score          int         `json:"score"`
-	UID            uint32      `json:"uid"`
-	Args           string      `json:"args,omitempty"`
-	ParentID       string      `json:"parent_id,omitempty"`
-	StartTime      time.Time   `json:"start_time,omitempty"`
-	LastSeen       time.Time   `json:"last_seen,omitempty"`
-	Annotation     *Annotation `json:"annotation,omitempty"`
-	RevertPending  bool        `json:"revert_pending,omitempty"`
+	ExecID        string      `json:"exec_id"`
+	PID           uint32      `json:"pid"`
+	Binary        string      `json:"binary"`
+	State         string      `json:"state"`
+	Score         int         `json:"score"`
+	UID           uint32      `json:"uid"`
+	Args          string      `json:"args,omitempty"`
+	ParentID      string      `json:"parent_id,omitempty"`
+	StartTime     time.Time   `json:"start_time,omitempty"`
+	LastSeen      time.Time   `json:"last_seen,omitempty"`
+	Annotation    *Annotation `json:"annotation,omitempty"`
+	RevertPending bool        `json:"revert_pending,omitempty"`
+	Origin        *OriginInfo `json:"origin,omitempty"`
 }
 
 // Snapshot returns one Entry per tracked exec_id, joined with whatever
@@ -506,6 +730,12 @@ func (g *Gateway) Snapshot() []Entry {
 		if a, ok := g.AnnotationFor(t.ExecID); ok {
 			ac := a
 			e.Annotation = &ac
+		}
+		if g.originFn != nil && e.PID != 0 {
+			if o, ok := g.originFn(e.PID, e.ExecID); ok {
+				oc := o
+				e.Origin = &oc
+			}
 		}
 		out = append(out, e)
 	}
@@ -575,6 +805,10 @@ type ManualRequest struct {
 // monotonicity is bypassed via Force(), allowing operators to *down*-grade
 // (e.g. quarantine → throttled) when they have context the engine lacks.
 //
+// Manual actions reach the real enforcer chain regardless of detect-only
+// mode: an operator pressing "Sever" expects the process to die, not a
+// "would have killed" log line. Dry-run and kill-switch still apply.
+//
 // Returns the synthesised Decision for echoing back to the UI.
 func (g *Gateway) Manual(ctx context.Context, req ManualRequest) (*circuit.Decision, error) {
 	if req.ExecID == "" {
@@ -596,8 +830,11 @@ func (g *Gateway) Manual(ctx context.Context, req ManualRequest) (*circuit.Decis
 	// entry. Without this, manual overrides on synthetic exec_ids (from
 	// chokectl jail, or jail-by-PID from the UI) yield "(unknown)" pid=-
 	// in the drill panel even though we have the data right here.
+	// observed=false: being NAMED by an operator or a control-plane command is
+	// not evidence that this host runs the process. Caching it must not let this
+	// agent claim ownership of the exec_id on a later fleet command (see Owns).
 	if req.PID != 0 {
-		g.remember(req.ExecID, req.PID, req.Binary)
+		g.remember(req.ExecID, req.PID, req.Binary, false)
 	}
 	target := actionToState(req.Action)
 	prev, _ := g.circuit.Force(req.ExecID, target)
@@ -933,6 +1170,29 @@ type SysProcDetailFn func(pid uint32) (SysProcDetail, error)
 // SetSysProcDetailFn wires the live-proc reader. Optional — when nil, the
 // HTTP handler returns an empty detail and the UI gracefully falls back.
 func (g *Gateway) SetSysProcDetailFn(fn SysProcDetailFn) { g.sysProcDetailFn = fn }
+
+// OriginInfo mirrors origin.Origin's JSON shape so the choke package
+// stays free of an import on the origin package. main.go adapts the
+// real Origin into this struct in SetOriginLookupFn's wrapper.
+type OriginInfo struct {
+	Kind        string `json:"kind,omitempty"`
+	RemoteIP    string `json:"remote_ip,omitempty"`
+	RemotePort  uint16 `json:"remote_port,omitempty"`
+	User        string `json:"user,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+}
+
+// OriginLookupFn returns the originating client's identity for a PID, or
+// (zero, false) when no attribution is available. The execID is passed
+// alongside so the wiring in main.go can walk ancestors via the engine's
+// in-memory process tree (retains exited nodes for ~10 minutes) rather
+// than /proc — which is critical for short-lived chains like SSH MOTD
+// scripts whose PIDs vanish before the decision fires.
+type OriginLookupFn func(pid uint32, execID string) (OriginInfo, bool)
+
+// SetOriginLookupFn wires the origin tracker into the gateway. Optional —
+// when nil, audit rows simply leave the origin fields empty.
+func (g *Gateway) SetOriginLookupFn(fn OriginLookupFn) { g.originFn = fn }
 
 // HostProcessDetail returns the live /proc snapshot for a single PID.
 // Returns an empty struct (no error) when no detail backend is wired,

@@ -1,0 +1,128 @@
+// HeartbeatService — periodic agent health/liveness + hints. Cheap and
+// unary; the authoritative agent registry (architecture.md §3.5) is built from
+// these. A missed heartbeat never stops enforcement (autonomy invariant).
+// See docs/plan/wire-contract.md §2.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+import "ebpfsoc/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service HeartbeatService {
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+}
+
+message HeartbeatRequest {
+  AgentInfo agent_info = 1;
+  DataPlaneState data_plane = 2;
+  // Unshipped WAL rows — a health + backpressure signal (a growing buffer means
+  // the agent is enforcing/observing fine but cannot drain upstream).
+  uint64 buffer_depth = 3;
+  // The agent's view of uplink progress (last acked telemetry sequence).
+  uint64 last_acked_seq = 4;
+  // The policy bundle version the agent currently has applied.
+  string applied_policy_version = 5;
+  // Compact snapshot of the agent's data-plane state so the central console can
+  // render Choke/Devices per tenant without a second channel. Capped by the
+  // agent; the authoritative interactive surface remains the agent-local API.
+  repeated ChokeSummary chokes = 6;
+  repeated DeviceSummary devices = 7;
+
+  // Kernel-side and host-side drill detail for the Choke Gateway page.
+  //
+  // Without these the multi-tenant console can only ever render the panels
+  // valid-EMPTY, because the data exists solely on the agent: the same page
+  // that shows 462 token buckets, a populated cgroup map and 122 host processes
+  // on the single-tenant engine showed 0 / {} / 0 on the control plane, for
+  // every tenant, permanently. That is not a quiet degradation — it reads as a
+  // broken product to anyone who has seen the single-host console.
+  //
+  // Capped like chokes/devices above: this is a fleet SCAN surface, not the
+  // authoritative interactive one, and an uncapped per-heartbeat dump of every
+  // process on every host would cost more than the panels are worth.
+  repeated BucketSummary buckets = 8;
+  repeated CgroupSummary cgroups = 9;
+  repeated ProcessSummary processes = 10;
+}
+
+// BucketSummary is one kernel token bucket — the per-PID rate limit the choke
+// gateway actually installed. It is the evidence that a throttle reached the
+// kernel rather than only being recorded as a decision.
+message BucketSummary {
+  uint32 pid = 1;
+  uint64 rate_per_sec = 2;
+  uint64 burst = 3;
+  uint64 tokens = 4;
+  // Raw bitmask, NOT a label: the single-host engine serves `"flags": 1` and the
+  // console types it as a number. Sending a friendly string here would render
+  // the fleet panel differently from the identical single-host one.
+  uint32 flags = 5;
+}
+
+// CgroupSummary is one choke tier and the PIDs the kernel reports inside it.
+// The console renders it as the cgroup map: which processes are actually
+// confined right now, as opposed to which ones a decision row claims are.
+message CgroupSummary {
+  string tier = 1; // choke-throttled | choke-tarpit | choke-quarantined
+  repeated uint32 pids = 2;
+}
+
+// ProcessSummary is one live host process, joined with its choke state where
+// the gateway is tracking it. Powers the console's process picker, which on the
+// control plane had nothing to pick from.
+message ProcessSummary {
+  uint32 pid = 1;
+  uint32 ppid = 2;
+  uint32 uid = 3;
+  // comm and exe are BOTH carried because the engine serves both and the
+  // console falls back between them; collapsing to one loses the short name
+  // for kernel threads, which have no exe path at all.
+  string comm = 4;
+  string exe = 10;
+  string cmdline = 5;
+  bool tracked = 6;
+  string state = 7;
+  int32 score = 8;
+  string exec_id = 9;
+}
+
+// ChokeSummary is one process the agent is currently choking (or watching),
+// trimmed to what an operator scans in a fleet-wide view.
+message ChokeSummary {
+  string exec_id = 1;
+  uint32 pid = 2;
+  string binary = 3;
+  string state = 4; // watch | throttle | tarpit | quarantine | sever
+  int32 score = 5;
+}
+
+// DeviceSummary is one device under the MAC gateway (empty when the device
+// data plane is inactive).
+message DeviceSummary {
+  string mac = 1;
+  string state = 2;
+  string label = 3;
+  // Last observed address for the device (ARP/neighbour or DHCP). Carried so a
+  // fleet operator can identify an asset by IP the way the single-host console
+  // already does; without it a multi-tenant device row is a bare MAC.
+  string last_ip = 4;
+  // True when the agent's allow-list refuses to choke this device (gateway,
+  // uplink, DHCP/DNS, operator workstation, the agent's own NIC). Reported so
+  // the console can disable the action rather than offering an enforcement that
+  // the agent will reject — on an inline deployment the protected entries are
+  // exactly the ones whose severing would cut the agent off.
+  bool protected = 5;
+}
+
+message HeartbeatResponse {
+  google.protobuf.Timestamp server_time = 1;
+  // Desired cadence — lets the CP tune load per fleet.
+  uint32 desired_heartbeat_interval_s = 2;
+  // Hint that commands are queued (re)open/keep the command stream.
+  bool commands_pending = 3;
+  // Hint to pull a new policy bundle (agent still verifies the signature).
+  string desired_policy_version = 4;
+}

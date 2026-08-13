@@ -41,6 +41,11 @@ const (
 	NameThrottled   = "choke-throttled"
 	NameTarpit      = "choke-tarpit"
 	NameQuarantined = "choke-quarantined"
+	// Where released processes land. A cgroup with controllers enabled in
+	// subtree_control cannot itself hold processes, so a released process
+	// cannot simply be written back to the choke root — it needs a real,
+	// limit-free sibling of the choke tiers.
+	NamePristine = "choke-pristine"
 )
 
 // Limits is the resource budget for a single tier. CPUMax follows
@@ -86,10 +91,12 @@ func DefaultLimits() map[circuit.Action]Limits {
 
 // Manager owns the per-state cgroups. Concurrency-safe.
 type Manager struct {
-	root string
-	mu   sync.Mutex
+	root   string
+	mu     sync.Mutex
 	limits map[circuit.Action]Limits
 	paths  map[circuit.Action]string
+	// Limits this kernel refused during Setup. See Degraded().
+	degraded []string
 }
 
 // NewManager builds an unconfigured manager. Call Setup() before Apply.
@@ -101,6 +108,11 @@ func NewManager(root string) *Manager {
 		root:   root,
 		limits: DefaultLimits(),
 		paths: map[circuit.Action]string{
+			// ActNone is the release tier: no limits are registered for it in
+			// DefaultLimits, so Setup creates it bare and a process moved here
+			// runs unconstrained. Having a path for ActNone is what makes
+			// MoveTo(pid, ActNone) a real per-process release.
+			circuit.ActNone:       filepath.Join(root, NamePristine),
 			circuit.ActThrottle:   filepath.Join(root, NameThrottled),
 			circuit.ActTarpit:     filepath.Join(root, NameTarpit),
 			circuit.ActQuarantine: filepath.Join(root, NameQuarantined),
@@ -137,34 +149,56 @@ func (m *Manager) Setup() error {
 	if !IsCgroupV2(m.root) {
 		return fmt.Errorf("cgroup v2 not detected at %s (no cgroup.controllers file)", m.root)
 	}
+	// Setup is idempotent, so the degraded set is rebuilt per run rather than
+	// accumulating duplicates across restarts/reconfigures.
+	m.degraded = nil
 	// Enable controllers in the parent's subtree so child cgroups can
 	// use them. Best-effort — they may already be enabled, in which case
 	// the kernel returns -EBUSY/-EINVAL and we ignore.
 	_ = os.WriteFile(filepath.Join(m.root, "cgroup.subtree_control"),
 		[]byte("+cpu +memory +io +pids"), 0o644)
 
+	// Creating the tier cgroups is what enforcement actually depends on:
+	// MoveTo needs the directory, and quarantine needs cgroup.freeze. The
+	// per-tier resource limits are refinements on top of that.
+	//
+	// Every limit is therefore best-effort and the failures are collected
+	// rather than returned. A kernel without CFS bandwidth control (OrbStack,
+	// several managed VM images) rejects cpu.max with EINVAL — and treating
+	// that as fatal used to abort Setup on the first tier, leave the remaining
+	// tiers uncreated, and drop the whole engine to detect-only. Losing a CPU
+	// cap is a degraded control; losing enforcement entirely is a different
+	// product. Only a mkdir failure is fatal now.
 	for a, path := range m.paths {
 		if err := os.MkdirAll(path, 0o755); err != nil {
 			return fmt.Errorf("mkdir %s: %w", path, err)
 		}
 		l := m.limits[a]
-		if err := writeIfNotEmpty(filepath.Join(path, "cpu.max"), l.CPUMax); err != nil {
-			return err
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "pids.max"), l.PidsMax); err != nil {
-			return err
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "io.weight"), l.IOWeight); err != nil {
-			// io.weight is only available when the io controller is
-			// enabled with weight tracking; failure is non-fatal.
-		}
-		if err := writeIfNotEmpty(filepath.Join(path, "memory.high"), l.MemoryHigh); err != nil {
-			// memory.high may be unavailable in unprivileged containers;
-			// non-fatal.
+		for _, knob := range []struct{ file, value string }{
+			{"cpu.max", l.CPUMax},
+			{"pids.max", l.PidsMax},
+			{"io.weight", l.IOWeight},
+			{"memory.high", l.MemoryHigh},
+		} {
+			if err := writeIfNotEmpty(filepath.Join(path, knob.file), knob.value); err != nil {
+				m.degraded = append(m.degraded,
+					fmt.Sprintf("%s/%s: %v", filepath.Base(path), knob.file, err))
+			}
 		}
 	}
+	// A previous run can leave the quarantine tier frozen with nobody in it —
+	// the flag is tier-wide and per-process release never cleared it. Setup is
+	// the one place guaranteed to run on every boot, so reconcile here too and
+	// the residue heals itself on restart rather than needing a manual write.
+	m.reconcileQuarantineFreeze()
 	return nil
 }
+
+// Degraded lists the per-tier limits this kernel refused, in "tier/knob: err"
+// form. Empty means every configured limit applied. Callers should surface it
+// at startup so a partially-capable box is visible rather than silently weaker
+// than the operator believes.
+func (m *Manager) Degraded() []string { return m.degraded }
 
 func writeIfNotEmpty(path, value string) error {
 	if value == "" {
@@ -201,8 +235,50 @@ func (m *Manager) MoveTo(pid uint32, a circuit.Action) error {
 	}
 	if a == circuit.ActQuarantine {
 		_ = os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("1"), 0o644)
+	} else {
+		// A process just moved to another tier. If it was the last one held in
+		// quarantine, the tier should stop being frozen — see
+		// reconcileQuarantineFreeze.
+		m.reconcileQuarantineFreeze()
 	}
 	return nil
+}
+
+// quarantineEmpty reports whether the quarantine tier currently holds nobody.
+// An unreadable tier returns false: never act on a guess about enforcement.
+func (m *Manager) quarantineEmpty() bool {
+	path := m.paths[circuit.ActQuarantine]
+	if path == "" {
+		return true
+	}
+	b, err := os.ReadFile(filepath.Join(path, "cgroup.procs"))
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(string(b)) == ""
+}
+
+// reconcileQuarantineFreeze drops the tier back to unfrozen once the last
+// process has left it.
+//
+// cgroup.freeze is a property of the TIER, but the ladder is per-process.
+// Releasing a process moves it OUT of the quarantine cgroup and never touched
+// the flag, so after the first quarantine the tier stayed frozen for the
+// lifetime of the host. Measured on all three production hosts: freeze=1 with
+// zero pids.
+//
+// Empty-and-frozen suspends nothing, so it is not harmful in itself. What it
+// costs is falsifiability: the next quarantine's `freeze=1` write lands on a
+// tier that is already frozen, so a write that FAILS looks exactly like one
+// that succeeded. That write's error is deliberately discarded — the tier's
+// 0.1% CPU cap is the designed fallback — which only works as a safety net if
+// the flag's resting state is 0 and the write therefore means something.
+func (m *Manager) reconcileQuarantineFreeze() {
+	path := m.paths[circuit.ActQuarantine]
+	if path == "" || !m.quarantineEmpty() {
+		return
+	}
+	_ = os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("0"), 0o644)
 }
 
 // Thaw releases a quarantined cgroup so its members can run again. Used

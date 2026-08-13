@@ -8,12 +8,12 @@
 //
 // Filter shape (architecturally):
 //
-//	1. load arch from offset 4   (seccomp_data.arch)
-//	2. cmp against expected arch; on mismatch -> allow (we don't try to
-//	   handle multi-arch; misbehaved arch reaches the next layer)
-//	3. load nr   from offset 0   (seccomp_data.nr)
-//	4. for each denied syscall: cmp; on equal -> return EPERM
-//	5. fallthrough -> return ALLOW
+//  1. load arch from offset 4   (seccomp_data.arch)
+//  2. cmp against expected arch; on mismatch -> allow (we don't try to
+//     handle multi-arch; misbehaved arch reaches the next layer)
+//  3. load nr   from offset 0   (seccomp_data.nr)
+//  4. for each denied syscall: cmp; on equal -> return EPERM
+//  5. fallthrough -> return ALLOW
 //
 // EPERM rather than KILL_PROCESS is deliberate: we want the syscall to
 // return -1, not the whole process to disappear. The choke gateway can
@@ -30,13 +30,13 @@ import (
 // Linux cBPF / seccomp constants. Defined here so the compiler builds on
 // non-Linux dev hosts.
 const (
-	bpfLD     = 0x00
-	bpfJMP    = 0x05
-	bpfRET    = 0x06
-	bpfW      = 0x00 // 32-bit word
-	bpfABS    = 0x20
-	bpfK      = 0x00
-	bpfJEQ    = 0x10
+	bpfLD  = 0x00
+	bpfJMP = 0x05
+	bpfRET = 0x06
+	bpfW   = 0x00 // 32-bit word
+	bpfABS = 0x20
+	bpfK   = 0x00
+	bpfJEQ = 0x10
 
 	// seccomp data layout (struct seccomp_data): nr@0, arch@4, ip@8, args@16
 	seccompNR   = 0

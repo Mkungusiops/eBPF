@@ -1,0 +1,284 @@
+# Phase 0 CI (docs/plan/roadmap.md Phase 0 "CI/CD").
+#
+# On every PR (and pushes to main / feat branches):
+#   - go vet ./...  and  go test ./...
+#   - policy posture: every shipped TracingPolicy is disarmed by declaration
+#   - build all THREE binaries (engine, agent, controlplane) as static linux
+#   - web suite: npm ci && npm run lint && npm run typecheck && npm test
+#   - Playwright e2e (mocked API, Chromium; credential/target-VM specs self-skip)
+#   - build a control-plane container image, generate an SBOM, and — for
+#     same-repo events — push it to GHCR and sign it keylessly with cosign.
+#
+# Signing/publishing is skipped for PRs from forks (they have neither registry
+# write nor an OIDC token); those still build the image and produce the SBOM so
+# the Dockerfile and bill-of-materials are validated on every PR.
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, "feat/**"]
+
+# Least privilege by default; the image job widens its own scope.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GO_VERSION: "1.25.0"
+  NODE_VERSION: "20"
+
+jobs:
+  go:
+    name: Go — vet · test · build 3 binaries
+    runs-on: ubuntu-latest
+    # Postgres service so the RLS isolation integration test
+    # (internal/centralstore) runs in CI rather than skipping. NATS JetStream is
+    # exercised via an embedded in-process server, so it needs no service here.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: soc
+          POSTGRES_PASSWORD: socpass
+          POSTGRES_DB: ebpf_soc
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U soc -d ebpf_soc"
+          --health-interval 10s --health-timeout 5s --health-retries 5
+      # ClickHouse service so the events-firehose integration test
+      # (internal/centralstore) runs in CI rather than skipping.
+      clickhouse:
+        image: clickhouse/clickhouse-server:24.8-alpine
+        env:
+          CLICKHOUSE_USER: soc
+          CLICKHOUSE_PASSWORD: socpass
+          CLICKHOUSE_DB: ebpf_soc
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd "clickhouse-client --user soc --password socpass -q 'SELECT 1'"
+          --health-interval 10s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: engine/go.sum
+
+      # Validate the agent↔control-plane wire-contract IDL (docs/plan/wire-contract.md).
+      # protoc-only syntax/import check — no language plugins, so it's a cheap gate.
+      - name: install protoc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+
+      - name: proto-lint (wire contract IDL)
+        run: make proto-lint
+
+      # Enforcement posture, checked statically so it cannot rot between
+      # deployments. The live equivalent (scripts/e2e/host-posture.sh) needs the
+      # AWS rig and only runs when someone remembers; this runs on every push.
+      - name: policy posture (every TracingPolicy declares monitor mode)
+        run: ./scripts/ci/check-policy-posture.sh
+
+      - name: go vet
+        working-directory: engine
+        run: go vet ./...
+
+      - name: go test
+        working-directory: engine
+        env:
+          EBPF_TEST_PG_DSN: postgres://soc:socpass@localhost:5432/ebpf_soc?sslmode=disable
+          EBPF_TEST_CH_DSN: clickhouse://soc:socpass@localhost:9000/ebpf_soc
+        run: go test ./...
+
+      # All three build targets must compile from the shared internal/ packages
+      # (the Phase 0 definition of done). Static CGO-free linux builds; the
+      # agent in particular MUST stay a single static binary.
+      - name: build all three binaries (static linux/amd64)
+        working-directory: engine
+        run: |
+          mkdir -p ../dist
+          for cmd in engine agent controlplane; do
+            echo "→ building $cmd"
+            CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+              go build -trimpath -ldflags="-s -w" -o "../dist/$cmd-linux-amd64" "./cmd/$cmd"
+          done
+          file ../dist/* || true
+          # Fail loudly if any binary is not statically linked.
+          for b in ../dist/*; do
+            file "$b" | grep -q "statically linked" || { echo "NOT static: $b"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-linux-amd64
+          path: dist/*
+          if-no-files-found: error
+
+  web:
+    name: Web — lint · typecheck · test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      - name: lint
+        working-directory: web
+        run: npm run lint
+
+      - name: typecheck
+        working-directory: web
+        run: npm run typecheck
+
+      - name: test
+        working-directory: web
+        run: npm test
+
+  e2e:
+    name: Web — Playwright e2e (mocked API)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: npm ci
+        working-directory: web
+        run: npm ci
+
+      # Only Chromium is exercised; --with-deps installs the OS libraries it needs.
+      - name: install Playwright browser
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      # The specs mock /api via route interception and Playwright starts the Vite
+      # dev server itself (PLAYWRIGHT_START_WEB_SERVER=1), so no engine backend is
+      # required. Credential- and target-VM-gated specs self-skip without secrets
+      # (locally: 44 passed, 9 skipped).
+      - name: playwright test
+        working-directory: web
+        env:
+          CI: "true"
+          PLAYWRIGHT_START_WEB_SERVER: "1"
+        run: npx playwright test --project=chromium
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: web/playwright-report
+          if-no-files-found: ignore
+
+  image:
+    name: Container image — build · SBOM · sign
+    needs: [go, web, e2e]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # cosign keyless signing (Sigstore/Fulcio OIDC)
+    steps:
+      - uses: actions/checkout@v4
+
+      # GHCR image names must be lowercase; the repo name may not be. Compute a
+      # lowercased image ref and decide whether this event can publish (same-repo
+      # events can; fork PRs cannot).
+      - name: Resolve image name + publish eligibility
+        id: cfg
+        run: |
+          echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')/controlplane" >> "$GITHUB_OUTPUT"
+          if [ "${{ github.event_name }}" != "pull_request" ] || \
+             [ "${{ github.event.pull_request.head.repo.full_name }}" = "${{ github.repository }}" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.cfg.outputs.publish == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Image metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ steps.cfg.outputs.image }}
+          tags: |
+            type=sha,format=long
+            type=ref,event=branch
+            type=ref,event=pr
+
+      # One build. Push when eligible (digest is then available for signing);
+      # otherwise load locally so the SBOM step can still scan it.
+      - name: Build control-plane image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: deploy/controlplane.Dockerfile
+          push: ${{ steps.cfg.outputs.publish == 'true' }}
+          load: ${{ steps.cfg.outputs.publish != 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # SLSA provenance attestation — only when pushing (the docker/load
+          # exporter used on fork PRs does not support attestations).
+          provenance: ${{ steps.cfg.outputs.publish == 'true' }}
+
+      # SBOM as an uploadable artifact. Scan the pushed digest when we have one,
+      # else the locally-loaded tag.
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          image: >-
+            ${{ steps.cfg.outputs.publish == 'true'
+                && format('{0}@{1}', steps.cfg.outputs.image, steps.build.outputs.digest)
+                || fromJSON(steps.meta.outputs.json).tags[0] }}
+          format: spdx-json
+          output-file: sbom.controlplane.spdx.json
+          upload-artifact: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom-controlplane
+          path: sbom.controlplane.spdx.json
+          if-no-files-found: error
+
+      - name: Install cosign
+        if: steps.cfg.outputs.publish == 'true'
+        uses: sigstore/cosign-installer@v3
+
+      # Keyless: identity comes from the GitHub OIDC token, signature + SBOM
+      # attestation are recorded in the Rekor transparency log. No private keys.
+      - name: Sign image and attest SBOM (keyless)
+        if: steps.cfg.outputs.publish == 'true'
+        env:
+          IMAGE: ${{ steps.cfg.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          cosign sign --yes "${IMAGE}@${DIGEST}"
+          cosign attest --yes --type spdxjson \
+            --predicate sbom.controlplane.spdx.json "${IMAGE}@${DIGEST}"

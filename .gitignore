@@ -13,6 +13,17 @@
 /engine/engine-darwin-*
 /engine/engine-windows-*
 /engine/engine.exe
+# Phase 0 build-target split binaries (`make build-agent`, `make build-controlplane`)
+/engine/agent
+/engine/agent-linux-*
+/engine/controlplane
+/engine/controlplane-linux-*
+# The sim-agent binary was committed by accident (a 31 MB macOS build, useless
+# on the Linux targets). The deploy path builds its own into $BUILD_DIR.
+/engine/simagent
+/engine/simagent-linux-*
+# Phase 1 generated gRPC stubs (`make proto`) are COMMITTED so CI and consumers
+# build without the protoc plugins; regenerate from engine/proto/ via `make proto`.
 *.exe
 
 # Bundles produced by `make tarball`
@@ -22,6 +33,12 @@
 /out/
 /build/
 /bin/
+/web/dist/
+/web/playwright-report/
+/web/test-results/
+/web/tsconfig.tsbuildinfo
+/engine/internal/api/web/*
+!/engine/internal/api/web/.keep
 
 # Go test, coverage, profile output
 *.test
@@ -76,6 +93,16 @@ attack-run.log
 .env.*
 !.env.example
 !.env.template
+
+# Deployment state written by scripts/deploy-platform.sh. Holds the generated
+# database passwords, the control-plane admin bearer, the CA bundle, and the
+# fleet signing public key — one directory per deployed server.
+.deploy/
+
+# Build + credential output from scripts/deploy/*.sh: cross-compiled binaries
+# and credentials-<host>.txt (every generated login/secret, 0600).
+.deploy-build/
+
 
 # Generic key & cert material
 *.pem
@@ -284,3 +311,9 @@ NOTES.md.local
 # Convention: any file ending in `.local` is per-developer override.
 *.local
 !*.local.example
+
+# Compiled BPF objects — built on the target by setup.sh / `make devchoke`
+*.o
+
+# Local dev credentials — never commit
+docs/credentials/

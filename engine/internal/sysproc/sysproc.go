@@ -13,10 +13,10 @@ type Entry struct {
 	PID       uint32 `json:"pid"`
 	PPID      uint32 `json:"ppid"`
 	UID       uint32 `json:"uid"`
-	Comm      string `json:"comm"`         // 16-char short name (kernel comm)
-	Exe       string `json:"exe"`          // /proc/<pid>/exe symlink target
-	Cmdline   string `json:"cmdline"`      // null-separated argv joined by space
-	StartTime uint64 `json:"start_time"`   // jiffies since boot — stable across re-reads
+	Comm      string `json:"comm"`       // 16-char short name (kernel comm)
+	Exe       string `json:"exe"`        // /proc/<pid>/exe symlink target
+	Cmdline   string `json:"cmdline"`    // null-separated argv joined by space
+	StartTime uint64 `json:"start_time"` // jiffies since boot — stable across re-reads
 }
 
 // ListFn is the platform-agnostic entry point. Linux returns the live list;
@@ -28,17 +28,45 @@ type ListFn func() ([]Entry, error)
 // on /proc/<pid>/cwd, missing /proc/uptime, etc.) stays at its zero value.
 type Detail struct {
 	PID         uint32   `json:"pid"`
-	Status      string   `json:"status,omitempty"`        // "R","S","D","Z","T","I"
+	Status      string   `json:"status,omitempty"` // "R","S","D","Z","T","I"
 	Threads     int      `json:"threads,omitempty"`
 	VmRSSKB     uint64   `json:"vm_rss_kb,omitempty"`
 	VmSizeKB    uint64   `json:"vm_size_kb,omitempty"`
-	StartedUnix int64    `json:"started_unix,omitempty"`  // wall-clock seconds since epoch
+	StartedUnix int64    `json:"started_unix,omitempty"` // wall-clock seconds since epoch
 	Cwd         string   `json:"cwd,omitempty"`
 	Root        string   `json:"root,omitempty"`
 	NumFDs      int      `json:"num_fds,omitempty"`
-	FDSamples   []string `json:"fd_samples,omitempty"`    // up to 10 readlink targets
-	NumConns    int      `json:"num_conns,omitempty"`     // tcp+tcp6+udp+udp6 owned by this PID
-	ConnPeers   []string `json:"conn_peers,omitempty"`    // up to 5 sample peer "ip:port"
+	FDSamples   []string `json:"fd_samples,omitempty"` // up to 10 readlink targets
+	NumConns    int      `json:"num_conns,omitempty"`  // tcp+tcp6+udp+udp6 owned by this PID
+	ConnPeers   []string `json:"conn_peers,omitempty"` // up to 5 sample peer "ip:port"
+}
+
+// Ancestors walks the PPID chain upward from pid, returning at most max
+// ancestors with the immediate parent first. The `all` slice is a recent
+// sysproc.List() snapshot — passing one in keeps this allocation-free
+// per call when a caller (e.g. the origin tracker) needs to do many
+// lookups against the same snapshot. Cycle-safe.
+func Ancestors(all []Entry, pid uint32, max int) []uint32 {
+	if len(all) == 0 || pid == 0 || max <= 0 {
+		return nil
+	}
+	byPID := make(map[uint32]uint32, len(all))
+	for _, e := range all {
+		byPID[e.PID] = e.PPID
+	}
+	out := make([]uint32, 0, max)
+	visited := map[uint32]bool{pid: true}
+	cur := pid
+	for i := 0; i < max; i++ {
+		p, ok := byPID[cur]
+		if !ok || p == 0 || visited[p] {
+			break
+		}
+		visited[p] = true
+		out = append(out, p)
+		cur = p
+	}
+	return out
 }
 
 // Descendants walks the PPID tree to collect every PID transitively

@@ -31,8 +31,10 @@ func runTetraList() (string, error) {
 }
 
 // Tetra prints something like:
-//   ID   NAME                    STATE     FILTERID   NAMESPACE   SENSORS         KERNELMEMORY   MODE      NPOST   NENFORCE   NMONITOR
-//   1    outbound-connections    enabled   0          (global)    generic_kprobe  1.17 MB        enforce   12      0          0
+//
+//	ID   NAME                    STATE     FILTERID   NAMESPACE   SENSORS         KERNELMEMORY   MODE      NPOST   NENFORCE   NMONITOR
+//	1    outbound-connections    enabled   0          (global)    generic_kprobe  1.17 MB        enforce   12      0          0
+//
 // Columns are space-padded; we split on whitespace runs and map by header.
 func parseTetraList(raw string) []policyStat {
 	var (

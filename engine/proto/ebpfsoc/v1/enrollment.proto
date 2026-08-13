@@ -1,0 +1,59 @@
+// EnrollmentService — the one channel reachable with server-auth TLS + a
+// one-time bootstrap token. It exists solely to issue the mTLS client cert that
+// every other channel requires. See docs/plan/wire-contract.md §3.
+syntax = "proto3";
+
+package ebpfsoc.v1;
+
+import "ebpfsoc/v1/common.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1;ebpfsocv1";
+
+service EnrollmentService {
+  // Enroll exchanges a one-time, tenant-scoped bootstrap token + a CSR for a
+  // client certificate whose subject encodes tenant_id + agent_id. Idempotent
+  // only in that a spent token is rejected (threat-model SC-7).
+  rpc Enroll(EnrollRequest) returns (EnrollResponse);
+
+  // Renew re-issues a certificate for an ALREADY-enrolled agent, called over
+  // its existing mTLS identity — no bootstrap token. The tenant_id + agent_id
+  // are read from the caller's verified client certificate, never the request,
+  // so an agent cannot change tenants at renewal (isolation invariant R4). This
+  // lets a long-lived agent rotate before expiry without an operator minting a
+  // fresh token (threat-model CH-6).
+  rpc Renew(RenewRequest) returns (EnrollResponse);
+}
+
+message RenewRequest {
+  // Fresh agent-generated CSR (PEM). A new keypair is minted per renewal; the
+  // private key never leaves the host.
+  bytes csr_pem = 1;
+  // Updated agent facts captured at renewal (version/arch/hostname).
+  AgentInfo agent_info = 2;
+}
+
+message EnrollRequest {
+  // One-time, short-lived, tenant-scoped token minted by an operator in the
+  // console. Verified, then burned.
+  string bootstrap_token = 1;
+  // Agent-generated keypair CSR (PEM). The private key never leaves the host.
+  bytes csr_pem = 2;
+  AgentInfo agent_info = 3;
+}
+
+message EnrollResponse {
+  // Issued client certificate (PEM). Subject binds tenant_id + agent_id; the
+  // agent cannot alter its tenant by re-issuing (isolation invariant R4).
+  bytes certificate_pem = 1;
+  // Trust anchor(s) the agent uses to authenticate the control plane (mTLS).
+  bytes ca_bundle_pem = 2;
+  // Server-assigned agent identity (also encoded in the cert subject).
+  string agent_id = 3;
+  // Cert expiry — agents are short-lived and auto-rotate before this
+  // (threat-model CH-6).
+  google.protobuf.Timestamp cert_not_after = 4;
+  // Endpoints for the mTLS channels, so enrollment can steer fleets/regions.
+  string uplink_endpoint = 5;
+  string command_endpoint = 6;
+}
