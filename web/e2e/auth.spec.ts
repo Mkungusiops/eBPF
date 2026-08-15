@@ -1,4 +1,4 @@
-import { expect, hasCredentials, loginByApi, test } from "./support/test";
+import { expect, hasBackend, hasCredentials, loginByApi, test } from "./support/test";
 
 async function suppressNativeInstallPrompt(page: Parameters<typeof test>[0]["page"]): Promise<void> {
   await page.addInitScript(() => {
@@ -236,6 +236,7 @@ test.describe("auth", () => {
   });
 
   test("bad credentials redirect back to the login error URL", async ({ request }) => {
+    test.skip(!(await hasBackend(request)), "needs a live engine on :8080");
     const response = await request.post("/api/login", {
       failOnStatusCode: false,
       form: { user: "definitely-not-a-user", pass: "definitely-not-a-password" },
@@ -249,6 +250,7 @@ test.describe("auth", () => {
   });
 
   test("unauthenticated API requests return the JSON 401 contract", async ({ request }) => {
+    test.skip(!(await hasBackend(request)), "needs a live engine on :8080");
     const response = await request.get("/api/whoami", { failOnStatusCode: false });
 
     expect(response.status()).toBe(401);

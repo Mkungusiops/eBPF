@@ -64,6 +64,33 @@ export const test = base.extend<{ ebpf: EbpfEnv }>({
 
 export { expect };
 
+/**
+ * Reports whether a live engine is reachable behind the Vite proxy.
+ *
+ * Two specs in auth.spec.ts assert the ENGINE's auth contract (the 303 redirect
+ * on bad credentials, the JSON 401 envelope) rather than the console's, so they
+ * need a real backend on :8080. They had no guard, which made them pass on a
+ * developer machine that happens to be running the local stack and fail in CI
+ * with ECONNREFUSED — the mocked-API suite is supposed to need no backend at all.
+ *
+ * Probing rather than reading a flag is deliberate: the question is whether a
+ * backend is actually answering, not whether someone remembered to set a
+ * variable.
+ */
+export async function hasBackend(api: APIRequestContext): Promise<boolean> {
+  try {
+    const res = await api.get("/api/whoami", { failOnStatusCode: false, timeout: 3000 });
+    // Status, not merely "did it resolve". The Vite dev server PROXIES /api to
+    // the engine, so when nothing is listening it answers 502 itself rather than
+    // refusing the connection — a try/catch alone sees a successful response and
+    // concludes a backend exists. A live engine answers this route 401 by
+    // contract; anything 5xx is the proxy reporting it could not reach one.
+    return res.status() < 500;
+  } catch {
+    return false;
+  }
+}
+
 export function hasCredentials(
   env: EbpfEnv
 ): env is EbpfEnv & { username: string; password: string } {
