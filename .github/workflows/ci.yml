@@ -81,7 +81,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: engine/go.sum
@@ -268,7 +268,7 @@ jobs:
         with:
           fetch-depth: 0 # gitleaks scans history, not just the tip
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: ${{ env.GO_VERSION }}
           cache-dependency-path: engine/go.sum
