@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,11 @@ type Gateway struct {
 
 	// systemCritical: auto-enforce exemption set. Looked up by exact
 	// binary path; manual overrides bypass it.
+	//
+	// Guarded because SetSystemCritical can replace it from the control-plane
+	// command channel while the event loop reads it on every scored
+	// transition. It was an unguarded map when only the constructor wrote it.
+	critMu         sync.RWMutex
 	systemCritical map[string]bool
 }
 
@@ -268,7 +274,10 @@ func (g *Gateway) isSystemCritical(binary string) bool {
 	if binary == "" {
 		return false
 	}
-	if g.systemCritical[binary] {
+	g.critMu.RLock()
+	hit := g.systemCritical[binary]
+	g.critMu.RUnlock()
+	if hit {
 		return true
 	}
 	// Path-prefix exemption for /usr/lib/systemd/* — covers any new
@@ -278,6 +287,55 @@ func (g *Gateway) isSystemCritical(binary string) bool {
 		return true
 	}
 	return false
+}
+
+// SetSystemCritical replaces the auto-enforce exemption list.
+//
+// The safe minimum is ALWAYS unioned in, so sshd, sudo, systemd and the login
+// path cannot be removed — not by a mistake, and not by a validly signed
+// command from a compromised control plane. That is threat-model EN-1: the
+// worst outcome of an enforcement bug is locking every operator out of the
+// host, and a host you cannot log into cannot be remediated.
+//
+// The union lives HERE rather than only at the call site for the same reason
+// approval.Store.Decide holds the four-eyes check in the store: a guarantee
+// enforced at one call site is a guarantee a second call site will forget.
+// command.Processor also unions before calling — belt and braces, deliberately.
+//
+// Returns the effective list, so a caller can log or audit what actually took
+// effect rather than what it asked for.
+func (g *Gateway) SetSystemCritical(binaries []string) []string {
+	effective := map[string]bool{}
+	for _, b := range DefaultSystemCriticalBinaries() {
+		effective[b] = true
+	}
+	for _, b := range binaries {
+		if b = strings.TrimSpace(b); b != "" {
+			effective[b] = true
+		}
+	}
+	g.critMu.Lock()
+	g.systemCritical = effective
+	g.critMu.Unlock()
+
+	out := make([]string, 0, len(effective))
+	for b := range effective {
+		out = append(out, b)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// SystemCriticalList returns the current exemption list, sorted.
+func (g *Gateway) SystemCriticalList() []string {
+	g.critMu.RLock()
+	defer g.critMu.RUnlock()
+	out := make([]string, 0, len(g.systemCritical))
+	for b := range g.systemCritical {
+		out = append(out, b)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // chainHasSystemCritical reports whether the exec_id's process chain has

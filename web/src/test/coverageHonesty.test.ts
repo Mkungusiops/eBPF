@@ -43,7 +43,13 @@ describe("coverage is only reported when it can be computed", () => {
 });
 
 describe("every coverage render consults measurability", () => {
-  const soc = readFileSync("src/features/soc/SocRoute.tsx", "utf8")
+// NOTE: this asserts on SOURCE TEXT, which makes it brittle to refactoring —
+// it broke when the code moved out of SocRoute.tsx into focused modules. The
+// invariant it guards is real, so it now reads every file the SOC route is
+// composed from rather than one path. A behavioural test would be better still.
+  const soc = ["SocRoute", "CorrelationGraph", "exportStudio", "panels"]
+    .map((f) => readFileSync(`src/features/soc/${f}.tsx`, "utf8"))
+    .join("\n")
     .split("\n")
     .filter((line) => !/^\s*(\/\/|\*|\/\*)/.test(line))
     .join("\n");

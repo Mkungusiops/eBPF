@@ -24,11 +24,12 @@ internal/isolationguard already applies to the gRPC surface.
 
 WHAT IS NOT GENERATED
 ---------------------
-RESPONSE schemas. Responses are assembled as map[string]any at many points and
-vary by outcome, so there is no single declaration to read; guessing them would
-produce exactly the confidently-wrong document this is trying to avoid. The
-response fields that matter (ok, status, target_match, approval_required) are
-documented by hand, and verified against a running server, in
+CLOSED response schemas. Response FIELD NAMES are extracted from each handler's
+writeJSON map literals and published as observed, non-exhaustive properties -
+about 40% of responses are assembled inline and the shape varies by outcome, so
+declaring them closed would be wrong. Typed-value responses are not covered.
+The response semantics that actually matter (ok means applied, not accepted)
+are documented by hand and verified against a running server in
 docs/api/integration-guide.md.
 
 Usage:  ./scripts/ci/gen-openapi.py [--check]
@@ -258,12 +259,71 @@ def collect_request_bodies(d: pathlib.Path) -> dict[str, dict]:
     return out
 
 
+
+# ── response fields ──────────────────────────────────────────────────────────
+# Extracted from the `writeJSON(w, <code>, map[string]any{...})` literals in each
+# handler. Unlike request bodies there is no single declaration to read: about
+# 40% of responses are map[string]any assembled inline and the rest are typed
+# values, and the shape legitimately varies by outcome (APPLIED vs NO_AGENT vs
+# APPROVAL_REQUIRED). So these are published as OBSERVED fields, explicitly
+# non-exhaustive, rather than as a closed schema that would be wrong.
+#
+# Naming them is still worth doing: the fields that decide whether a caller
+# believes a containment happened — ok, status, target_match, approval_required
+# — are exactly the ones that were being misread.
+RESP_KEY_RX = re.compile(r'"([a-z_][a-z0-9_]*)"\s*:')
+
+
+def collect_response_fields(d: pathlib.Path) -> dict[str, dict]:
+    """handler name -> {field: type} observed in its writeJSON map literals."""
+    out: dict[str, dict] = {}
+    for f in go_files(d):
+        lines = f.read_text().split("\n")
+        current = None
+        for i, ln in enumerate(lines):
+            m = re.match(r"^func \([^)]*\) (\w+)\(w http\.ResponseWriter", ln)
+            if m:
+                current = m.group(1)
+                continue
+            if not current or "map[string]any{" not in ln:
+                continue
+            if "writeJSON" not in ln and "writeJSON" not in lines[max(0, i - 1)]:
+                continue
+            # Consume the literal, brace-balanced.
+            depth = 0
+            j = i
+            buf: list[str] = []
+            while j < len(lines):
+                depth += lines[j].count("{") - lines[j].count("}")
+                buf.append(lines[j])
+                if depth <= 0:
+                    break
+                j += 1
+            blob = "\n".join(buf)
+            fields = out.setdefault(current, {})
+            for key in RESP_KEY_RX.findall(blob):
+                # Infer from the value that follows the key, when it is obvious.
+                mv = re.search(r'"' + re.escape(key) + r'"\s*:\s*([^,\n}]+)', blob)
+                val = (mv.group(1).strip() if mv else "")
+                if val in ("true", "false") or val.startswith("out.applied") or val.endswith(".OK"):
+                    t = "boolean"
+                elif re.fullmatch(r"-?\d+", val):
+                    t = "integer"
+                elif val.startswith("len(") or val.startswith("int("):
+                    t = "integer"
+                else:
+                    t = "string"
+                fields.setdefault(key, t)
+    return out
+
+
 def collect_routes() -> list[dict]:
     rx = re.compile(r'mux\.HandleFunc\("([^"]+)",\s*([A-Za-z0-9_.()*]+)')
     routes: list[dict] = []
     for surface, d in SURFACES.items():
         handlers = collect_handlers(d)
         bodies = collect_request_bodies(d)
+        responses = collect_response_fields(d)
         seen = set()
         for f in go_files(d):
             for path, expr in rx.findall(f.read_text()):
@@ -281,6 +341,7 @@ def collect_routes() -> list[dict]:
                         "doc": info.get("doc", ""),
                         "methods": info.get("methods", ["GET"]),
                         "body": bodies.get(hname),
+                        "resp": responses.get(hname),
                     }
                 )
     routes.sort(key=lambda r: (r["surface"], r["path"]))
@@ -407,7 +468,22 @@ def render(routes: list[dict]) -> str:
                 for line in _schema_lines(primary["body"], 16):
                     a(line)
             a("      responses:")
-            a('        "200": { description: "Success" }')
+            if primary.get("resp"):
+                a('        "200":')
+                a("          description: |")
+                a("            Success. The fields below are those OBSERVED in this handler's")
+                a("            JSON responses, derived from its writeJSON literals - they are")
+                a("            NOT an exhaustive schema, and the shape varies by outcome.")
+                a("            Read `ok` as 'the agent confirmed it applied', not 'accepted'.")
+                a("          content:")
+                a("            application/json:")
+                a("              schema:")
+                a("                type: object")
+                a("                properties:")
+                for k, t in sorted(primary["resp"].items()):
+                    a(f"                  {yaml_str(k)}: {{ type: {t} }}")
+            else:
+                a('        "200": { description: "Success" }')
             a('        "401": { description: "Unauthenticated" }')
             a('        "404": { description: "Not found, or not visible to this caller" }')
     return "\n".join(L) + "\n"
