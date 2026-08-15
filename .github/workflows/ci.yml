@@ -137,7 +137,7 @@ jobs:
       # this adds the ineffectual-assignment, unused-result and staticcheck
       # families that found real dead code in this tree.
       - name: golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v1.62
           working-directory: engine
