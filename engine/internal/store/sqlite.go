@@ -235,7 +235,9 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 		}
 		out = append(out, e)
 	}
-	return out, nil
+	// A partial result set from an interrupted query must not read as "no more
+	// rows" — that silently under-reports events on a security console.
+	return out, rows.Err()
 }
 
 func (s *Store) RecentAlerts(limit int) ([]Alert, error) {
@@ -257,7 +259,7 @@ func (s *Store) RecentAlerts(limit int) ([]Alert, error) {
 		_ = json.Unmarshal([]byte(idsJSON), &a.EventIDs)
 		out = append(out, a)
 	}
-	return out, nil
+	return out, rows.Err()
 }
 
 func (s *Store) EventsByExecID(execID string) ([]Event, error) {
@@ -277,5 +279,5 @@ func (s *Store) EventsByExecID(execID string) ([]Event, error) {
 		}
 		out = append(out, e)
 	}
-	return out, nil
+	return out, rows.Err()
 }

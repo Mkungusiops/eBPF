@@ -733,15 +733,18 @@ export function HoneypotsBody({ honeypots, now }: { honeypots: SocHoneypot[]; no
 
   const prefix = useMemo(() => commonPrefix(honeypots.map((h) => h.path)), [honeypots]);
 
-  const isRecent = (h: SocHoneypot) =>
-    Boolean(h.lastSeen) && now - new Date(h.lastSeen as string).getTime() < 60_000;
+  const isRecent = useCallback(
+    (h: SocHoneypot) =>
+      Boolean(h.lastSeen) && now - new Date(h.lastSeen as string).getTime() < 60_000,
+    [now]
+  );
 
   const stats = useMemo(() => {
     const totalHits = honeypots.reduce((sum, h) => sum + h.hits, 0);
     const accessed = honeypots.filter((h) => h.hits > 0).length;
     const hot = honeypots.filter(isRecent).length;
     return { totalHits, accessed, hot };
-  }, [honeypots, now]);
+  }, [honeypots, isRecent]);
 
   const counts: Record<HoneypotFilter, number> = {
     all: honeypots.length,
@@ -768,7 +771,7 @@ export function HoneypotsBody({ honeypots, now }: { honeypots: SocHoneypot[]; no
       return (b.lastSeen || "").localeCompare(a.lastSeen || "");
     });
     return list;
-  }, [honeypots, query, filter, sort, now]);
+  }, [honeypots, query, filter, sort, isRecent]);
 
   const maxHits = Math.max(1, ...honeypots.map((h) => h.hits));
 
@@ -921,15 +924,18 @@ export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyS
   const policyStats = live ?? propStats;
 
   // Prefer a reported rate; otherwise derive it from the posts counter.
-  const rate = (s: SocPolicyStat) => s.ratePerMin ?? kprobeRateFromHistory(s.name);
-  const bandOf = (s: SocPolicyStat): Exclude<KprobeBand, "all"> => {
-    const r = rate(s);
-    if (r > threshold) return "over";
-    if (r === 0) return "idle";
-    if (r < threshold * 0.25) return "calm";
-    if (r < threshold * 0.6) return "warm";
-    return "hot";
-  };
+  const rate = useCallback((s: SocPolicyStat) => s.ratePerMin ?? kprobeRateFromHistory(s.name), []);
+  const bandOf = useCallback(
+    (s: SocPolicyStat): Exclude<KprobeBand, "all"> => {
+      const r = rate(s);
+      if (r > threshold) return "over";
+      if (r === 0) return "idle";
+      if (r < threshold * 0.25) return "calm";
+      if (r < threshold * 0.6) return "warm";
+      return "hot";
+    },
+    [rate, threshold]
+  );
 
   const totalPosts = policyStats.reduce((sum, s) => sum + s.posts, 0);
   const hottest = policyStats.reduce<SocPolicyStat | null>((best, s) => (!best || rate(s) > rate(best) ? s : best), null);
@@ -968,7 +974,7 @@ export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyS
     const acc: Record<KprobeBand, number> = { all: policyStats.length, hot: 0, warm: 0, calm: 0, idle: 0, over: 0 };
     for (const s of policyStats) acc[bandOf(s)] += 1;
     return acc;
-  }, [policyStats, threshold]);
+  }, [policyStats, bandOf]);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -984,7 +990,7 @@ export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyS
       return rate(b) - rate(a);
     });
     return list;
-  }, [policyStats, query, band, sort, threshold]);
+  }, [policyStats, query, band, sort, bandOf, rate]);
 
   const maxRate = Math.max(1, threshold, ...policyStats.map(rate));
 

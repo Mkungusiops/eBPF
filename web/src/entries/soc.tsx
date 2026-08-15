@@ -5,5 +5,6 @@ import { StreamProvider } from "../lib/stream";
 renderApp(
   <StreamProvider>
     <SocPage />
-  </StreamProvider>
+  </StreamProvider>,
+  "the SOC console"
 );

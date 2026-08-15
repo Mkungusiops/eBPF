@@ -39,9 +39,13 @@ type Fleet struct {
 	pass      string
 	client    *http.Client
 
-	mu      sync.Mutex
-	peers   []FleetPeer
-	cookies map[string]string // peer name -> session cookie value
+	mu    sync.Mutex
+	peers []FleetPeer
+	// peer name -> the pair a peer's middleware requires. The CSRF half used to
+	// be discarded at login, so every fleet WRITE (preset, thresholds, thaw,
+	// device-jail — and the kill-switch, the emergency stop) was rejected 403 by
+	// the peer and no test covered it.
+	cookies map[string]peerSession
 	loaded  time.Time
 }
 
@@ -59,7 +63,7 @@ func NewFleet(hostsFile, user, pass string) *Fleet {
 		user:      user,
 		pass:      pass,
 		client:    &http.Client{Timeout: 6 * time.Second},
-		cookies:   make(map[string]string),
+		cookies:   make(map[string]peerSession),
 	}
 }
 
@@ -114,13 +118,13 @@ func parseHostsFile(path string) ([]FleetPeer, error) {
 
 // peerLogin establishes a session for one peer and caches the cookie.
 // Called lazily before any peer call and again after a 401.
-func (f *Fleet) peerLogin(p FleetPeer) (string, error) {
+func (f *Fleet) peerLogin(p FleetPeer) (peerSession, error) {
 	form := url.Values{}
 	form.Set("user", f.user)
 	form.Set("pass", f.pass)
 	req, err := http.NewRequest(http.MethodPost, p.URL+"/api/login", strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return peerSession{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	// Don't follow the 303 redirect to /; we just want the Set-Cookie.
@@ -130,35 +134,51 @@ func (f *Fleet) peerLogin(p FleetPeer) (string, error) {
 	}
 	resp, err := noRedir.Do(req)
 	if err != nil {
-		return "", err
+		return peerSession{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode >= 400 && resp.StatusCode != http.StatusSeeOther && resp.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("peer login failed: %s", resp.Status)
+		return peerSession{}, fmt.Errorf("peer login failed: %s", resp.Status)
 	}
+	var sess peerSession
 	for _, c := range resp.Cookies() {
-		if c.Name == "soc_session" {
-			return c.Value, nil
+		switch c.Name {
+		case "soc_session":
+			sess.Cookie = c.Value
+		case "csrf_token":
+			// Required by the peer on every unsafe /api/ method; dropping it
+			// here is what made fleet writes 403.
+			sess.CSRF = c.Value
 		}
 	}
-	return "", errors.New("peer login: no session cookie")
+	if sess.Cookie == "" {
+		return peerSession{}, errors.New("peer login: no session cookie")
+	}
+	return sess, nil
 }
 
-func (f *Fleet) sessionFor(p FleetPeer) (string, error) {
+// peerSession is what one peer's auth middleware demands: the session cookie,
+// plus the CSRF token that unsafe /api/ methods must echo back as a header.
+type peerSession struct {
+	Cookie string
+	CSRF   string
+}
+
+func (f *Fleet) sessionFor(p FleetPeer) (peerSession, error) {
 	f.mu.Lock()
-	tok, ok := f.cookies[p.Name]
+	sess, ok := f.cookies[p.Name]
 	f.mu.Unlock()
-	if ok && tok != "" {
-		return tok, nil
+	if ok && sess.Cookie != "" {
+		return sess, nil
 	}
-	tok, err := f.peerLogin(p)
+	sess, err := f.peerLogin(p)
 	if err != nil {
-		return "", err
+		return peerSession{}, err
 	}
 	f.mu.Lock()
-	f.cookies[p.Name] = tok
+	f.cookies[p.Name] = sess
 	f.mu.Unlock()
-	return tok, nil
+	return sess, nil
 }
 
 func (f *Fleet) invalidate(name string) {
@@ -171,7 +191,7 @@ func (f *Fleet) invalidate(name string) {
 // Returns the raw response body and the HTTP status code.
 func (f *Fleet) peerCall(p FleetPeer, method, path string, body []byte) ([]byte, int, error) {
 	doOnce := func() (*http.Response, error) {
-		tok, err := f.sessionFor(p)
+		sess, err := f.sessionFor(p)
 		if err != nil {
 			return nil, err
 		}
@@ -186,7 +206,13 @@ func (f *Fleet) peerCall(p FleetPeer, method, path string, body []byte) ([]byte,
 		if body != nil {
 			req.Header.Set("Content-Type", "application/json")
 		}
-		req.AddCookie(&http.Cookie{Name: "soc_session", Value: tok})
+		req.AddCookie(&http.Cookie{Name: "soc_session", Value: sess.Cookie})
+		// The peer compares this against the CSRF embedded in the session
+		// cookie, so it must be sent on every unsafe method or the write is
+		// refused before it reaches a handler.
+		if isUnsafeMethod(method) {
+			req.Header.Set("X-CSRF-Token", sess.CSRF)
+		}
 		return f.client.Do(req)
 	}
 	resp, err := doOnce()
@@ -196,7 +222,9 @@ func (f *Fleet) peerCall(p FleetPeer, method, path string, body []byte) ([]byte,
 	if resp.StatusCode == http.StatusUnauthorized {
 		resp.Body.Close()
 		f.invalidate(p.Name)
-		resp, err = doOnce()
+		// bodyclose cannot see that the deferred Close below covers this
+		// reassigned response; the previous body is closed on the line above.
+		resp, err = doOnce() //nolint:bodyclose
 		if err != nil {
 			return nil, 0, err
 		}

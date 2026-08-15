@@ -32,7 +32,7 @@
 # Config:
 #   $CHOKECTL_HOSTS         path to hosts file (default ./chokectl.hosts)
 #   $CHOKE_USER             API user (default admin)
-#   $CHOKE_PASS             API password (default ebpf-soc-demo)
+#   $CHOKE_PASS             API password (REQUIRED — no default)
 #   --hosts=PATH            override hosts file
 #   --host=NAME             restrict to a single host (writes only)
 #   --timeout=SECS          per-request timeout (default 5)
@@ -50,7 +50,10 @@ set -uo pipefail
 
 CHOKECTL_HOSTS="${CHOKECTL_HOSTS:-./chokectl.hosts}"
 CHOKE_USER="${CHOKE_USER:-admin}"
-CHOKE_PASS="${CHOKE_PASS:-ebpf-soc-demo}"
+# No default. This tool drives quarantine and sever against a live fleet; a
+# built-in password published in this repository is a credential, not a default.
+CHOKE_PASS="${CHOKE_PASS:-}"
+[[ -n "$CHOKE_PASS" ]] || die "CHOKE_PASS is required (export CHOKE_PASS=... before running)"
 TIMEOUT=5
 HOST_FILTER=""
 

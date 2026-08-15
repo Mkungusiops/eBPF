@@ -1,0 +1,86 @@
+# Release — cut a signed, checksummed, verifiable set of artefacts from a tag.
+#
+# This is the CD half of the pipeline. Before it existed, CI built a signed and
+# attested CONTAINER while every real deployment scp-ed a binary built on
+# someone's laptop — so the thing that was attested and the thing that ran were
+# never the same artefact. That is why every production box reported a
+# `-dirty` revision.
+#
+# scripts/release.sh already did the hard part (refuse to build from a dirty
+# tree, refuse to build untested, checksum everything, cosign-sign it). It was
+# simply never wired to anything. This runs it on a tag, so the binaries an
+# operator installs are the binaries CI built, signed, and logged to Rekor.
+#
+# Verify any published artefact with:
+#   cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+#     --certificate-identity-regexp '^https://github.com/.*/release.yml@.*' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     SHA256SUMS
+#   sha256sum -c SHA256SUMS
+name: Release
+
+on:
+  push:
+    tags: ["v*.*.*"]
+  # Manual re-cut of an existing tag (e.g. after a failed publish).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Tag to build (vX.Y.Z). Must already exist."
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    name: Build · checksum · sign · publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the GitHub Release
+      id-token: write # cosign keyless (Sigstore/Fulcio OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # release.sh derives the version from the tag and refuses a dirty or
+          # untagged tree, so it needs full history and tags.
+          fetch-depth: 0
+          ref: ${{ github.event.inputs.version || github.ref }}
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: engine/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # The console is embedded into the engine binary via go:embed, staged from
+      # web/dist by the Makefile. A bare `go build` compiles fine and silently
+      # ships STALE UI, so the frontend must be built before the binaries.
+      - name: build console assets
+        working-directory: web
+        run: npm ci && npm run build
+
+      - uses: sigstore/cosign-installer@v3
+
+      - name: cut the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          echo "releasing $VERSION"
+          ./scripts/release.sh --version "$VERSION" --publish
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ github.event.inputs.version || github.ref_name }}
+          path: dist/${{ github.event.inputs.version || github.ref_name }}/*
+          if-no-files-found: error
+
+env:
+  GO_VERSION: "1.26.6"
+  NODE_VERSION: "20"

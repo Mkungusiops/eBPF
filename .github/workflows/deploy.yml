@@ -1,0 +1,174 @@
+# Deploy — install a SIGNED release onto the estate, with an approval gate.
+#
+# Deliberately manual (`workflow_dispatch`), not push-triggered. This platform
+# runs as root with CAP_BPF on customer kernels and can SIGKILL processes; an
+# automatic push-to-prod is the wrong default for it. What this gives you over
+# the previous process is not speed — it is that the bytes installed are the
+# bytes CI built and Sigstore logged, chosen by tag, with a recorded approver.
+#
+# Before this existed, deployment meant running scripts/deploy/*.sh from a
+# workstation against binaries built on that workstation. Nothing tied what ran
+# in production to anything CI had ever seen.
+#
+# ── Required repository configuration ────────────────────────────────────────
+# Environments (Settings → Environments) named `staging` and `production`.
+# Put REQUIRED REVIEWERS on `production` — that is the approval gate.
+#
+# Per-environment secrets:
+#   SSH_PRIVATE_KEY   deploy key with passwordless sudo on the targets
+#   SSH_KNOWN_HOSTS   output of `ssh-keyscan <each host>` — pinning, not TOFU
+#   ENGINE_PASS       console credential (there is deliberately no default)
+#
+# Per-environment variables:
+#   CP_HOST, ENGINE_HOST, AGENT_HOSTS (space-separated "tenant=sshhost" pairs)
+#   CP_PRIVATE_IP     address agents dial for gRPC (e.g. 172.31.45.193)
+#   CP_DOMAIN         PUBLIC DNS NAME of the console (e.g. console.example.com)
+#   ENGINE_DOMAIN     PUBLIC DNS NAME of the engine  (e.g. engine.example.com)
+#
+# CP_DOMAIN/ENGINE_DOMAIN must be the DNS NAME, never an IP. The provisioner
+# rewrites the nginx site on every run and binds server_name to TARGET_HOST, so
+# deploying with an IP silently replaces the TLS vhost with a plaintext one and
+# takes the console offline on its real hostname while every service still
+# reports healthy. TLS=1 is set below for the same reason.
+#
+# If you would rather not hold an SSH key in GitHub, keep using
+# `make deploy-release VERSION=vX.Y.Z` locally — it performs the same signature
+# verification before installing anything.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Released tag to deploy (vX.Y.Z)"
+        required: true
+      environment:
+        description: "Target environment"
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      component:
+        description: "What to deploy"
+        required: true
+        default: all
+        type: choice
+        options: [all, control-plane, engine, agents]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Verify the release is signed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: sigstore/cosign-installer@v3
+
+      # Fail BEFORE touching any host. An unverifiable artefact must never
+      # reach a box, and finding that out mid-rollout is worse than not
+      # starting.
+      - name: download and verify artefacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version }}"
+          mkdir -p dist && cd dist
+          gh release download "$V" --repo "$GITHUB_REPOSITORY"
+
+          echo "→ verifying the cosign signature over SHA256SUMS"
+          cosign verify-blob \
+            --certificate SHA256SUMS.pem \
+            --signature SHA256SUMS.sig \
+            --certificate-identity-regexp "^https://github.com/${GITHUB_REPOSITORY}/\.github/workflows/release\.yml@" \
+            --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+            SHA256SUMS
+
+          echo "→ verifying every binary against the signed manifest"
+          sha256sum -c SHA256SUMS
+
+          echo "✓ artefacts are signed by the release workflow and intact"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-${{ inputs.version }}
+          path: dist/*
+          if-no-files-found: error
+
+  deploy:
+    name: Install onto ${{ inputs.environment }}
+    needs: verify
+    runs-on: ubuntu-latest
+    # The approval gate lives here: a protected environment pauses this job
+    # until a required reviewer approves, and records who did.
+    environment: ${{ inputs.environment }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-${{ inputs.version }}
+          path: dist
+
+      - name: configure ssh
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          # Pinned host keys, not StrictHostKeyChecking=no. Accepting whatever
+          # key answers would make a MITM indistinguishable from a deploy.
+          echo "${{ secrets.SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+          cat >> ~/.ssh/config <<'CFG'
+          Host *
+            IdentityFile ~/.ssh/id_deploy
+            User ubuntu
+            StrictHostKeyChecking yes
+            BatchMode yes
+          CFG
+
+      - name: control plane
+        if: inputs.component == 'all' || inputs.component == 'control-plane'
+        env:
+          # DATA_MODE=none is REQUIRED on any estate running real agents. The
+          # default (sim) resurrects fake agents beside the real ones, and a sim
+          # acks STATUS_APPLIED for a process it never touched — the
+          # false-containment failure this product exists to prevent.
+          DATA_MODE: none
+          TLS: "1"
+          ENGINE_PASS: ${{ secrets.ENGINE_PASS }}
+        run: |
+          test -n "${{ vars.CP_DOMAIN }}" || { echo "CP_DOMAIN must be set to the console DNS name"; exit 1; }
+          TARGET_HOST="${{ vars.CP_DOMAIN }}" SSH_HOST="${{ vars.CP_HOST }}" \
+            ./scripts/deploy/multi-tenant-ubuntu.sh
+
+      - name: single-tenant engine
+        if: inputs.component == 'all' || inputs.component == 'engine'
+        env:
+          TLS: "1"
+          ENGINE_PASS: ${{ secrets.ENGINE_PASS }}
+        run: |
+          test -n "${{ vars.ENGINE_DOMAIN }}" || { echo "ENGINE_DOMAIN must be set to the engine DNS name"; exit 1; }
+          TARGET_HOST="${{ vars.ENGINE_DOMAIN }}" SSH_HOST="${{ vars.ENGINE_HOST }}" \
+            ./scripts/deploy/single-tenant-ubuntu.sh
+
+      - name: agents
+        if: inputs.component == 'all' || inputs.component == 'agents'
+        run: |
+          set -euo pipefail
+          for pair in ${{ vars.AGENT_HOSTS }}; do
+            tenant="${pair%%=*}"; host="${pair#*=}"
+            echo "→ $host (tenant $tenant)"
+            make deploy-agent \
+              TENANT="$tenant" AGENT_HOST="$host" \
+              CP_SSH="${{ vars.CP_HOST }}" CP_IP="${{ vars.CP_PRIVATE_IP }}"
+          done
+
+      # Deploying and not checking is how a half-rolled-out fleet goes
+      # unnoticed. This asserts the estate is actually serving afterwards.
+      - name: post-deploy verification
+        run: ./scripts/ci/verify-deploy.sh

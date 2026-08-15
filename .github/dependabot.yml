@@ -1,0 +1,37 @@
+# Dependabot was absent entirely, which is how grpc and golang.org/x/text sat on
+# versions with known advisories until govulncheck was first run manually and
+# found 9 reachable vulnerabilities. govulncheck in CI catches them at PR time;
+# this proposes the upgrade so nobody has to notice.
+#
+# Grouped so a quiet week produces one reviewable PR instead of fifteen.
+version: 2
+updates:
+  - package-ecosystem: gomod
+    directory: /engine
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      go-minor-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, go]
+
+  - package-ecosystem: npm
+    directory: /web
+    schedule: { interval: weekly }
+    open-pull-requests-limit: 5
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, web]
+
+  # The workflows pin actions by tag; this keeps those current, which matters
+  # because cosign/sigstore actions carry the signing trust path.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    labels: [dependencies, ci]
+
+  - package-ecosystem: docker
+    directory: /deploy
+    schedule: { interval: weekly }
+    labels: [dependencies, ci]

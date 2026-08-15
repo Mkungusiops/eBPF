@@ -84,7 +84,7 @@ GEN=$!
 
 echo "──────────────────────────────────────────────────────────────"
 echo " Network choke demo up. Demo device MAC: $DEV_MAC (10.9.0.2)"
-echo " Open:  http://<this-host>:$PORT/devices   login: admin / ebpf-soc-demo"
+echo " Open:  http://<this-host>:$PORT/devices   login: admin / ${NETNS_PASS:-netns-dev}"
 echo " Select the device row → Choke (sever) to terminate it; Thaw to restore."
 echo "──────────────────────────────────────────────────────────────"
 
@@ -93,5 +93,5 @@ echo "────────────────────────�
 # Engine output goes to a VM-side file (it's chatty in -fake mode); the
 # launcher's stdout stays a one-time banner.
 exec "$BIN" -fake -db /tmp/ui-demo.db -http 0.0.0.0:$PORT \
-  -pass ebpf-soc-demo \
+  -pass ${NETNS_PASS:-netns-dev} \
   -devchoke-obj "$OBJ" -devchoke-iface "$IFACE" >>/tmp/ui-demo.log 2>&1

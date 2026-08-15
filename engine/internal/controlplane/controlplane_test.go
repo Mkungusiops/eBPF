@@ -124,7 +124,7 @@ func TestControlPlaneEnrollIngestRead(t *testing.T) {
 	}
 
 	// Unauthenticated read is rejected.
-	if r, _ := http.Get(httpBase + "/api/telemetry?tenant=tenant-a"); r == nil || r.StatusCode != 401 {
+	if r, _ := http.Get(httpBase + "/api/telemetry?tenant=tenant-a"); r == nil || r.StatusCode != 401 { //nolint:bodyclose // status-only probe
 		t.Fatalf("unauthenticated read status = %v, want 401", r.StatusCode)
 	}
 }

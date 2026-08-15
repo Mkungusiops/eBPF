@@ -17,9 +17,31 @@ func eventRec(dedup, execID string) *ebpfsocv1.TelemetryRecord {
 	}
 }
 
+// waitFor polls until cond holds. The deadline is a FAILURE timeout, not a
+// performance assertion: the loop returns the instant the condition is met, so
+// a generous budget costs a passing test nothing and only bounds how long a
+// genuinely broken one takes to report.
+//
+// It was 3 seconds, which passed normally and failed under -race — the detector
+// slows execution enough that the async bus hop ran out of budget. A test that
+// fails only when instrumented is why the race gate was never turned on, so the
+// budget now has headroom for it, and shrinks to fit `go test -timeout` when
+// that is tighter.
+// The budget is deliberately far larger than the work: this test drives real
+// async I/O (ingest sink → bus → consumer → SQLite), and `go test -race ./...`
+// runs package binaries in parallel, so on a loaded or few-core machine the hop
+// can be starved for tens of seconds without anything being wrong. A budget
+// tuned to the happy path just converts that contention into a false failure —
+// which is what a 3-second one did, and why -race stayed out of CI.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	budget := 90 * time.Second
+	if d, ok := t.Deadline(); ok {
+		if remaining := time.Until(d) - time.Second; remaining < budget {
+			budget = remaining
+		}
+	}
+	deadline := time.Now().Add(budget)
 	for time.Now().Before(deadline) {
 		if cond() {
 			return

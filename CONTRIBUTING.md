@@ -8,15 +8,30 @@ and run it locally.
 ## Local gates (must pass before a PR)
 
 ```bash
-# backend
-cd engine && make test && make vet && make build-linux
+# backend — run from the REPO ROOT (there is no engine/Makefile)
+make vet && make test && make build-linux
+
+# backend, with the gates CI applies
+cd engine && go test -race ./... && golangci-lint run ./...
+
+# REQUIRED on macOS: ~10 files are behind `//go:build linux`, and neither the
+# compiler nor golangci-lint looks at them when you build on darwin. A change
+# can pass every gate above and still fail to compile for the target that ships.
+cd engine && CGO_ENABLED=0 GOOS=linux go build ./...
 
 # frontend
 cd web && npm run lint && npm run typecheck && npm run test && npm run build
 ```
 
-CI runs the same. **Do not** weaken or skip the tenant-isolation
-(cross-tenant read-denial) tests — that invariant is the product's core promise.
+`npm run lint` runs ESLint *and* the architectural checker in
+`web/scripts/lint.mjs`; both must pass. `make vet` and `make test` are
+repo-root targets — `cd engine && make test` fails with "No rule to make target",
+which is what this file used to instruct.
+
+CI runs the same, plus `-race`, a coverage ratchet, and `scripts/scan.sh --ci`
+(govulncheck, staticcheck, npm audit, gitleaks, trivy). **Do not** weaken or
+skip the tenant-isolation (cross-tenant read-denial) tests — that invariant is
+the product's core promise.
 
 ## Conventions
 

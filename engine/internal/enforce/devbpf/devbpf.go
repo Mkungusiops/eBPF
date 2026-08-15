@@ -108,6 +108,16 @@ type devKey struct {
 	Pad [2]byte
 }
 
+// keyFor builds the kernel map key for a MAC.
+//
+// Only cilium_linux.go calls this, and that file is behind `//go:build linux`.
+// golangci-lint's `unused` check does not analyse Linux-tagged files when run on
+// darwin, so it reports this function as dead and a macOS-only verification loop
+// (build, vet, test, lint) agrees — every one of those steps passes with it
+// deleted. It is not dead: removing it breaks `GOOS=linux go build`, which is
+// the only build that ships. Confirm with a cross-build before touching it.
+//
+//nolint:unused // used by cilium_linux.go; invisible to the linter on darwin.
 func keyFor(m MAC) devKey { return devKey{MAC: m} }
 
 // ParseMAC parses a colon/dash MAC string into a MAC. Rejects anything that

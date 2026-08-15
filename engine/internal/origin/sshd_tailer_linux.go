@@ -150,11 +150,10 @@ func (s *SSHDTailer) handleLine(line []byte) {
 		})
 		return
 	}
-	if _, _, ok := ParseSSHDisconnected(rec.Message); ok {
-		// We don't have a reliable pid → 4-tuple back-reference on
-		// disconnect (the session sshd is gone by the time we get
-		// here), so we let the TTL sweeper clean up. Logged at debug
-		// level so noise stays out of the journal.
-		return
-	}
+	// Disconnect lines are deliberately not handled. There is no reliable
+	// pid → 4-tuple back-reference on disconnect (the session sshd is gone by
+	// the time we get here), so attribution is left to the tracker's TTL
+	// sweeper. This used to call ParseSSHDisconnected and return, which is a
+	// no-op at the end of a function that returns anyway — staticcheck flags
+	// it (SA4006), and only on Linux, where this file is compiled.
 }

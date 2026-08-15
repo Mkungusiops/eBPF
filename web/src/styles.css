@@ -110,3 +110,67 @@ textarea {
 .severity-info {
   color: rgb(var(--muted));
 }
+
+/* Error boundary fallback (src/components/ErrorBoundary.tsx). Styled from the
+   same tokens as the rest of the console so a failed render still looks like
+   this product rather than an unstyled browser error. */
+.console-error-boundary {
+  max-width: 46rem;
+  margin: 4rem auto;
+  padding: 2rem;
+  background: rgb(var(--panel));
+  color: rgb(var(--text));
+  border: 1px solid rgb(var(--danger) / 0.4);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.console-error-boundary h1 {
+  margin: 0;
+  font-size: 1.35rem;
+  color: rgb(var(--danger));
+}
+
+.console-error-boundary p {
+  margin: 0;
+  line-height: 1.55;
+  color: rgb(var(--muted));
+}
+
+.console-error-boundary p strong {
+  color: rgb(var(--text));
+}
+
+.console-error-boundary pre {
+  margin: 0;
+  padding: 0.75rem 0.9rem;
+  background: rgb(var(--surface));
+  border: 1px solid rgb(var(--row));
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.console-error-boundary button {
+  align-self: flex-start;
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  border: 1px solid rgb(var(--accent));
+  background: rgb(var(--accent));
+  color: rgb(var(--surface));
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.console-error-boundary button:hover {
+  filter: brightness(1.1);
+}
+
+.console-error-boundary button:focus-visible {
+  outline: 2px solid rgb(var(--text));
+  outline-offset: 2px;
+}

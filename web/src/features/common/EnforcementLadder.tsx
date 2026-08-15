@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   ACTION_FOR_RUNG,
@@ -65,8 +65,19 @@ export function EnforcementLadder({
   const [result, setResult] = useState<EnforcementResult | null>(null);
   const [confirmTop, setConfirmTop] = useState(false);
 
+  // Generation counter for the confirmation loop below. Bumped whenever the
+  // target changes or the component unmounts, so an in-flight loop can tell it
+  // has been superseded and stop before writing a stale result.
+  const runIdRef = useRef(0);
+  useEffect(() => {
+    return () => {
+      runIdRef.current += 1;
+    };
+  }, []);
+
   // A reason typed against one target must never be submitted against another.
   useEffect(() => {
+    runIdRef.current += 1; // abandon any confirmation still polling for the old target
     setReason("");
     setResult(null);
     setConfirmTop(false);
@@ -78,9 +89,20 @@ export function EnforcementLadder({
 
   const run = useCallback(
     async (rung: Rung) => {
+      // This run owns the ladder until something bumps the counter. The loop
+      // below polls for up to confirmAttempts * confirmIntervalMs (16s by
+      // default) with no way to cancel: an operator who severed process A and
+      // then clicked process B during that window saw "sever confirmed" render
+      // against B. Resetting the UI on target change was not enough — the loop
+      // kept running and called setResult again.
+      const myRun = runIdRef.current + 1;
+      runIdRef.current = myRun;
+      const superseded = () => runIdRef.current !== myRun;
+
       setBusy(rung);
       setResult(null);
       const outcome = await apply(rung, reason.trim());
+      if (superseded()) return;
       setBusy(null);
       setConfirmTop(false);
       if (!outcome.ok) {
@@ -95,7 +117,9 @@ export function EnforcementLadder({
       setResult({ ok: true, detail: `${action} dispatched — awaiting confirmation…` });
       for (let attempt = 0; attempt < confirmAttempts; attempt++) {
         await new Promise((resolve) => window.setTimeout(resolve, confirmIntervalMs));
+        if (superseded()) return;
         const now = await readState();
+        if (superseded()) return;
         onSettled?.();
         if (now === rung) {
           setResult({ ok: true, detail: `${action} confirmed — now ${now}` });

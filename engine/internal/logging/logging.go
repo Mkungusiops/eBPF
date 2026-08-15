@@ -85,3 +85,24 @@ func (w slogWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil
 }
+
+// RedactDSN masks the password in a database DSN so it can be logged.
+//
+// Shared rather than copied: cmd/engine and cmd/agent each carried an identical
+// private version, and a redaction helper that drifts between two binaries is a
+// credential-in-logs bug waiting to happen in whichever copy nobody re-reads.
+func RedactDSN(dsn string) string {
+	at := strings.LastIndex(dsn, "@")
+	if at < 0 {
+		return dsn
+	}
+	scheme := strings.Index(dsn, "://")
+	if scheme < 0 || scheme >= at {
+		return dsn
+	}
+	colon := strings.Index(dsn[scheme+3:at], ":")
+	if colon < 0 {
+		return dsn
+	}
+	return dsn[:scheme+3+colon+1] + "***" + dsn[at:]
+}

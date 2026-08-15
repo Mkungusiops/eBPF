@@ -128,6 +128,13 @@ func backfillSeverity(db *sql.DB, dialect string) {
 			}
 			batch = append(batch, it)
 		}
+		// A truncated batch must not be mistaken for "backfill complete" — that
+		// would stop early and leave rows permanently unstamped.
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			slog.Error("severity backfill: row iteration failed", "error", err)
+			return
+		}
 		rows.Close()
 		if len(batch) == 0 {
 			if total > 0 {

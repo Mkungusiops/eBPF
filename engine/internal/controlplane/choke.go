@@ -284,6 +284,14 @@ func requireReasonForDestructive(action, reason string) error {
 // to a host on a guess.
 func irreversible(action string) bool { return action == "sever" }
 
+// chokeThresholds is the engine's default score ladder, surfaced so the console
+// panels render. Defined once because the Choke and Fleet views ship the same
+// numbers to the operator, and two copies of a number are two chances to
+// disagree about when a host severs a process.
+func chokeThresholds() map[string]int {
+	return map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40}
+}
+
 // dispatchChoke builds a Jail/Thaw command, routes it to the agent actually
 // running the target, and reports what genuinely happened.
 // tier: throttle|tarpit|quarantine|sever (jail) or "thaw".
@@ -826,34 +834,49 @@ func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type res struct {
-		ExecID string `json:"exec_id"`
-		OK     bool   `json:"ok"`
-		Agent  string `json:"agent,omitempty"`
-		Detail string `json:"detail,omitempty"`
+		ExecID           string `json:"exec_id"`
+		OK               bool   `json:"ok"`
+		Agent            string `json:"agent,omitempty"`
+		Detail           string `json:"detail,omitempty"`
+		Status           string `json:"status,omitempty"`
+		ApprovalRequired bool   `json:"approval_required,omitempty"`
+		ApprovalID       string `json:"approval_id,omitempty"`
 	}
+	requester := s.subject(r)
 	results := make([]res, 0, len(b.Targets))
+	held := 0
 	for _, t := range b.Targets {
-		// Same routing and honesty rules as the single-target path: sending to
-		// agents[0] used to pick whichever agent happened to sort first, and
-		// counted its no-op ack as containment.
-		r := res{ExecID: t.ExecID}
-		resv := s.resolveTarget(tenant, t.ExecID, t.Pid, t.AgentID)
-		switch {
-		case len(resv.agents) == 0:
-			r.Detail = "no agent online for tenant"
-		case irreversible(b.Action) && !resv.unique:
-			r.Detail = "ambiguous target (" + resv.how + "); re-issue with agent_id"
-		default:
-			out := s.dispatchTargeted(resv.agents, &ebpfsocv1.Command{
-				Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: t.ExecID, Pid: t.Pid, Tier: b.Action}}})
-			if out.owner != "" && out.definitive {
-				s.owners.put(tenant, t.ExecID, out.owner)
-			}
-			r.OK, r.Agent, r.Detail = out.applied, out.owner, out.detail
+		// Every target goes through chokeRequest, the SAME gate the single-target
+		// path uses. Bulk previously called dispatchTargeted directly, which meant
+		// the one endpoint built to act on many hosts at once was also the one
+		// endpoint that skipped EN-2 dual control — precisely the "ONE command
+		// severs many hosts" risk the approval package exists to stop. Routing
+		// through chokeRequest also inherits performChoke's target resolution and
+		// its refusal to broadcast an irreversible action, rather than restating
+		// both here where they drifted.
+		out := res{ExecID: t.ExecID}
+		_, body := s.chokeRequest(requester, tenant, t.ExecID, t.Pid, b.Action, b.Reason, t.AgentID)
+		out.OK, _ = body["ok"].(bool)
+		out.Agent, _ = body["agent"].(string)
+		out.Detail, _ = body["detail"].(string)
+		out.Status, _ = body["status"].(string)
+		if req, ok := body["approval"].(approval.Request); ok {
+			out.ApprovalRequired, out.ApprovalID = true, req.ID
+			held++
 		}
-		results = append(results, r)
+		results = append(results, out)
 	}
-	writeJSON(w, 200, map[string]any{"results": results})
+	resp := map[string]any{"results": results}
+	// Say plainly that nothing was applied, rather than leaving the console to
+	// infer it from a list of ok:false rows.
+	if held > 0 {
+		resp["approval_required"] = true
+		resp["held"] = held
+		resp["detail"] = fmt.Sprintf(
+			"%d of %d targets need a second operator to approve %s; those have NOT been applied.",
+			held, len(b.Targets), b.Action)
+	}
+	writeJSON(w, 200, resp)
 }
 
 // handleChokeForget — stop tracking the given exec_ids (dispatched as a thaw).
@@ -906,23 +929,70 @@ func (s *Server) handleDeviceJail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
+	// Same reason rule as the process plane. Severing a device cuts a host off
+	// the network; the audit chain may not record that with no statement of why.
+	if err := requireReasonForDestructive(b.Action, b.Reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	type res struct {
-		Mac    string `json:"mac"`
-		OK     bool   `json:"ok"`
-		Agent  string `json:"agent,omitempty"`
-		Detail string `json:"detail,omitempty"`
+		Mac              string `json:"mac"`
+		OK               bool   `json:"ok"`
+		Agent            string `json:"agent,omitempty"`
+		Detail           string `json:"detail,omitempty"`
+		Status           string `json:"status,omitempty"`
+		ApprovalRequired bool   `json:"approval_required,omitempty"`
+		ApprovalID       string `json:"approval_id,omitempty"`
 	}
+	requester := s.subject(r)
 	results := make([]res, 0, len(b.Macs))
+	held := 0
 	for _, mac := range b.Macs {
-		// A device jail goes to every agent because only the one whose segment
-		// the MAC is on can contain it — but an agent that has never seen the
-		// MAC writes a tc rule matching nothing, so it must not be counted.
-		// dispatchAll used to count exactly that as applied.
-		out := s.dispatchTargeted(s.tenantAgents(tenant), &ebpfsocv1.Command{
-			Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: "device:" + mac, Tier: b.Action}}})
-		results = append(results, res{Mac: mac, OK: out.applied, Agent: out.owner, Detail: out.detail})
+		out := res{Mac: mac}
+		// EN-2 applies to the device plane too: quarantining or severing a set of
+		// MACs from one console session is the same blast radius as doing it to a
+		// set of processes, and this handler takes a LIST. Held before dispatch.
+		if s.cfg.RequireApproval && s.approvals != nil && approval.RequiresApproval(b.Action) {
+			req := s.approvals.Create(approval.Request{
+				Tenant: tenant, Action: b.Action, MAC: mac, Scope: "device",
+				Reason: b.Reason, Requester: requester,
+			})
+			s.cfg.Logf("[approval] %s requested device %s on %s (tenant=%s) -> %s (awaiting a second operator)",
+				requester, b.Action, mac, tenant, req.ID)
+			out.Status, out.ApprovalRequired, out.ApprovalID = "APPROVAL_REQUIRED", true, req.ID
+			out.Detail = fmt.Sprintf(
+				"%s is a destructive action and needs a second operator to approve it (request %s). "+
+					"It has NOT been applied.", b.Action, req.ID)
+			held++
+			results = append(results, out)
+			continue
+		}
+		jailed := s.performDeviceJail(tenant, mac, b.Action)
+		out.OK, out.Agent, out.Detail, out.Status = jailed.applied, jailed.owner, jailed.detail, jailed.status
+		results = append(results, out)
 	}
-	writeJSON(w, 200, map[string]any{"action": b.Action, "reason": b.Reason, "results": results})
+	resp := map[string]any{"action": b.Action, "reason": b.Reason, "results": results}
+	if held > 0 {
+		resp["approval_required"] = true
+		resp["held"] = held
+		resp["detail"] = fmt.Sprintf(
+			"%d of %d devices need a second operator to approve %s; those have NOT been applied.",
+			held, len(b.Macs), b.Action)
+	}
+	writeJSON(w, 200, resp)
+}
+
+// performDeviceJail executes a device-plane containment. Split out so the
+// APPROVED path replays byte-for-byte the containment the approver read, the
+// same reason chokeRequest and performChoke are split on the process plane.
+//
+// A device jail goes to every agent because only the one whose segment the MAC
+// is on can contain it — but an agent that has never seen the MAC writes a tc
+// rule matching nothing, so it must not be counted. dispatchAll used to count
+// exactly that as applied.
+func (s *Server) performDeviceJail(tenant, mac, action string) targetedOutcome {
+	return s.dispatchTargeted(s.tenantAgents(tenant), &ebpfsocv1.Command{
+		Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: "device:" + mac, Tier: action}}})
 }
 
 // tenantAgents lists every agent currently online for the tenant.
@@ -1031,7 +1101,7 @@ func (s *Server) handleChokeStateGW(w http.ResponseWriter, r *http.Request) {
 		"counts":        counts,
 		// Agents don't report their thresholds on the heartbeat yet; surface the
 		// engine defaults so the panel renders. (Editing is the write increment.)
-		"thresholds": map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40},
+		"thresholds": chokeThresholds(),
 		// NOT {"ok":true}. The control plane does not hash-chain decisions
 		// centrally, so claiming the chain is intact renders a green "intact ·
 		// 0 rows" in the header for a check that never ran. supported=false is

@@ -110,15 +110,15 @@ func TestBFFAuthorizationCodeFlow(t *testing.T) {
 	}
 
 	// 5. Unauthenticated request (fresh client) is rejected.
-	if r, _ := http.Get(bffURL + "/api/whoami"); r == nil || r.StatusCode != 401 {
+	if r, _ := http.Get(bffURL + "/api/whoami"); r == nil || r.StatusCode != 401 { //nolint:bodyclose // status-only probe
 		t.Fatalf("unauthenticated whoami status = %v, want 401", r.StatusCode)
 	}
 
 	// 6. Logout invalidates the session server-side.
-	if _, err := client.Get(bffURL + "/auth/logout"); err != nil {
+	if _, err := client.Get(bffURL + "/auth/logout"); err != nil { //nolint:bodyclose // status-only probe
 		t.Fatal(err)
 	}
-	if r, _ := client.Get(bffURL + "/api/whoami"); r.StatusCode != 401 {
+	if r, _ := client.Get(bffURL + "/api/whoami"); r.StatusCode != 401 { //nolint:bodyclose // status-only probe
 		t.Fatalf("whoami after logout = %d, want 401", r.StatusCode)
 	}
 }

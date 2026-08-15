@@ -324,3 +324,32 @@ func TestReleaseClearsFreezeOnceTierEmpties(t *testing.T) {
 		t.Errorf("cgroup.freeze=%q after the last process left quarantine, want %q", string(freeze), "0")
 	}
 }
+
+// The freeze IS the quarantine — the CPU cap is a fallback, not the action.
+// This error used to be discarded, so a refused freeze returned nil, the
+// gateway recorded outcome="ok", and the console showed a process as
+// quarantined while it kept running at full speed.
+func TestMoveToQuarantineSurfacesAFailedFreeze(t *testing.T) {
+	root := fakeRoot(t)
+	m := NewManager(root)
+	if err := m.Setup(); err != nil {
+		t.Fatal(err)
+	}
+	// Make the freeze write fail the way the kernel would refuse it: replace
+	// cgroup.freeze with a directory, so os.WriteFile cannot open it.
+	freeze := filepath.Join(root, NameQuarantined, "cgroup.freeze")
+	if err := os.Remove(freeze); err != nil && !os.IsNotExist(err) {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(freeze, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := m.MoveTo(2222, circuit.ActQuarantine)
+	if err == nil {
+		t.Fatal("a quarantine whose freeze failed must report an error, not success — " +
+			"reporting a running process as contained is the worst failure mode a containment product has")
+	}
+	if !strings.Contains(err.Error(), "freeze") {
+		t.Errorf("error should name the failed freeze, got: %v", err)
+	}
+}

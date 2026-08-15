@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -44,6 +45,11 @@ type Broadcast struct {
 }
 
 type Server struct {
+	// srv is the running HTTP server, captured in Start so Shutdown can stop
+	// it gracefully. Guarded because Start runs in its own goroutine.
+	srvMu sync.Mutex
+	srv   *http.Server
+
 	store     *store.Store
 	tree      *tree.Tree
 	broadcast <-chan Broadcast
@@ -184,7 +190,38 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/fleet/device-jail", s.handleFleetDeviceJail)
 
 	log.Printf("HTTP listening on %s (auth: user=%s)", addr, s.auth.Username())
-	return http.ListenAndServe(addr, metricsMiddleware(s.auth.Middleware(mux)))
+	// Explicit timeouts. http.ListenAndServe leaves all four unset, so a client
+	// that opens a connection and dribbles a request holds a goroutine and a file
+	// descriptor indefinitely — slowloris against the console of a security
+	// product. WriteTimeout is deliberately 0: /api/stream is Server-Sent Events
+	// and a write deadline would sever every live console after it elapsed.
+	// ReadHeaderTimeout is the one that actually bounds the attack.
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           metricsMiddleware(s.auth.Middleware(mux)),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+	s.srvMu.Lock()
+	s.srv = srv
+	s.srvMu.Unlock()
+	return srv.ListenAndServe()
+}
+
+// Shutdown stops the HTTP server, letting in-flight requests finish.
+//
+// Previously there was none: the process exited from under whatever an operator
+// had just clicked, so a containment request could be severed mid-dispatch with
+// no record of whether it landed.
+func (s *Server) Shutdown(ctx context.Context) error {
+	s.srvMu.Lock()
+	srv := s.srv
+	s.srvMu.Unlock()
+	if srv == nil {
+		return nil
+	}
+	return srv.Shutdown(ctx)
 }
 
 // metricsMiddleware times every request and records the duration into
@@ -584,5 +621,10 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(v)
+	// The status line and headers are already out by the time Encode can fail,
+	// so the client gets a truncated body either way — but a silent failure
+	// here looks identical to an empty result set on a console panel, so log it.
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		log.Printf("[api] writeJSON: %v", err)
+	}
 }
