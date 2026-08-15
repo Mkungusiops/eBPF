@@ -1,5 +1,5 @@
 import { SSE_CONTRACT } from "./support/contracts";
-import { expect, hasCredentials, loginByApi, test } from "./support/test";
+import { expect, hasBackend, hasCredentials, loginByApi, test } from "./support/test";
 import {
   createRafStreamBatcher,
   shouldProbeWhoami
@@ -7,7 +7,12 @@ import {
 import type { StreamFrame } from "../src/lib/types";
 
 test.describe("sse", () => {
+  // The 401 JSON envelope is the ENGINE's contract. Without a backend the Vite
+  // proxy answers 502 and the assertion fails on the status, so this needs the
+  // same guard as the auth and routes specs. It was the last unguarded caller of
+  // the request fixture — every other one gates on hasBackend or hasCredentials.
   test("unauthenticated stream requests return the JSON 401 contract", async ({ request }) => {
+    test.skip(!(await hasBackend(request)), "needs a live engine on :8080");
     const response = await request.get(SSE_CONTRACT.endpoint, {
       failOnStatusCode: false,
       timeout: 5_000
