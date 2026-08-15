@@ -65,16 +65,34 @@ build_binaries() { # engine | controlplane
   # stage the fresh dist into the engine's embed dir so it serves current UI
   rm -rf "$REPO_ROOT/engine/internal/api/web"/* 2>/dev/null || true
   cp -R "$REPO_ROOT/web/dist/." "$REPO_ROOT/engine/internal/api/web/" 2>/dev/null || true
+  # Stamp the human-facing release name, exactly as the Makefile does.
+  #
+  # Go records the commit SHA and dirty flag on its own, so /api/version always
+  # answered "which commit". It could not answer "which VERSION" — the field was
+  # empty on every deployed box because this build passed no ldflags, while
+  # `make release` did. A customer asks for a version, not a SHA, and a release
+  # that cannot name itself is not auditable.
+  # VERSION may be set explicitly. That is not a way to fake a release: it exists
+  # because the only thing that can legitimately differ from the tag is DEPLOY
+  # TOOLING (this file, the Makefile), which is not compiled into any binary. If
+  # Go source differs from the tag, git describe reports -dirty and that is what
+  # gets stamped.
+  local ver
+  ver="${VERSION:-$(cd "$REPO_ROOT" && git describe --tags --dirty --always 2>/dev/null || echo '')}"
+  local ldflags
+  ldflags="-X github.com/jeffmk/ebpf-poc-engine/internal/buildinfo.version=$ver"
+  log "stamping version $ver"
+
   ( cd "$REPO_ROOT/engine"
     case "$1" in
       engine)
         log "cross-compiling engine (linux/amd64, static)"
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$BUILD_DIR/engine" ./cmd/engine ;;
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$ldflags" -o "$BUILD_DIR/engine" ./cmd/engine ;;
       controlplane)
         log "cross-compiling control plane + agents (linux/amd64, static)"
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$BUILD_DIR/controlplane" ./cmd/controlplane
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$BUILD_DIR/simagent"     ./cmd/simagent
-        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$BUILD_DIR/agent"        ./cmd/agent ;;
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$ldflags" -o "$BUILD_DIR/controlplane" ./cmd/controlplane
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$ldflags" -o "$BUILD_DIR/simagent"     ./cmd/simagent
+        CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags "$ldflags" -o "$BUILD_DIR/agent"        ./cmd/agent ;;
     esac )
   ok "binaries in $BUILD_DIR"
 }

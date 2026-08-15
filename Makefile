@@ -344,7 +344,7 @@ deploy-agent:
 	@set -e; \
 	mkdir -p $(ROOT)/.deploy-build/trust; \
 	echo "→ building the agent binary"; \
-	cd $(ENGINE_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o $(ROOT)/.deploy-build/agent ./cmd/agent; \
+	cd $(ENGINE_DIR) && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) -o $(ROOT)/.deploy-build/agent ./cmd/agent; \
 	echo "→ pulling CA + fleet key + enrolment token from $(CP_SSH)"; \
 	ssh -o BatchMode=yes $(CP_SSH) 'sudo cat /var/lib/ebpf-soc/ca.pem'    > $(ROOT)/.deploy-build/trust/ca.pem; \
 	ssh -o BatchMode=yes $(CP_SSH) 'sudo cat /var/lib/ebpf-soc/fleet.pub' > $(ROOT)/.deploy-build/trust/fleet.pub; \
