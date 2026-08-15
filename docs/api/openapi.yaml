@@ -109,7 +109,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "command_id": { type: string }
+                  "detail": { type: string }
+                  "status": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/admin/enroll-token":
@@ -128,7 +141,21 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "ca_bundle_pem": { type: string }
+                  "expires_in_s": { type: integer }
+                  "tenant": { type: string }
+                  "token": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/alert-stats":
@@ -180,7 +207,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "approvals": { type: string }
+                  "pending": { type: string }
+                  "you": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/approvals/decide":
@@ -213,7 +253,22 @@ paths:
                 "tenant":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "approval": { type: string }
+                  "detail": { type: string }
+                  "error": { type: string }
+                  "ok": { type: boolean }
+                  "status": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/approvals/policy":
@@ -230,7 +285,22 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "enabled": { type: string }
+                  "fleet_arming": { type: string }
+                  "never_gated": { type: string }
+                  "requires_approval": { type: string }
+                  "ttl_seconds": { type: integer }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/attacks":
@@ -262,7 +332,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "chokes": { type: string }
+                  "count": { type: integer }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/annotate":
@@ -278,7 +361,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -293,7 +387,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/buckets":
@@ -445,7 +550,19 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "flows": { type: string }
+                  "mac": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/device-jail":
@@ -586,7 +703,28 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "counts": { type: string }
+                  "data_plane": { type: string }
+                  "devices_known": { type: string }
+                  "devices_seen": { type: string }
+                  "dry_run": { type: string }
+                  "enforcing": { type: string }
+                  "frames_seen": { type: string }
+                  "kill_switched": { type: boolean }
+                  "links_attached": { type: string }
+                  "mode": { type: string }
+                  "tracked": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/device-thaw":
@@ -615,7 +753,18 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "results": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -643,7 +792,18 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "results": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/devices":
@@ -702,7 +862,19 @@ paths:
                   items:
                     type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "forgotten": { type: string }
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -729,7 +901,19 @@ paths:
                   items:
                     type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "forgotten": { type: string }
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/jail":
@@ -986,7 +1170,22 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "preset": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -1012,7 +1211,22 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "preset": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/proc/":
@@ -1029,7 +1243,30 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "agent": { type: string }
+                  "cmdline": { type: string }
+                  "comm": { type: string }
+                  "detail": { type: string }
+                  "exe": { type: string }
+                  "exec_id": { type: string }
+                  "pid": { type: string }
+                  "ppid": { type: string }
+                  "score": { type: string }
+                  "source": { type: string }
+                  "state": { type: string }
+                  "tracked": { type: string }
+                  "uid": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/process/":
@@ -1049,7 +1286,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "chain": { type: string }
+                  "events": { type: string }
+                  "exec_id": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/processes":
@@ -1086,7 +1336,29 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "audit": { type: string }
+                  "counts": { type: string }
+                  "dry_run": { type: string }
+                  "enforcing": { type: string }
+                  "kernel": { type: string }
+                  "kill_switched": { type: boolean }
+                  "mode": { type: string }
+                  "ok": { type: boolean }
+                  "supported": { type: boolean }
+                  "thresholds": { type: string }
+                  "total": { type: integer }
+                  "tracked": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/thaw":
@@ -1186,7 +1458,21 @@ paths:
                   type: integer
                   format: int32
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -1220,7 +1506,21 @@ paths:
                   type: integer
                   format: int32
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/decisions":
@@ -1255,7 +1555,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "count": { type: integer }
+                  "devices": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/events":
@@ -1272,7 +1585,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "count": { type: integer }
+                  "events": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet":
@@ -1290,7 +1616,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "agents": { type: string }
+                  "count": { type: integer }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/alerts":
@@ -1306,7 +1645,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/cgroups":
@@ -1323,7 +1673,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/decisions":
@@ -1339,7 +1700,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/device-jail":
@@ -1371,7 +1743,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/hosts":
@@ -1387,7 +1770,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/kill-switch":
@@ -1442,7 +1836,22 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "preset": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -1468,7 +1877,22 @@ paths:
                 "reason":
                   type: string
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "preset": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/probe":
@@ -1490,7 +1914,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/state":
@@ -1506,7 +1941,18 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "hosts": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/fleet/thaw":
@@ -1606,7 +2052,21 @@ paths:
                   type: integer
                   format: int32
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -1640,7 +2100,21 @@ paths:
                   type: integer
                   format: int32
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "applied": { type: string }
+                  "detail": { type: string }
+                  "ok": { type: string }
+                  "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/honeypots":
@@ -1722,7 +2196,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "count": { type: integer }
+                  "policies": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/policy-stats":
@@ -1739,7 +2226,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "count": { type: integer }
+                  "stats": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/process/":
@@ -1759,7 +2259,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "chain": { type: string }
+                  "events": { type: string }
+                  "exec_id": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/run-attack":
@@ -1778,7 +2291,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "fired": { type: string }
+                  "id": { type: string }
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -1796,7 +2322,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "fired": { type: string }
+                  "id": { type: string }
+                  "ok": { type: boolean }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/stream":
@@ -1861,7 +2400,20 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "count": { type: integer }
+                  "records": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/verify-chain":
@@ -1885,7 +2437,21 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "detail": { type: string }
+                  "ok": { type: boolean }
+                  "supported": { type: boolean }
+                  "total": { type: integer }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/version":
@@ -1929,7 +2495,24 @@ paths:
       parameters:
         - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "can_respond": { type: string }
+                  "cross_tenant": { type: string }
+                  "host": { type: string }
+                  "role": { type: string }
+                  "subject": { type: string }
+                  "tenants": { type: string }
+                  "user": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/apple-touch-icon.png":
@@ -2159,7 +2742,20 @@ paths:
 
         Surface: control-plane, engine.
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "detail": { type: string }
+                  "status": { type: string }
+                  "store": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/sw.js":

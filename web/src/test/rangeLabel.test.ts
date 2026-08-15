@@ -8,7 +8,9 @@ import { readFileSync } from "node:fs";
  * (`${value}m`) that had drifted from rangeLabel: the control read "10080m"
  * while every notice on the same page called that window "7d".
  */
-const soc = readFileSync("src/features/soc/SocRoute.tsx", "utf8");
+const soc = ["SocRoute", "CorrelationGraph", "exportStudio", "panels"]
+  .map((f) => readFileSync(`src/features/soc/${f}.tsx`, "utf8"))
+  .join("\n");
 const choke = readFileSync("src/features/choke/ChokeRoute.tsx", "utf8");
 
 describe("window selector labels", () => {

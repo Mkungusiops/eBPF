@@ -4,6 +4,7 @@ import (
 	"context"
 	"log"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -365,6 +366,37 @@ func (g *DeviceGateway) Snapshot() []DeviceEntry {
 }
 
 // StateCounts returns how many devices sit on each rung of the ladder.
+// SetProtectedMACs adds MACs to the device-plane lockout allow-list.
+//
+// ADD-ONLY, deliberately. The list is what stops the engine quarantining or
+// severing the default gateway, the uplink, the DHCP/DNS server or the control
+// plane itself — blackholing the very path an operator would use to undo the
+// mistake. Allowing a remote command to REMOVE an entry would hand that
+// self-inflicted outage to anyone who could sign one, so protection may be
+// widened from the control plane but never narrowed. Narrowing is a local
+// decision, made in the agent's config, by someone with a shell on the box.
+//
+// Unparseable MACs are skipped and returned so the caller can report them
+// rather than silently protecting nothing.
+func (g *DeviceGateway) SetProtectedMACs(macs []string) (added []string, skipped []string) {
+	for _, raw := range macs {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		m, err := devbpf.ParseMAC(raw)
+		if err != nil {
+			skipped = append(skipped, raw)
+			continue
+		}
+		g.thr.Protect(m)
+		added = append(added, m.String())
+	}
+	sort.Strings(added)
+	sort.Strings(skipped)
+	return added, skipped
+}
+
 func (g *DeviceGateway) StateCounts() map[string]int {
 	out := map[string]int{"pristine": 0, "throttled": 0, "tarpit": 0, "quarantined": 0, "severed": 0}
 	for _, ts := range g.circuit.Snapshot() {

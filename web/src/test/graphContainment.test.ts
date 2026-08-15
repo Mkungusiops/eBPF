@@ -9,7 +9,9 @@ import { describe, expect, it } from "vitest";
  * a graph of any size the first question during triage, "what is already
  * held?", could only be answered by clicking every node in turn.
  */
-const soc = readFileSync("src/features/soc/SocRoute.tsx", "utf8");
+const soc = ["SocRoute", "CorrelationGraph", "exportStudio", "panels"]
+  .map((f) => readFileSync(`src/features/soc/${f}.tsx`, "utf8"))
+  .join("\n");
 const css = readFileSync("src/features/soc/soc.css", "utf8");
 
 describe("containment is marked on the graph canvas", () => {

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"strings"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
@@ -162,10 +164,53 @@ func (a gatewayApplier) Thaw(execID string, pid uint32) error {
 	return err
 }
 
+// ApplyPreset switches the gateway's posture from a fleet-wide command.
+//
+// This returned "not yet supported (Phase 1)" long after Phase 1 shipped, so
+// two operators could complete a dual-control approval for a fleet containment
+// preset and every agent would ack REJECTED — a change-control flow that ran to
+// completion and applied nothing. The gateway's preset machinery was fully
+// implemented the whole time; nothing connected it to the command channel.
 func (a gatewayApplier) ApplyPreset(name string) error {
-	return fmt.Errorf("preset %q: not yet supported via the command channel (Phase 1)", name)
+	if a.gw == nil {
+		return errors.New("preset: no choke gateway on this agent")
+	}
+	prev, err := a.gw.ApplyPreset(choke.Preset(strings.TrimSpace(name)), "control-plane",
+		"fleet preset via command channel")
+	if err != nil {
+		return err // unknown preset — the gateway validates the name
+	}
+	log.Printf("[applier] preset=%s applied (previous: thresholds=%+v kill_switch=%v dry_run=%v)",
+		name, prev.Thresholds, prev.KillSwitched, prev.DryRun)
+	return nil
 }
 
-func (a gatewayApplier) SetProtectedList([]string, []string) error {
-	return fmt.Errorf("protected-list updates: not yet supported via the command channel (Phase 1)")
+// SetProtectedList widens the enforcement exemption lists on both planes.
+//
+// Both underlying setters are deliberately additive against a safe minimum:
+// Gateway.SetSystemCritical always unions the default list (sshd, sudo,
+// systemd, the login path) and DeviceGateway.SetProtectedMACs only ever adds.
+// So a signed command can widen protection and cannot narrow it — the
+// sudo-lockout defense in threat-model EN-1. command.Processor also unions
+// before calling here; the guarantee is enforced at both ends on purpose,
+// because one call site is one call site away from being forgotten.
+func (a gatewayApplier) SetProtectedList(binaries, macs []string) error {
+	if a.gw == nil {
+		return errors.New("protected-list: no choke gateway on this agent")
+	}
+	effective := a.gw.SetSystemCritical(binaries)
+	log.Printf("[applier] system-critical exemption list set: %d binaries", len(effective))
+
+	if a.devGW != nil && len(macs) > 0 {
+		added, skipped := a.devGW.SetProtectedMACs(macs)
+		log.Printf("[applier] device protect-list: %d MAC(s) protected", len(added))
+		if len(skipped) > 0 {
+			// Reported, not swallowed: a MAC the operator believes is
+			// protected but which never parsed is exactly the gap that gets
+			// a gateway severed.
+			return fmt.Errorf("protected-list applied, but %d MAC(s) were unparseable and are NOT protected: %s",
+				len(skipped), strings.Join(skipped, ", "))
+		}
+	}
+	return nil
 }

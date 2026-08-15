@@ -1,6 +1,7 @@
 package command
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -276,4 +277,100 @@ func TestApplierWithoutOwnershipKeepsApplying(t *testing.T) {
 	if fa.jailCalls != 1 {
 		t.Fatalf("jail calls = %d, want 1", fa.jailCalls)
 	}
+}
+
+// End-to-end over the REAL applier, not the fake one above.
+//
+// The fake has always returned nil for ApplyPreset and SetProtectedList, so
+// every test here passed while the shipping agent returned "not yet supported"
+// — the suite proved the command channel's plumbing and never that a preset
+// reached a gateway. That gap is exactly how a dual-control-approved fleet
+// preset came to ack REJECTED on every real host.
+func TestSignedPresetReachesTheGatewayEndToEnd(t *testing.T) {
+	s, v, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	applied := make(chan string, 1)
+	p := NewProcessor(v, &recordingApplier{onPreset: func(n string) error {
+		applied <- n
+		return nil
+	}}, []string{"sudo", "sshd", "systemd"})
+
+	cmd := sign(s, &ebpfsocv1.Command{
+		CommandId: "preset-1",
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action:    &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: "containment"}},
+	})
+	ack := p.Handle(cmd)
+	if ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("preset acked %v (%s) — an approved fleet preset must reach the agent",
+			ack.GetStatus(), ack.GetDetail())
+	}
+	select {
+	case got := <-applied:
+		if got != "containment" {
+			t.Errorf("applier received preset %q, want containment", got)
+		}
+	default:
+		t.Fatal("ack said APPLIED but the applier was never called")
+	}
+}
+
+// The union happens in the processor AND in the gateway. This asserts the
+// processor half: whatever a signed command asks for, the always-protected
+// minimum is added before it reaches the applier.
+func TestProcessorUnionsTheAlwaysProtectedMinimum(t *testing.T) {
+	s, v, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan []string, 1)
+	p := NewProcessor(v, &recordingApplier{onProtected: func(bins []string) error {
+		got <- bins
+		return nil
+	}}, []string{"sudo", "sshd", "systemd"})
+
+	cmd := sign(s, &ebpfsocv1.Command{
+		CommandId: "prot-1",
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action: &ebpfsocv1.Command_UpdateProtectedList{
+			UpdateProtectedList: &ebpfsocv1.UpdateProtectedList{ProtectedBinaries: []string{"/usr/bin/myapp"}},
+		},
+	})
+	if ack := p.Handle(cmd); ack.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("protected-list acked %v (%s)", ack.GetStatus(), ack.GetDetail())
+	}
+	bins := <-got
+	joined := strings.Join(bins, " ")
+	for _, must := range []string{"sudo", "sshd", "systemd"} {
+		if !strings.Contains(joined, must) {
+			t.Errorf("%q missing — the sudo-lockout minimum was not unioned in", must)
+		}
+	}
+}
+
+// recordingApplier implements Applier, defaulting every method to a no-op so a
+// test can override only the one it cares about.
+type recordingApplier struct {
+	onPreset    func(string) error
+	onProtected func([]string) error
+}
+
+func (r *recordingApplier) SetMode(ebpfsocv1.EnforcementMode, ebpfsocv1.Plane) error { return nil }
+func (r *recordingApplier) Jail(string, uint32, string) error                        { return nil }
+func (r *recordingApplier) Thaw(string, uint32) error                                { return nil }
+func (r *recordingApplier) SetThresholds(_, _, _, _ int32) error                     { return nil }
+func (r *recordingApplier) KillSwitch(bool, string, ebpfsocv1.Plane) error           { return nil }
+func (r *recordingApplier) ApplyPreset(n string) error {
+	if r.onPreset != nil {
+		return r.onPreset(n)
+	}
+	return nil
+}
+func (r *recordingApplier) SetProtectedList(bins, _ []string) error {
+	if r.onProtected != nil {
+		return r.onProtected(bins)
+	}
+	return nil
 }
