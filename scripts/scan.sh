@@ -61,13 +61,22 @@ fi
 if scanning web; then
   step_header "Web — npm audit"
   if have_cmd npm; then
-    # The console is served from the agent/control plane, so a compromised
-    # dependency runs in an operator's browser inside the SOC. High/critical
-    # only: moderate advisories in dev-only tooling are noise here.
-    if (cd "$REPO_ROOT/web" && npm audit --audit-level=high); then
-      ok "no high or critical advisories"
+    # SHIPPED dependencies are the gate. The console is served from the agent
+    # and the control plane, so a compromised runtime dependency executes in an
+    # operator's browser inside the SOC — that blocks a release.
+    #
+    # Dev-only tooling (test runner, bundler, coverage) is REPORTED but does not
+    # block. It is a genuine supply-chain concern for developer machines and
+    # worth acting on, but it is not the same risk as code served to an
+    # operator, and treating the two identically means either never shipping or
+    # learning to ignore the scanner. Both are worse than drawing the line.
+    if (cd "$REPO_ROOT/web" && npm audit --omit=dev --audit-level=high); then
+      ok "no high/critical advisories in shipped dependencies"
     else
-      found "npm audit reported high/critical advisories"
+      found "npm audit: high/critical in a SHIPPED dependency"
+    fi
+    if ! (cd "$REPO_ROOT/web" && npm audit --audit-level=high >/dev/null 2>&1); then
+      warn "dev-tooling advisories present (not blocking) — review with: cd web && npm audit"
     fi
   else
     skip npm "install Node 18+"
@@ -78,7 +87,12 @@ fi
 if scanning secrets; then
   step_header "Secrets — gitleaks"
   if have_cmd gitleaks; then
-    if gitleaks detect --source "$REPO_ROOT" --no-banner --redact; then
+    # -c is explicit: gitleaks only auto-discovers .gitleaks.toml relative to
+    # its working directory, and this runs from wherever the caller invoked it.
+    # Without it the reviewed allowlist is ignored and every honeypot decoy
+    # reports as a leak — see .gitleaks.toml for why this repo plants credentials
+    # that are designed to look real.
+    if gitleaks detect --source "$REPO_ROOT" -c "$REPO_ROOT/.gitleaks.toml" --no-banner --redact; then
       ok "no secrets found in the git history"
     else
       found "gitleaks found committed secrets — rotate them, do not just delete the commit"
@@ -109,7 +123,17 @@ if scanning image; then
   step_header "Image — trivy"
   if have_cmd trivy; then
     if [[ -f "$REPO_ROOT/deploy/controlplane.Dockerfile" ]]; then
-      if trivy fs --scanners vuln,secret,misconfig --exit-code 1 --severity HIGH,CRITICAL "$REPO_ROOT"; then
+      # --secret-config carries the SAME reviewed allowances as .gitleaks.toml.
+      # Both scanners find the honeypot decoys, because bait that does not look
+      # like a real credential does not work as bait. Both scanners are kept and
+      # both are allow-listed by path: two independent tools catch different
+      # things, and silencing either wholesale is the easy, wrong answer.
+      #
+      # .dev/honey/_id_rsa and _aws_credentials are COMMITTED, so a fresh CI
+      # checkout finds them even when a local cached scan does not.
+      if trivy fs --scanners vuln,secret,misconfig --exit-code 1 \
+           --severity HIGH,CRITICAL \
+           --secret-config "$REPO_ROOT/trivy-secret.yaml" "$REPO_ROOT"; then
         ok "no HIGH/CRITICAL findings"
       else
         found "trivy reported HIGH/CRITICAL findings"

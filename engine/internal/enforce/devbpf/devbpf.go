@@ -117,7 +117,11 @@ type devKey struct {
 // deleted. It is not dead: removing it breaks `GOOS=linux go build`, which is
 // the only build that ships. Confirm with a cross-build before touching it.
 //
+// Two directives because two tools ask independently, and neither honours the
+// other's: golangci-lint reads //nolint, staticcheck reads //lint:ignore.
+//
 //nolint:unused // used by cilium_linux.go; invisible to the linter on darwin.
+//lint:ignore U1000 called from cilium_linux.go, which is behind //go:build linux
 func keyFor(m MAC) devKey { return devKey{MAC: m} }
 
 // ParseMAC parses a colon/dash MAC string into a MAC. Rejects anything that

@@ -124,7 +124,10 @@ func main() {
 	// Tetragon subscription — the agent's sole event source. Unlike cmd/engine
 	// there is no fake mode here: the agent is a production sensor that runs
 	// next to Tetragon. Dev/UI iteration without a kernel uses cmd/engine -fake.
-	conn, err := grpc.Dial(cfg.TetragonAddr,
+	// NewClient, not the deprecated Dial — same change cmd/engine already carries.
+	// Missing it here is exactly the agent/engine drift the shared packages exist
+	// to prevent: a fix applied to one twin and not the other.
+	conn, err := grpc.NewClient(cfg.TetragonAddr,
 		grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("dial tetragon: %v", err)

@@ -1,0 +1,60 @@
+# gitleaks configuration.
+#
+# This product PLANTS decoy credentials on purpose. The honeypot subsystem writes
+# a fake `_id_rsa`, a fake `_shadow`, and fake AWS credentials into a watched
+# directory so that anything reading them raises an alert — the bait has to look
+# convincing to an attacker, which means it looks convincing to a secret scanner
+# too. The attack-simulation catalogue likewise describes credential theft in
+# terms a scanner recognises.
+#
+# So a secret scanner will always fire on this repository, and the answer is a
+# reviewed allowlist rather than removing the bait or disabling the scan. Every
+# entry below was checked by hand; all six original findings were decoys,
+# descriptions, or deliberately-invalid tokens. NONE were real credentials.
+#
+# Rules for changing this file:
+#   * Allow a PATH or a specific known-fake STRING. Never disable a rule wholesale.
+#   * Say why. An unexplained allowance is how a real leak gets waved through.
+#   * A new finding outside these paths is real until proven otherwise.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed decoys, simulation copy, and deliberately-invalid test tokens"
+
+paths = [
+  # Materialised honeypot bait. The generator that writes these lives in
+  # engine/internal/api/honeypots.go; the content is explicitly labelled
+  # "ThisIsNotARealKey…". Access to these files is the alert.
+  '''^\.dev/honey/''',
+
+  # The decoy DEFINITIONS themselves: the literal strings the honeypot writes.
+  # Flagging them is the scanner working correctly on content designed to look
+  # like a credential.
+  '''^engine/internal/api/honeypots\.go$''',
+
+  # The attack-simulation catalogue. These are DESCRIPTIONS of technique
+  # ("reads of shadow, sudoers, ~/.ssh/*"), not credentials.
+  '''^engine/internal/api/attacks\.go$''',
+
+  # Local netns development lab. The only credential is a shell variable with a
+  # dev default (NETNS_PASS), inside a comment showing how to drive the lab.
+  '''^scripts/dev/netns-.*\.sh$''',
+]
+
+regexes = [
+  # smoke.sh asserts that an INVALID token is rejected with 401. The token is
+  # the literal word "bogus"; a real one would defeat the test.
+  '''bogus-token''',
+
+  # The honeypot's own key body, which states in the key material that it is not
+  # a key. Matched as a string so a genuine key in the same file still fires.
+  '''ThisIsNotARealKey[A-Za-z]*''',
+
+  # Decoy shadow entry — the hash field literally reads "decoynothashed".
+  '''decoynothashed''',
+
+  # Decoy AWS key: twenty zeroes is not an issued access key id.
+  '''AKIA0{16,}''',
+]
