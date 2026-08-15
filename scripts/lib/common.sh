@@ -64,6 +64,24 @@ have_cmd() { command -v "$1" >/dev/null 2>&1; }
 confirm() { # confirm "question" [default y|n]
   local q="$1" def="${2:-y}" ans
   if [[ "${ASSUME_YES:-0}" == "1" ]]; then return 0; fi
+  # No terminal (CI, cron, a pipe): take the DEFAULT and say so, rather than
+  # reading a device that does not exist. Previously `read </dev/tty || true`
+  # swallowed the failure, left ans empty, and fell through to the default
+  # anyway — but only after printing a confusing "/dev/tty: No such device"
+  # error. In release.sh that default was "n", so the publish step aborted after
+  # signing and the workflow still reported success: a green build that had
+  # quietly published nothing.
+  #
+  # Taking the default, not assuming yes: a destructive prompt whose default is
+  # "n" must stay "n" when nobody is there to answer it.
+  # Test that /dev/tty can actually be OPENED, not merely that the node exists.
+  # On macOS the node is present and passes -r even with no controlling
+  # terminal; the open then fails with "Device not configured".
+  if ! (exec 3</dev/tty) 2>/dev/null; then
+    log "no terminal — taking the default ($def) for: $q"
+    [[ "$def" =~ ^[Yy] ]]
+    return
+  fi
   local hint="[y/N]"; [[ "$def" == "y" ]] && hint="[Y/n]"
   read -r -p "$(printf '%s?%s %s %s ' "$C_YEL" "$C_RESET" "$q" "$hint")" ans </dev/tty || true
   ans="${ans:-$def}"

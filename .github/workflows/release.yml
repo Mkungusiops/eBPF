@@ -67,13 +67,44 @@ jobs:
 
       - uses: sigstore/cosign-installer@v3
 
-      - name: cut the release
+      # Build and sign only — NOT --publish.
+      #
+      # release.sh --publish is written for a human at a terminal: it prompts for
+      # confirmation, then creates AND pushes the tag itself. Neither fits here.
+      # The prompt reads /dev/tty, which does not exist on a runner, so the
+      # script aborted after signing ("aborted, artifacts remain in dist/") and
+      # no GitHub Release was ever created — the build looked green while
+      # publishing silently did not happen. And the tag cannot be created here
+      # because pushing it is what triggered this workflow.
+      - name: build, checksum and sign
+        run: |
+          VERSION="${{ github.event.inputs.version || github.ref_name }}"
+          echo "building $VERSION"
+          ./scripts/release.sh --version "$VERSION"
+
+      - name: publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          set -euo pipefail
           VERSION="${{ github.event.inputs.version || github.ref_name }}"
-          echo "releasing $VERSION"
-          ./scripts/release.sh --version "$VERSION" --publish
+          NOTES="Static linux/amd64 agent, control plane and engine.
+
+          Verify before installing:
+            cosign verify-blob --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+              --certificate-identity-regexp '^https://github.com/.*/\.github/workflows/release\.yml@' \
+              --certificate-oidc-issuer https://token.actions.githubusercontent.com SHA256SUMS
+            sha256sum -c SHA256SUMS"
+
+          # Create, or upload into an existing release if this tag is re-cut.
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "release $VERSION exists — replacing its assets"
+            gh release upload "$VERSION" dist/"$VERSION"/* --clobber
+          else
+            gh release create "$VERSION" dist/"$VERSION"/* \
+              --title "$VERSION" --notes "$NOTES" --verify-tag
+          fi
+          gh release view "$VERSION" --json assets -q '.assets[].name' | sed 's/^/  published: /'
 
       - uses: actions/upload-artifact@v4
         with:
