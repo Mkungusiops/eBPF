@@ -92,7 +92,7 @@ jobs:
 
           echo "✓ artefacts are signed by the release workflow and intact"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: verified-${{ inputs.version }}
           path: dist/*
