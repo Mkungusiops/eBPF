@@ -11,7 +11,12 @@
 #   docker build -f deploy/controlplane.Dockerfile -t controlplane .
 
 # ---- build stage ----------------------------------------------------------
-FROM golang:1.25-bookworm AS build
+# 1.26.6 is the patched toolchain: govulncheck reports 7 stdlib advisories
+# against 1.26.5 and earlier (net/url, html/template, crypto/tls, net/http,
+# encoding/xml, encoding/asn1). This image is what actually ships, so building
+# it with an unpatched compiler puts those CVEs in the signed artifact
+# regardless of what CI runs.
+FROM golang:1.26.6-bookworm AS build
 WORKDIR /src
 
 # Module cache layer: copy just the manifests first so `go mod download` is

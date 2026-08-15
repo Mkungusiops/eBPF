@@ -47,10 +47,13 @@ export function EventReplay({
   const rowRefs = useRef<Array<HTMLDivElement | null>>([]);
 
   // Reset replay state whenever the underlying event set changes (new drill).
+  // firstId is lifted out of the dependency array so the rule can check it
+  // statically — an inline `ordered[0]?.id` is opaque to the linter.
+  const firstId = ordered[0]?.id;
   useEffect(() => {
     setCursor(null);
     setPlaying(false);
-  }, [count, ordered[0]?.id]);
+  }, [count, firstId]);
 
   useEffect(() => {
     if (!playing) return;

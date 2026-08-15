@@ -11,6 +11,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -113,4 +114,16 @@ func ApplyInt(target *int, fileValue *int, defaultValue int) {
 		return
 	}
 	*target = *fileValue
+}
+
+// SplitCSV parses a comma-separated flag value, trimming blanks and dropping
+// empties. Shared by cmd/engine and cmd/agent, which each had a private copy.
+func SplitCSV(s string) []string {
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
 }

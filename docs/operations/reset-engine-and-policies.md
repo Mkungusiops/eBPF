@@ -17,6 +17,12 @@ fully detached from the spawning shell and auto-restarts on crash. The first
 three lines make the block idempotent (clear any prior/failed unit).
 
 ```bash
+# Set a console password first. There is deliberately no default: the previously
+# published one (admin/ebpf-soc-demo) has been removed from every deploy path,
+# because following this runbook verbatim used to stand up a console on a
+# credential printed in this repository.
+export ENGINE_PASS="$(openssl rand -base64 24)"
+
 multipass exec ebpf -- sudo systemctl stop ebpf-engine 2>/dev/null || true
 multipass exec ebpf -- sudo systemctl reset-failed ebpf-engine 2>/dev/null || true
 multipass exec ebpf -- sudo pkill -f engine-linux-amd64 || true
@@ -33,7 +39,7 @@ multipass exec ebpf -- sudo systemd-run \
     -tetragon       unix:///var/run/tetragon/tetragon.sock \
     -db             /var/lib/ebpf-engine/events.db \
     -http           :8080 \
-    -user           admin -pass ebpf-soc-demo \
+    -user           admin -pass "$ENGINE_PASS" \
     -policies       /home/ubuntu/ebpf-poc/policies \
     -choke-policies /home/ubuntu/ebpf-poc/policies/choke \
     -attacks        /home/ubuntu/ebpf-poc/attacks \

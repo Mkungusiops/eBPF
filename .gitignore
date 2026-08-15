@@ -35,6 +35,11 @@
 /bin/
 /web/dist/
 /web/playwright-report/
+# Coverage output from `npm run test:coverage`
+/web/coverage/
+# Rendered API docs. Build with `make api-docs`; the SOURCE is docs/api/*.yaml
+# and *.md, which are committed. The 1.1 MB rendered bundle is an artefact.
+/docs/api/dist/
 /web/test-results/
 /web/tsconfig.tsbuildinfo
 /engine/internal/api/web/*
@@ -282,6 +287,10 @@ node_modules/
 .svelte-kit/
 .turbo/
 
+# Python bytecode from the docs generators in scripts/ci/
+__pycache__/
+*.pyc
+
 # ╔═══════════════════════════════════════════════════════════════════════════╗
 # ║ 10. Docker / container artifacts                                           ║
 # ╚═══════════════════════════════════════════════════════════════════════════╝
@@ -317,3 +326,9 @@ NOTES.md.local
 
 # Local dev credentials — never commit
 docs/credentials/
+
+# Operator fleet inventory. chokectl.hosts names live hosts and their addresses,
+# which is per-operator state and light reconnaissance if published; the
+# committed .example is the template. It was tracked with a real fleet IP.
+/chokectl.hosts
+!/chokectl.hosts.example

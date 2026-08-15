@@ -61,7 +61,7 @@ fi
 
 # Login -> cookie jar; grab CSRF for POSTs.
 JAR=$(mktemp)
-ip netns exec ns-gw curl -s -c "$JAR" -d 'user=admin&pass=ebpf-soc-demo' "$URL/api/login" >/dev/null
+ip netns exec ns-gw curl -s -c "$JAR" -d 'user=admin&pass=${NETNS_PASS:-netns-dev}' "$URL/api/login" >/dev/null
 CSRF=$(awk '$6=="csrf_token"{print $7}' "$JAR")
 
 GET()  { ip netns exec ns-gw curl -s -b "$JAR" "$URL$1"; }

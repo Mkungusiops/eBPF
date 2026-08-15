@@ -488,7 +488,15 @@ func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 		// performed the enforcement. Skipped in dry-run mode because the
 		// bpfmap is "what the kernel is doing" — and in dry-run the
 		// kernel is doing nothing.
-		g.mirrorBPFMap(d)
+		//
+		// The containment itself succeeded, so this does not become an error
+		// outcome — but it must not be recorded as a plain "ok" either, or the
+		// audit row asserts a kernel map state that was never written.
+		if err := g.mirrorBPFMap(d); err != nil {
+			outcome = "ok (kernel map mirror failed: " + err.Error() + ")"
+			log.Printf("[gateway] bpfmap mirror action=%s exec_id=%s pid=%d: %v",
+				d.Action, d.ExecID, d.PID, err)
+		}
 	}
 
 	reason := d.Reason
@@ -534,13 +542,17 @@ func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 // On Linux the bpfmap is currently a NoopBackend by default — when the
 // real BPF data plane lands, swapping the backend in main.go is enough;
 // no caller of this method changes.
-func (g *Gateway) mirrorBPFMap(d *circuit.Decision) {
+// The error is returned rather than discarded because the console renders this
+// map as "Choke Map (kernel)" — what the kernel is actually doing. A silently
+// failed write left that panel asserting shaping that was never installed. The
+// enforcement itself has already succeeded by the time this runs, so a mirror
+// failure degrades the outcome string instead of failing the containment.
+func (g *Gateway) mirrorBPFMap(d *circuit.Decision) error {
 	if g.bpfmap == nil || d.PID == 0 {
-		return
+		return nil
 	}
 	if d.Action == circuit.ActSever {
-		_ = g.bpfmap.Delete(d.PID)
-		return
+		return g.bpfmap.Delete(d.PID)
 	}
 	cfg := enforce.DefaultThrottlerConfig()
 	var b bpfmap.PIDBucket
@@ -552,9 +564,9 @@ func (g *Gateway) mirrorBPFMap(d *circuit.Decision) {
 	case circuit.ActQuarantine:
 		b = bpfmap.PIDBucket{RatePerSec: cfg.QuarantineRate, Burst: cfg.QuarantineBurst, Flags: bpfmap.FlagQuarantine}
 	default:
-		return
+		return nil
 	}
-	_ = g.bpfmap.Update(d.PID, b)
+	return g.bpfmap.Update(d.PID, b)
 }
 
 // installTokenBuckets walks the policy set and, for every policy whose

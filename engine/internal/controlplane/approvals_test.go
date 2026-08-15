@@ -1,6 +1,10 @@
 package controlplane
 
 import (
+	"bytes"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -207,4 +211,125 @@ func TestChangeControlIsOffByDefault(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("sever never reached the agent with change-control disabled")
+}
+
+// The tests above call chokeRequest directly, which is exactly how the bypass
+// below survived: they prove the MECHANISM holds without binding any ROUTE to
+// it. These drive the real HTTP handlers instead, because the defect was never
+// in the gate — it was that two handlers walked around it.
+func approvalHTTP(t *testing.T) *Server {
+	t.Helper()
+	s := approvalServer(t)
+	s.cfg.AdminToken = "admin-secret"
+	return s
+}
+
+func postJSON(t *testing.T, s *Server, h http.HandlerFunc, path string, body any) map[string]any {
+	t.Helper()
+	raw, _ := json.Marshal(body)
+	req := httptest.NewRequest("POST", path, bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	rec := httptest.NewRecorder()
+	h(rec, req)
+	var out map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	return out
+}
+
+// TestBulkChokeIsHeldForApproval — /api/choke/bulk-manual is the one endpoint
+// built to act on MANY hosts at once, and it used to dispatch straight to the
+// agents without ever entering the approval gate. That defeats EN-2 with the
+// single request the threat model is actually about.
+func TestBulkChokeIsHeldForApproval(t *testing.T) {
+	s := approvalHTTP(t)
+
+	out := postJSON(t, s, s.handleChokeBulk, "/api/choke/bulk-manual?tenant=acme", map[string]any{
+		"targets": []map[string]any{{"exec_id": "exec-on-a", "pid": 4021}},
+		"action":  "sever",
+		"reason":  "confirmed C2",
+	})
+
+	if n := s.dispatcher.Pending("agent-a"); n != 0 {
+		t.Fatalf("%d commands queued for agent-a — bulk sever bypassed change-control", n)
+	}
+	if s.approvals.PendingCount("acme") != 1 {
+		t.Fatalf("pending approvals = %d, want 1 — bulk sever was not held",
+			s.approvals.PendingCount("acme"))
+	}
+	if req, _ := out["approval_required"].(bool); !req {
+		t.Fatalf("response does not tell the operator the action was held: %v", out)
+	}
+}
+
+// TestDeviceJailIsHeldForApproval — the device plane takes a LIST of MACs and
+// had neither the reason rule nor the approval gate.
+func TestDeviceJailIsHeldForApproval(t *testing.T) {
+	s := approvalHTTP(t)
+
+	out := postJSON(t, s, s.handleDeviceJail, "/api/choke/device/jail?tenant=acme", map[string]any{
+		"macs":   []string{"de:ad:be:ef:00:01"},
+		"action": "sever",
+		"reason": "rogue device on the segment",
+	})
+
+	if n := s.dispatcher.Pending("agent-a"); n != 0 {
+		t.Fatalf("%d commands queued for agent-a — device sever bypassed change-control", n)
+	}
+	if s.approvals.PendingCount("acme") != 1 {
+		t.Fatalf("pending approvals = %d, want 1 — device sever was not held",
+			s.approvals.PendingCount("acme"))
+	}
+	if req, _ := out["approval_required"].(bool); !req {
+		t.Fatalf("response does not tell the operator the action was held: %v", out)
+	}
+}
+
+// A device sever with no reason must be refused, matching the process plane.
+func TestDeviceJailRequiresAReason(t *testing.T) {
+	s := approvalHTTP(t)
+	raw, _ := json.Marshal(map[string]any{
+		"macs": []string{"de:ad:be:ef:00:01"}, "action": "sever", "reason": "  ",
+	})
+	req := httptest.NewRequest("POST", "/api/choke/device/jail?tenant=acme", bytes.NewReader(raw))
+	req.Header.Set("Authorization", "Bearer admin-secret")
+	rec := httptest.NewRecorder()
+	s.handleDeviceJail(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400 — an unjustified device sever must be refused", rec.Code)
+	}
+	if s.approvals.PendingCount("acme") != 0 {
+		t.Fatal("an approval was created for a request that should have been refused outright")
+	}
+}
+
+// An approved device jail must actually reach the fleet. A gate that holds a
+// request and then loses it is an outage dressed as governance.
+func TestApprovedDeviceJailDispatches(t *testing.T) {
+	s := approvalHTTP(t)
+	out := postJSON(t, s, s.handleDeviceJail, "/api/choke/device/jail?tenant=acme", map[string]any{
+		"macs": []string{"de:ad:be:ef:00:01"}, "action": "sever", "reason": "rogue device",
+	})
+	results, _ := out["results"].([]any)
+	if len(results) != 1 {
+		t.Fatalf("results = %v", out)
+	}
+	id, _ := results[0].(map[string]any)["approval_id"].(string)
+	if id == "" {
+		t.Fatalf("no approval id in %v", out)
+	}
+	req, err := s.approvals.Decide("acme", id, "bob", "verified", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go s.executeApproved("acme", req)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if s.dispatcher.Pending("agent-a") > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("approved device sever never reached the agent")
 }

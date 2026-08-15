@@ -187,3 +187,47 @@ func TestActorTamperBreaksChain(t *testing.T) {
 		t.Fatal("rewriting the actor must break the audit chain, but verification passed")
 	}
 }
+
+// The companion to TestActorTamperBreaksChain, and the case that let the
+// forgery ship: REWRITING an existing actor was caught, but ADDING attribution
+// to a row that had none was not. Autonomous, score-driven enforcement writes
+// exactly such rows — no actor, no origin, no device — so every one of them
+// could be re-attributed to a named operator after the fact, with the chain
+// still certifying the record as intact.
+func TestAttributingAnAutonomousDecisionBreaksChain(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		tamper string
+	}{
+		{"actor", `UPDATE decisions SET actor = 'ceo@corp.example'`},
+		{"origin", `UPDATE decisions SET origin_ip = '10.0.0.9', origin_user = 'root'`},
+		{"device", `UPDATE decisions SET device_mac = 'de:ad:be:ef:00:01'`},
+		{"all", `UPDATE decisions SET actor = 'ceo@corp.example', origin_ip = '10.0.0.9', origin_user = 'root', device_mac = 'de:ad:be:ef:00:01'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			// An autonomous enforcement: nobody ordered it, so no attribution.
+			if _, err := s.InsertDecision(&Decision{
+				ExecID: "A", PID: 4242, Binary: "/usr/bin/curl", Action: "sever",
+				FromState: "tarpit", ToState: "severed", Score: 91,
+				Reason: "autonomous: score threshold", Backend: "severer",
+				Outcome: "ok", Timestamp: time.Now().UTC(),
+			}); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+			if res, err := s.VerifyDecisionChain(); err != nil || !res.OK {
+				t.Fatalf("baseline verify must pass: ok=%v err=%v", res.OK, err)
+			}
+			if _, err := s.db.Exec(tc.tamper); err != nil {
+				t.Fatalf("tamper: %v", err)
+			}
+			res, err := s.VerifyDecisionChain()
+			if err != nil {
+				t.Fatalf("verify: %v", err)
+			}
+			if res.OK {
+				t.Fatalf("forging %s onto an unattributed decision must break the chain, but verification passed", tc.name)
+			}
+		})
+	}
+}

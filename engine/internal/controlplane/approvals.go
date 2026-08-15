@@ -182,6 +182,16 @@ func (s *Server) executeApproved(tenant string, req approval.Request) (int, map[
 		}
 		return badChoke("unknown fleet change: " + req.Action)
 	}
+	// Device-scope requests target a MAC, not a process, so they re-enter the
+	// device path rather than performChoke — which resolves a process owner and
+	// would find nothing for a MAC.
+	if req.Scope == "device" {
+		out := s.performDeviceJail(tenant, req.MAC, req.Action)
+		return 200, map[string]any{
+			"ok": out.applied, "status": out.status, "detail": out.detail,
+			"agent": out.owner, "action": req.Action, "reason": req.Reason, "mac": req.MAC,
+		}
+	}
 	return s.performChoke(tenant, req.ExecID, req.PID, req.Action, req.Reason, req.AgentID)
 }
 

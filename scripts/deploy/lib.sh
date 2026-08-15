@@ -915,7 +915,13 @@ cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
     # ETag makes that a 304, and a corrected icon lands on the next load.
     # The =404 matters too: without it this path falls through to the SPA
     # catch-all and answers index.html, which the browser discards as an icon.
-    location = /favicon.ico { try_files \$uri =404; add_header Cache-Control "public, no-cache" always; }
+    # The inner quotes MUST stay escaped, and no comment in this heredoc may
+    # contain a bare double-quote either. The whole block is a single
+    # double-quoted argument to RUN, so an unescaped one closes that argument
+    # early and the file lands truncated at this line. nginx then fails its
+    # config test with an unexpected-end-of-file error and can neither reload
+    # nor restart until someone repairs it by hand. That is what happened here.
+    location = /favicon.ico { try_files \$uri =404; add_header Cache-Control \"public, no-cache\" always; }
     # nginx's stock mime.types has no entry for .webmanifest, so this went out
     # as application/octet-stream — the engine, which serves its own copy from
     # Go, sent application/manifest+json for the identical bytes. This is the

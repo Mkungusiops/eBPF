@@ -5,5 +5,6 @@ import { StreamProvider } from "../lib/stream";
 renderApp(
   <StreamProvider>
     <ChokePage />
-  </StreamProvider>
+  </StreamProvider>,
+  "the choke gateway"
 );

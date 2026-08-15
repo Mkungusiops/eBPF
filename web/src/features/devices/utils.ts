@@ -1,10 +1,18 @@
 import type {
   DeviceAction,
   DeviceBucket,
+  DeviceEntry,
   DeviceFlow,
   DeviceStateCounts,
   DeviceStateName
 } from "./types";
+
+/**
+ * What the engine says when it was started without a device-choke interface.
+ * The route, the flow loader and the action error handler all have to recognise
+ * the same 503 and say the same thing, so the copy lives in one place.
+ */
+export const DISABLED_MESSAGE = "device choke disabled (start with -devchoke-iface)";
 
 export const DEVICE_STATE_ORDER: DeviceStateName[] = [
   "pristine",
@@ -104,4 +112,46 @@ export function isBridgeMasterWarning(state?: {
   frames_seen?: number;
 } | null): boolean {
   return (state?.links_attached ?? 0) > 0 && (state?.frames_seen ?? 0) === 0;
+}
+
+/**
+ * Can this data plane actually drop a packet?
+ *
+ * "noop" means no tc program is attached — the ladder still moves and the
+ * device table still reads back "severed", but nothing touches traffic. That is
+ * the correct configuration for a host with no bridge to sit inline on, so it
+ * is not an error; claiming otherwise is.
+ *
+ * This existed twice with two different answers. One version excluded "noop"
+ * and drove a single status dot; the other treated "noop" as healthy and drove
+ * the header's integrity readout, `auditOk`, AND the exported evidence bundle —
+ * which recorded `data_plane: "active"` for a plane that cannot enforce. An
+ * unknown value is treated as inactive for the same reason: on an artefact
+ * someone may hand to an auditor, "I could not tell" must never render as "yes".
+ */
+export function planeIsActive(dataPlane: string | undefined | null): boolean {
+  return Boolean(dataPlane) && dataPlane !== "noop" && dataPlane !== "disabled";
+}
+
+/**
+ * The device table's two filters, applied together: the ladder rung the
+ * operator clicked, and the free-text search box.
+ *
+ * `query` must already be trimmed and lower-cased — the route needs that same
+ * value to decide which empty-state copy to show, so it is computed once there
+ * rather than twice.
+ */
+export function filterDevices(
+  devices: DeviceEntry[],
+  options: { rungFilter: string | null; query: string }
+): DeviceEntry[] {
+  return devices.filter((d) => {
+    if (options.rungFilter && (d.state || "pristine") !== options.rungFilter) return false;
+    if (!options.query) return true;
+    return [d.mac, d.last_ip, d.hostname, d.vendor, d.source, d.state]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+      .includes(options.query);
+  });
 }

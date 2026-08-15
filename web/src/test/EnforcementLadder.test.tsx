@@ -177,3 +177,50 @@ describe("EnforcementLadder", () => {
     expect(readState).not.toHaveBeenCalled();
   });
 });
+
+// The confirmation loop polls for up to confirmAttempts * confirmIntervalMs
+// (16s with the shipped defaults) with no cancellation. Resetting the UI when
+// the target changed was not enough: the loop kept running and wrote its result
+// anyway, so an operator who severed process A and clicked process B during the
+// window saw "sever confirmed" rendered against B. In a containment console that
+// is the exact false-containment lie the product exists to avoid.
+describe("EnforcementLadder confirmation is bound to the target it started on", () => {
+  it("does not report a confirmation after the operator switches target", async () => {
+    const targetA = { id: "exec-A", label: "/usr/bin/nc", pid: 1, host: "web-01" };
+    const targetB = { id: "exec-B", label: "/usr/bin/curl", pid: 2, host: "web-01" };
+
+    const apply = vi.fn(async () => ({ ok: true, detail: "accepted" }));
+    // Never reaches the requested rung, so the loop keeps polling.
+    const readState = vi.fn(async () => "pristine");
+
+    const props = {
+      state: "pristine" as const,
+      policy: PROCESS_TERMINAL,
+      apply,
+      readState,
+      confirmIntervalMs: 1,
+      confirmAttempts: 50
+    };
+
+    const { rerender } = render(<EnforcementLadder target={targetA} {...props} />);
+
+    fireEvent.change(screen.getByPlaceholderText(/reason/i), {
+      target: { value: "confirmed c2" }
+    });
+    await act(async () => {
+      fireEvent.click(btn("Throttle"));
+    });
+
+    // Operator moves to a different process while the loop is still polling.
+    rerender(<EnforcementLadder target={targetB} {...props} />);
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+
+    // Nothing about the previous target's action may be shown against this one.
+    expect(screen.queryByText(/confirmed — now/i)).toBeNull();
+    expect(screen.queryByText(/dispatched — awaiting confirmation/i)).toBeNull();
+    expect(screen.queryByText(/has not reported the new state yet/i)).toBeNull();
+  });
+});

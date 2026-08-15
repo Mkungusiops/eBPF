@@ -48,7 +48,18 @@ TETRA_CT   ?= tetragon
 # is never used for a real deployment (see `make deploy`, which sets its own).
 FAKE_PASS  ?= fake-dev
 
-.PHONY: deploy-console deploy-engine deploy-agent e2e _require_ssh_host
+# Console credential for the deploy targets. Deliberately has NO default.
+#
+# These targets used to launch the engine with `-pass ebpf-soc-demo` and then
+# echo that credential back to the operator. `deploy-remote` is the documented
+# generic-SSH path for EC2, Azure and bare metal, so following the docs stood up
+# an internet-reachable console on a password published in this repository. The
+# default was removed from the binary in Phase 0 and left in the deploy path,
+# which is the half that reaches production hosts.
+ENGINE_USER ?= admin
+ENGINE_PASS ?=
+
+.PHONY: deploy-console deploy-engine deploy-agent e2e _require_ssh_host _require_engine_pass
 .PHONY: web build build-linux build-agent build-agent-linux build-controlplane build-controlplane-linux proto proto-tools proto-lint test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
 # Build and stage Vite's static output for go:embed. The redesigned UI is
@@ -90,13 +101,59 @@ require-clean:
 	  *)         echo "release: building $(VERSION)";; \
 	esac
 
+# ─────────────────────────────────────────────────────────────────────────
+# API documentation.
+#
+#   make api-docs        render docs/api/dist/index.html (one self-contained file)
+#   make api-docs-check  fail if the generated docs no longer match the source
+#
+# The spec and the wire contract are DERIVED from the code, so they cannot drift;
+# CI runs the same --check gates. Open the rendered file directly — it needs no
+# server and makes no network requests.
+.PHONY: api-docs api-docs-check
+api-docs:
+	@./scripts/ci/gen-openapi.py
+	@./scripts/ci/gen-protodoc.py
+	@./scripts/ci/build-api-docs.sh
+
+api-docs-check:
+	@./scripts/ci/gen-openapi.py --check
+	@./scripts/ci/gen-protodoc.py --check
+
+# Install a PUBLISHED, SIGNED release onto the estate — the local counterpart of
+# .github/workflows/deploy.yml, for operators who would rather not hold an SSH
+# key in GitHub. Same guarantee either way: the signature over SHA256SUMS is
+# verified against the release workflow's identity BEFORE anything is installed,
+# so what lands on a host is what CI built rather than what this laptop compiled.
+#
+#   make deploy-release VERSION=v1.1.0 SSH_HOST=control-plane
+.PHONY: verify-release deploy-release
+verify-release:
+	@[ -n "$(VER)" ] || { echo "VER=vX.Y.Z required"; exit 1; }
+	@command -v cosign >/dev/null || { echo "cosign required: brew install cosign"; exit 1; }
+	@command -v gh     >/dev/null || { echo "gh required: brew install gh"; exit 1; }
+	@set -e; rm -rf $(ROOT)/dist/$(VER); mkdir -p $(ROOT)/dist/$(VER); \
+	cd $(ROOT)/dist/$(VER) && gh release download "$(VER)"; \
+	echo "→ verifying release signature"; \
+	cosign verify-blob \
+	  --certificate SHA256SUMS.pem --signature SHA256SUMS.sig \
+	  --certificate-identity-regexp '^https://github.com/.*/\.github/workflows/release\.yml@' \
+	  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+	  SHA256SUMS; \
+	shasum -a 256 -c SHA256SUMS; \
+	echo "  ✓ $(VER) is signed by the release workflow and intact"
+
 # Every artefact a handover ships, from one tag, with hashes to match.
 .PHONY: release
 release: require-clean build-linux build-agent-linux build-controlplane-linux
 	@echo
 	@echo "release $(VERSION) — artefact digests:"
 	@cd $(ENGINE_DIR) && shasum -a 256 engine-linux-$(LINUX_ARCH) agent-linux-$(LINUX_ARCH) controlplane-linux-$(LINUX_ARCH) | sed 's/^/  /'
-	@cd $(WEB_DIR)/dist && find . -type f | sort | xargs shasum -a 256 | shasum -a 256 | sed 's/^/  console bundle: /'
+	@# LC_ALL=C: the default collation differs between macOS and Linux (it orders
+	@# "favicon-light.svg" against "favicon.svg" differently), which changes the
+	@# order of lines fed into the rollup and therefore the digest. A digest the
+	@# recipient cannot reproduce on their own machine verifies nothing.
+	@cd $(WEB_DIR)/dist && find . -type f | LC_ALL=C sort | xargs shasum -a 256 | shasum -a 256 | sed 's/^/  console bundle: /'
 
 build: web
 	cd $(ENGINE_DIR) && $(GOBUILD) -o engine ./cmd/engine
@@ -257,6 +314,15 @@ DEPLOY_ENV = $(if $(TARGET_HOST),TARGET_HOST=$(TARGET_HOST),) $(if $(filter 1,$(
 _require_ssh_host:
 	@[ -n "$(SSH_HOST)" ] || { echo "SSH_HOST=user@host (or an ssh alias) required"; exit 1; }
 
+# No console password may be baked into a deploy path. Fail before anything is
+# started rather than silently standing up a known-credential console.
+_require_engine_pass:
+	@[ -n "$(ENGINE_PASS)" ] || { \
+	  echo "ENGINE_PASS is required — this target starts a console on :8080."; \
+	  echo "  make $(MAKECMDGOALS) ENGINE_PASS=\"$$(openssl rand -base64 24)\""; \
+	  echo "(there is deliberately no default: the old one was published in this repo)"; \
+	  exit 1; }
+
 # Multi-tenant control plane: Postgres + Keycloak + control plane + nginx.
 # Use DATA_MODE=none when real agents are managed separately, or every redeploy
 # resurrects the sim-agents alongside them.
@@ -344,7 +410,7 @@ vm-doctor:
 
 vm-up: vm-doctor
 
-deploy: build-linux vm-up
+deploy: _require_engine_pass build-linux vm-up
 	@command -v multipass >/dev/null || { echo "multipass not found — install via brew: brew install --cask multipass"; exit 1; }
 	@multipass info $(VM) >/dev/null 2>&1 || { echo "multipass VM '$(VM)' not found — run: multipass launch 22.04 --name $(VM) --cpus 2 --memory 4G --disk 20G"; exit 1; }
 	@echo "→ syncing bundle into $(VM):$(REMOTE_DIR)"
@@ -362,14 +428,14 @@ deploy: build-linux vm-up
 	@echo "→ (re)starting engine with choke gateway + enforcement"
 	-multipass exec $(VM) -- bash -lc "sudo systemctl stop ebpf-engine; sudo systemctl reset-failed ebpf-engine; sudo pkill -f engine-linux-amd64; exit 0"
 	multipass exec $(VM) -- sudo mkdir -p /var/lib/ebpf-engine
-	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT) -bpf-obj $(REMOTE_DIR)/bpf/choke.o -bpf-cgroup /sys/fs/cgroup $(DEVCHOKE_FLAGS)"
+	multipass exec $(VM) -- bash -lc "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$(REMOTE_DIR) $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user $(ENGINE_USER) -pass $(ENGINE_PASS) -policies $(REMOTE_DIR)/policies -attacks $(REMOTE_DIR)/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $(REMOTE_DIR)/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT) -bpf-obj $(REMOTE_DIR)/bpf/choke.o -bpf-cgroup /sys/fs/cgroup $(DEVCHOKE_FLAGS)"
 	@sleep 2
 	@echo
 	@echo "──────────────────────────────────────────────────────────────"
 	@echo " Engine status:"
 	@multipass exec $(VM) -- bash -lc "sudo systemctl is-active ebpf-engine; sudo ss -tlnp | grep ':8080' || true"
 	@echo
-	@VM_IP=$$(multipass info $(VM) | awk '/IPv4/{print $$2; exit}'); echo " UI:           http://$$VM_IP:8080/"; echo " Choke console: http://$$VM_IP:8080/choke"; echo " login:        admin / ebpf-soc-demo"
+	@VM_IP=$$(multipass info $(VM) | awk '/IPv4/{print $$2; exit}'); echo " UI:           http://$$VM_IP:8080/"; echo " Choke console: http://$$VM_IP:8080/choke"; echo " login:        $(ENGINE_USER) / (the ENGINE_PASS you supplied)"
 	@echo "──────────────────────────────────────────────────────────────"
 
 # `redeploy` is `deploy` minus the setup.sh step — fast iteration once the
@@ -377,7 +443,7 @@ deploy: build-linux vm-up
 # executable (ETXTBSY), so we stage the new binary as `.new`, then `mv`
 # it over the live one — rename(2) is atomic and unaffected by the old
 # inode still being held open. systemctl restart picks it up.
-redeploy: build-linux
+redeploy: _require_engine_pass build-linux
 	multipass transfer $(LINUX_BIN) $(VM):$(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new
 	multipass exec $(VM) -- bash -lc "chmod +x $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new && mv -f $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH).new $(REMOTE_DIR)/engine-linux-$(LINUX_ARCH)"
 	tar -cz -C $(ROOT) policies attacks | multipass exec $(VM) -- tar -xz -C $(REMOTE_DIR)
@@ -406,7 +472,7 @@ SSH_OPTS ?=
 SSH       = ssh -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $(SSH_OPTS) $(HOST)
 SCP       = scp -o StrictHostKeyChecking=accept-new -o ConnectTimeout=10 $(SSH_OPTS)
 
-deploy-remote: build-linux
+deploy-remote: _require_engine_pass build-linux
 	@if [ -z "$(HOST)" ]; then echo "HOST=user@ip required, e.g. make deploy-remote HOST=azureuser@52.x.y.z"; exit 1; fi
 	@command -v ssh >/dev/null || { echo "ssh not found"; exit 1; }
 	@$(SSH) -o BatchMode=yes true 2>/dev/null || { echo "cannot reach $(HOST) over ssh — check key, firewall, host"; exit 1; }
@@ -431,7 +497,7 @@ deploy-remote: build-linux
 	echo "→ (re)starting engine with choke gateway + enforcement"; \
 	$(SSH) "sudo systemctl stop ebpf-engine 2>/dev/null; sudo systemctl reset-failed ebpf-engine 2>/dev/null; sudo pkill -f engine-linux-amd64 2>/dev/null; exit 0" || true; \
 	$(SSH) "sudo mkdir -p /var/lib/ebpf-engine"; \
-	$(SSH) "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$$REMOTE_DIR $$REMOTE_DIR/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user admin -pass ebpf-soc-demo -policies $$REMOTE_DIR/policies -attacks $$REMOTE_DIR/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $$REMOTE_DIR/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT)"; \
+	$(SSH) "sudo systemd-run --unit=ebpf-engine --description='eBPF Choke Gateway' --property=Restart=always --property=RestartSec=2 --property=StandardOutput=append:/var/log/ebpf-engine.log --property=StandardError=append:/var/log/ebpf-engine.log --property=WorkingDirectory=$$REMOTE_DIR $$REMOTE_DIR/engine-linux-$(LINUX_ARCH) -tetragon unix:///var/run/tetragon/tetragon.sock -db /var/lib/ebpf-engine/events.db -http :8080 -user $(ENGINE_USER) -pass $(ENGINE_PASS) -policies $$REMOTE_DIR/policies -attacks $$REMOTE_DIR/attacks -honeypots /var/lib/ebpf-engine/honey -choke-policies $$REMOTE_DIR/policies/choke -enforce -cgroup-root /sys/fs/cgroup -throttle-at $(THROTTLE_AT) -tarpit-at $(TARPIT_AT) -quarantine-at $(QUARANTINE_AT) -sever-at $(SEVER_AT)"; \
 	sleep 2; \
 	echo; \
 	echo "──────────────────────────────────────────────────────────────"; \
@@ -449,7 +515,7 @@ deploy-remote: build-linux
 	echo " UI:           $$PRIMARY/"; \
 	[ -n "$$VM_IP" ] && echo " Direct IP:    http://$$VM_IP:8080/"; \
 	echo " Choke console: $$PRIMARY/choke"; \
-	echo " login:        admin / ebpf-soc-demo"; \
+	echo " login:        $(ENGINE_USER) / (the ENGINE_PASS you supplied)"; \
 	echo "──────────────────────────────────────────────────────────────"
 
 # Fast iteration variant — binary + policies only, no setup.sh.
@@ -458,7 +524,7 @@ deploy-remote: build-linux
 # rename(2) is fine: the old inode stays alive for the running process,
 # the new path points at the new inode, and systemctl restart picks
 # it up cleanly. Falls back to pkill (Restart=always respawns).
-redeploy-remote: build-linux
+redeploy-remote: _require_engine_pass build-linux
 	@if [ -z "$(HOST)" ]; then echo "HOST=user@ip required"; exit 1; fi
 	@set -e; \
 	if [ "$(REMOTE_DIR_ORIGIN)" = "command line" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment" ] || [ "$(REMOTE_DIR_ORIGIN)" = "environment override" ]; then \
@@ -482,7 +548,7 @@ redeploy-remote: build-linux
 # under /etc/ebpf-engine/, and the BPF data plane under /opt/.../bpf/.
 # Use `make deploy` for fast iteration, `make install-vm` when you want
 # the persistent layout. They're not interchangeable mid-deploy — pick one.
-install-vm: build-linux vm-up
+install-vm: _require_engine_pass build-linux vm-up
 	multipass exec $(VM) -- bash -c "rm -rf /tmp/ebpf-poc-install && mkdir -p /tmp/ebpf-poc-install/engine/internal/enforce/bpfmap/bpf"
 	tar -cz -C $(ROOT) deploy policies attacks scripts | multipass exec $(VM) -- tar -xz -C /tmp/ebpf-poc-install
 	multipass transfer $(LINUX_BIN) $(VM):/tmp/ebpf-poc-install/engine/engine-linux-amd64
@@ -570,7 +636,7 @@ vm-status-all:
 	  printf '%-12s ' "$$vm"; \
 	  if [ -z "$$ip" ]; then echo "(not running)"; continue; fi; \
 	  jar=/tmp/chokectl-cookies-mk-$$vm; \
-	  curl -s -m 3 -c $$jar -d 'user=admin&pass=ebpf-soc-demo' http://$$ip:8080/api/login -o /dev/null 2>/dev/null; \
+	  curl -s -m 3 -c $$jar -d "user=$(ENGINE_USER)&pass=$$ENGINE_PASS" http://$$ip:8080/api/login -o /dev/null 2>/dev/null; \
 	  curl -s -m 3 -b $$jar "http://$$ip:8080/api/choke/state" 2>/dev/null \
 	    | python3 -c 'import sys,json;d=json.load(sys.stdin); t=d.get("thresholds") or {}; print(d.get("mode","?"), "kill="+("on" if d.get("kill_switched") else "off"), "thr="+str(t.get("throttle_at","?"))+"/"+str(t.get("tarpit_at","?"))+"/"+str(t.get("quarantine_at","?"))+"/"+str(t.get("sever_at","?")), "tracked="+str(d.get("tracked",0)))' \
 	    || echo "(unreachable)"; \

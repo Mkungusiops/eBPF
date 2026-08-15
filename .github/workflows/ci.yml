@@ -1,13 +1,20 @@
 # Phase 0 CI (docs/plan/roadmap.md Phase 0 "CI/CD").
 #
 # On every PR (and pushes to main / feat branches):
-#   - go vet ./...  and  go test ./...
+#   - go vet, golangci-lint, and `go test -race` with a coverage ratchet
 #   - policy posture: every shipped TracingPolicy is disarmed by declaration
 #   - build all THREE binaries (engine, agent, controlplane) as static linux
-#   - web suite: npm ci && npm run lint && npm run typecheck && npm test
+#   - web suite: npm ci && npm run lint (eslint + architecture) && typecheck
+#     && test with coverage
 #   - Playwright e2e (mocked API, Chromium; credential/target-VM specs self-skip)
+#   - security: govulncheck, staticcheck, npm audit, gitleaks, trivy
 #   - build a control-plane container image, generate an SBOM, and — for
 #     same-repo events — push it to GHCR and sign it keylessly with cosign.
+#
+# Integration services are provided rather than allowed to skip: Postgres for
+# the RLS isolation test, ClickHouse for the events firehose, and Keycloak for
+# the OIDC/PKCE session tests. A test that silently skips in CI reports green
+# having verified nothing, which is how internal/bff came to sit at 0.0%.
 #
 # Signing/publishing is skipped for PRs from forks (they have neither registry
 # write nor an OIDC token); those still build the image and produce the SBOM so
@@ -17,7 +24,10 @@ name: CI
 on:
   pull_request:
   push:
-    branches: [main, "feat/**"]
+    # release/** is included deliberately. Without it, pushing a release branch
+    # ran no gate at all, while the accompanying tag fired release.yml — so a
+    # signed, published artefact could be cut from code CI had never seen.
+    branches: [main, "feat/**", "release/**"]
 
 # Least privilege by default; the image job widens its own scope.
 permissions:
@@ -28,7 +38,12 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  GO_VERSION: "1.25.0"
+  # Patched toolchain, not just a recent one. govulncheck reports 7 stdlib
+  # advisories against go1.26.5 and earlier (net/url, html/template, crypto/tls,
+  # net/http, encoding/xml, encoding/asn1) — all fixed in 1.26.6. The stdlib is
+  # a dependency like any other; pinning an unpatched compiler ships those CVEs
+  # into the signed image no matter what go.mod says.
+  GO_VERSION: "1.26.6"
   NODE_VERSION: "20"
 
 jobs:
@@ -85,16 +100,101 @@ jobs:
       - name: policy posture (every TracingPolicy declares monitor mode)
         run: ./scripts/ci/check-policy-posture.sh
 
+      # The API spec is DERIVED from the mux registrations, so it cannot quietly
+      # drift from the code. This fails when a route is added, removed or renamed
+      # without regenerating docs/api/openapi.yaml — the same ratchet pattern
+      # internal/isolationguard applies to the gRPC surface. Integrating teams
+      # build against this spec; a stale one is worse than none.
+      - name: API spec matches the routes in the code
+        run: ./scripts/ci/gen-openapi.py --check
+
+      # Same ratchet for the gRPC surface. The .proto comments are normative
+      # (they record WHY tenant never travels in the payload, among others), so
+      # the rendered contract must not lag the IDL an integrator builds against.
+      - name: wire-contract doc matches the .proto IDL
+        run: ./scripts/ci/gen-protodoc.py --check
+
+      # Render the browsable API reference and publish it as a build artefact.
+      # Deliberately NOT served from the console: a complete map of a security
+      # platform's API, containment and kill-switch endpoints included, is
+      # reconnaissance. Downloading it from a build gives integrating teams the
+      # document without putting it on the public internet.
+      - name: render API reference
+        run: ./scripts/ci/build-api-docs.sh
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: api-reference
+          path: docs/api/dist/index.html
+          if-no-files-found: error
+
       - name: go vet
         working-directory: engine
         run: go vet ./...
 
-      - name: go test
+      # Static analysis beyond vet. vet catches a narrow, high-confidence set;
+      # this adds the ineffectual-assignment, unused-result and staticcheck
+      # families that found real dead code in this tree.
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v6
+        with:
+          version: v1.62
+          working-directory: engine
+          args: --timeout=5m
+
+      # Keycloak so the OIDC/PKCE tests RUN rather than skip. internal/bff is
+      # 314 lines of session and token handling that reported 0.0% coverage
+      # because its only test gates on this URL and CI never set it — green,
+      # having tested nothing. Postgres and ClickHouse are already here for
+      # exactly this reason; Keycloak was the one that was missed.
+      #
+      # Started as a step, not a service: it needs the `start-dev` command, and
+      # `services:` cannot override an image's entrypoint.
+      - name: start Keycloak
+        run: |
+          docker run -d --name keycloak -p 8081:8080 \
+            -e KEYCLOAK_ADMIN=admin -e KEYCLOAK_ADMIN_PASSWORD=admin \
+            quay.io/keycloak/keycloak:26.0 start-dev
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8081/realms/master >/dev/null; then
+              echo "keycloak ready after ${i}s"; exit 0
+            fi
+            sleep 1
+          done
+          echo "keycloak did not become ready"; docker logs keycloak; exit 1
+
+      # -race is on because the suite is already race-clean, so the gate costs
+      # nothing but catches the next regression. It was absent while 12 test
+      # files spawned goroutines and t.Parallel() appeared zero times.
+      - name: go test (race + coverage)
         working-directory: engine
         env:
           EBPF_TEST_PG_DSN: postgres://soc:socpass@localhost:5432/ebpf_soc?sslmode=disable
           EBPF_TEST_CH_DSN: clickhouse://soc:socpass@localhost:9000/ebpf_soc
-        run: go test ./...
+          EBPF_TEST_KEYCLOAK_URL: http://localhost:8081
+        run: go test -race -coverprofile=coverage.out ./...
+
+      # A ratchet, not a target. It fails only when coverage goes BACKWARDS,
+      # so it cannot be satisfied by deleting tests and does not block work on
+      # untested legacy packages. Raise MIN as coverage climbs.
+      - name: coverage ratchet
+        working-directory: engine
+        run: |
+          MIN=32.0
+          TOTAL=$(go tool cover -func=coverage.out | awk '/^total:/ {gsub(/%/,"",$3); print $3}')
+          echo "total coverage: ${TOTAL}% (floor ${MIN}%)"
+          awk -v t="$TOTAL" -v m="$MIN" 'BEGIN { exit (t+0 < m+0) ? 1 : 0 }' || {
+            echo "::error::coverage ${TOTAL}% fell below the ${MIN}% floor"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: go-coverage
+          path: engine/coverage.out
+          if-no-files-found: warn
 
       # All three build targets must compile from the shared internal/ packages
       # (the Phase 0 definition of done). Static CGO-free linux builds; the
@@ -136,7 +236,12 @@ jobs:
         working-directory: web
         run: npm ci
 
-      - name: lint
+      # `npm run lint` now runs ESLint AND the bespoke architectural checker in
+      # scripts/lint.mjs. ESLint was previously not installed at all, so this
+      # step passed without a linter ever running: no hooks rule, no
+      # exhaustive-deps rule, no a11y rule, and every inline
+      # `// eslint-disable-next-line` in the tree was inert.
+      - name: lint (eslint + architecture)
         working-directory: web
         run: npm run lint
 
@@ -144,9 +249,61 @@ jobs:
         working-directory: web
         run: npm run typecheck
 
-      - name: test
+      - name: test (with coverage)
         working-directory: web
-        run: npm test
+        run: npm run test:coverage
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: web-coverage
+          path: web/coverage
+          if-no-files-found: warn
+
+  security:
+    name: Security — vulnerabilities · secrets · SAST
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # gitleaks scans history, not just the tip
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: engine/go.sum
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # scripts/scan.sh already implemented all of this — govulncheck,
+      # staticcheck, npm audit, gitleaks and trivy — and was referenced nowhere
+      # in CI. The image job below signs, SBOMs and attests to a Rekor
+      # transparency log; without this it was proving the provenance of code
+      # nothing had ever scanned. The script's own --ci mode refuses to pass
+      # when a scanner is missing ("a missing scanner is a false green"), so
+      # every tool it wants is installed here rather than allowed to skip.
+      - name: install scanners
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install honnef.co/go/tools/cmd/staticcheck@latest
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+          curl -sSfL https://github.com/gitleaks/gitleaks/releases/download/v8.21.2/gitleaks_8.21.2_linux_x64.tar.gz \
+            | sudo tar -xz -C /usr/local/bin gitleaks
+
+          curl -sSfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh \
+            | sudo sh -s -- -b /usr/local/bin v0.58.1
+
+      - name: npm ci (for npm audit)
+        working-directory: web
+        run: npm ci
+
+      - name: scan (vulnerabilities · secrets · SAST)
+        run: ./scripts/scan.sh --ci
 
   e2e:
     name: Web — Playwright e2e (mocked API)
@@ -189,7 +346,9 @@ jobs:
 
   image:
     name: Container image — build · SBOM · sign
-    needs: [go, web, e2e]
+    # security is a gate, not a report: an image is not signed and attested
+    # until the code in it has been scanned.
+    needs: [go, web, e2e, security]
     runs-on: ubuntu-latest
     permissions:
       contents: read

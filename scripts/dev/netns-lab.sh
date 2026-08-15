@@ -16,7 +16,7 @@
 #                                                #   OBJ = path to devchoke.o
 #   sudo bash scripts/dev/netns-lab.sh down      # tear it all down
 #
-# Then drive it: curl -u admin:ebpf-soc-demo http://127.0.0.1:8080/api/choke/devices
+# Then drive it: curl -u admin:${NETNS_PASS:-netns-dev} http://127.0.0.1:8080/api/choke/devices
 # (the engine's :8080 is reachable from the host since ns-gw shares nothing
 # but the veths — run curl with `sudo ip netns exec ns-gw curl ...`).
 set -euo pipefail
@@ -77,7 +77,7 @@ run() {
   echo "running engine in ns-gw, attaching devchoke to $GW_LAN ..."
   exec ip netns exec ns-gw "$bin" \
     -fake \
-    -pass ebpf-soc-demo \
+    -pass ${NETNS_PASS:-netns-dev} \
     -db /tmp/netns-lab-events.db \
     -http :8080 \
     -devchoke-obj "$obj" \

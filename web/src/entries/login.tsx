@@ -6,4 +6,4 @@ import { initTheme } from "../lib/theme";
 // (no flash of dark on a light desktop).
 initTheme();
 
-renderApp(<LoginPage />);
+renderApp(<LoginPage />, "the login page");

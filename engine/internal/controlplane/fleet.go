@@ -93,8 +93,15 @@ func (s *Server) handleFleetState(w http.ResponseWriter, r *http.Request) {
 		hosts = append(hosts, hostResult{Name: rec.AgentID, OK: true, Data: map[string]any{
 			"mode": mode, "dry_run": dryRun, "kill_switched": false,
 			"tracked": len(rec.Chokes), "counts": chokeStateCounts(rec.Chokes),
-			"thresholds": map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40},
-			"audit":      map[string]any{"ok": true, "total": 0},
+			"thresholds": chokeThresholds(),
+			// NOT {"ok":true}. The control plane does not hash-chain decisions
+			// centrally, so claiming the chain is intact renders a green
+			// "intact · 0 rows" for a check that never ran. supported=false is
+			// the third state: unverifiable here, as opposed to verified or
+			// broken. This is the same fix already made in choke.go — a
+			// security product may report that a control is unavailable; it may
+			// not report an unrun check as passed.
+			"audit": map[string]any{"ok": false, "supported": false, "total": 0},
 		}})
 	}
 	writeJSON(w, 200, map[string]any{"hosts": hosts})
@@ -178,8 +185,13 @@ func (s *Server) handleFleetDevices(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range s.registry.ListTenant(tenant) {
 		devices := []map[string]any{}
 		for _, d := range rec.Devices {
+			// protected comes from the agent's own protect-list, not a literal.
+			// Hardcoding false showed the guard against quarantining your own
+			// gateway as empty on the Fleet view, while the Choke view read the
+			// real value from the same heartbeat field.
 			devices = append(devices, map[string]any{
-				"mac": d.GetMac(), "state": d.GetState(), "hostname": d.GetLabel(), "protected": false,
+				"mac": d.GetMac(), "state": d.GetState(), "hostname": d.GetLabel(),
+				"protected": d.GetProtected(),
 			})
 		}
 		hosts = append(hosts, hostResult{Name: rec.AgentID, OK: true, Data: devices})

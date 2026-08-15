@@ -234,7 +234,19 @@ func (m *Manager) MoveTo(pid uint32, a circuit.Action) error {
 		return fmt.Errorf("cgroupv2: move pid=%d → %s: %w", pid, path, err)
 	}
 	if a == circuit.ActQuarantine {
-		_ = os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("1"), 0o644)
+		// The freeze IS the quarantine — the CPU cap configured at tier setup is
+		// a fallback, not the action. Discarding this error reported a process as
+		// quarantined while it kept running, and the audit chain recorded
+		// outcome="ok" for containment that never happened. A security product
+		// may report that a control failed; it may not report a failure as
+		// success. ESRCH is still success: the process is gone, which is the
+		// state quarantine was trying to reach.
+		if err := os.WriteFile(filepath.Join(path, "cgroup.freeze"), []byte("1"), 0o644); err != nil {
+			if isESRCH(err) {
+				return nil
+			}
+			return fmt.Errorf("cgroupv2: freeze pid=%d → %s: %w", pid, path, err)
+		}
 	} else {
 		// A process just moved to another tier. If it was the last one held in
 		// quarantine, the tier should stop being frozen — see

@@ -1,0 +1,59 @@
+# Static analysis for the engine module.
+#
+# TRAP, read before acting on an `unused` finding: this module has ~10 files
+# behind `//go:build linux` (the eBPF/cgroup/seccomp backends). When golangci-lint
+# runs on darwin it does not analyse them, so a function called ONLY from a
+# Linux-tagged file is reported as dead — and `go build`, `go vet`, `go test` and
+# this linter all pass on macOS after you delete it. The break only appears on a
+# Linux build, which is the only build that ships.
+#
+# That already happened once: `devbpf.keyFor` was deleted as unused and broke
+# `GOOS=linux go build` for both the engine and the agent. Before deleting
+# anything this linter calls unused, confirm with:
+#
+#     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./...
+#
+# Deliberately a small, high-signal set rather than everything golangci-lint
+# offers. A linter that reports hundreds of style opinions on an existing tree
+# gets disabled within a week; these are the families that found real defects
+# here — discarded errors on enforcement paths, assignments that never get read,
+# and dead helpers kept alive only by their own tests.
+run:
+  timeout: 5m
+
+linters:
+  enable:
+    - errcheck # discarded errors — the audit's largest defect class
+    - govet
+    - ineffassign # e.g. `km := strings.Index(...)` followed by `_ = km`
+    - staticcheck
+    - unused
+    - misspell
+    - bodyclose # leaked HTTP response bodies
+    - rowserrcheck # sql.Rows.Err() left unchecked
+
+linters-settings:
+  errcheck:
+    # Deferred closes and log writes are conventionally ignored; failing on
+    # them buries the cases that matter under noise.
+    exclude-functions:
+      - (io.Closer).Close
+      - (*database/sql.DB).Close
+      - (*database/sql.Rows).Close
+      - (*database/sql.Tx).Rollback
+      - fmt.Fprintf
+      - fmt.Fprintln
+  staticcheck:
+    checks: ["all", "-ST1000", "-ST1003", "-ST1020", "-ST1021", "-ST1022"]
+
+issues:
+  # Generated protobuf code is not ours to lint.
+  exclude-dirs:
+    - gen
+  exclude-rules:
+    # Tests may ignore errors on setup helpers where the assertion is the point.
+    - path: _test\.go
+      linters:
+        - errcheck
+  max-issues-per-linter: 0
+  max-same-issues: 0

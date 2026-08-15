@@ -92,7 +92,15 @@ test.describe("auth", () => {
     await page.goto("/login");
 
     await expect(page.locator('link[rel="manifest"][href="/manifest.webmanifest"]').first()).toHaveAttribute("href", "/manifest.webmanifest");
-    await expect(page.locator('link[rel="apple-touch-icon"][href="/apple-touch-icon.png"]').first()).toHaveAttribute("href", "/apple-touch-icon.png");
+    // Matched on prefix, not equality: commit 7190b00 ("one tab icon
+    // everywhere") added a `?v=3` cache-buster to this href in all five entry
+    // HTMLs and did not update the assertion, so this has been failing ever
+    // since. What the test cares about is that the icon is advertised and
+    // points at the right asset — the cache-buster is free to change again.
+    await expect(page.locator('link[rel="apple-touch-icon"][href^="/apple-touch-icon.png"]').first()).toHaveAttribute(
+      "href",
+      /^\/apple-touch-icon\.png/
+    );
     await expect(page.locator('script[src="/pwa-install-bridge.js"]').first()).toHaveAttribute("src", "/pwa-install-bridge.js");
     await expect(page.locator('meta[name="mobile-web-app-capable"]').first()).toHaveAttribute("content", "yes");
     await expect(page.locator('meta[name="apple-mobile-web-app-capable"]').first()).toHaveAttribute("content", "yes");

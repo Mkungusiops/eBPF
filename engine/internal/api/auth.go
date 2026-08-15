@@ -69,8 +69,9 @@ type Auth struct {
 	secret     []byte
 	sessionTTL time.Duration
 
-	mu        sync.Mutex
-	loginRate map[string]*rateBucket
+	mu            sync.Mutex
+	loginRate     map[string]*rateBucket
+	lastRateSweep time.Time
 	// loginRateLimit is attempts per rolling minute per IP; 0 disables the
 	// limit (dev/E2E). Defaults to defaultRateLimit.
 	loginRateLimit int
@@ -249,20 +250,43 @@ func (a *Auth) verifySession(cookie string) (session, error) {
 }
 
 // rateAllowed enforces a sliding-minute bucket per remote address.
+//
+// Expired buckets are swept here rather than left to accumulate: the map had no
+// eviction at all, so it grew one permanent entry per distinct source address
+// for the life of the process. That was a memory-exhaustion vector on top of the
+// bypass, because the key came from an attacker-suppliable header.
 func (a *Auth) rateAllowed(remote string) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.loginRateLimit <= 0 { // disabled (dev/E2E)
 		return true
 	}
-	b, ok := a.loginRate[remote]
 	now := time.Now()
+	a.sweepRateLocked(now)
+	b, ok := a.loginRate[remote]
 	if !ok || now.After(b.resetAt) {
 		a.loginRate[remote] = &rateBucket{count: 1, resetAt: now.Add(defaultRateWindow)}
 		return true
 	}
 	b.count++
 	return b.count <= a.loginRateLimit
+}
+
+// rateSweepEvery bounds how often the sweep runs so a burst of logins does not
+// walk the whole map on every attempt.
+const rateSweepEvery = 5 * time.Minute
+
+// sweepRateLocked drops buckets whose window has closed. Caller holds a.mu.
+func (a *Auth) sweepRateLocked(now time.Time) {
+	if now.Sub(a.lastRateSweep) < rateSweepEvery {
+		return
+	}
+	a.lastRateSweep = now
+	for k, b := range a.loginRate {
+		if now.After(b.resetAt) {
+			delete(a.loginRate, k)
+		}
+	}
 }
 
 // Middleware authenticates and CSRF-checks every request. Public paths
@@ -369,17 +393,26 @@ func (a *Auth) HandleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login?err=1", http.StatusSeeOther)
 		return
 	}
-	a.setAuthCookies(w, cookie, csrf)
+	a.setAuthCookies(w, r, cookie, csrf)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
-func (a *Auth) setAuthCookies(w http.ResponseWriter, sessionCookie, csrf string) {
+func (a *Auth) setAuthCookies(w http.ResponseWriter, r *http.Request, sessionCookie, csrf string) {
 	maxAge := int(a.sessionTTL.Seconds())
+	// Secure was missing on BOTH cookies. These are stateless HMAC sessions with
+	// a 24h TTL and no server-side revocation, so a single cleartext request on
+	// any path leaked a day-long admin session to a console with a SIGKILL
+	// button. Derived from the actual transport rather than a config flag so it
+	// cannot be wrong in either direction: `make fake` over plain HTTP still
+	// works, and a TLS deployment always gets the flag. The control plane
+	// already did this correctly (bff.go sets Secure); the engine did not.
+	secure := isHTTPS(r)
 	http.SetCookie(w, &http.Cookie{
 		Name:     a.cookie,
 		Value:    sessionCookie,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
 	})
@@ -390,9 +423,19 @@ func (a *Auth) setAuthCookies(w http.ResponseWriter, sessionCookie, csrf string)
 		Value:    csrf,
 		Path:     "/",
 		HttpOnly: false,
+		Secure:   secure,
 		SameSite: http.SameSiteLaxMode,
 		MaxAge:   maxAge,
 	})
+}
+
+// isHTTPS reports whether the request reached the operator over TLS, directly
+// or through the TLS-terminating nginx edge.
+func isHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	return strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https")
 }
 
 // HandleLogout clears both cookies. With stateless sessions there's
@@ -445,18 +488,41 @@ func newToken() string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
+// remoteIP identifies the caller for rate-limiting purposes.
+//
+// This is a security key, not a log field: rateAllowed buckets login attempts
+// by whatever this returns, so anything the caller controls is a bypass. It
+// previously took the LEFTMOST X-Forwarded-For entry, on the stated assumption
+// that "nginx sends the real client IP as the leftmost entry". The deployed
+// nginx uses $proxy_add_x_forwarded_for (deploy/nginx/ebpf-engine.conf,
+// scripts/deploy/lib.sh), which APPENDS its own $remote_addr to whatever the
+// client sent — so the leftmost entry is supplied by the attacker, and rotating
+// one header gave unlimited bcrypt guesses against the single admin credential.
+//
+// Two rules fix it, and both matter:
+//
+//  1. Only trust X-Forwarded-For when the request actually arrived from the
+//     proxy. nginx proxies from loopback, so a non-loopback peer means the
+//     header was set by whoever dialled us and must be ignored entirely.
+//  2. Take the RIGHTMOST entry, which is the one nginx appended. Every entry
+//     to its left was forwarded verbatim from the client.
 func remoteIP(r *http.Request) string {
-	// Honor X-Forwarded-For for nginx-fronted deployments. nginx sends
-	// the real client IP as the leftmost entry.
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.Index(xff, ","); i > 0 {
-			return strings.TrimSpace(xff[:i])
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" && isLoopback(host) {
+		if i := strings.LastIndex(xff, ","); i >= 0 {
+			return strings.TrimSpace(xff[i+1:])
 		}
 		return strings.TrimSpace(xff)
 	}
-	host := r.RemoteAddr
-	if i := strings.LastIndex(host, ":"); i > 0 {
-		host = host[:i]
-	}
 	return host
+}
+
+// isLoopback reports whether addr is a loopback address — i.e. whether the
+// request could have come from the co-located nginx rather than off-box.
+func isLoopback(addr string) bool {
+	ip := net.ParseIP(addr)
+	return ip != nil && ip.IsLoopback()
 }

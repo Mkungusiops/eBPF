@@ -82,18 +82,26 @@ func (d *Decision) hasActor() bool { return d.Actor != "" }
 
 func (d *Decision) actorTail() string { return "|" + d.Actor }
 
-// canonical builds a stable string representation used for hashing. Field
-// order matters; do not reorder without bumping a schema version.
+func (d *Decision) originTail() string {
+	return "|" +
+		d.OriginKind + "|" +
+		d.OriginIP + "|" +
+		strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
+		d.OriginUser + "|" +
+		d.OriginFingerprint
+}
+
+// canonicalAt builds the canonical string for one rendering of the timestamp.
+// Both canonical() (write path) and canonicalCandidates() (verify path) go
+// through it, so the two can never drift into hashing different field sets —
+// the drift that made operator attribution forgeable is structurally excluded.
 //
-// Timestamp is truncated to microsecond precision before formatting:
-// Postgres TIMESTAMPTZ has 6 fractional digits, Go's time.Time has 9.
-// Without truncation, the write-path hashes nanos but verify reads back
-// microseconds, the canonical strings differ, and the chain reports
-// broken-at-id-1 even when nothing was actually tampered with. SQLite
-// preserves nanos so truncating is harmless there — keeps the two
-// dialects in lockstep.
-func (d *Decision) canonical() string {
-	base := d.Timestamp.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano) + "|" +
+// Field order matters; do not reorder without bumping a schema version.
+// Trailers append to the end, each one gated on the row actually carrying that
+// data, so a row written before a trailer existed keeps its original canonical
+// form and therefore its original hash.
+func (d *Decision) canonicalAt(ts string) string {
+	s := ts + "|" +
 		d.ExecID + "|" +
 		strconv.FormatUint(uint64(d.PID), 10) + "|" +
 		d.Binary + "|" +
@@ -105,29 +113,29 @@ func (d *Decision) canonical() string {
 		strconv.FormatBool(d.DryRun) + "|" +
 		d.Backend + "|" +
 		d.Outcome
-	// Trailers append to the end so old rows (no origin/device) keep their
-	// original canonical form and hash. New rows with attribution gain the
-	// extra protection without invalidating the existing chain. Order:
-	// origin trailer (if any) then device trailer (if any).
-	s := base
 	if d.hasOrigin() {
-		s += "|" +
-			d.OriginKind + "|" +
-			d.OriginIP + "|" +
-			strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
-			d.OriginUser + "|" +
-			d.OriginFingerprint
+		s += d.originTail()
 	}
 	if d.hasDevice() {
 		s += d.deviceTail()
 	}
-	// Actor trailer is appended last, after origin/device, for the same reason
-	// they are conditional: a row written before operator attribution existed
-	// keeps its original canonical form and therefore its original hash.
 	if d.hasActor() {
 		s += d.actorTail()
 	}
 	return s
+}
+
+// canonical builds the stable string representation used for hashing.
+//
+// Timestamp is truncated to microsecond precision before formatting:
+// Postgres TIMESTAMPTZ has 6 fractional digits, Go's time.Time has 9.
+// Without truncation, the write-path hashes nanos but verify reads back
+// microseconds, the canonical strings differ, and the chain reports
+// broken-at-id-1 even when nothing was actually tampered with. SQLite
+// preserves nanos so truncating is harmless there — keeps the two
+// dialects in lockstep.
+func (d *Decision) canonical() string {
+	return d.canonicalAt(d.Timestamp.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano))
 }
 
 func computeHash(prev, canonical string) string {
@@ -138,84 +146,32 @@ func computeHash(prev, canonical string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// canonicalCandidates returns every canonical form the row could have
-// been hashed under across this engine's history. VerifyDecisionChain
-// accepts the row's stored hash if it matches ANY of these forms.
+// canonicalCandidates returns every canonical form the row could legitimately
+// have been hashed under. VerifyDecisionChain accepts the row's stored hash if
+// it matches ANY of them.
 //
-// This exists because canonical() has changed twice:
+// Exactly ONE axis of ambiguity is legitimate: timestamp precision. canonical()
+// originally formatted at full nanosecond precision and later truncated to
+// microseconds so Postgres TIMESTAMPTZ round-trips match SQLite. Rows written
+// before that change hash the nanosecond form, so both are reproduced.
 //
-//  1. Original form: timestamp formatted at full nanosecond precision,
-//     12 fields, no origin trailer.
-//  2. Truncate-to-microsecond was added (to keep Postgres TIMESTAMPTZ
-//     verification matching SQLite). Made all pre-truncate rows fail
-//     verification on engines running the new code.
-//  3. Origin fields appended conditionally (this branch). Rows with
-//     attribution get a 5-field trailer; rows without keep the
-//     legacy 12-field form for backward compatibility.
-//
-// Each historical era is reproduced here. Tamper-evidence is preserved
-// — an attacker can't forge a row that produces a matching hash under
-// any era without inverting sha256. Write-path canonical() still
-// emits the single current form so new rows pin to the latest era.
+// The trailers (origin, device, actor) are deliberately NOT an axis of
+// ambiguity, and this is a security property rather than a style choice.
+// canonicalAt appends each trailer if and only if the row carries that data,
+// and every trailer shipped in the same change as the columns feeding it — so
+// a row holding origin, device or actor data was necessarily hashed with that
+// trailer included. Enumerating trailer-less forms for a row that HAS the data
+// used to let an attacker ADD attribution to an unattributed row and still
+// verify, because the bare form still matched the stored hash: every
+// autonomous, score-driven enforcement could be re-attributed to a named
+// operator, or given a victim's device MAC, and the chain would certify it as
+// intact. Candidates must therefore mirror the row's own field presence
+// one-for-one, which routing both paths through canonicalAt guarantees.
 func (d *Decision) canonicalCandidates() []string {
-	tsMicro := d.Timestamp.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)
-	tsNano := d.Timestamp.UTC().Format(time.RFC3339Nano)
-
-	body := func(ts string) string {
-		return ts + "|" +
-			d.ExecID + "|" +
-			strconv.FormatUint(uint64(d.PID), 10) + "|" +
-			d.Binary + "|" +
-			d.Action + "|" +
-			d.FromState + "|" +
-			d.ToState + "|" +
-			strconv.Itoa(d.Score) + "|" +
-			d.Reason + "|" +
-			strconv.FormatBool(d.DryRun) + "|" +
-			d.Backend + "|" +
-			d.Outcome
+	return []string{
+		d.canonicalAt(d.Timestamp.UTC().Truncate(time.Microsecond).Format(time.RFC3339Nano)),
+		d.canonicalAt(d.Timestamp.UTC().Format(time.RFC3339Nano)),
 	}
-	originTail := "|" +
-		d.OriginKind + "|" +
-		d.OriginIP + "|" +
-		strconv.FormatUint(uint64(d.OriginPort), 10) + "|" +
-		d.OriginUser + "|" +
-		d.OriginFingerprint
-	deviceTail := d.deviceTail()
-
-	// Reproduce every form a row could have been written under. The write
-	// path emits base[+origin][+device]; we enumerate the matching
-	// combinations for each timestamp precision era so a canonical-format
-	// change never retroactively invalidates the audit log. Tamper-evidence
-	// is preserved — an attacker still can't forge a hash without inverting
-	// sha256.
-	actorTail := d.actorTail()
-
-	out := make([]string, 0, 16)
-	for _, ts := range []string{tsMicro, tsNano} {
-		b := body(ts)
-		stems := make([]string, 0, 4)
-		if d.hasOrigin() && d.hasDevice() {
-			stems = append(stems, b+originTail+deviceTail)
-		}
-		if d.hasOrigin() {
-			stems = append(stems, b+originTail)
-		}
-		if d.hasDevice() {
-			stems = append(stems, b+deviceTail)
-		}
-		stems = append(stems, b)
-		// Era 4: operator attribution. Emit each stem both with and without the
-		// actor trailer so a row written before this column existed still
-		// verifies, while new operator-ordered rows are covered by the hash.
-		for _, stem := range stems {
-			if d.hasActor() {
-				out = append(out, stem+actorTail)
-			}
-			out = append(out, stem)
-		}
-	}
-	return out
 }
 
 // decisionStore is mixed into Store via composition (see sqlite.go) but
@@ -331,6 +287,11 @@ func (ds *decisionStore) addColumnIfMissing(table, col, def string) error {
 		if name == col {
 			return nil
 		}
+	}
+	// An interrupted PRAGMA read would otherwise look like "column absent" and
+	// send us into an ALTER TABLE that then fails on an existing column.
+	if err := rows.Err(); err != nil {
+		return err
 	}
 	_, err = ds.db.Exec(fmt.Sprintf(
 		`ALTER TABLE %s ADD COLUMN %s %s`, table, col, def))
@@ -560,11 +521,4 @@ func nullableUint16(v uint16) interface{} {
 		return nil
 	}
 	return v
-}
-
-// formatDecisionRow keeps a stable rendering for log lines and tests.
-func formatDecisionRow(d *Decision) string {
-	return fmt.Sprintf("decision id=%d ts=%s action=%s %s→%s exec_id=%s pid=%d score=%d dry_run=%v",
-		d.ID, d.Timestamp.UTC().Format(time.RFC3339), d.Action,
-		d.FromState, d.ToState, d.ExecID, d.PID, d.Score, d.DryRun)
 }
