@@ -15,7 +15,11 @@
     "isolatedModules": true,
     "noEmit": true,
     "jsx": "react-jsx",
-    "types": ["vitest/globals", "@testing-library/jest-dom"]
+    // "node" is required: vite.config.ts uses __dirname and process.env, and
+    // seven tests import node:fs / node:zlib. It typechecked locally without it
+    // by accident of module resolution and failed in CI on a clean install,
+    // which is why release.yml never once succeeded.
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
   },
   "include": ["src", "vite.config.ts", "playwright.config.ts"],
   "references": []

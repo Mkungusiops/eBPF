@@ -263,7 +263,17 @@ DIRTY="$(git status --porcelain | wc -l | tr -d ' ')"
   git status --short | sed 's/^/  /'
   die "working tree is dirty — a tag must name a reproducible tree"
 }
-read -r -p "$(printf '%s?%s tag annotation [%s]: ' "$C_YEL" "$C_RESET" "$VERSION")" ANNOT </dev/tty
+# Free text, NOT a yes/no. Every other prompt in this script is [Y/n], so an
+# annotation prompt in the same style invites a reflexive "Y" — which is exactly
+# what happened once, leaving a tag whose message is the single letter Y. Make
+# the shape obvious and reject a bare y/n.
+log "the tag MESSAGE (free text, not a confirmation). Enter accepts the default."
+read -r -p "$(printf '%s»%s message [%s]: ' "$C_BLU" "$C_RESET" "$VERSION")" ANNOT </dev/tty
+case "$(printf '%s' "$ANNOT" | tr '[:upper:]' '[:lower:]')" in
+  y|n|yes|no)
+    warn "'$ANNOT' looks like an answer to a yes/no prompt, not a release message"
+    read -r -p "$(printf '%s»%s message [%s]: ' "$C_BLU" "$C_RESET" "$VERSION")" ANNOT </dev/tty ;;
+esac
 git tag -a "$VERSION" -m "${ANNOT:-$VERSION}"
 ok "tagged $VERSION at $(git rev-parse --short HEAD) on main"
 

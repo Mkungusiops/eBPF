@@ -89,7 +89,10 @@ jobs:
       # Validate the agent↔control-plane wire-contract IDL (docs/plan/wire-contract.md).
       # protoc-only syntax/import check — no language plugins, so it's a cheap gate.
       - name: install protoc
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+        # libprotobuf-dev carries the well-known .proto files (Timestamp, Duration).
+        # protobuf-compiler alone gives you the binary and nothing to import, which
+        # failed the FIRST gate in this job and skipped every gate after it.
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler libprotobuf-dev
 
       - name: proto-lint (wire contract IDL)
         run: make proto-lint

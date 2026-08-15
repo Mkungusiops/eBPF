@@ -204,9 +204,24 @@ proto-tools:
 	@echo "→ installed protoc-gen-go $(PROTOC_GEN_GO_VERSION) + protoc-gen-go-grpc $(PROTOC_GEN_GO_GRPC_VERSION) (ensure $$(go env GOPATH)/bin is on PATH)"
 
 # Syntax/import validation only — no plugins required, so this is the CI gate.
+# protoc resolves google/protobuf/*.proto (Timestamp, Duration, …) from its own
+# install prefix. Ubuntu's `protobuf-compiler` package ships the BINARY without
+# those .proto files — they live in `libprotobuf-dev` — so CI failed with
+#   google/protobuf/timestamp.proto: File not found.
+# while macOS passed, because Homebrew bundles them under /usr/local/include.
+# proto-lint is the FIRST gate in CI, so every later gate was skipped too.
+# Resolve the directory explicitly rather than relying on the implicit lookup.
+PROTO_WKT_DIRS := /usr/local/include /usr/include /opt/homebrew/include
+PROTO_WKT := $(firstword $(foreach d,$(PROTO_WKT_DIRS),\
+               $(if $(wildcard $(d)/google/protobuf/timestamp.proto),$(d))))
+
 proto-lint:
-	protoc -I $(PROTO_DIR) --descriptor_set_out=/dev/null $(PROTO_DIR)/ebpfsoc/v1/*.proto
-	@echo "→ proto IDL valid"
+	@[ -n "$(PROTO_WKT)" ] || { \
+	  echo "the protobuf well-known types were not found in: $(PROTO_WKT_DIRS)"; \
+	  echo "install them (Debian/Ubuntu: libprotobuf-dev, macOS: brew install protobuf)"; \
+	  exit 1; }
+	protoc -I $(PROTO_DIR) -I $(PROTO_WKT) --descriptor_set_out=/dev/null $(PROTO_DIR)/ebpfsoc/v1/*.proto
+	@echo "→ proto IDL valid (well-known types from $(PROTO_WKT))"
 
 proto: proto-lint
 	@mkdir -p $(GEN_DIR)
