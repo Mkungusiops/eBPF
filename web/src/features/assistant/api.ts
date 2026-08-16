@@ -1,3 +1,4 @@
+import { readCookie } from "../../lib/api";
 /**
  * AssistantApi — the injected seam for the analyst assistant.
  *
@@ -80,8 +81,25 @@ export class AssistantError extends Error {
 
 type Requester = (path: string, init?: RequestInit) => Promise<Response>;
 
-const defaultRequest: Requester = (path, init) =>
-  fetch(path, { credentials: "same-origin", ...init });
+/**
+ * The console protects every unsafe method with a double-submit CSRF token, so
+ * an assistant POST without the header is rejected before it reaches the
+ * handler — which is exactly what happened: the panel rendered, the buttons
+ * worked, and every ask came back "csrf token missing or invalid".
+ *
+ * readCookie is the console's shared helper (lib/api.ts); reusing it rather
+ * than re-reading document.cookie here keeps one definition of where the token
+ * lives.
+ */
+const defaultRequest: Requester = (path, init) => {
+  const headers = new Headers(init?.headers);
+  const method = (init?.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD" && !headers.has("X-CSRF-Token")) {
+    const csrf = readCookie("csrf_token");
+    if (csrf) headers.set("X-CSRF-Token", csrf);
+  }
+  return fetch(path, { credentials: "same-origin", ...init, headers });
+};
 
 /**
  * The real client. `request` is injectable so a test can drive the whole hook

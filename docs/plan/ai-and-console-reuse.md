@@ -326,6 +326,9 @@ Prerequisite for 1B: land Dependabot **#11** (Vitest 4).
 - **Do not consolidate `formatTime`/`Sparkline` before tests exist.** Three signatures and two prop
   shapes mean consolidation is a behaviour change.
 - **Do not give the assistant a write tool**, however narrow, however well-prompted.
+- **Do not let the assistant generate visualizations.** Decided 2026-08-16, and
+  not because it cannot be done safely — see §7a. It is text-only, and it points
+  at panels that already exist.
 - **Do not merge Dependabot #1** (`golang 1.27rc2-bookworm`) — a release candidate in a deploy image
   for a product running as root with `CAP_BPF`.
 
@@ -342,3 +345,48 @@ Prerequisite for 1B: land Dependabot **#11** (Vitest 4).
 | `Sparkline` definitions | **2** (2 prop shapes) | 1 |
 | Playwright | 47 passed, 12 skipped | unchanged — it is the contract |
 | Assistant write tools | n/a | **0, enforced by a failing test** |
+
+---
+
+## 7a. Why the assistant does not draw charts
+
+Asked and decided on 2026-08-16. Recorded because "why can't your AI make
+charts?" is a question an enterprise customer will ask, and the answer is a
+deliberate decision with a threat model behind it, not an omission.
+
+**It could be done safely.** The design is known: the model returns a closed-enum
+descriptor carrying no markup, no URL and no data point — `{"type":
+"severity_timeline", "window": "24h"}` — the engine validates it against a chart
+registry, and **the console fetches the data itself** from the same read-only
+endpoint with its own authenticated client. The model contributes a question,
+never an answer, so a fabricated chart is not merely unlikely, it is
+unrepresentable. Same discipline as `Tool.method` being unexported.
+
+That matters because this assistant reads **attacker-influenced data**: process
+names, args and paths flow from telemetry into its context, and whoever can run
+a process chooses what it is called. Model output is therefore untrusted input,
+and anything that renders it as markup is XSS on a console that contains hosts.
+
+**It was still declined, for three reasons that outrank the risk:**
+
+1. **The console already has the charts.** 31 SOC panels — severity timeline,
+   MITRE coverage, correlation graph, KPI tiles. An analyst is not short of
+   visualizations; they are short of knowing which one matters right now. So the
+   assistant's value was never generating visuals, it is directing attention to
+   the ones already on screen. That needs a prompt change and stable panel names,
+   and carries zero new attack surface.
+
+2. **Every capability is review burden.** "The LLM's output is rendered as text,
+   never as markup — nothing it says can inject anything" is a one-sentence
+   assurance any customer security team accepts. The descriptor-and-registry
+   version is true, safe, and takes a meeting. On a platform running as root with
+   `CAP_BPF` that can SIGKILL processes, the assistant should be the *least*
+   interesting thing in a security review.
+
+3. **It is off-message.** The UVP is graduated, reversible, audited containment.
+   An assistant that draws charts dilutes it; one that explains a process chain
+   and refuses to act reinforces it.
+
+**Revisit only when an analyst asks for a view the console does not have.** That
+is a real signal. Building it speculatively is how a security product accumulates
+surface nobody asked for.

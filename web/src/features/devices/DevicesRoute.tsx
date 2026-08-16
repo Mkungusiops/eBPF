@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 import { useEffect, useMemo, useState } from "react";
 import { useOSTheme } from "../../lib/theme";
 
@@ -238,6 +239,10 @@ export function DevicesRoute({
           Identity is the MAC, stable across DHCP and IP changes. Quarantine still allows DHCP/DNS so a device can recover. Protected MACs refuse quarantine and sever actions.
           {inventory.lastUpdatedAt ? ` Last refreshed ${formatAgo(new Date(inventory.lastUpdatedAt), now())} ago.` : ""}
         </p>
+          {/* Command lens too, not only Assurance: Command is where an operator
+              actually investigates a device. Mounting only into the reporting
+              view put the assistant where nobody works. */}
+          <AssistantPanel subjectLabel="the device fleet" />
         </>
         )}
       </div>

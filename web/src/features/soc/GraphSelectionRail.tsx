@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 // The correlation graph's selection rail.
 //
 // Every node answers the same question — "which processes are behind this?" —
@@ -156,6 +157,9 @@ export function GraphSelectionRail({
         <p className="soc-graph-selection-empty">
           Click a node to see the processes behind it, then pick one to inspect and act.
         </p>
+      ) : null}
+      {drillExecId ? (
+        <AssistantPanel execId={drillExecId} subjectLabel="the selected process" />
       ) : null}
     </aside>
   );

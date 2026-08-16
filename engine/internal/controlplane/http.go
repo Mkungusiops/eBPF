@@ -41,10 +41,11 @@ func (s *Server) buildHTTP() http.Handler {
 	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleStream)
-	s.registerChokeRoutes(mux)    // rich Choke Gateway + Devices API, tenant-scoped
-	s.registerApprovalRoutes(mux) // EN-2 change-control queue for destructive actions
-	s.registerFleetRoutes(mux)    // Fleet view: tenant's agents as hosts
-	s.registerAttackRoutes(mux)   // quick-fire attacks + honeypots (demo/lab)
+	s.registerAssistantRoutes(mux) // analyst assistant (read-only tools, tenant-scoped)
+	s.registerChokeRoutes(mux)     // rich Choke Gateway + Devices API, tenant-scoped
+	s.registerApprovalRoutes(mux)  // EN-2 change-control queue for destructive actions
+	s.registerFleetRoutes(mux)     // Fleet view: tenant's agents as hosts
+	s.registerAttackRoutes(mux)    // quick-fire attacks + honeypots (demo/lab)
 	mux.HandleFunc("/api/admin/enroll-token", s.handleEnrollToken)
 	mux.HandleFunc("/api/admin/command", s.handleCommand)
 	if s.cfg.BFF != nil {

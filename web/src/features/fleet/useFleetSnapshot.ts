@@ -1,3 +1,6 @@
+import { createFleetApi, type FleetApi } from "./fleetApi";
+
+const defaultFleetApi = createFleetApi();
 /**
  * The fleet console's read path: one fan-out poll across every configured peer,
  * plus the derivations every panel reads from.
@@ -12,9 +15,8 @@
  * alert feeds re-merge only when their own host payloads change, so a peer
  * list refresh does not re-sort 80 decisions.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 
-import { fleetErrorMessage, isFleetDisabled, readFleetSnapshot, readWhoami } from "./api";
 import { deriveFleet, mergeHostPayloads, type MergedAlert, type MergedDecision } from "./fleetLogic";
 import type {
   CgroupSnapshot,
@@ -51,7 +53,15 @@ export function emptySnapshot(): FleetStateSnapshot {
   };
 }
 
-export function useFleetSnapshot(pollMs: number = POLL_MS): FleetSnapshotFeed {
+export function useFleetSnapshot(
+  pollMs: number = POLL_MS,
+  // Injected; defaults to the real client so no call site changes.
+  api: FleetApi = defaultFleetApi
+): FleetSnapshotFeed {
+  // One controller for the whole hook. Every fetch carries its signal and the
+  // cleanup aborts it, so a poll started before unmount cannot resolve into a
+  // dead component — the missing-AbortSignal bug named in the Tier 1A plan.
+  const abortRef = useRef<AbortController | null>(null);
   const [who, setWho] = useState("...");
   const [snapshot, setSnapshot] = useState<FleetStateSnapshot>(() => emptySnapshot());
   const [pollStatus, setPollStatus] = useState<PollStatus>("idle");
@@ -60,15 +70,23 @@ export function useFleetSnapshot(pollMs: number = POLL_MS): FleetSnapshotFeed {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   useEffect(() => {
-    readWhoami()
+    api.fetchWhoami()
       .then((identity) => setWho(identity.user ?? "operator"))
       .catch(() => setWho("operator"));
-  }, []);
+  }, [api]);
 
   const refresh = useCallback(async () => {
     setPollStatus((current) => (current === "idle" ? "loading" : current));
+    // A controller per poll, created HERE rather than in an effect: effect
+    // ordering meant the first call could run before the ref was assigned and
+    // went out with no signal at all — the exact bug this was meant to fix,
+    // silently reintroduced one layer down. Abort any previous poll so a slow
+    // one cannot land after a newer one.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     try {
-      const next = await readFleetSnapshot();
+      const next = await api.fetchSnapshot({ signal: controller.signal });
       setSnapshot({
         peers: next.peers,
         states: next.states.hosts ?? [],
@@ -82,22 +100,28 @@ export function useFleetSnapshot(pollMs: number = POLL_MS): FleetSnapshotFeed {
       setPollStatus(next.peers.length === 0 ? "degraded" : "connected");
       setLastUpdated(new Date());
     } catch (error) {
-      if (isFleetDisabled(error)) {
+      if (api.isDisabled(error)) {
         setSnapshot(emptySnapshot());
-        setDisabledMessage(fleetErrorMessage(error));
+        setDisabledMessage(api.errorMessage(error));
         setPollStatus("disabled");
         setPollError("");
         return;
       }
       setPollStatus("degraded");
-      setPollError(fleetErrorMessage(error));
+      setPollError(api.errorMessage(error));
     }
-  }, []);
+  }, [api]);
 
   useEffect(() => {
     void refresh();
     const interval = window.setInterval(() => void refresh(), pollMs);
-    return () => window.clearInterval(interval);
+    return () => {
+      window.clearInterval(interval);
+      // Abort the in-flight poll, not just the timer. Clearing the interval
+      // stops FUTURE polls; without this the one already in flight still
+      // resolves and calls setState on an unmounted component.
+      abortRef.current?.abort();
+    };
   }, [pollMs, refresh]);
 
   const derived = useMemo(

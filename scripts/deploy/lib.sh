@@ -123,14 +123,57 @@ PKG() {
     || die "package install failed: $pkgs"
 }
 
-_systemd_unit() { # <name> <description> <ExecStart> [After]
+
+# ── Analyst assistant ──────────────────────────────────────────────────────
+# Provision the optional LLM assistant for a unit, or return the empty string
+# when it is not requested.
+#
+#   ASSISTANT_URL=https://host/v1 OPEN_WEIGHT_API_KEY=... ./scripts/deploy/estate.sh
+#
+# THE KEY NEVER TOUCHES THIS REPO OR THE COMMAND LINE. It is read from the
+# DEPLOYER's environment and written to a 0600 EnvironmentFile on the target,
+# because flags land in /proc/<pid>/cmdline and unit files, and a key committed
+# to a deploy script is a key in every clone forever.
+#
+# Writing the key to its OWN file (not controlplane.env) is deliberate: that file
+# is regenerated from a heredoc on every deploy, so anything appended to it is
+# silently lost on the next run — which already happened once here.
+#
+# _assistant_flags <keyfile>  — echoes the flags to append to ExecStart.
+_assistant_flags() {
+  local keyfile="$1"
+  [[ -z "${ASSISTANT_URL:-}" ]] && { printf ''; return 0; }
+  if [[ -z "${OPEN_WEIGHT_API_KEY:-}" ]]; then
+    # Loud, not fatal: the engine reports itself unavailable and the console
+    # says so, which is a working deployment minus one optional feature.
+    warn "ASSISTANT_URL is set but OPEN_WEIGHT_API_KEY is not — the assistant will report itself unavailable"
+  else
+    # >&2 is REQUIRED, not tidiness. This function is called in $(…) so that its
+    # flags can be appended to ExecStart, which means anything it prints on
+    # stdout is spliced into the systemd unit. RUN echoes the remote command
+    # under DRY_RUN and passes through the remote stdout otherwise, so without
+    # this the unit would be built with deploy chatter inside its ExecStart.
+    RUN "install -d -m 0700 \"$(dirname "$keyfile")\"
+      umask 077; printf 'OPEN_WEIGHT_API_KEY=%s\n' '$OPEN_WEIGHT_API_KEY' > $keyfile
+      chmod 600 $keyfile" >&2
+  fi
+  printf ' -assistant-url %s -assistant-model %s' \
+    "$ASSISTANT_URL" "${ASSISTANT_MODEL:-gpt-oss:120b}"
+}
+
+_systemd_unit() { # <name> <description> <ExecStart> [After] [EnvironmentFiles…]
+  # $5 is a SPACE-SEPARATED list, so a unit can take more than one env file.
+  # The control plane needs two: the deploy-generated controlplane.env, and the
+  # assistant key in its own file. They cannot be merged — controlplane.env is
+  # rewritten from a heredoc on every deploy, so anything else living in it is
+  # silently lost on the next run. Prefix an entry with '-' to make it optional.
   RUN "cat > /etc/systemd/system/$1.service <<'UNIT'
 [Unit]
 Description=$2
 After=network-online.target ${4:-}
 Wants=network-online.target
 [Service]
-$( [[ -n "${5:-}" ]] && echo "EnvironmentFile=$5" )
+$( for _ef in ${5:-}; do echo "EnvironmentFile=$_ef"; done )
 ExecStart=$3
 Restart=always
 RestartSec=5
@@ -471,8 +514,11 @@ $devlines
 YAML"
   log "writing systemd unit (ebpf-engine)"
   local fakeflag=""; [[ "$ENGINE_MODE" == fake ]] && fakeflag="-fake"
+  local asst; asst="$(_assistant_flags /etc/ebpf-engine/assistant.env)"
+  [[ -n "$asst" ]] && ok "analyst assistant: ${ASSISTANT_MODEL:-gpt-oss:120b} (read-only tools)"
   _systemd_unit ebpf-engine "eBPF SOC engine (single-tenant)" \
-    "/usr/local/bin/ebpf-engine -config /etc/ebpf-engine/engine.yaml $fakeflag -login-rate $LOGIN_RATE"
+    "/usr/local/bin/ebpf-engine -config /etc/ebpf-engine/engine.yaml $fakeflag -login-rate $LOGIN_RATE$asst" \
+    "" -/etc/ebpf-engine/assistant.env
   # restart, not `enable --now`: the latter no-ops when the service is already
   # running, so a redeploy would keep the OLD process alive — still in -fake mode,
   # still holding the previous password — while the unit file and engine.yaml on
@@ -824,6 +870,35 @@ EOF"
     K create clients/\$CID/protocol-mappers/models -r ebpf-soc -s name=tenant -s protocol=openid-connect -s protocolMapper=oidc-usermodel-attribute-mapper -s 'config.\"user.attribute\"=tenant' -s 'config.\"claim.name\"=tenant' -s 'config.\"jsonType.label\"=String' -s 'config.\"id.token.claim\"=true' -s 'config.\"access.token.claim\"=true' -s 'config.\"userinfo.token.claim\"=true' >/dev/null 2>&1 || true
     K get clients/\$CID/client-secret -r ebpf-soc | grep value | sed -E 's/.*\"value\" *: *\"([^\"]+)\".*/\1/'")"
 
+    # NEVER write an empty client secret.
+    #
+    # This extraction can come back empty — a kcadm session that has not
+    # authenticated, a CID lookup that raced the realm create, an output format
+    # change. When it did, `CP_OIDC_CLIENT_SECRET=` went into the environment
+    # file and the control plane started perfectly: units active, TLS serving,
+    # console reachable, health checks green — and then failed EVERY login at
+    # the token exchange with "unauthorized_client". A blank credential is the
+    # worst outcome of a failed fetch, because it is indistinguishable from a
+    # successful one until a human tries to sign in.
+    #
+    # Retry once (the usual cause is transient), then refuse. A deploy that
+    # stops here is trivially recoverable; one that silently blanks the secret
+    # is a login outage nobody notices until an operator is locked out.
+    if [[ ${#CP_SECRET} -lt 20 ]]; then
+      warn "console-bff client secret came back empty (${#CP_SECRET} chars) — retrying"
+      CP_SECRET="$(RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
+        { $KC_CFG; }
+        CID=\$(K get clients -r ebpf-soc -q clientId=console-bff --fields id --format csv | tail -1 | tr -d '\"')
+        K get clients/\$CID/client-secret -r ebpf-soc | grep value | sed -E 's/.*\"value\" *: *\"([^\"]+)\".*/\1/'")"
+    fi
+    if [[ ${#CP_SECRET} -lt 20 ]]; then
+      die "could not read the console-bff client secret from Keycloak (${#CP_SECRET} chars).
+    Writing an empty CP_OIDC_CLIENT_SECRET leaves the console up with every login
+    failing at the token exchange, so this stops instead. Check Keycloak is
+    running and that kcadm can authenticate on the target."
+    fi
+    ok "console-bff client secret read from Keycloak (${#CP_SECRET} chars)"
+
   # one operator per tenant + one cross-tenant msoc-admin
   local userlist=""
   for t in $TENANTS; do
@@ -872,9 +947,12 @@ EOF"
   # verification passes regardless of the IP they dial. Enrollment is
   # bootstrap-token-gated and the command channel is mTLS, so exposing 9443 on
   # the local OrbStack bridge is safe.
+  local cpasst; cpasst="$(_assistant_flags /etc/ebpf-soc/assistant.env)"
+  [[ -n "$cpasst" ]] && ok "analyst assistant: ${ASSISTANT_MODEL:-gpt-oss:120b} (read-only tools)"
   _systemd_unit ebpf-soc-controlplane "ebpf-soc control plane (multi-tenant)" \
-    "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 0.0.0.0:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub" \
-    "postgresql.service ebpf-keycloak.service" /etc/ebpf-soc/controlplane.env
+    "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 0.0.0.0:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub$cpasst" \
+    "postgresql.service ebpf-keycloak.service" \
+    "/etc/ebpf-soc/controlplane.env -/etc/ebpf-soc/assistant.env"
   # MUST be restart, not `enable --now`: the latter is a no-op when the service is
   # already running, so a redeploy would leave the control plane holding the OLD
   # Postgres password (PG_PASS is rotated above) while its env file has the new

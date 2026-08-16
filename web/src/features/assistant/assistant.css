@@ -204,13 +204,57 @@
   padding-top: 10px;
 }
 
-/* pre-wrap: the model emits newlines and short lists, and reflowing them into a
-   paragraph destroys the timeline structure the handover prompt asks for. */
+/* Rendered by AnswerText, not pre-wrap: raw markdown printed literal asterisks
+   and a 64-char exec id ate three lines on a narrow panel. */
 .asst__content {
-  white-space: pre-wrap;
-  line-height: 1.55;
+  line-height: 1.6;
   color: var(--text, #e6ebf5);
   font-size: 12.5px;
+}
+
+.asst__p {
+  margin: 0 0 8px;
+}
+.asst__p:last-child {
+  margin-bottom: 0;
+}
+
+/* A heading here is a light weight change, not a size change: at 12.5px on a
+   side panel, larger type costs more vertical space than it buys scanability. */
+.asst__h {
+  margin: 12px 0 5px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted, #8b98b0);
+}
+.asst__h:first-child {
+  margin-top: 0;
+}
+
+.asst__list {
+  margin: 0 0 8px;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.asst__list li {
+  padding-left: 2px;
+}
+.asst__list li::marker {
+  color: var(--dim, #5c6880);
+}
+
+.asst__code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11.5px;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: var(--surface, #0d1119);
+  color: var(--accent, #6e8bff);
+  overflow-wrap: anywhere;
 }
 
 .asst__trace {

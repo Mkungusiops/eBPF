@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 import { useEffect } from "react";
 import { X } from "lucide-react";
 import { EnforcementLadder } from "../common/EnforcementLadder";
@@ -162,6 +163,11 @@ export function ProcessActionModal({
             <p>{gTech}</p>
           </div>
         </section>
+        {drill.execId ? (
+          <section className="soc-narrative">
+            <AssistantPanel execId={drill.execId} subjectLabel={drill.binary || drill.execId} />
+          </section>
+        ) : null}
       </div>
     </div>
   );

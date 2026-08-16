@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 /**
  * Assurance lens for the network plane — the device equivalent of the Choke
  * Gateway's, read for a CISO/board: posture with a transparent breakdown,
@@ -120,6 +121,7 @@ export function DevicesAssuranceView({
           </div>
         </article>
       </div>
+      <AssistantPanel subjectLabel="the device fleet" />
     </section>
   );
 }

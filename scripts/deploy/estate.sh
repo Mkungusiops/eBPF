@@ -51,6 +51,19 @@ ENGINE_DOMAIN="engine.adanianlabs.io"
 # nothing here" and "we forgot this host" look identical without an assertion.
 VICTIM_SSH="victim_device"
 
+# Analyst assistant. Opt-in, and the key comes from the DEPLOYER's environment —
+# never from this file, never from a flag:
+#
+#   ASSISTANT_URL=https://openweights.example.com/v1 \
+#   OPEN_WEIGHT_API_KEY=... ./scripts/deploy/estate.sh
+#
+# Exported so the provisioners see them. Absent, both surfaces report the
+# assistant as unconfigured, which is the correct default for a security
+# product: no outbound dependency on an inference endpoint unless asked for.
+export ASSISTANT_URL="${ASSISTANT_URL:-}"
+export ASSISTANT_MODEL="${ASSISTANT_MODEL:-gpt-oss:120b}"
+export OPEN_WEIGHT_API_KEY="${OPEN_WEIGHT_API_KEY:-}"
+
 # "tenant=ssh-alias" — acme-corp intentionally appears twice.
 AGENTS=(
   "adanian-internal=Tenant_A_agent"
@@ -110,6 +123,11 @@ doing cp     && dim "control plane   $CP_SSH      TLS=1 DATA_MODE=none  $CP_DOMA
 doing engine && dim "engine          $ENGINE_SSH  TLS=1                 $ENGINE_DOMAIN"
 doing agents && for a in "${AGENTS[@]}"; do dim "agent           ${a#*=}  tenant=${a%%=*}"; done
 dim "victim_device   SKIPPED — containment target, must stay agent-less"
+if [[ -n "$ASSISTANT_URL" ]]; then
+  dim "assistant       $ASSISTANT_MODEL via $ASSISTANT_URL$([[ -z "$OPEN_WEIGHT_API_KEY" ]] && echo '  (NO KEY — will report unavailable)')"
+else
+  dim "assistant       off (set ASSISTANT_URL to enable)"
+fi
 printf '\n'
 confirm "deploy $VERSION to the production estate?" n || die "stopped"
 

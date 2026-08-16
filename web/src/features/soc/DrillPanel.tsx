@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 // The alert drill-down that fills the slide-over: what fired, in two registers
 // (plain English for a lead briefing leadership, technical for the responder),
 // the choke response form, investigator notes, lineage, indicators and the
@@ -20,6 +21,12 @@ const SEVERITY_WORD: Record<string, string> = {
   info: "informational"
 };
 
+// Mounted here rather than on a chat page: the analyst is already looking at
+// this alert, and an assistant that requires navigating away is one that gets
+// used once. It receives the alert's exec id so the operator never types one.
+//
+// It self-disables when the deployment has no model configured, so this mount
+// is inert on every estate that has not opted in.
 export function DrillPanel({
   alert,
   ack,
@@ -198,6 +205,12 @@ export function DrillPanel({
               event.args ||
               (event.destIp ? `${event.destIp}${event.destPort ? `:${event.destPort}` : ""}` : "")
           }))}
+        />
+      </div>
+      <div className="soc-drill-section">
+        <AssistantPanel
+          execId={alert.execId}
+          subjectLabel={alert.title || alert.process || alert.execId}
         />
       </div>
     </div>

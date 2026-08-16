@@ -22,6 +22,7 @@ import (
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/approval"
+	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
@@ -37,6 +38,11 @@ import (
 // Config wires the control plane. CA, FleetSigner and Store are constructed by
 // the caller (cmd/controlplane) so their lifecycle/persistence is its concern.
 type Config struct {
+	// Assistant configures the optional analyst assistant. Zero value = off,
+	// which is the default: a control plane must not acquire an outbound
+	// dependency on an inference endpoint because someone upgraded.
+	Assistant assistant.Config
+
 	CA          *mtls.CA
 	ServerName  string // gRPC cert SAN — the host/IP agents connect to
 	FleetSigner signing.Signer
@@ -75,7 +81,13 @@ type Config struct {
 
 // Server is an assembled control plane.
 type Server struct {
-	cfg        Config
+	cfg Config
+	// selfAddr is the HTTP address Serve bound to, so the assistant's tools can
+	// read this control plane's own endpoints over loopback. Captured rather
+	// than taken from a request Host header: the tools run server-side, and a
+	// client-supplied origin would turn the ask endpoint into a request
+	// forwarder authenticated as the control plane.
+	selfAddr   string
 	ca         *mtls.CA
 	gs         *grpc.Server
 	httpH      http.Handler
@@ -173,6 +185,7 @@ func (s *Server) Fleet() *fleet.Service { return s.fleet }
 
 // Serve listens on grpcAddr (mTLS) and httpAddr and runs until ctx is cancelled.
 func (s *Server) Serve(ctx context.Context, grpcAddr, httpAddr string) error {
+	s.selfAddr = httpAddr
 	grpcLis, err := net.Listen("tcp", grpcAddr)
 	if err != nil {
 		return err

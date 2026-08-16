@@ -37,6 +37,7 @@ import {
   Sparkles,
   X
 } from "lucide-react";
+import { AnswerText } from "./AnswerText";
 import { useAssistant } from "./useAssistant";
 import type { AssistantApi } from "./api";
 import "./assistant.css";
@@ -178,7 +179,7 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
             </p>
           ) : null}
 
-          <div className="asst__content">{answer.content}</div>
+          <AnswerText content={answer.content} />
 
           {answer.steps.length > 0 ? (
             <div className="asst__trace">

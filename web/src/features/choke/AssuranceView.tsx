@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 // The Assurance lens: the same live containment data, read for a CISO/board —
 // posture with a transparent breakdown, control effectiveness, audit-chain
 // integrity, enforcement + reversibility, and one-click board-ready evidence.
@@ -184,6 +185,7 @@ export function AssuranceView({
           </div>
         </article>
       </div>
+      <AssistantPanel subjectLabel="the containment posture" />
     </section>
   );
 }

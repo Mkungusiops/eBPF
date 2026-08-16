@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 // Process drill-in slide-over: everything known about one exec_id — lineage,
 // kernel events, audited decisions — plus the enforcement ladder that acts on
 // it. This is where a sever is usually fired from, so the ladder here is the
@@ -215,6 +216,11 @@ export function ProcessDrill({
               emptyLabel="No process events for this exec."
             />
           </section>
+        </div>
+      ) : null}
+      {drill.execId ? (
+        <div className="choke-drill-assistant">
+          <AssistantPanel execId={drill.execId} subjectLabel={entry.binary || drill.execId} />
         </div>
       ) : null}
     </aside>

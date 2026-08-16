@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"sync"
@@ -179,6 +180,7 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	delete(h.pending, state)
 	h.mu.Unlock()
 	verifier := pl.verifier
+	fromCookie := false
 	if ok && time.Since(pl.created) > loginTTL {
 		// Present but stale: a genuine expiry, and the cookie would be no
 		// fresher. Restart rather than falling back.
@@ -196,11 +198,22 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		verifier = vc.Value
+		fromCookie = true
 	}
 	clearCookie(w, verifierCookie) // single-use, like the state
 
 	tok, err := h.oauth2.Exchange(r.Context(), q.Get("code"), oauth2.VerifierOption(verifier))
 	if err != nil {
+		// LOG IT. This error was discarded, so a user seeing "token exchange
+		// failed" produced no server-side record at all and the cause had to be
+		// guessed from the outside. The reason matters and they are not alike:
+		// a reused authorization code (a reloaded callback) is user behaviour,
+		// a verifier mismatch is our bug, and an unreachable IdP is an outage.
+		//
+		// fromCookie distinguishes the fallback path, which is the one that can
+		// legitimately pick the wrong verifier when several logins overlap.
+		slog.Warn("oidc token exchange failed",
+			"error", err, "verifier_from_cookie", fromCookie)
 		http.Error(w, "token exchange failed", http.StatusBadGateway)
 		return
 	}

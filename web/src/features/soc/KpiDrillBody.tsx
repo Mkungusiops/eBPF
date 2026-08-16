@@ -1,3 +1,4 @@
+import { AssistantPanel } from "../assistant";
 // What sits behind a KPI tile when an operator clicks it. Three shapes: the
 // ingestion-rate drill, the process drill, and the per-severity alert drill.
 import { EmptyState, Sparkline } from "./components";
@@ -122,6 +123,7 @@ export function KpiDrillBody({
           ))}
         </div>
       </section>
+      <AssistantPanel />
     </div>
   );
 }

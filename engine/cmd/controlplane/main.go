@@ -25,6 +25,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/controlplane"
@@ -40,6 +41,12 @@ func main() {
 		grpcAddr   = flag.String("grpc", ":9443", "agent-facing mTLS gRPC listen address")
 		httpAddr   = flag.String("http", ":9090", "operator HTTP listen address")
 		serverName = flag.String("server-name", "localhost", "TLS server name (cert SAN) agents connect to")
+
+		// Analyst assistant. OFF unless -assistant-url is set. The KEY IS NOT A
+		// FLAG — it comes from the environment (assistant.Config.APIKeyEnv),
+		// because flags land in process listings and unit files.
+		assistantURL   = flag.String("assistant-url", "", "OpenAI-compatible base URL for the analyst assistant; empty disables it")
+		assistantModel = flag.String("assistant-model", "gpt-oss:120b", "model id for the analyst assistant")
 
 		storeKind = flag.String("store", "sqlite", "central store backend: sqlite | postgres | clickhouse")
 		dbPath    = flag.String("db", "controlplane.db", "SQLite path (store=sqlite)")
@@ -200,6 +207,7 @@ func main() {
 		UplinkEndpoint: *serverName + *grpcAddr, CommandEndpoint: *serverName + *grpcAddr,
 		AdminToken: *adminToken, BFF: bffH, Logf: log.Printf,
 		RequireApproval: *requireApproval || os.Getenv("CP_REQUIRE_APPROVAL") == "1",
+		Assistant:       assistantConfig(*assistantURL, *assistantModel),
 	})
 	if err != nil {
 		log.Fatalf("controlplane: %v", err)
@@ -209,4 +217,25 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Println("[controlplane] shut down")
+}
+
+// assistantConfig builds the assistant configuration, or the zero value (which
+// reads as disabled) when no URL was given.
+func assistantConfig(url, model string) assistant.Config {
+	if url == "" {
+		return assistant.Config{}
+	}
+	cfg := assistant.DefaultConfig()
+	cfg.BaseURL = url
+	cfg.Model = model
+	if cfg.APIKey() == "" {
+		// Configured but unusable. Say so at startup: the console will report
+		// "not configured", which is indistinguishable from "switched off"
+		// unless the operator is told here.
+		log.Printf("[assistant] %s configured (%s) but %s is unset — reporting unavailable",
+			cfg.Model, cfg.BaseURL, cfg.APIKeyEnv)
+	} else {
+		log.Printf("[assistant] enabled: %s via %s (read-only tools)", cfg.Model, cfg.BaseURL)
+	}
+	return cfg
 }
