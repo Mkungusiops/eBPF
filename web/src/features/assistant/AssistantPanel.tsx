@@ -164,6 +164,13 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
 
       {answer ? (
         <article className="asst__answer">
+          {answer.grounded === false ? (
+            <p className="asst__ungrounded" role="alert">
+              <AlertTriangle size={12} aria-hidden />
+              Not grounded in telemetry — treat as unverified.
+            </p>
+          ) : null}
+
           {answer.truncated ? (
             <p className="asst__warn">
               <AlertTriangle size={12} aria-hidden />

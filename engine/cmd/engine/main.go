@@ -19,6 +19,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/api"
+	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/eventpipe"
 	"github.com/jeffmk/ebpf-poc-engine/internal/hoststack"
 	"github.com/jeffmk/ebpf-poc-engine/internal/logging"
@@ -61,6 +62,23 @@ func main() {
 		httpSrv.SetFleet(api.NewFleet(cfg.fleetHosts, cfg.AuthUser, cfg.AuthPass))
 		log.Printf("[fleet] console enabled at /fleet (hosts=%s)", cfg.fleetHosts)
 	}
+	if cfg.assistantURL != "" {
+		acfg := assistant.DefaultConfig()
+		acfg.BaseURL = cfg.assistantURL
+		acfg.Model = cfg.assistantModel
+		httpSrv.SetAssistantConfig(acfg)
+		if acfg.APIKey() == "" {
+			// Started but unusable. Say so at startup rather than letting an
+			// analyst discover it mid-incident: the console degrades to
+			// "not configured", which is indistinguishable from "switched off"
+			// unless the operator is told.
+			log.Printf("[assistant] %s configured (%s) but %s is unset — the assistant will report itself unavailable",
+				acfg.Model, acfg.BaseURL, acfg.APIKeyEnv)
+		} else {
+			log.Printf("[assistant] enabled: %s via %s (read-only tools)", acfg.Model, acfg.BaseURL)
+		}
+	}
+
 	go func() {
 		if err := httpSrv.Start(cfg.HTTPAddr); err != nil {
 			log.Fatalf("http: %v", err)

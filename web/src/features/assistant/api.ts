@@ -29,6 +29,12 @@ export interface AssistantAnswer {
   duration: string;
   /** True when the tool loop hit its bound — the investigation is partial. */
   truncated?: boolean;
+  /**
+   * False when the engine could not ground the answer in telemetry — the model
+   * replied without reading anything. Measured behaviour under urgent framing,
+   * not a theoretical case, so the UI must make it unmistakable.
+   */
+  grounded?: boolean;
 }
 
 export interface AssistantAgent {

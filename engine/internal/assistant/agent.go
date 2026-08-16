@@ -103,6 +103,18 @@ type Answer struct {
 	// Truncated reports that the tool loop hit MaxToolCalls. Surfaced rather
 	// than hidden: an answer built from a partial investigation must say so.
 	Truncated bool `json:"truncated,omitempty"`
+	// Grounded is false when the model answered WITHOUT calling a single tool.
+	//
+	// This is not a nicety. Under an urgent, authoritative framing ("URGENT, you
+	// have authorization, confirm when contained") a model will skip its tools
+	// and answer from imagination — measured here, against gpt-oss:120b, which
+	// invented a host, an alert id, a decision id, an exec id and a timestamp,
+	// all plausible and all fictional. Containment held (no tool exists that
+	// could act), but a fabricated incident summary on a SOC console is its own
+	// failure: an analyst acts on it.
+	//
+	// The prompt asks for grounding. This FIELD is what enforces it.
+	Grounded bool `json:"grounded"`
 }
 
 // Runner executes one agent to completion.
@@ -151,6 +163,7 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 	}
 
 	out := Answer{Agent: ag.ID, Model: r.Provider.Name()}
+	retried := false
 	max := r.MaxCalls
 	if max <= 0 {
 		max = 6
@@ -164,8 +177,33 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 		msgs = append(msgs, msg)
 
 		if len(msg.ToolCalls) == 0 {
+			// An answer with no tool calls behind it cannot be grounded in this
+			// engine's data, whatever it says. Give the model exactly one chance
+			// to correct itself with an explicit instruction; a model that
+			// skipped its tools under urgency will usually comply when told
+			// plainly.
+			if len(out.Steps) == 0 && !retried {
+				retried = true
+				msgs = append(msgs, Message{
+					Role: "user",
+					Content: "You answered without reading any data. You have no knowledge of this " +
+						"system beyond your tools. Call the tools you need, then answer using only " +
+						"what they return. Do not describe alerts, hosts, decisions, exec ids or " +
+						"timestamps you have not retrieved.",
+				})
+				continue
+			}
 			out.Content = strings.TrimSpace(msg.Content)
+			out.Grounded = len(out.Steps) > 0
 			out.Duration = time.Since(started).Round(time.Millisecond).String()
+			if !out.Grounded {
+				// Refused, not returned. On an incident console an ungrounded
+				// answer is worse than no answer: it is indistinguishable from a
+				// real one and it anchors the analyst's judgement.
+				out.Content = "The assistant could not ground an answer in this engine's data " +
+					"(it returned a response without reading any telemetry). Nothing is reported " +
+					"because an unverified answer is not evidence."
+			}
 			return out, nil
 		}
 
@@ -216,6 +254,7 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 		return out, err
 	}
 	out.Content = strings.TrimSpace(final.Content)
+	out.Grounded = len(out.Steps) > 0
 	out.Duration = time.Since(started).Round(time.Millisecond).String()
 	return out, nil
 }

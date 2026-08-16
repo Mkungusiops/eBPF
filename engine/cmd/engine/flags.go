@@ -9,6 +9,17 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/hoststack"
 )
 
+// DefaultAssistantModel is the model the assistant uses unless overridden.
+//
+// gpt-oss:120b, chosen by measurement rather than reputation. Across the 14
+// tool-calling models on the reference endpoint it was both the fastest (~1.7s)
+// and the best grounded: given an alert record with NO severity field and asked
+// for a critical count, it refused and named the missing field, where two
+// otherwise-capable models returned empty content and one timed out. For a SOC
+// assistant that refusal behaviour is the product — an assistant that guesses a
+// severity is worse than no assistant.
+const DefaultAssistantModel = "gpt-oss:120b"
+
 // engineVersion is what this build target reports to /api/system-health. The
 // agent build reports the same number with an "-agent" suffix so a fleet can
 // tell the two apart without a metric-cardinality change.
@@ -35,6 +46,14 @@ type engineConfig struct {
 	// Fleet Console fan-out. The multi-host control pattern this implements
 	// becomes the control plane's command channel; it is not an agent concern.
 	fleetHosts string
+
+	// Analyst assistant. OFF unless -assistant-model is set: a security product
+	// must not acquire an outbound dependency on an inference endpoint because
+	// someone upgraded. The API KEY IS NOT A FLAG — it is read from the
+	// environment (see assistant.Config.APIKeyEnv), because flags land in
+	// process listings, shell history and systemd unit files.
+	assistantURL   string
+	assistantModel string
 }
 
 // parseEngineFlags builds the engine's configuration from the command line and
@@ -56,6 +75,10 @@ func parseEngineFlags(args []string) *engineConfig {
 }
 
 func (c *engineConfig) bind(fs *flag.FlagSet) {
+	fs.StringVar(&c.assistantURL, "assistant-url", "",
+		"OpenAI-compatible base URL for the analyst assistant (e.g. https://host/v1); empty disables it")
+	fs.StringVar(&c.assistantModel, "assistant-model", DefaultAssistantModel,
+		"model id for the analyst assistant; only used when -assistant-url is set")
 	fs.StringVar(&c.TetragonAddr, "tetragon", hoststack.DefaultTetragonAddr, "Tetragon gRPC address")
 	fs.StringVar(&c.DBPath, "db", hoststack.DefaultDBPath, "SQLite database path")
 	fs.StringVar(&c.HTTPAddr, "http", hoststack.DefaultHTTPAddr, "HTTP listen address")

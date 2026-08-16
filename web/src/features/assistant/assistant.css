@@ -287,3 +287,19 @@
   color: var(--dim, #5c6880);
   font-size: 12px;
 }
+
+/* Ungrounded. The one place the assistant borrows the incident colour, because
+   an answer that was not read from telemetry is the failure this panel exists
+   to prevent an analyst from acting on. */
+.asst__ungrounded {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, var(--danger, #f4556e) 45%, transparent);
+  border-radius: 5px;
+  color: var(--danger, #f4556e);
+  font-size: 11.5px;
+  font-weight: 600;
+}
