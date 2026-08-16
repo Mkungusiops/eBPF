@@ -133,6 +133,12 @@ func HasCrossTenant(p Principal) bool {
 	return false
 }
 
+// IsCrossTenant reports whether the role grants reach beyond one tenant.
+// Exported so callers deriving a scope from a principal use the SAME definition
+// as authorization does — two independent notions of "cross-tenant" is how they
+// drift apart.
+func (r Role) IsCrossTenant() bool { return isCrossTenant(r) }
+
 func isCrossTenant(r Role) bool {
 	return r == RoleMSOCAdmin || r == RoleCrossTenantResponder
 }

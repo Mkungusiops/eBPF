@@ -47,6 +47,10 @@ type Scope struct {
 	CrossTenant bool
 }
 
+// Validate reports whether the scope is usable. Exported so a caller deriving a
+// Scope from a session can fail at the boundary rather than at the first query.
+func (s Scope) Validate() error { return s.valid() }
+
 func (s Scope) valid() error {
 	if strings.TrimSpace(s.UserID) == "" {
 		return ErrNoScope

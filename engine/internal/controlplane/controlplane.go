@@ -26,6 +26,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
+	"github.com/jeffmk/ebpf-poc-engine/internal/chatstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/command"
 	"github.com/jeffmk/ebpf-poc-engine/internal/enrollment"
 	"github.com/jeffmk/ebpf-poc-engine/internal/fleet"
@@ -87,7 +88,11 @@ type Server struct {
 	// than taken from a request Host header: the tools run server-side, and a
 	// client-supplied origin would turn the ask endpoint into a request
 	// forwarder authenticated as the control plane.
-	selfAddr   string
+	selfAddr string
+	// chats persists assistant conversations. nil when the deployment has no
+	// chat history configured — every handler reports it unavailable rather
+	// than panicking, so the feature is genuinely optional.
+	chats      chatstore.Store
 	ca         *mtls.CA
 	gs         *grpc.Server
 	httpH      http.Handler
