@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/buildinfo"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
@@ -49,6 +50,14 @@ type Server struct {
 	// it gracefully. Guarded because Start runs in its own goroutine.
 	srvMu sync.Mutex
 	srv   *http.Server
+	// selfAddr is the address Start bound to, so the assistant's tools can call
+	// this engine's own read endpoints over loopback. Captured rather than
+	// derived from a request Host header — see selfBaseURL in assistant.go.
+	selfAddr string
+	// assistantCfg is the optional analyst assistant. Zero value means
+	// disabled, which is the default: the engine must not acquire an outbound
+	// dependency on an inference endpoint unless someone asks for it.
+	assistantCfg assistant.Config
 
 	store     *store.Store
 	tree      *tree.Tree
@@ -90,6 +99,7 @@ func NewServer(st *store.Store, pt *tree.Tree, broadcast chan Broadcast, auth *A
 }
 
 func (s *Server) Start(addr string) error {
+	s.selfAddr = addr
 	go s.fanout()
 	mux := http.NewServeMux()
 
@@ -135,6 +145,8 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/decisions", s.handleDecisions)
 	mux.HandleFunc("/api/verify-chain", s.handleVerifyChain)
 	mux.HandleFunc("/api/origin", s.handleOrigin)
+	mux.HandleFunc("/api/assistant", s.handleAssistantCapability)
+	mux.HandleFunc("/api/assistant/ask", s.handleAssistantAsk)
 
 	// Choke Gateway Console — separate page, separate API namespace.
 	mux.HandleFunc("/choke", s.handleChokeConsole)

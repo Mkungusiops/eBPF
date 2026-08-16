@@ -206,7 +206,7 @@ func (r *Registry) Get(name string) (Tool, bool) {
 // The doer is expected to be readOnlyClient (see provider.go), which is the
 // third read-only layer: even if this function were changed to build a POST,
 // the transport refuses it.
-func (r *Registry) Call(ctx context.Context, doer *http.Client, base, name string, args map[string]any) (json.RawMessage, error) {
+func (r *Registry) Call(ctx context.Context, doer *http.Client, base, cookie, name string, args map[string]any) (json.RawMessage, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("assistant: unknown tool %q", name)
@@ -228,6 +228,12 @@ func (r *Registry) Call(ctx context.Context, doer *http.Client, base, name strin
 	req, err := http.NewRequestWithContext(ctx, t.method, url, nil)
 	if err != nil {
 		return nil, err
+	}
+	// The asking analyst's session. Without it these calls are unauthenticated
+	// and the engine correctly refuses them; with it the assistant inherits the
+	// caller's authorization exactly. See Runner.Cookie.
+	if cookie != "" {
+		req.Header.Set("Cookie", cookie)
 	}
 	resp, err := doer.Do(req)
 	if err != nil {

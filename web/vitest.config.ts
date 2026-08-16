@@ -11,6 +11,7 @@ export default defineConfig({
     },
     globals: true,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+    setupFiles: ["src/test-setup.ts"],
     testTimeout: 10_000,
     // Frontend coverage was previously unmeasurable: @vitest/coverage-v8 was
     // not installed, so `vitest run --coverage` failed outright and 152 green
