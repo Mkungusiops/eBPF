@@ -36,8 +36,11 @@ const (
 	sessionCookie = "soc_cp_session"
 	stateCookie   = "soc_login_state"
 	retryCookie   = "soc_login_retry" // loop-guard for the restart-on-mismatch path
-	sessionTTL    = 8 * time.Hour
-	loginTTL      = 10 * time.Minute
+	// verifierCookie carries the PKCE verifier so an in-flight login survives a
+	// control-plane restart. See the fallback in callback().
+	verifierCookie = "soc_login_verifier"
+	sessionTTL     = 8 * time.Hour
+	loginTTL       = 10 * time.Minute
 )
 
 type session struct {
@@ -138,6 +141,21 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		Name: stateCookie, Value: state, Path: "/", HttpOnly: true,
 		Secure: h.secure, SameSite: http.SameSiteLaxMode, MaxAge: int(loginTTL.Seconds()),
 	})
+	// The verifier ALSO goes in an HttpOnly cookie, not only h.pending.
+	//
+	// h.pending is in-memory, so every control-plane restart voided every login
+	// in flight and the user landed on "sign-in could not be completed (state)".
+	// That is not a rare edge: it happens on every single deploy, to anyone
+	// mid-login, and it looks like a broken product rather than a restart.
+	//
+	// The cookie is HttpOnly + Secure + SameSite=Lax, so it is readable only by
+	// this server over TLS — the same protection the session cookie relies on.
+	// h.pending stays as the fast path and keeps its server-side TTL check; the
+	// cookie is consulted only when the map has no entry.
+	http.SetCookie(w, &http.Cookie{
+		Name: verifierCookie, Value: verifier, Path: "/", HttpOnly: true,
+		Secure: h.secure, SameSite: http.SameSiteLaxMode, MaxAge: int(loginTTL.Seconds()),
+	})
 	url := h.oauth2.AuthCodeURL(state, oauth2.S256ChallengeOption(verifier))
 	http.Redirect(w, r, url, http.StatusFound)
 }
@@ -160,12 +178,28 @@ func (h *Handler) callback(w http.ResponseWriter, r *http.Request) {
 	pl, ok := h.pending[state]
 	delete(h.pending, state)
 	h.mu.Unlock()
-	if !ok || time.Since(pl.created) > loginTTL {
+	verifier := pl.verifier
+	if ok && time.Since(pl.created) > loginTTL {
+		// Present but stale: a genuine expiry, and the cookie would be no
+		// fresher. Restart rather than falling back.
 		h.restartLogin(w, r, "expired")
 		return
 	}
+	if !ok {
+		// No server-side entry. Either the process restarted since /auth/login
+		// or the entry was already consumed. The cookie survives the former;
+		// the browser has already dropped it for the latter, because its MaxAge
+		// is loginTTL and callback clears it below.
+		vc, cerr := r.Cookie(verifierCookie)
+		if cerr != nil || vc.Value == "" {
+			h.restartLogin(w, r, "expired")
+			return
+		}
+		verifier = vc.Value
+	}
+	clearCookie(w, verifierCookie) // single-use, like the state
 
-	tok, err := h.oauth2.Exchange(r.Context(), q.Get("code"), oauth2.VerifierOption(pl.verifier))
+	tok, err := h.oauth2.Exchange(r.Context(), q.Get("code"), oauth2.VerifierOption(verifier))
 	if err != nil {
 		http.Error(w, "token exchange failed", http.StatusBadGateway)
 		return
