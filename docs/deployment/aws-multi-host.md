@@ -1,4 +1,4 @@
-# Deploy the full platform across five AWS hosts
+# Deploy the full platform across six AWS hosts
 
 The reference **multi-host** deployment: a control plane, a single-tenant
 engine, one real agent per tenant, and a disposable device to contain. Both
@@ -13,7 +13,7 @@ subnet there is.
 
 ---
 
-## 1. Why five hosts
+## 1. Why six hosts
 
 | Host | Runs | Why it is separate |
 |------|------|--------------------|
@@ -21,7 +21,22 @@ subnet there is.
 | single-tenant engine | engine + Tetragon + nginx | Its own kernel — this is the standalone product |
 | tenant A agent | agent + Tetragon + tc device plane | **Own kernel per tenant** |
 | tenant B agent | agent + Tetragon + tc device plane | Second tenant proves isolation is real |
+| tenant B **second** agent | agent + Tetragon + tc device plane | Makes one tenant multi-agent — see below |
 | victim device | nothing (a target) | Something safe to actually contain |
+
+**The second agent in tenant B is not redundancy.** A tenant with exactly one
+agent cannot distinguish "containment was routed to the named host" from
+"containment was broadcast to everyone", because the two are identical when
+everyone *is* one host. That is not hypothetical: containment here was genuinely
+broadcast rather than routed, and a sever killed processes on hosts nobody named.
+A multi-agent tenant is the only configuration in which that class of bug is
+visible, so the estate keeps one permanently.
+
+It is also the host most easily forgotten — omitting it leaves that tenant
+running mixed builds, which is precisely the state in which routing bugs surface
+and are hardest to attribute. Deploy with
+[`scripts/deploy/estate.sh`](../../scripts/deploy/estate.sh) rather than by hand;
+it has the full host list built in.
 
 **One kernel per tenant is the whole point.** Tetragon attaches BPF to a kernel,
 so tenants sharing one (containers on a single host, for instance) would observe
@@ -80,6 +95,39 @@ from arbitrary addresses.
 Postgres and the control plane's HTTP API bind `127.0.0.1` and must stay there.
 
 ## 4. Deploy
+
+### The whole estate, in one command
+
+```bash
+./scripts/deploy/estate.sh        # or: make deploy-estate
+```
+
+Prefer this to running the steps by hand. The estate needs six invocations in a
+fixed order, each carrying environment variables that are **not optional and
+whose omission fails silently** — every one of the traps in §6 is an omission
+that already happened, and each was invisible at the time:
+
+| Omitted | What it did |
+|---|---|
+| `TLS=1` + a DNS hostname | Replaced the TLS vhost with a plaintext one and took the console **fully offline** on its real hostname — while every unit reported `active` and `curl http://<ip>/` returned 200 |
+| `DATA_MODE=none` | Resurrected the sim-agents beside the real ones; a sim acks `STATUS_APPLIED` for a process it never touched |
+| the second tenant-B agent | Left a tenant on mixed builds — the exact configuration where routing bugs hide |
+
+The script preflights every host **before** touching any of them (a half-deployed
+estate on mixed builds is worse than one that never started), prints the plan,
+and waits for confirmation, defaulting to **no**. It finishes by running
+[`verify-deploy.sh`](../../scripts/ci/verify-deploy.sh), and asserts that the
+victim is still agent-less — "deliberately deployed nothing here" and "forgot
+this host" look identical without that assertion.
+
+```bash
+./scripts/deploy/estate.sh --only agents    # cp | engine | agents | verify
+./scripts/deploy/estate.sh --skip-build     # reuse the current build
+DRY_RUN=1 ./scripts/deploy/estate.sh        # print every command, run none
+```
+
+The individual steps below are what it runs, and remain the reference for
+deploying to a different estate.
 
 ### Control plane
 

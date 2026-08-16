@@ -31,9 +31,17 @@
 # takes the console offline on its real hostname while every service still
 # reports healthy. TLS=1 is set below for the same reason.
 #
-# If you would rather not hold an SSH key in GitHub, keep using
-# `make deploy-release VERSION=vX.Y.Z` locally — it performs the same signature
-# verification before installing anything.
+# If you would rather not hold an SSH key in GitHub, use
+# `make deploy-release VERSION=vX.Y.Z` locally. Be clear on what that does and
+# does not give you: it verifies the published release's cosign signature and
+# checksums, and refuses to run unless HEAD *is* that tag — so you are deploying
+# the source the signed release was built from. It does NOT install the signed
+# bytes, because the provisioners call build_binaries and compile from the
+# working tree. Installing the downloaded artefacts needs build_binaries to
+# accept a prebuilt path; until then only this workflow installs CI-built bytes.
+#
+# (Until 2026-08-16 `deploy-release` was a .PHONY target with no recipe: it
+# exited 0 having deployed nothing, while this comment recommended it.)
 name: Deploy
 
 on:

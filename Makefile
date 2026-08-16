@@ -127,9 +127,14 @@ api-docs-check:
 # so what lands on a host is what CI built rather than what this laptop compiled.
 #
 #   make deploy-release VERSION=v1.1.0 SSH_HOST=control-plane
-.PHONY: verify-release deploy-release
+# VER is the internal name; VERSION= is what every doc and the deploy
+# workflow tell operators to pass. Accept VERSION and fall back to VER so the
+# documented invocation works instead of failing its own guard.
+VER ?= $(VERSION)
+
+.PHONY: verify-release deploy-release deploy-estate
 verify-release:
-	@[ -n "$(VER)" ] || { echo "VER=vX.Y.Z required"; exit 1; }
+	@[ -n "$(VER)" ] || { echo "VERSION=vX.Y.Z required"; exit 1; }
 	@command -v cosign >/dev/null || { echo "cosign required: brew install cosign"; exit 1; }
 	@command -v gh     >/dev/null || { echo "gh required: brew install gh"; exit 1; }
 	@set -e; rm -rf $(ROOT)/dist/$(VER); mkdir -p $(ROOT)/dist/$(VER); \
@@ -142,6 +147,23 @@ verify-release:
 	  SHA256SUMS; \
 	shasum -a 256 -c SHA256SUMS; \
 	echo "  ✓ $(VER) is signed by the release workflow and intact"
+
+# The whole estate, built from the working tree — the way deploys have always
+# worked here (the provisioners call build_binaries themselves).
+deploy-estate:
+	@./scripts/deploy/estate.sh
+
+# Deploy a PUBLISHED tag. Honest about its guarantee: the provisioners build from
+# the working tree, so this cannot install the downloaded signed bytes. What it
+# does give you is that the release exists and is intact (cosign + checksums),
+# and that the tree you are deploying IS that tag rather than whatever was last
+# edited. Installing the signed artefacts themselves needs build_binaries to
+# accept a prebuilt path — not done yet, so it is not claimed.
+deploy-release: verify-release
+	@test -n "$(VER)" || { echo "VERSION=vX.Y.Z required"; exit 1; }
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse $(VER)^{commit})" || { \
+	  echo "HEAD is not $(VER) — 'git checkout $(VER)' first"; exit 1; }
+	@./scripts/deploy/estate.sh
 
 # Every artefact a handover ships, from one tag, with hashes to match.
 .PHONY: release

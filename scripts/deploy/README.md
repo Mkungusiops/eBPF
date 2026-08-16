@@ -28,6 +28,21 @@ multi-      │ multi-tenant-orbstack  │ multi-tenant-ubuntu    │ multi-tena
 
 ## Quick start
 
+**Deploying the production estate? Use one command, not these:**
+
+```bash
+./scripts/deploy/estate.sh        # or: make deploy-estate
+```
+
+[`estate.sh`](estate.sh) drives the whole six-host estate in order with every
+required variable already set, preflights all hosts before touching any of them,
+and verifies afterwards. The scripts below are the building blocks it calls, and
+the reference for deploying somewhere new — but invoking them by hand against
+production means re-supplying variables whose omission fails **silently**
+(`TLS=1`, a DNS name rather than an IP, `DATA_MODE=none`, and every agent host).
+Each of those omissions has already caused an outage or a false result here; see
+[aws-multi-host.md §4](../../docs/deployment/aws-multi-host.md).
+
 ```bash
 # Local, on OrbStack — nothing to configure, creates the machine for you:
 ./scripts/deploy/single-tenant-orbstack.sh          # engine  -> http://<ip>:8090/
