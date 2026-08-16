@@ -63,33 +63,39 @@ func (s Scope) valid() error {
 }
 
 // Chat is one conversation.
+//
+// The json tags are not decoration: these structs are serialised straight onto
+// the operator API, and Go's default is the EXPORTED FIELD NAME. Without tags
+// the console would receive {"ID":…,"TenantID":…} from these routes and
+// {"exec_id":…} from every other one — two conventions in one API, discovered
+// by whoever writes the client.
 type Chat struct {
-	ID       string
-	TenantID string
-	UserID   string
-	Title    string
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	UserID   string `json:"user_id"`
+	Title    string `json:"title"`
 	// Mode distinguishes an incident conversation from an ad-hoc one; reserved
 	// for the per-incident grouping in platform-assistant.md §3.
-	Mode string
+	Mode string `json:"mode"`
 	// CompactedSummary holds an earlier span of the conversation, summarised.
 	//
 	// Present from the first migration on purpose. A long incident conversation
 	// WILL exceed the model's context, and retrofitting compaction later means
 	// either truncating silently (the analyst loses the start of their own
 	// investigation) or a migration under pressure.
-	CompactedSummary string
-	PinnedAt         *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	CompactedSummary string     `json:"compacted_summary,omitempty"`
+	PinnedAt         *time.Time `json:"pinned_at,omitempty"`
+	CreatedAt        time.Time  `json:"created_at"`
+	UpdatedAt        time.Time  `json:"updated_at"`
 }
 
 // Message is one turn.
 type Message struct {
-	ID      string
-	ChatID  string
-	Role    string // user | assistant
-	Content string
-	Model   string
+	ID      string `json:"id"`
+	ChatID  string `json:"chat_id"`
+	Role    string `json:"role"` // user | assistant
+	Content string `json:"content"`
+	Model   string `json:"model,omitempty"`
 	// Steps and Grounded are STORED, not recomputed.
 	//
 	// An answer's provenance is part of the record: a post-incident review has
@@ -97,9 +103,9 @@ type Message struct {
 	// and whether it was grounded at all. Text without them is unusable as
 	// evidence — and "grounded" is exactly the field a reviewer will want when
 	// an assisted conclusion turns out to be wrong.
-	Steps     string // the answer's tool trace, as JSON
-	Grounded  bool
-	CreatedAt time.Time
+	Steps     string    `json:"steps,omitempty"` // the answer's tool trace, as JSON
+	Grounded  bool      `json:"grounded"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 var (

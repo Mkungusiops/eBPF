@@ -41,6 +41,15 @@ export interface AssistantAnswer {
 export interface AssistantAgent {
   id: string;
   title: string;
+  /**
+   * True for the agent that ANSWERS A QUESTION rather than performing a fixed
+   * task. The others are buttons: their instructions say "explain this process
+   * chain" and they ignore whatever was typed.
+   *
+   * The sidebar must select on this flag, never on list position — picking
+   * agents[0] is what made "Hello" return a process-chain analysis.
+   */
+  conversational?: boolean;
 }
 
 /**
@@ -61,6 +70,15 @@ export interface AssistantAskRequest {
   agent: string;
   question?: string;
   execId?: string;
+  /**
+   * Conversation to record this exchange in.
+   *
+   * OMITTED MEANS INCOGNITO and nothing is stored — the default, and deliberately
+   * so: an analyst may ask about a live breach before it is classified, and the
+   * safe default for an unclassified question is to leave no record. The drill
+   * panels pass nothing; only the history sidebar supplies an id.
+   */
+  chatId?: string;
   signal?: AbortSignal;
 }
 
@@ -118,11 +136,11 @@ export function createAssistantApi(request: Requester = defaultRequest): Assista
       return (await res.json()) as AssistantCapability;
     },
 
-    async ask({ agent, question, execId, signal }) {
+    async ask({ agent, question, execId, chatId, signal }) {
       const res = await request("/api/assistant/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent, question, exec_id: execId }),
+        body: JSON.stringify({ agent, question, exec_id: execId, chat_id: chatId }),
         signal
       });
       if (!res.ok) {

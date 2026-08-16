@@ -9,3 +9,9 @@ export type {
   AssistantCapability,
   AssistantStep
 } from "./api";
+export { ChatSidebar } from "./ChatSidebar";
+export type { ChatSidebarProps } from "./ChatSidebar";
+export { AssistantChatProvider, useAssistantChat } from "./AssistantChatProvider";
+export { useChats } from "./useChats";
+export { createChatApi, parseSteps, HISTORY_DISABLED } from "./chatApi";
+export type { Chat, ChatApi, ChatMessage } from "./chatApi";

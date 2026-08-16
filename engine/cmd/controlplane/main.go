@@ -28,6 +28,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
+	"github.com/jeffmk/ebpf-poc-engine/internal/chatstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/controlplane"
 	"github.com/jeffmk/ebpf-poc-engine/internal/ingest"
 	"github.com/jeffmk/ebpf-poc-engine/internal/mtls"
@@ -201,6 +202,10 @@ func main() {
 		log.Printf("[auth] headless admin-token auth (single msoc-admin operator)")
 	}
 
+	// Assistant chat history. Postgres only, and never load-bearing: see
+	// openChatStore.
+	chats := openChatStore(*storeKind, *pgDSN)
+
 	cp, err := controlplane.New(controlplane.Config{
 		CA: ca, ServerName: *serverName, FleetSigner: fleetSigner, FleetKeyID: "fleet-1",
 		Store: store, Firehose: firehose, CertTTL: *certTTL, EnrollTTL: *enrollTTL,
@@ -208,6 +213,7 @@ func main() {
 		AdminToken: *adminToken, BFF: bffH, Logf: log.Printf,
 		RequireApproval: *requireApproval || os.Getenv("CP_REQUIRE_APPROVAL") == "1",
 		Assistant:       assistantConfig(*assistantURL, *assistantModel),
+		Chats:           chats,
 	})
 	if err != nil {
 		log.Fatalf("controlplane: %v", err)
@@ -217,6 +223,37 @@ func main() {
 		log.Fatalf("serve: %v", err)
 	}
 	log.Println("[controlplane] shut down")
+}
+
+// openChatStore provisions assistant chat history, or returns nil to disable it.
+//
+// Two deliberate properties:
+//
+// POSTGRES ONLY. History is multi-tenant data protected by RLS, and RLS is the
+// mechanism that keeps one operator's conversations out of another's. SQLite has
+// no equivalent, so rather than persist chats with weaker isolation than every
+// other tenant-partitioned table, a non-Postgres deployment simply has no
+// history and the endpoints say so.
+//
+// NEVER FATAL. A failure here logs and disables the feature; it does not stop
+// the control plane. Chat history is a convenience — detection, containment and
+// the operator read API are not — so a chat migration that cannot get its lock
+// must not be able to keep a SOC from responding to an incident.
+func openChatStore(storeKind, dsn string) chatstore.Store {
+	if storeKind != "postgres" || dsn == "" {
+		log.Printf("[chat] history disabled (store=%s) — the assistant still answers, it just does not remember", storeKind)
+		// Returning a nil *PGStore here would produce a NON-nil interface, and
+		// the handlers' `s.chats == nil` check would sail past it straight into
+		// a nil dereference. The untyped nil is the point.
+		return nil
+	}
+	st, err := chatstore.OpenPostgres(dsn, centralstore.AppRole)
+	if err != nil {
+		log.Printf("[chat] history unavailable: %v — continuing without it", err)
+		return nil
+	}
+	log.Printf("[chat] assistant history ready (postgres, RLS as %s)", centralstore.AppRole)
+	return st
 }
 
 // assistantConfig builds the assistant configuration, or the zero value (which

@@ -1,6 +1,7 @@
 package chatstore
 
 import (
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -133,5 +134,43 @@ func TestIDsAreNotSequential(t *testing.T) {
 			t.Fatalf("id %q is too short to be unguessable", id)
 		}
 		seen[id] = true
+	}
+}
+
+func TestEveryWireFieldHasASnakeCaseTag(t *testing.T) {
+	// Chat and Message are serialised straight onto the operator API. Go's
+	// default is the exported field name, so an untagged field ships as "ID"
+	// beside "exec_id" from every other route — two conventions in one API,
+	// found by whoever writes the client.
+	for _, v := range []any{Chat{}, Message{}} {
+		typ := reflect.TypeOf(v)
+		if typ.NumField() == 0 {
+			t.Fatalf("%s has no fields — this test is vacuous", typ.Name())
+		}
+		for i := 0; i < typ.NumField(); i++ {
+			f := typ.Field(i)
+			tag := f.Tag.Get("json")
+			if tag == "" {
+				t.Errorf("%s.%s has no json tag; it would serialise as %q", typ.Name(), f.Name, f.Name)
+				continue
+			}
+			name := strings.Split(tag, ",")[0]
+			if name != strings.ToLower(name) {
+				t.Errorf("%s.%s serialises as %q; the API is snake_case", typ.Name(), f.Name, name)
+			}
+		}
+	}
+}
+
+func TestGroundedIsAlwaysPresentOnTheWire(t *testing.T) {
+	// omitempty on a bool drops FALSE — and false is the single most important
+	// value here. An answer the assistant could not ground must not arrive at
+	// the console indistinguishable from one that was never assessed.
+	b, err := json.Marshal(Message{ID: "m1", Role: "assistant", Grounded: false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"grounded":false`) {
+		t.Errorf("an ungrounded message serialised as %s; \"grounded\":false must be explicit", b)
 	}
 }

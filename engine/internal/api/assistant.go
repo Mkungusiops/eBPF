@@ -32,6 +32,9 @@ type assistantCapabilityResponse struct {
 type assistantAgent struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Conversational tells the console which agent takes a QUESTION. Without it
+	// a chat surface has to guess by list position, and it guessed a button.
+	Conversational bool `json:"conversational,omitempty"`
 }
 
 func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Request) {
@@ -61,7 +64,7 @@ func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Reques
 
 	out := assistantCapabilityResponse{Enabled: true, Model: cfg.Model}
 	for _, a := range assistant.Agents() {
-		out.Agents = append(out.Agents, assistantAgent{ID: a.ID, Title: a.Title})
+		out.Agents = append(out.Agents, assistantAgent{ID: a.ID, Title: a.Title, Conversational: a.Conversational})
 	}
 	writeJSONStatus(w, http.StatusOK, out)
 }
@@ -177,3 +180,24 @@ func (s *Server) selfBaseURL() string {
 // SetAssistantConfig enables the analyst assistant. Called from main() when the
 // deployment configures a model; left unset otherwise.
 func (s *Server) SetAssistantConfig(cfg assistant.Config) { s.assistantCfg = cfg }
+
+// handleAssistantChatsUnavailable answers the chat-history routes on the
+// single-tenant engine.
+//
+// This engine stores to SQLite. Chat history is protected by Postgres RLS —
+// that is what keeps one operator's conversations out of another's — and there
+// is no SQLite equivalent, so rather than persist conversations with weaker
+// isolation than every other tenant-partitioned table, this deployment simply
+// has no history.
+//
+// 503 with a reason, never 401 or 404: the console distinguishes "switched off"
+// from "broken", and it can only do that if the server says which. A silent
+// fall-through told operators a feature had failed when it was never built for
+// this deployment.
+func (s *Server) handleAssistantChatsUnavailable(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusServiceUnavailable)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"error": "chat history is not enabled on this deployment",
+	})
+}

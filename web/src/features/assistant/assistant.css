@@ -13,9 +13,9 @@
  */
 
 .asst {
-  border: 1px solid var(--row, #1e2636);
+  border: 1px solid rgb(var(--row));
   border-radius: 8px;
-  background: var(--panel, #121722);
+  background: rgb(var(--panel));
   padding: 12px 14px;
   display: flex;
   flex-direction: column;
@@ -27,7 +27,7 @@
   display: flex;
   align-items: center;
   gap: 7px;
-  color: var(--text, #e6ebf5);
+  color: rgb(var(--text));
 }
 
 .asst__head h3 {
@@ -46,9 +46,9 @@
   align-items: center;
   gap: 4px;
   padding: 2px 7px;
-  border: 1px solid var(--row, #1e2636);
+  border: 1px solid rgb(var(--row));
   border-radius: 999px;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
   font-size: 10.5px;
   font-weight: 600;
   text-transform: uppercase;
@@ -58,11 +58,11 @@
 
 .asst__subject {
   margin: 0;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
   font-size: 12px;
 }
 .asst__subject strong {
-  color: var(--text, #e6ebf5);
+  color: rgb(var(--text));
   font-weight: 600;
 }
 
@@ -77,18 +77,18 @@
   align-items: center;
   gap: 6px;
   padding: 6px 11px;
-  border: 1px solid var(--row, #1e2636);
+  border: 1px solid rgb(var(--row));
   border-radius: 6px;
-  background: var(--surface, #0d1119);
-  color: var(--text, #e6ebf5);
+  background: rgb(var(--surface));
+  color: rgb(var(--text));
   font: inherit;
   font-size: 12px;
   cursor: pointer;
   transition: border-color 120ms ease, background 120ms ease;
 }
 .asst__action:hover:not(:disabled) {
-  border-color: var(--accent, #6e8bff);
-  background: color-mix(in srgb, var(--accent, #6e8bff) 8%, var(--surface, #0d1119));
+  border-color: rgb(var(--accent));
+  background: color-mix(in srgb, rgb(var(--accent)) 8%, rgb(var(--surface)));
 }
 .asst__action:disabled {
   opacity: 0.5;
@@ -104,19 +104,19 @@
   flex: 1;
   min-width: 0;
   padding: 6px 10px;
-  border: 1px solid var(--row, #1e2636);
+  border: 1px solid rgb(var(--row));
   border-radius: 6px;
-  background: var(--surface, #0d1119);
-  color: var(--text, #e6ebf5);
+  background: rgb(var(--surface));
+  color: rgb(var(--text));
   font: inherit;
   font-size: 12px;
 }
 .asst__input::placeholder {
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
 }
 .asst__input:focus-visible {
   outline: none;
-  border-color: var(--accent, #6e8bff);
+  border-color: rgb(var(--accent));
 }
 
 .asst__send {
@@ -124,15 +124,15 @@
   align-items: center;
   justify-content: center;
   width: 32px;
-  border: 1px solid var(--row, #1e2636);
+  border: 1px solid rgb(var(--row));
   border-radius: 6px;
-  background: var(--surface, #0d1119);
-  color: var(--muted, #8b98b0);
+  background: rgb(var(--surface));
+  color: rgb(var(--muted));
   cursor: pointer;
 }
 .asst__send:hover:not(:disabled) {
-  color: var(--accent, #6e8bff);
-  border-color: var(--accent, #6e8bff);
+  color: rgb(var(--accent));
+  border-color: rgb(var(--accent));
 }
 .asst__send:disabled {
   opacity: 0.4;
@@ -143,7 +143,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
   font-size: 12px;
 }
 
@@ -154,13 +154,13 @@
   gap: 3px;
   border: none;
   background: none;
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
   font: inherit;
   font-size: 11px;
   cursor: pointer;
 }
 .asst__cancel:hover {
-  color: var(--text, #e6ebf5);
+  color: rgb(var(--text));
 }
 
 .asst__spin {
@@ -183,10 +183,10 @@
   align-items: flex-start;
   gap: 7px;
   padding: 8px 10px;
-  border: 1px solid color-mix(in srgb, var(--danger, #f4556e) 40%, transparent);
+  border: 1px solid color-mix(in srgb, rgb(var(--danger)) 40%, transparent);
   border-radius: 6px;
-  background: color-mix(in srgb, var(--danger, #f4556e) 8%, transparent);
-  color: var(--danger, #f4556e);
+  background: color-mix(in srgb, rgb(var(--danger)) 8%, transparent);
+  color: rgb(var(--danger));
   font-size: 12px;
 }
 
@@ -195,12 +195,12 @@
   align-items: center;
   gap: 6px;
   margin: 0 0 8px;
-  color: var(--warn, #f5b13d);
+  color: rgb(var(--warn));
   font-size: 11.5px;
 }
 
 .asst__answer {
-  border-top: 1px solid var(--row, #1e2636);
+  border-top: 1px solid rgb(var(--row));
   padding-top: 10px;
 }
 
@@ -208,7 +208,7 @@
    and a 64-char exec id ate three lines on a narrow panel. */
 .asst__content {
   line-height: 1.6;
-  color: var(--text, #e6ebf5);
+  color: rgb(var(--text));
   font-size: 12.5px;
 }
 
@@ -227,7 +227,7 @@
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
 }
 .asst__h:first-child {
   margin-top: 0;
@@ -244,7 +244,7 @@
   padding-left: 2px;
 }
 .asst__list li::marker {
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
 }
 
 .asst__code {
@@ -252,8 +252,8 @@
   font-size: 11.5px;
   padding: 1px 4px;
   border-radius: 3px;
-  background: var(--surface, #0d1119);
-  color: var(--accent, #6e8bff);
+  background: rgb(var(--surface));
+  color: rgb(var(--accent));
   overflow-wrap: anywhere;
 }
 
@@ -268,13 +268,13 @@
   border: none;
   background: none;
   padding: 0;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
   font: inherit;
   font-size: 11.5px;
   cursor: pointer;
 }
 .asst__trace-toggle:hover {
-  color: var(--text, #e6ebf5);
+  color: rgb(var(--text));
 }
 
 .asst__steps {
@@ -292,30 +292,30 @@
   align-items: baseline;
   gap: 7px;
   font-size: 11px;
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
 }
 .asst__step code {
-  color: var(--accent, #6e8bff);
+  color: rgb(var(--accent));
   font-size: 11px;
 }
 .asst__step--err code {
-  color: var(--danger, #f4556e);
+  color: rgb(var(--danger));
 }
 
 .asst__args {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 10.5px;
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
   overflow-wrap: anywhere;
 }
 
 .asst__dim {
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
 }
 
 .asst__meta {
   margin-top: 9px;
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
   font-size: 10.5px;
 }
 
@@ -324,11 +324,11 @@
   gap: 6px;
 }
 .asst--off .asst__head {
-  color: var(--muted, #8b98b0);
+  color: rgb(var(--muted));
 }
 .asst__off-text {
   margin: 0;
-  color: var(--dim, #5c6880);
+  color: rgb(var(--dim));
   font-size: 12px;
 }
 
@@ -341,9 +341,555 @@
   gap: 6px;
   margin: 0 0 8px;
   padding: 6px 9px;
-  border: 1px solid color-mix(in srgb, var(--danger, #f4556e) 45%, transparent);
+  border: 1px solid color-mix(in srgb, rgb(var(--danger)) 45%, transparent);
   border-radius: 5px;
-  color: var(--danger, #f4556e);
+  color: rgb(var(--danger));
   font-size: 11.5px;
   font-weight: 600;
+}
+
+/* ══ Platform assistant slide-over ═══════════════════════════════════════════
+ *
+ * docs/plan/platform-assistant.md §5.
+ *
+ * COLOUR CONTRACT: this console stores its palette as space-separated RGB
+ * TRIPLES (--panel: 18 22 31), so every colour must be written rgb(var(--x)).
+ * Writing var(--panel, #121722) yields the literal string "18 22 31", which is
+ * not a colour, so the browser DROPS the declaration silently. That is not
+ * hypothetical — it shipped, and it rendered the whole panel transparent with
+ * the dashboard reading through the conversation.
+ *
+ * The surface is layered over the route, not in place of it: an analyst
+ * mid-triage must not lose the alert queue to ask a question.
+ */
+
+.chat-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgb(var(--surface) / 0.55);
+  /* The blur is what separates "panel over content" from "text on top of
+     text". On a dense dashboard it is the difference between legible and not. */
+  backdrop-filter: blur(2px);
+  animation: chat-fade 140ms ease-out;
+}
+
+.chat {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 61;
+  /* Resizable, persisted, and clamped so it can never be dragged to a width
+     that hides its own composer. */
+  width: clamp(340px, var(--chat-w, 460px), min(760px, 96vw));
+  display: flex;
+  flex-direction: column;
+  background: rgb(var(--panel));
+  border-left: 1px solid rgb(var(--row));
+  box-shadow: -24px 0 60px rgb(0 0 0 / 0.45);
+  font-size: 13px;
+  color: rgb(var(--text));
+  animation: chat-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes chat-in {
+  from { transform: translateX(24px); opacity: 0; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+@keyframes chat-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+/* Respect a stated preference for less motion; a slide-over is decoration. */
+@media (prefers-reduced-motion: reduce) {
+  .chat, .chat-scrim { animation: none; }
+}
+
+/* ── drag-to-resize ───────────────────────────────────────────────────────── */
+
+.chat__grip {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  background: none;
+  border: 0;
+  padding: 0;
+  z-index: 2;
+}
+
+.chat__grip:hover,
+.chat__grip:focus-visible {
+  background: rgb(var(--accent) / 0.35);
+  outline: none;
+}
+
+/* ── header ───────────────────────────────────────────────────────────────── */
+
+.chat__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 13px 14px;
+  border-bottom: 1px solid rgb(var(--row));
+  background: rgb(var(--surface) / 0.5);
+}
+
+.chat__head h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: rgb(var(--text));
+}
+
+.chat__spark {
+  color: rgb(var(--accent));
+}
+
+.chat__scope {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--dim));
+  border: 1px solid rgb(var(--row));
+  border-radius: 999px;
+  padding: 2px 7px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 130px;
+}
+
+.chat__close {
+  margin-left: auto;
+  background: none;
+  border: 0;
+  color: rgb(var(--muted));
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 5px;
+  display: inline-flex;
+}
+
+.chat__close:hover {
+  color: rgb(var(--text));
+  background: rgb(var(--row));
+}
+
+/* ── state notes ──────────────────────────────────────────────────────────────
+ * A feature this deployment did not switch on is drawn in --dim, never
+ * --danger. Spending the incident colour on a non-incident is how operators
+ * learn that red means nothing.
+ */
+
+.chat__note {
+  margin: 0;
+  padding: 9px 14px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgb(var(--dim));
+  background: rgb(var(--surface) / 0.4);
+  border-bottom: 1px solid rgb(var(--row));
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.chat__note--warn {
+  color: rgb(var(--warn));
+  background: rgb(var(--warn) / 0.07);
+}
+
+/* ── conversation list ────────────────────────────────────────────────────── */
+
+.chat__list-wrap {
+  border-bottom: 1px solid rgb(var(--row));
+  padding: 9px 10px 10px;
+  max-height: 38%;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex-shrink: 0;
+}
+
+.chat__list-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  background: none;
+  border: 0;
+  color: rgb(var(--muted));
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  padding: 2px 2px 6px;
+}
+
+.chat__list-toggle:hover {
+  color: rgb(var(--text));
+}
+
+.chat__tools {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.chat__search {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border: 1px solid rgb(var(--row));
+  border-radius: 7px;
+  background: rgb(var(--surface));
+  color: rgb(var(--dim));
+  min-width: 0;
+}
+
+.chat__search:focus-within {
+  border-color: rgb(var(--accent) / 0.6);
+}
+
+.chat__search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: 0;
+  color: rgb(var(--text));
+  font-size: 12px;
+  outline: none;
+}
+
+.chat__search input::placeholder {
+  color: rgb(var(--dim));
+}
+
+/* The primary act in an empty sidebar. Given the accent so a first-time
+   operator has somewhere obvious to start. */
+.chat__new {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background: rgb(var(--accent) / 0.14);
+  border: 1px solid rgb(var(--accent) / 0.35);
+  border-radius: 7px;
+  color: rgb(var(--accent));
+  font-size: 12px;
+  font-weight: 500;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.chat__new:hover {
+  background: rgb(var(--accent) / 0.22);
+}
+
+.chat__scroll {
+  overflow-y: auto;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px;
+}
+
+/* Date grouping, taken from the reference implementation in ~/Code/m. An
+   operator looks for "the one from yesterday", not for a position in a list. */
+.chat__group {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: rgb(var(--dim));
+  padding: 9px 6px 4px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.chat__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.chat__item {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  border-radius: 7px;
+  border: 1px solid transparent;
+}
+
+.chat__item:hover {
+  background: rgb(var(--row) / 0.55);
+}
+
+.chat__item--on {
+  background: rgb(var(--accent) / 0.12);
+  border-color: rgb(var(--accent) / 0.3);
+}
+
+.chat__item-open {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  background: none;
+  border: 0;
+  color: rgb(var(--text));
+  font-size: 12.5px;
+  text-align: left;
+  padding: 7px 9px;
+  cursor: pointer;
+  border-radius: 7px;
+}
+
+.chat__item-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat__pin-on {
+  color: rgb(var(--accent));
+  flex-shrink: 0;
+}
+
+.chat__item-act {
+  background: none;
+  border: 0;
+  color: rgb(var(--dim));
+  cursor: pointer;
+  padding: 5px;
+  border-radius: 5px;
+  opacity: 0;
+  display: inline-flex;
+}
+
+.chat__item:hover .chat__item-act {
+  opacity: 1;
+}
+
+.chat__item-act:hover {
+  color: rgb(var(--text));
+  background: rgb(var(--row));
+}
+
+/* Keyboard users never fire :hover, so without this the row actions are
+   permanently invisible and unreachable. */
+.chat__item-act:focus-visible {
+  opacity: 1;
+  outline: 1px solid rgb(var(--accent));
+}
+
+.chat__empty {
+  color: rgb(var(--dim));
+  font-size: 12px;
+  padding: 10px 8px;
+  line-height: 1.5;
+}
+
+/* ── thread ───────────────────────────────────────────────────────────────── */
+
+.chat__thread {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px 14px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+}
+
+.chat__starters {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  align-items: stretch;
+  margin: auto 0;
+}
+
+.chat__starters-lead {
+  color: rgb(var(--muted));
+  font-size: 13px;
+  margin: 0 0 3px;
+  line-height: 1.5;
+}
+
+.chat__starter {
+  text-align: left;
+  background: rgb(var(--surface));
+  border: 1px solid rgb(var(--row));
+  border-radius: 9px;
+  color: rgb(var(--text));
+  font-size: 12.5px;
+  padding: 9px 11px;
+  cursor: pointer;
+  line-height: 1.45;
+}
+
+.chat__starter:hover {
+  border-color: rgb(var(--accent) / 0.5);
+  background: rgb(var(--accent) / 0.08);
+}
+
+/* The analyst's own turn: aligned right and bounded, so the eye can separate
+   question from answer without reading either. */
+.chat__q {
+  margin: 0;
+  align-self: flex-end;
+  max-width: 88%;
+  background: rgb(var(--accent) / 0.14);
+  border: 1px solid rgb(var(--accent) / 0.22);
+  border-radius: 11px 11px 3px 11px;
+  padding: 8px 11px;
+  color: rgb(var(--text));
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The answer is full width and unboxed — it is the content, not a message in a
+   chat app. The left rule marks where it starts without framing it as a bubble. */
+.chat__a {
+  border: 0;
+  border-left: 2px solid rgb(var(--row));
+  border-radius: 0;
+  background: none;
+  padding: 0 0 0 11px;
+  margin: 0;
+}
+
+.chat__a--ungrounded {
+  border-left-color: rgb(var(--warn));
+}
+
+.chat__meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 10.5px;
+  color: rgb(var(--dim));
+  margin-top: 7px;
+}
+
+/* ── composer ─────────────────────────────────────────────────────────────── */
+
+.chat__composer {
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgb(var(--row));
+  background: rgb(var(--surface) / 0.5);
+}
+
+.chat__composer-box {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  border: 1px solid rgb(var(--row));
+  border-radius: 11px;
+  background: rgb(var(--panel));
+  padding: 8px 8px 8px 11px;
+}
+
+.chat__composer-box:focus-within {
+  border-color: rgb(var(--accent) / 0.6);
+}
+
+/* Auto-growing textarea rather than an input: an analyst pasting a process
+   chain or a path should see what they are sending. */
+.chat__input {
+  flex: 1;
+  resize: none;
+  background: none;
+  border: 0;
+  outline: none;
+  color: rgb(var(--text));
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  max-height: 132px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.chat__input::placeholder {
+  color: rgb(var(--dim));
+}
+
+.chat__send {
+  display: inline-grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border: 0;
+  border-radius: 8px;
+  background: rgb(var(--accent));
+  color: rgb(var(--surface));
+  cursor: pointer;
+}
+
+.chat__send:disabled {
+  background: rgb(var(--row));
+  color: rgb(var(--dim));
+  cursor: not-allowed;
+}
+
+.chat__hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 7px 2px 0;
+  font-size: 10.5px;
+  color: rgb(var(--dim));
+}
+
+.chat__hint kbd {
+  font: inherit;
+  border: 1px solid rgb(var(--row));
+  border-radius: 3px;
+  padding: 0 3px;
+  color: rgb(var(--muted));
+}
+
+@media (max-width: 640px) {
+  .chat {
+    width: 100vw;
+  }
+  .chat__grip {
+    display: none;
+  }
+}
+
+/* Handover to the wider sidebar. Quiet by default: it is a convenience beside
+   the guarantee badge, not an action, and must not compete with the agent
+   buttons an analyst came to press. */
+.asst__expand {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 1px solid rgb(var(--row));
+  border-radius: 5px;
+  color: rgb(var(--muted));
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.asst__expand:hover {
+  color: rgb(var(--text));
+  border-color: rgb(var(--accent));
 }

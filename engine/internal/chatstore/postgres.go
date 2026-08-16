@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver ("pgx")
 )
 
 // schema mirrors internal/centralstore/postgres.go deliberately — same RLS
@@ -64,22 +66,169 @@ CREATE POLICY tenant_isolation ON assistant_message
   WITH CHECK (tenant_id = current_setting('app.tenant_id', true));
 `
 
+// grants is separate from schema because it is parameterised by the role, and
+// because it is the half that is easy to forget: withScope drops privilege to a
+// non-superuser role, so without these every statement fails "permission denied
+// for table assistant_chat" — the store looks wired and works for nobody.
+//
+// The role gets the four verbs the Store interface actually needs and no more.
+// RLS still filters every row; the grants only decide which VERBS are reachable,
+// so a bug that got past the policy still cannot, say, TRUNCATE the history.
+const grants = `
+GRANT SELECT, INSERT, UPDATE, DELETE ON assistant_chat    TO %[1]s;
+GRANT SELECT, INSERT, UPDATE, DELETE ON assistant_message TO %[1]s;
+`
+
+// startupLockTimeout bounds the DDL below. Mirrors centralstore: a migration
+// that cannot get its lock must fail fast and say so, not hang a control-plane
+// restart indefinitely while the fleet writes.
+const startupLockTimeout = "5s"
+
+// Pool ceilings for the chat store's own connections.
+//
+// database/sql defaults MaxOpenConns to UNLIMITED, and that default is what
+// turned a slow query into a total control-plane outage once already: every
+// overlapping request opened another Postgres connection until the server hit
+// max_connections and refused everything, health endpoints included.
+//
+// The chat store gets its OWN small pool rather than sharing centralstore's.
+// Sharing would let a sidebar full of history queries starve the telemetry
+// reads the console depends on; separate bounded pools mean a chat storm queues
+// behind chat, and the sum of both ceilings still leaves a stock max_connections
+// room for psql, backups and the readiness probe.
+const (
+	maxOpenConns    = 8
+	maxIdleConns    = 4
+	connMaxLifetime = 30 * time.Minute
+	connMaxIdleTime = 5 * time.Minute
+)
+
+// tunePool applies the ceilings above. Separated from OpenPostgres so a test
+// can assert the pool is actually bounded without needing a live database —
+// the unbounded default is silent, and an outage is a costly way to find out.
+func tunePool(db *sql.DB) {
+	db.SetMaxOpenConns(maxOpenConns)
+	db.SetMaxIdleConns(maxIdleConns)
+	db.SetConnMaxLifetime(connMaxLifetime)
+	db.SetConnMaxIdleTime(connMaxIdleTime)
+}
+
 // PGStore is the Postgres-backed chat store.
 type PGStore struct {
 	db *sql.DB
 	// role is the non-superuser role every statement runs as. RLS is bypassed
 	// by a superuser even with FORCE, so dropping privilege is not optional.
 	role string
+	// ownsDB is true only when this store opened the pool. Close() on a pool
+	// handed in by someone else would take down whatever else is using it.
+	ownsDB bool
 }
 
-func NewPGStore(db *sql.DB, role string) (*PGStore, error) {
-	if _, err := db.Exec(schema); err != nil {
-		return nil, fmt.Errorf("chatstore: migrate: %w", err)
+// OpenPostgres connects on its own bounded pool and provisions the schema.
+//
+// role must be the same role the rest of the application drops to
+// (centralstore.AppRole) — see the comment on that constant.
+func OpenPostgres(dsn, role string) (*PGStore, error) {
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, err
 	}
-	if role == "" {
-		role = "ebpf_soc_app"
+	tunePool(db)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s, err := NewPGStore(db, role)
+	if err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	s.ownsDB = true
+	return s, nil
+}
+
+// NewPGStore provisions the schema on an existing pool.
+//
+// The role is REQUIRED. It used to default, and the default named a role no
+// migration ever creates — which is invisible at startup and fails at the first
+// query. A missing role is now a startup error, where it is cheap to see.
+func NewPGStore(db *sql.DB, role string) (*PGStore, error) {
+	if strings.TrimSpace(role) == "" {
+		return nil, fmt.Errorf("chatstore: no app role given; pass centralstore.AppRole")
+	}
+	if err := provision(db, role); err != nil {
+		return nil, err
 	}
 	return &PGStore{db: db, role: role}, nil
+}
+
+// provision creates the schema, the role and the grants, and is idempotent.
+//
+// It SKIPS the DDL entirely once the database is already in the target state.
+// The statements are all idempotent, but DROP POLICY / CREATE POLICY / ALTER
+// TABLE each take an ACCESS EXCLUSIVE lock, and re-taking those on every restart
+// is the exact pattern that made a control-plane restart contend with live
+// writes. Checking first costs one catalogue query and no table lock at all.
+func provision(db *sql.DB, role string) error {
+	ready, err := schemaReady(db, role)
+	if err != nil {
+		return fmt.Errorf("chatstore: schema probe: %w", err)
+	}
+	if ready {
+		return nil
+	}
+	// Session-scoped, so it bounds this connection's DDL without following the
+	// pooled connections used for queries afterwards.
+	if _, err := db.Exec("SET lock_timeout = '" + startupLockTimeout + "'"); err != nil {
+		return fmt.Errorf("chatstore: set lock_timeout: %w", err)
+	}
+	if _, err := db.Exec(schema); err != nil {
+		return fmt.Errorf("chatstore: migrate (retry in a moment if this is lock contention): %w", err)
+	}
+	// The role normally already exists — centralstore creates it — but this
+	// package must not depend on which store happened to open first.
+	if _, err := db.Exec(fmt.Sprintf(`DO $$ BEGIN
+	  IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '%s') THEN
+	    CREATE ROLE %s NOSUPERUSER NOLOGIN;
+	  END IF;
+	END $$;`, role, quoteIdent(role))); err != nil {
+		return fmt.Errorf("chatstore: app role: %w", err)
+	}
+	if _, err := db.Exec(fmt.Sprintf(grants, quoteIdent(role))); err != nil {
+		return fmt.Errorf("chatstore: grants: %w", err)
+	}
+	return nil
+}
+
+// schemaReady reports whether both tables exist, both force RLS, both carry the
+// policy, and the app role can actually reach them.
+//
+// The grant check is the one that matters: tables-and-policies-but-no-grants is
+// a state a half-finished migration leaves behind, and it reads as "provisioned"
+// to any probe that only looks for the tables.
+func schemaReady(db *sql.DB, role string) (bool, error) {
+	var ready bool
+	err := db.QueryRow(`
+SELECT
+      (SELECT count(*) FROM pg_class
+        WHERE relname IN ('assistant_chat','assistant_message') AND relrowsecurity AND relforcerowsecurity) = 2
+  AND (SELECT count(*) FROM pg_policies
+        WHERE tablename IN ('assistant_chat','assistant_message') AND policyname = 'tenant_isolation') = 2
+  AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)
+  AND (SELECT count(DISTINCT table_name) FROM information_schema.role_table_grants
+        WHERE grantee = $1 AND table_name IN ('assistant_chat','assistant_message')
+          AND privilege_type = 'INSERT') = 2`, role).Scan(&ready)
+	return ready, err
+}
+
+// Close releases the pool, but only if this store opened it. A store built on a
+// caller-supplied *sql.DB does not own that pool's lifetime, and closing it
+// would take down everything else sharing it.
+func (p *PGStore) Close() error {
+	if !p.ownsDB {
+		return nil
+	}
+	return p.db.Close()
 }
 
 // withScope runs fn inside a transaction that drops privilege and sets

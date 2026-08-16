@@ -33,12 +33,14 @@ import {
   ChevronDown,
   ChevronRight,
   Loader2,
+  Maximize2,
   Send,
   Sparkles,
   X
 } from "lucide-react";
 import { AnswerText } from "./AnswerText";
 import { useAssistant } from "./useAssistant";
+import { useAssistantChat } from "./AssistantChatProvider";
 import type { AssistantApi } from "./api";
 import "./assistant.css";
 
@@ -53,6 +55,7 @@ export interface AssistantPanelProps {
 
 export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProps) {
   const { capability, answer, running, error, ask, cancel } = useAssistant({ api, execId });
+  const assistantChat = useAssistantChat();
   const [question, setQuestion] = useState("");
   const [traceOpen, setTraceOpen] = useState(false);
 
@@ -97,6 +100,25 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
           <Ban size={11} aria-hidden />
           Read-only
         </span>
+        {/* Continuity (platform-assistant.md §5). The drill assistant and the
+            sidebar must be ONE conversation opened wider — two surfaces that
+            look alike but forget each other teach the operator that neither
+            remembers. The subject travels with the handover so the wider view
+            opens already knowing what is under investigation.
+
+            Absent when no provider is mounted, which is how this stays safe in
+            tests and in any entry that has not adopted the shell. */}
+        {assistantChat ? (
+          <button
+            type="button"
+            className="asst__expand"
+            onClick={() => assistantChat.openAssistant({ execId })}
+            title="Continue this investigation in the assistant sidebar"
+          >
+            <Maximize2 size={11} aria-hidden />
+            Expand
+          </button>
+        ) : null}
       </header>
 
       {subjectLabel ? (
@@ -106,7 +128,11 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
       ) : null}
 
       <div className="asst__actions">
-        {capability.agents.map((a) => (
+        {/* Task agents only. The conversational agent takes a typed question and
+            has no fixed job, so rendering it as a one-click button would promise
+            an action it cannot perform — it belongs in the sidebar, which has a
+            composer. */}
+        {capability.agents.filter((a) => !a.conversational).map((a) => (
           <button
             key={a.id}
             type="button"

@@ -21,6 +21,7 @@ import {
   Network,
   Settings,
   ShieldAlert,
+  Sparkles,
   Wifi,
   UserCircle,
   X,
@@ -38,6 +39,8 @@ export function SocSidebar({
   onToggleSidebar,
   onCloseSidebar,
   onOpenSurface,
+  onOpenAssistant,
+  assistantOpen,
   watchlistCount,
   notificationBadge,
   userName
@@ -47,6 +50,14 @@ export function SocSidebar({
   onToggleSidebar: () => void;
   onCloseSidebar: () => void;
   onOpenSurface: (surface: OpenSurface) => void;
+  /**
+   * The assistant is NOT an OpenSurface. The surfaces are mutually exclusive
+   * overlays, so routing the assistant through them would close whatever the
+   * analyst was reading — exactly what platform-assistant.md §5 forbids. It
+   * gets its own pair of props so it can be open ALONGSIDE any surface.
+   */
+  onOpenAssistant: () => void;
+  assistantOpen: boolean;
   watchlistCount: number;
   notificationBadge: number | undefined;
   userName: string;
@@ -84,6 +95,11 @@ export function SocSidebar({
           <SidebarButton icon={Clock} label="Time Machine" onClick={() => onOpenSurface("time-machine")} active={openSurface === "time-machine"} />
         </SidebarSection>
         <SidebarSection title="Intelligence">
+          {/* Top of Intelligence, above Watchlist: it is an intelligence
+              surface, and inventing a group for one item makes the nav worse.
+              Same Sparkles icon as the drill-panel assistant so the two read as
+              one feature rather than two products. */}
+          <SidebarButton icon={Sparkles} label="Assistant" onClick={onOpenAssistant} active={assistantOpen} />
           <SidebarButton icon={Eye} label="Watchlist" onClick={() => onOpenSurface("watchlist")} badge={watchlistCount} active={openSurface === "watchlist"} />
           <SidebarButton icon={Database} label="Honeypots" onClick={() => onOpenSurface("honeypots")} active={openSurface === "honeypots"} />
         </SidebarSection>

@@ -44,6 +44,15 @@ type Config struct {
 	// dependency on an inference endpoint because someone upgraded.
 	Assistant assistant.Config
 
+	// Chats persists assistant conversations. nil = history disabled, and the
+	// chat endpoints answer 503 "not enabled" rather than failing obscurely.
+	//
+	// Optional on purpose. Chat history is a convenience; detection, response
+	// and the read API are not. A deployment whose chat schema will not migrate
+	// must still start and still contain threats, so this stays nil in that case
+	// instead of aborting startup.
+	Chats chatstore.Store
+
 	CA          *mtls.CA
 	ServerName  string // gRPC cert SAN — the host/IP agents connect to
 	FleetSigner signing.Signer
@@ -155,6 +164,7 @@ func New(cfg Config) (*Server, error) {
 		auditor:    authz.NewMemAuditor(),
 		owners:     newOwnerCache(),
 		approvals:  approval.NewStore(approval.DefaultTTL),
+		chats:      cfg.Chats,
 	}
 
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))

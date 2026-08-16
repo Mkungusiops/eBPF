@@ -286,3 +286,53 @@ func TestRatchetItselfIsLoadBearing(t *testing.T) {
 		t.Error("isMutating says /api/alerts IS mutating; the block parser over-reaches")
 	}
 }
+
+func TestExactlyOneConversationalAgentExists(t *testing.T) {
+	// THE BUG THIS PINS: the sidebar routed free text through explain-chain,
+	// whose instruction is "explain this process chain" regardless of what was
+	// typed. An analyst who said "Hello" received an unrelated incident
+	// analysis, on both the single-tenant and multi-tenant consoles.
+	//
+	// A chat surface needs exactly one agent to select. Zero and it falls back
+	// to a button again; more than one and the choice is arbitrary.
+	var conversational []string
+	for _, a := range Agents() {
+		if a.Conversational {
+			conversational = append(conversational, a.ID)
+		}
+	}
+	if len(conversational) != 1 {
+		t.Fatalf("found %d conversational agents (%v); a chat surface needs exactly one to select",
+			len(conversational), conversational)
+	}
+}
+
+func TestConversationalAgentIsOfferedFirst(t *testing.T) {
+	// Belt and braces for a client that selects by position rather than by flag.
+	// The ordering is cheap; a console picking a task agent is not.
+	all := Agents()
+	if len(all) == 0 {
+		t.Fatal("no agents — this test is vacuous")
+	}
+	if !all[0].Conversational {
+		t.Errorf("Agents()[0] is %q, which is not conversational; a client that "+
+			"takes the first agent would get a fixed-task button", all[0].ID)
+	}
+}
+
+func TestTaskAgentsStateTheirTaskAndTheConversationalOneDoesNot(t *testing.T) {
+	// The structural difference between a button and a chat agent: a button
+	// carries a fixed TASK that overrides the question. If the conversational
+	// agent ever grows one, it stops answering what was asked.
+	for _, a := range Agents() {
+		answersTheQuestion := strings.Contains(a.Instructions, "Answer the analyst's question")
+		if a.Conversational && !answersTheQuestion {
+			t.Errorf("conversational agent %q does not instruct the model to answer the "+
+				"question; it will substitute a task of its own", a.ID)
+		}
+		if !a.Conversational && answersTheQuestion {
+			t.Errorf("task agent %q claims to answer free questions; it is rendered as a "+
+				"one-click button with no composer", a.ID)
+		}
+	}
+}

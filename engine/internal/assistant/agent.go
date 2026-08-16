@@ -17,6 +17,16 @@ type Agent struct {
 	ID           string
 	Title        string
 	Instructions string
+	// Conversational marks the agent that ANSWERS THE ANALYST'S QUESTION rather
+	// than performing a fixed task.
+	//
+	// The distinction is load-bearing, and it was learned the hard way: the
+	// sidebar shipped routing free text through explain-chain, whose
+	// instruction is "explain this process chain" regardless of what was typed.
+	// An analyst who said "Hello" received a process-chain analysis. The
+	// task agents are BUTTONS — they take no question — and a chat surface must
+	// not pick one of them by position in a list.
+	Conversational bool
 }
 
 // The two agents that map onto work an analyst already does by hand.
@@ -68,6 +78,26 @@ WHAT YOU CANNOT DO:
   say so plainly and let the operator decide — a human presses the button.`
 
 var agents = map[string]Agent{
+	"ask": {
+		ID:             "ask",
+		Title:          "Ask a question",
+		Conversational: true,
+		Instructions: sharedRules + `
+
+TASK: Answer the analyst's question, using this console's data.
+
+Answer WHAT WAS ASKED. Do not substitute a different analysis because it is the
+one you know how to do — if the question is unclear, say what you would need.
+
+If the message is a greeting or is not a question about the estate ("hi",
+"what can you do"), do not analyse an unrelated incident. Reply in one short
+line, then give a brief current-state orientation from the data: the alert
+counts by severity in the recent window, the top technique, and anything
+already contained. Two or three lines is the whole answer.
+
+Keep answers to the length the question deserves. A yes/no question gets a
+sentence, not a report.`,
+	},
 	"explain-chain": {
 		ID:    "explain-chain",
 		Title: "Explain this process chain",
@@ -93,7 +123,9 @@ Finish with the one thing the next analyst should do first. Under 150 words.`,
 
 // Agents lists the available agents, sorted, for the console to render.
 func Agents() []Agent {
-	return []Agent{agents["explain-chain"], agents["summarise-incident"]}
+	// Conversational first: a chat surface takes the first agent it is offered,
+	// and the ordering is the contract that stops it taking a button.
+	return []Agent{agents["ask"], agents["explain-chain"], agents["summarise-incident"]}
 }
 
 // Step is one tool invocation, surfaced to the UI so an analyst can see what the

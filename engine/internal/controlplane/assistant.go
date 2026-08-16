@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
+	"github.com/jeffmk/ebpf-poc-engine/internal/chatstore"
 )
 
 // The analyst assistant on the MULTI-TENANT control plane.
@@ -34,6 +35,9 @@ type assistantCapability struct {
 type cpAgent struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
+	// Conversational tells the console which agent takes a QUESTION. Without it
+	// a chat surface has to guess by list position, and it guessed a button.
+	Conversational bool `json:"conversational,omitempty"`
 }
 
 func (s *Server) registerAssistantRoutes(mux *http.ServeMux) {
@@ -61,7 +65,7 @@ func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Reques
 	default:
 		out := assistantCapability{Enabled: true, Model: cfg.Model}
 		for _, a := range assistant.Agents() {
-			out.Agents = append(out.Agents, cpAgent{ID: a.ID, Title: a.Title})
+			out.Agents = append(out.Agents, cpAgent{ID: a.ID, Title: a.Title, Conversational: a.Conversational})
 		}
 		writeJSON(w, http.StatusOK, out)
 	}
@@ -71,6 +75,14 @@ type cpAskRequest struct {
 	Agent    string `json:"agent"`
 	Question string `json:"question"`
 	ExecID   string `json:"exec_id"`
+	// ChatID, when present, records this exchange in that conversation.
+	//
+	// ABSENT MEANS INCOGNITO, and that is the default on purpose
+	// (platform-assistant.md §3): an analyst may ask about a live breach before
+	// it is classified, and the safe default for an unclassified question is to
+	// leave no record. Persistence is opt-in per ask, not a mode you can forget
+	// you are in.
+	ChatID string `json:"chat_id"`
 }
 
 func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +135,11 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		// The upstream message can carry provider detail; log it, do not return
 		// it to a browser.
 		slog.Warn("assistant run failed", "agent", req.Agent, "error", err)
+		// Keep the QUESTION even though there is no answer. Otherwise a failed
+		// ask leaves a conversation that exists in the list and is empty when
+		// reopened, which reads as data loss rather than as a failed request —
+		// and the analyst loses what they typed.
+		s.recordQuestion(r, req)
 		writeJSON(w, http.StatusBadGateway,
 			map[string]string{"error": "the assistant could not complete this request"})
 		return
@@ -134,7 +151,88 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	slog.Info("assistant answered", "agent", req.Agent, "exec_id", req.ExecID,
 		"steps", len(ans.Steps), "grounded", ans.Grounded, "duration", ans.Duration)
 
+	s.recordExchange(r, req, ans)
+
 	writeJSON(w, http.StatusOK, ans)
+}
+
+// recordExchange stores the question and the answer, when the caller asked for
+// it and this deployment has history.
+//
+// Two rules, both deliberate:
+//
+// IT NEVER FAILS THE ANSWER. The analyst has their answer already; losing the
+// history copy is a logged annoyance, not a reason to turn a good response into
+// an error. Anything else makes a storage hiccup look like the assistant broke.
+//
+// IT NEVER WIDENS SCOPE. The chat id comes from the request, so it is
+// attacker-controlled — but AppendMessage re-checks ownership against the
+// caller's Scope, and an id belonging to someone else returns ErrNotFound
+// rather than appending. That check lives in the store, not here, so it cannot
+// be skipped by a second caller added later.
+// recordQuestion stores just the analyst's question, for the case where the run
+// failed and there is no answer to pair with it.
+func (s *Server) recordQuestion(r *http.Request, req cpAskRequest) {
+	sc, ok := s.chatScopeFor(r, req)
+	if !ok {
+		return
+	}
+	if _, err := s.chats.AppendMessage(sc, req.ChatID, chatstore.Message{
+		Role: "user", Content: req.Question,
+	}); err != nil {
+		slog.Warn("assistant history: question not stored", "chat", req.ChatID, "error", err)
+	}
+}
+
+// chatScopeFor resolves the caller's scope for a recording, or reports that
+// this exchange must not be recorded at all. One place, so the incognito rule
+// and the unauthenticated rule cannot be applied inconsistently by a second
+// caller.
+func (s *Server) chatScopeFor(r *http.Request, req cpAskRequest) (chatstore.Scope, bool) {
+	if s.chats == nil || strings.TrimSpace(req.ChatID) == "" {
+		return chatstore.Scope{}, false // history disabled, or an incognito ask
+	}
+	p, ok := s.principal(r)
+	if !ok {
+		return chatstore.Scope{}, false
+	}
+	sc, err := scopeFor(p)
+	if err != nil {
+		return chatstore.Scope{}, false
+	}
+	return sc, true
+}
+
+func (s *Server) recordExchange(r *http.Request, req cpAskRequest, ans assistant.Answer) {
+	sc, ok := s.chatScopeFor(r, req)
+	if !ok {
+		return
+	}
+
+	// Provenance is part of the record: a post-incident review has to see which
+	// endpoints an assisted conclusion was built from. If the trace will not
+	// marshal, keep the message and lose the trace — a stored answer with no
+	// steps still beats no record of the exchange at all.
+	steps, err := json.Marshal(ans.Steps)
+	if err != nil {
+		slog.Warn("assistant steps not serialisable; storing the answer without its trace", "error", err)
+		steps = nil
+	}
+
+	if _, err := s.chats.AppendMessage(sc, req.ChatID, chatstore.Message{
+		Role: "user", Content: req.Question,
+	}); err != nil {
+		// ErrNotFound here is the ownership check doing its job on a chat id
+		// that is not the caller's — expected, not alarming.
+		slog.Warn("assistant history: question not stored", "chat", req.ChatID, "error", err)
+		return
+	}
+	if _, err := s.chats.AppendMessage(sc, req.ChatID, chatstore.Message{
+		Role: "assistant", Content: ans.Content, Model: s.cfg.Assistant.Model,
+		Steps: string(steps), Grounded: ans.Grounded,
+	}); err != nil {
+		slog.Warn("assistant history: answer not stored", "chat", req.ChatID, "error", err)
+	}
 }
 
 // contextWithTimeout bounds the run and inherits the request's cancellation, so

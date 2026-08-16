@@ -31,6 +31,7 @@ import { RightRail } from "./RightRail";
 import { SocModals } from "./SocModals";
 import { SocNotices } from "./SocNotices";
 import { SocSidebar } from "./Sidebar";
+import { useAssistantChat } from "../assistant/AssistantChatProvider";
 import { TimelinePanel } from "./TimelinePanel";
 import { AlertContextMenu, AlertPreview } from "./rows";
 import { ExecutiveMetricTile } from "./tiles";
@@ -79,6 +80,9 @@ export function SocRoute() {
   const [execBandOpen, setExecBandOpen] = useLocalJsonState<boolean>("soc.execBand", true);
   const [briefingOpen, setBriefingOpen] = useLocalJsonState<boolean>("soc.briefingMode", false);
   const [query, setQuery] = useState("");
+  // Null when no provider is mounted (tests, or an entry that has not adopted
+  // it). Every use is optional-chained so the console renders either way.
+  const assistantChat = useAssistantChat();
   const [hideBaseline, setHideBaseline] = useLocalJsonState<boolean>("soc.hideBaseline", true);
   const [filterUnack, setFilterUnack] = useState(false);
   const [groupAlerts, setGroupAlerts] = useLocalJsonState<boolean>("soc.groupAlerts", true);
@@ -323,6 +327,8 @@ export function SocRoute() {
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onCloseSidebar={() => setSidebarOpen(false)}
         onOpenSurface={openSurfaceByName}
+        onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: snapshot.whoami.host })}
+        assistantOpen={assistantChat?.open ?? false}
         watchlistCount={watchCount(watchlist)}
         notificationBadge={notificationsActive && notifyChannels.inApp ? notifyHistory.filter((item) => !item.read).length : undefined}
         userName={snapshot.whoami.user}

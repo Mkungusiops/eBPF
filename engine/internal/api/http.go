@@ -147,6 +147,16 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/origin", s.handleOrigin)
 	mux.HandleFunc("/api/assistant", s.handleAssistantCapability)
 	mux.HandleFunc("/api/assistant/ask", s.handleAssistantAsk)
+	// Chat history is Postgres+RLS only, and this engine is single-tenant
+	// SQLite — so it has none. The route still exists to say so HONESTLY.
+	//
+	// Without it the console's request fell through to the catch-all and came
+	// back 401 with a login redirect, which the sidebar could only read as
+	// "history is broken". An operator was told a feature had failed when it
+	// was simply never built for this deployment. A deliberate 503 is the
+	// difference between a fault and a fact.
+	mux.HandleFunc("/api/assistant/chats", s.handleAssistantChatsUnavailable)
+	mux.HandleFunc("/api/assistant/chats/", s.handleAssistantChatsUnavailable)
 
 	// Choke Gateway Console — separate page, separate API namespace.
 	mux.HandleFunc("/choke", s.handleChokeConsole)

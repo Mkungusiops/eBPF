@@ -124,17 +124,50 @@ failed). An optional feature that is switched off is not a fault.
 
 ## 6. Build order
 
-1. **Schema + `centralstore` access, with RLS tests.** Storage first, because
-   getting tenant scoping wrong later means a migration under pressure.
-2. **CRUD + search endpoints**, tenant-scoped, on both engine and control plane.
+1. **Schema + store access, with RLS tests.** ✅ `internal/chatstore`. Storage
+   first, because getting tenant scoping wrong later means a migration under
+   pressure.
+2. **CRUD + search endpoints**, tenant-scoped. ✅
+   `internal/controlplane/chat.go`.
 3. **Streaming.** The current `/api/assistant/ask` is request/response; a
-   sidebar conversation needs SSE and an abort path.
-4. **The panel shell** — list, search, conversation, composer.
+   sidebar conversation needs SSE and an abort path. ❌ **deferred — see below.**
+4. **The panel shell** — list, search, conversation, composer. ✅
+   `web/src/features/assistant/ChatSidebar.tsx`.
 5. **Continuity** — drill panel hands its `exec_id` and conversation to the
-   sidebar.
+   sidebar. ✅ `AssistantChatProvider`, mounted in `src/app/render.tsx`.
 
 Steps 1–2 carry the security risk and deserve the review attention. 3–5 are
 ordinary product work.
+
+### Why 4–5 shipped before 3
+
+Streaming was deferred, deliberately and with a cost. The sidebar is what makes
+the store observable at all — without it, steps 1–2 are endpoints nobody calls
+— so building it first bought end-to-end verification of the security-critical
+half much sooner.
+
+The interim cost is real: an analyst waits on a spinner for a tool-calling
+answer instead of watching it work. It is bounded by the seam — every network
+call goes through the injected `ChatApi` / `AssistantApi`, so SSE lands behind
+those interfaces without touching a component. What it is NOT is free; §3 calls
+abortable streaming non-negotiable and that judgement still stands.
+
+### What step 1 was missing when it was first written
+
+Worth recording, because none of it was visible in Go and all of it would have
+failed on first contact with a database:
+
+- **No `GRANT`s.** Both tables forced RLS and granted nothing to the app role
+  `withScope` drops to — every statement would have failed permission denied.
+- **A default role nobody creates.** `NewPGStore` defaulted to `ebpf_soc_app`;
+  every migration creates `ebpf_app`. Now `centralstore.AppRole` is exported and
+  is the single source of truth, and an empty role is a startup error.
+- **An unbounded connection pool** — the exact root cause of a previous total
+  control-plane outage. Chat now has its own small bounded pool rather than
+  sharing centralstore's, so history load cannot starve telemetry reads.
+
+The lesson generalises: unit tests that never touch Postgres cannot tell a
+working store from one that is merely well-typed.
 
 ## 7. What not to do
 

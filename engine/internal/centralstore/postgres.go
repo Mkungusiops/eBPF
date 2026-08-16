@@ -15,9 +15,18 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/ingest"
 )
 
-// appRole is the non-superuser role the store drops to for every data access,
+// AppRole is the non-superuser role the store drops to for every data access,
 // so Row-Level Security is enforced (a superuser would bypass it).
-const appRole = "ebpf_app"
+//
+// Exported because it is the whole database's app role, not this package's:
+// internal/chatstore drops to the same role for the same reason. Two packages
+// each naming their own role is how one of them ends up SET ROLE-ing to a role
+// nobody ever created — which fails at the first query, not at startup.
+const AppRole = "ebpf_app"
+
+// appRole is retained as the in-package spelling so the call sites below read
+// unchanged.
+const appRole = AppRole
 
 const pgSchema = `
 CREATE TABLE IF NOT EXISTS telemetry (
