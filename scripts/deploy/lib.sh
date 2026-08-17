@@ -1025,7 +1025,28 @@ cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
     # holds the spec to the letter ignores all of it and an installed console
     # keeps whatever icon it already had.
     location = /manifest.webmanifest { types {} default_type application/manifest+json; try_files \$uri =404; }
-    location / { try_files \$uri \$uri.html /index.html; }
+    # Content-hashed build output. Two rules, and BOTH matter.
+    #
+    # =404: a hashed asset that does not exist must 404, NOT fall through to
+    # the SPA catch-all below. Without it a stale shell asking for a deleted
+    # bundle receives index.html with a text/html content type, the browser
+    # refuses to parse it as an ES module, and the app never boots — a blank
+    # page with no error, because React never ran to catch anything.
+    #
+    # immutable: the filename carries a content hash, so the bytes can never
+    # change under it. This is the one place a long max-age is safe.
+    location /assets/ { try_files \$uri =404; add_header Cache-Control \"public, max-age=31536000, immutable\" always; }
+    # The HTML shells. no-cache means REVALIDATE, not do-not-store: the ETag
+    # turns the check into a cheap 304 while guaranteeing the browser never
+    # serves a shell that points at asset hashes a deploy has since replaced.
+    #
+    # Without this nginx sends no Cache-Control at all for HTML, and browsers
+    # fall back to heuristic freshness — the same trap already documented for
+    # the favicon above. It is worse here: a stale shell does not merely show
+    # an old icon, it references bundles that no longer exist, so the console
+    # comes up blank after every deploy for anyone with a warm cache. That is
+    # exactly what happened on sign-out and sign-in.
+    location / { try_files \$uri \$uri.html /index.html; add_header Cache-Control \"no-cache\" always; }
 NGINX"
 
   # TLS is driven by whether certs EXIST on the target, not by a flag, so a

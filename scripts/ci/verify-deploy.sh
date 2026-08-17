@@ -53,6 +53,38 @@ if [[ -n "${CP_HOST:-}" ]]; then
       *) err "https://$domain/ — got '$https'; the TLS server block is missing or the host is unreachable"
          FAIL=$((FAIL + 1)) ;;
     esac
+
+    # The HTML shell MUST tell the browser to revalidate.
+    #
+    # With no Cache-Control, browsers apply heuristic freshness and reuse the
+    # shell for days. After a deploy that shell names asset hashes which no
+    # longer exist, the SPA catch-all answers those requests with index.html,
+    # and the browser refuses to parse text/html as an ES module. The console
+    # comes up BLANK — no error boundary, because React never ran. It is
+    # invisible to every other check here, since the server is serving 200 and
+    # the current build is perfectly fine.
+    cc=$(curl -s -o /dev/null -D - --max-time 20 "https://$domain/" 2>/dev/null | tr -d '\r' | grep -i '^cache-control:' | head -1 || true)
+    if [[ "$cc" == *no-cache* || "$cc" == *no-store* ]]; then
+      ok "console HTML revalidates (${cc#*: })"
+    else
+      err "console HTML sends no revalidation directive (got '${cc:-none}'); a cached shell will point at deleted bundles and the console will load blank after the next deploy"
+      FAIL=$((FAIL + 1))
+    fi
+
+    # A missing hashed asset must 404, not fall through to the SPA catch-all.
+    # Answering index.html for a .js request is what turns a stale cache into
+    # an unparseable module instead of a clean, visible failure.
+    # Assert on the STATUS, not the content type: nginx serves its own 404 page
+    # as HTML, which is correct and would make a content-type check fail on a
+    # perfectly fixed deployment. What matters is that the browser is told the
+    # module is absent rather than handed a 200 it will try to parse.
+    miss=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "https://$domain/assets/does-not-exist-$$.js" || true)
+    if [[ "$miss" == "404" ]]; then
+      ok "missing assets 404 instead of falling through to the SPA shell"
+    else
+      err "a missing /assets/*.js returned $miss, not 404; a stale shell will receive HTML where it expects a module and the console will load blank"
+      FAIL=$((FAIL + 1))
+    fi
   fi
 
   # No sim-agents. A sim beside a real agent acks containment it never applied.
