@@ -404,6 +404,51 @@ func New(s Settings, st *store.Store, pt *tree.Tree, srv *api.Server) *Stack {
 			return len(snap)
 		},
 		TetragonConnected: func() bool { return stack.tetragonConnected.Load() },
+
+		// ENFORCEMENT POSTURE, read live on every request.
+		//
+		// Sensor Health could not previously say anything about containment
+		// because none of this was reachable from the API layer — the gateway,
+		// the cgroup manager and the device gateway all existed here and were
+		// never published. So the trust surface reported a green "ok" on a host
+		// whose quarantine CPU cap the kernel had refused at boot, and said
+		// nothing about whether the score ladder was armed.
+		ChokeDryRun:     func() bool { return gw.DryRun() },
+		ChokeKillSwitch: func() bool { return gw.KillSwitched() },
+		ChokeAutoMode: func() string {
+			if gw.Mode() == choke.ModeEnforcing {
+				return "enforcing"
+			}
+			return "detect-only"
+		},
+		CgroupAvailable: func() bool { return cgBackend.Available() },
+		// The kernel refuses limits it considers invalid and the manager
+		// records rather than aborts. That list was printed once at startup
+		// and never surfaced again.
+		CgroupDegraded: func() []string { return cgBackend.Mgr.Degraded() },
+		// DeviceGateway.Mode() already returns the posture as a string, and it
+		// distinguishes kill-switched and dry-run from plain detect-only —
+		// three states the process side folds together. Passed through
+		// verbatim rather than flattened: a device plane that is kill-switched
+		// is not the same fact as one that is merely not armed.
+		DeviceAutoMode: func() string {
+			if deviceGW == nil {
+				return ""
+			}
+			return deviceGW.Mode()
+		},
+		DevicePlane: func() string {
+			if deviceGW == nil {
+				return ""
+			}
+			return deviceGW.DataPlaneTier()
+		},
+		DeviceLinks: func() int {
+			if deviceGW == nil {
+				return 0
+			}
+			return int(deviceGW.AttachedLinks())
+		},
 	})
 
 	return stack
@@ -533,6 +578,40 @@ func (s *Stack) StartBackground(ctx context.Context) {
 // snapshot /api/system-health serves. They were two separate statements in each
 // main, which is one statement too many for a fact an operator uses to decide
 // whether a host is sensing at all.
+// BPFTier and BPFLinks report the PROCESS choke data plane, mirroring
+// DeviceGateway.DataPlaneTier/AttachedLinks for the device plane.
+//
+// They exist because DataPlaneState.process_plane and .process_links have been
+// in the wire contract since it was written and were never populated: the
+// agent filled in every device-plane field and left both process-plane fields
+// zero. A control plane therefore could not distinguish an agent with a live
+// cgroup/BPF data plane from one that fell back to the noop backend, and it
+// renders identically either way. Measured on the live estate 2026-08-21: the
+// single-tenant engine reports backend "noop" with 0 of 4 expected links on its
+// own /api/system-health, and the multi-tenant console had no way to say so.
+// Type-asserted rather than added to bpfmap.Backend: only the cilium backend
+// has a kernel side to report, and widening the interface would force a
+// meaningless implementation onto the noop backend and every test fake.
+func (s *Stack) BPFTier() string {
+	if s == nil || s.bpfBackend == nil {
+		return "noop"
+	}
+	if b, ok := s.bpfBackend.(interface{ AttachedLinks() int }); ok && b.AttachedLinks() > 0 {
+		return "cilium-ebpf"
+	}
+	return "noop"
+}
+
+func (s *Stack) BPFLinks() int {
+	if s == nil || s.bpfBackend == nil {
+		return 0
+	}
+	if b, ok := s.bpfBackend.(interface{ AttachedLinks() int }); ok {
+		return b.AttachedLinks()
+	}
+	return 0
+}
+
 func (s *Stack) MarkTetragonConnected(connected bool) {
 	metrics.SetTetragonConnected(connected)
 	s.tetragonConnected.Store(connected)

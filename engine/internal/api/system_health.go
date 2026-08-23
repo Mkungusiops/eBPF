@@ -27,6 +27,26 @@ type SystemInfo struct {
 	BPFLinks          func() int
 	BPFEntries        func() int
 	TetragonConnected func() bool
+
+	// ENFORCEMENT POSTURE. Sensor Health computed its verdict from detection
+	// facts alone — whether the kernel was readable, whether policies were
+	// loaded, whether Tetragon was up. Not one branch read a data plane, so a
+	// host reported a green "ok" while saying nothing at all about whether it
+	// could contain anything. The panel a customer opens to ask "can I trust
+	// this platform" answered a narrower question than the one being asked.
+	//
+	// These are closures for the same reason the three above are: posture is
+	// runtime state (a kill-switch flips, a mode is armed), and a value copied
+	// at startup would report the past. Nil means "this deployment cannot tell"
+	// and must render as unknown — never as a reassuring default.
+	ChokeDryRun     func() bool
+	ChokeKillSwitch func() bool
+	ChokeAutoMode   func() string // "enforcing" | "detect-only"
+	CgroupAvailable func() bool
+	CgroupDegraded  func() []string
+	DeviceAutoMode  func() string
+	DevicePlane     func() string // "tc" | "noop" | ""
+	DeviceLinks     func() int
 }
 
 var (
