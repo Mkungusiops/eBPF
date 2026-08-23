@@ -35,7 +35,16 @@ ok()   { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n     -> %s\n' "$1" "${2:-}"; }
 head_(){ printf '\n=== %s ===\n' "$1"; }
 aeq()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi; }
-rx()   { $RSH "$1" 2>/dev/null | tr -d '\r'; }
+# -n and a hard timeout, both learned the same way.
+#
+# Without -n, ssh inherits the suite's stdin and a remote command that reads it
+# blocks forever. Without the timeout, ANY remote stall — a throttled sshd, a
+# loaded box, a command that never returns — wedges the whole run with no error
+# and no output, which is exactly how a 28-minute hang in this suite was
+# mistaken for a product failure. A remote call that cannot answer in 30s has
+# failed; saying so lets the assertion fail loudly instead of the suite hanging
+# silently.
+rx()   { timeout 30 $RSH "$1" 2>/dev/null | tr -d '\r'; }
 jqr()  { printf '%s' "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);print(eval(sys.argv[1]))" "$2" 2>/dev/null; }
 GET()  { "${CURL[@]}" -s -b "$JAR" --max-time 25 "$ENGINE$1"; }
 

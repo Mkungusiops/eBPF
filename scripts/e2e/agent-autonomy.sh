@@ -31,8 +31,8 @@ ok()   { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
 bad()  { FAIL=$((FAIL+1)); printf '  FAIL  %s\n     -> %s\n' "$1" "${2:-}"; }
 head_(){ printf '\n=== %s ===\n' "$1"; }
 aeq()  { if [[ "$2" == "$3" ]]; then ok "$1"; else bad "$1" "expected '$2', got '$3'"; fi; }
-ax()   { $AGENT_RSH "$1" 2>/dev/null | tr -d '\r'; }
-cx()   { $CP_RSH "$1" 2>/dev/null | tr -d '\r'; }
+ax()   { timeout 30 $AGENT_RSH "$1" 2>/dev/null | tr -d '\r'; }
+cx()   { timeout 30 $CP_RSH "$1" 2>/dev/null | tr -d '\r'; }
 GET()  { "${CURL[@]}" -s -b "$JAR" --max-time 20 "$BASE$1"; }
 
 # Always bring the control plane back, however this exits. Leaving a fleet's

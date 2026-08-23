@@ -57,6 +57,13 @@ being broken. That is the failure mode to design against:
 Order matters — the control plane first, agents second, because they enrol
 against it.
 
+**For a whole estate, do not run these by hand.** `make deploy-estate` provisions
+all six hosts in the correct order and verifies the result; the ordering
+constraint above is exactly what it exists to encode. See
+[aws-multi-host.md](aws-multi-host.md).
+
+To add a single host to an estate that already exists:
+
 ```bash
 SSH_HOST=<cp> TARGET_HOST=<console-fqdn> TLS=1 DATA_MODE=none make deploy-console
 TENANT=<id> AGENT_HOST=<host> CP_SSH=<cp> CP_IP=<cp-private-ip> make deploy-agent

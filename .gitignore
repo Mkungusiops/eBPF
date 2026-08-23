@@ -332,3 +332,5 @@ docs/credentials/
 # committed .example is the template. It was tracked with a real fleet IP.
 /chokectl.hosts
 !/chokectl.hosts.example
+engine/internal/policyassets/embedded/*
+!engine/internal/policyassets/embedded/.keep

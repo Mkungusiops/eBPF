@@ -4,6 +4,15 @@ Design for a persistent, cross-surface assistant reachable from the console nav,
 with conversation history that spans a user's whole scope. Successor surface to
 the per-panel `AssistantPanel` shipped in [`ai-and-console-reuse.md`](ai-and-console-reuse.md) §3.
 
+> **Status: shipped.** The RLS-scoped chat store
+> (`engine/internal/chatstore/`), the control-plane chat routes
+> (`engine/internal/controlplane/chat.go`), `ChatSidebar`,
+> `AssistantChatProvider` and — as of 2026-08-19 — **streaming**
+> (`POST /api/assistant/stream`, SSE, abortable) are all in. Treat the build
+> order in §6 as a progress record, and see
+> [`../architecture/analyst-assistant.md`](../architecture/analyst-assistant.md)
+> for how the shipped assistant actually works.
+
 Reference implementation studied: `/Users/jeff/Code/m` — a complete Next.js chat
 product (streaming, history, search, projects, artifacts). What transfers and
 what does not is in §3.
@@ -129,8 +138,9 @@ failed). An optional feature that is switched off is not a fault.
    pressure.
 2. **CRUD + search endpoints**, tenant-scoped. ✅
    `internal/controlplane/chat.go`.
-3. **Streaming.** The current `/api/assistant/ask` is request/response; a
-   sidebar conversation needs SSE and an abort path. ❌ **deferred — see below.**
+3. **Streaming.** ✅ `POST /api/assistant/stream` on both servers, SSE, with the
+   AbortController that was already in `useChats` as the abort path. It streams
+   **tool steps**, not tokens — see below.
 4. **The panel shell** — list, search, conversation, composer. ✅
    `web/src/features/assistant/ChatSidebar.tsx`.
 5. **Continuity** — drill panel hands its `exec_id` and conversation to the
@@ -146,11 +156,19 @@ the store observable at all — without it, steps 1–2 are endpoints nobody cal
 — so building it first bought end-to-end verification of the security-critical
 half much sooner.
 
-The interim cost is real: an analyst waits on a spinner for a tool-calling
-answer instead of watching it work. It is bounded by the seam — every network
-call goes through the injected `ChatApi` / `AssistantApi`, so SSE lands behind
-those interfaces without touching a component. What it is NOT is free; §3 calls
-abortable streaming non-negotiable and that judgement still stands.
+The prediction held exactly: SSE landed behind the injected `ChatApi` /
+`AssistantApi` seam without touching a component's rendering, as one optional
+`askStream` method with a fallback to `ask`.
+
+**What the deferral got wrong was the shape of the answer.** The assumption was
+token streaming — watch the prose appear. The actual wait is the TOOL LOOP: up
+to six reads against the engine's own API before the model has a word to say. So
+what shipped streams the *investigation* — each completed tool call, named, as it
+happens — and delivers the answer in one final event. That is the information an
+analyst wants during the wait, and it is the same provenance trace the answer
+carries afterwards, only sooner.
+
+Token streaming remains unbuilt and is now a much smaller prize than it looked.
 
 ### What step 1 was missing when it was first written
 

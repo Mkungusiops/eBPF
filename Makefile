@@ -10,6 +10,8 @@
 #   make test            run all Go unit tests
 #   make vet             go vet
 #   make fake            run the engine in fake mode on :8080 (no Tetragon needed)
+#   make deploy-local    the whole platform on OrbStack: console + agents + engine
+#   make destroy-local   delete every local OrbStack machine
 #   make deploy-console  multi-tenant control plane onto an Ubuntu server (SSH)
 #   make deploy-engine   single-tenant engine + Tetragon onto an Ubuntu server
 #   make deploy-agent    one real per-tenant agent onto its own Ubuntu host
@@ -22,6 +24,8 @@
 ROOT       := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
 ENGINE_DIR := $(ROOT)/engine
 WEB_DIR    := $(ROOT)/web
+POLICY_DIR := $(ROOT)/policies
+POLICY_EMBED_DIR := $(ENGINE_DIR)/internal/policyassets/embedded
 EMBED_DIR  := $(ENGINE_DIR)/internal/api/web
 BIN        := $(ENGINE_DIR)/engine
 # Phase 0 build-target split (docs/plan/architecture.md §1). The agent and
@@ -60,7 +64,7 @@ ENGINE_USER ?= admin
 ENGINE_PASS ?=
 
 .PHONY: deploy-console deploy-engine deploy-agent e2e _require_ssh_host _require_engine_pass
-.PHONY: web build build-linux build-agent build-agent-linux build-controlplane build-controlplane-linux proto proto-tools proto-lint test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
+.PHONY: policy-assets web build build-linux build-agent build-agent-linux build-controlplane build-controlplane-linux proto proto-tools proto-lint test vet fake policies-apply policies-list tarball clean deploy redeploy deploy-remote redeploy-remote vm-logs vm-attack vm-status vm-up vm-doctor install install-vm tls-vm pg-vm devchoke netns-smoke
 
 # Build and stage Vite's static output for go:embed. The redesigned UI is
 # the release path; missing dist/ is a build failure, not a runtime fallback.
@@ -132,7 +136,7 @@ api-docs-check:
 # documented invocation works instead of failing its own guard.
 VER ?= $(VERSION)
 
-.PHONY: verify-release deploy-release deploy-estate
+.PHONY: verify-release deploy-release deploy-estate deploy-local destroy-local
 verify-release:
 	@[ -n "$(VER)" ] || { echo "VERSION=vX.Y.Z required"; exit 1; }
 	@command -v cosign >/dev/null || { echo "cosign required: brew install cosign"; exit 1; }
@@ -152,6 +156,16 @@ verify-release:
 # worked here (the provisioners call build_binaries themselves).
 deploy-estate:
 	@./scripts/deploy/estate.sh
+
+# The same platform locally: control plane + a real agent VM per tenant + the
+# single-tenant engine, all on OrbStack, all on real eBPF. Ordering matters
+# (agents enrol INTO the control plane), which is why this is one command and
+# not "run the two orbstack scripts".
+deploy-local:
+	@./scripts/deploy/estate-orbstack.sh $(ARGS)
+
+destroy-local:
+	@./scripts/deploy/estate-orbstack.sh --destroy
 
 # Deploy a PUBLISHED tag. Honest about its guarantee: the provisioners build from
 # the working tree, so this cannot install the downloaded signed bytes. What it
@@ -205,12 +219,26 @@ build-agent-linux: web
 
 # The control-plane stub (native). Minimal HTTP over internal/api + internal/store;
 # no embedded console, so no web dependency.
-build-controlplane:
+# Stage the canonical policies/ for go:embed into the control-plane binary.
+#
+# The control plane does not run on a monitored host, so it has no policy
+# directory to read; without this it can list a policy's NAME but never show its
+# body, which is exactly what an operator needs when writing one of their own.
+# Same shape as the web target: staged, not committed, with a .keep so a plain
+# `go build` still compiles and simply ships no bodies.
+policy-assets:
+	@mkdir -p $(POLICY_EMBED_DIR)
+	@find $(POLICY_EMBED_DIR) -mindepth 1 ! -name .keep -exec rm -rf {} +
+	@test -n "$$(ls $(POLICY_DIR)/*.yaml 2>/dev/null)" || { echo "no policies in $(POLICY_DIR)"; exit 1; }
+	@echo "→ staging $(POLICY_DIR)/*.yaml into $(POLICY_EMBED_DIR)"
+	@cp $(POLICY_DIR)/*.yaml "$(POLICY_EMBED_DIR)/"
+
+build-controlplane: policy-assets
 	cd $(ENGINE_DIR) && go build -o controlplane ./cmd/controlplane
 	@echo "→ $(CP_BIN)"
 
 # Static linux control plane — it runs in a container/K8s (architecture.md §3).
-build-controlplane-linux:
+build-controlplane-linux: policy-assets
 	cd $(ENGINE_DIR) && GOOS=linux GOARCH=$(LINUX_ARCH) CGO_ENABLED=0 $(GOBUILD) -o controlplane-linux-$(LINUX_ARCH) ./cmd/controlplane
 	@echo "→ $(CP_LINUX_BIN)"
 
@@ -388,7 +416,7 @@ deploy-agent:
 	TOK=$$(ssh -o BatchMode=yes $(CP_SSH) "sudo sed -n 's/^CP_ADMIN_TOKEN=//p' /etc/ebpf-soc/controlplane.env" | tr -d '\r'); \
 	[ -n "$$TOK" ] || { echo "could not read CP_ADMIN_TOKEN from $(CP_SSH)"; exit 1; }; \
 	[ -s $(DEVCHOKE_OBJ) ] || echo "  (no devchoke.o at $(DEVCHOKE_OBJ) — device choke will be audit-only; run 'make devchoke' on Linux)"; \
-	CP_SSH=$(CP_SSH) $(ROOT)/scripts/deploy/provision-agent-ssh.sh \
+	CP_SSH=$(CP_SSH) $(if $(DATA_MODE),DATA_MODE=$(DATA_MODE),) $(ROOT)/scripts/deploy/provision-agent-ssh.sh \
 	  "$(TENANT)" "$(AGENT_HOST)" "$(CP_IP)" "$$TOK" \
 	  $(ROOT)/.deploy-build/trust/ca.pem $(ROOT)/.deploy-build/trust/fleet.pub \
 	  $(ROOT)/.deploy-build/agent $$([ -s $(DEVCHOKE_OBJ) ] && echo $(DEVCHOKE_OBJ))

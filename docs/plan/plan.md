@@ -1,12 +1,15 @@
 # Enterprise Conversion Plan — eBPF Threat Choke Gateway → Multi-Tenant SOC Platform
 
-> **Deliverable:** convert the single-host PoC running at
-> [`soc.adanianlabs.io`](https://soc.adanianlabs.io/) into an enterprise, multi-tenant
-> security operations platform for Linux server fleets.
+> **Deliverable:** convert the single-host PoC into an enterprise, multi-tenant
+> security operations platform for Linux server fleets. (The PoC ran at
+> `soc.adanianlabs.io`; that host is retired and the domain no longer resolves.)
 >
-> **Status:** planning. This folder is the source of truth for the conversion.
-> **Author context:** written against the current `feat/enterprise-gradeI` branch after a
-> full read of the engine (`engine/`), console (`web/`), and docs (`docs/`).
+> **Status:** Phase 0 and Phase 1 delivered; Phase 2 in progress. The
+> multi-tenant control plane, the agent, the wire protocol and tenant isolation
+> are shipped — see [`roadmap.md`](roadmap.md) for what each phase actually
+> closed. This document remains the source of truth for the *strategy*; read the
+> gap analysis in §3 as the starting position it was written from, not as
+> today's state.
 
 ## How to read this folder
 
@@ -59,7 +62,12 @@ horizontally-scalable **control plane**.
 
 ---
 
-## 3. Where we are today (grounded assessment)
+## 3. The starting position (grounded assessment)
+
+> Written at the start of the conversion, describing the PoC as it then stood.
+> Kept because the reuse argument it makes is what the build actually followed —
+> every asset below did ship into the agent or the control plane. For today's
+> state see [`roadmap.md`](roadmap.md).
 
 The PoC is unusually well-built for its stage — this is a strong foundation, not a rewrite target.
 What exists and is *reusable*:
@@ -75,7 +83,7 @@ What exists and is *reusable*:
 | React multi-entry console (SOC/Choke/Devices/Fleet) | `web/src/` | Evolves into the multi-tenant console; no rewrite of the panels. |
 | Device (MAC) choke + inline-bridge data plane | `engine/internal/enforce/devbpf/`, `internal/device/` | A second sensor/enforcer class already proven (`make netns-smoke`). |
 | A **fleet fan-out** proving the multi-host control pattern | `engine/internal/api/fleet.go` | Becomes the *degraded/fallback* control path once the real control channel exists. |
-| A live, TLS-fronted deployment with a real ops runbook | `docs/deployment/live-soc-adanianlabs.md`, `docs/production-rollout/` | We have production scar tissue and honest limitations documented. |
+| A live, TLS-fronted deployment with a real ops runbook | `docs/operations/enforcement-traps.md`, `docs/production-rollout/` | We have production scar tissue and honest limitations documented. |
 
 The project's own honest limitations (`README.md` §Limitations) are exactly the enterprise gaps:
 
@@ -85,12 +93,14 @@ The project's own honest limitations (`README.md` §Limitations) are exactly the
 4. **Fixed scoring rules** — no baseline learning; manual tuning in `score/scorer.go`.
 5. **Device choke is operator-driven** — no automatic score path for the MAC gateway.
 
-Two more, from the live runbook, that are *operational* red flags to fix early:
+Two more, from the first production deployment, that are *operational* red flags to fix early:
 
-6. The live engine runs as a **bare root background process, not even a systemd unit** — no
-   auto-restart, no supervision (`docs/deployment/live-soc-adanianlabs.md` §1).
+6. That engine ran as a **bare root background process, not even a systemd unit** — no
+   auto-restart, no supervision. Closed since: `provision_engine` in `scripts/deploy/lib.sh`
+   installs a hardened systemd unit.
 7. **Enforcement blast radius is real**: in enforcing mode the process choke SIGKILLs `sudo`
-   (~120+ score) and can lock an operator out (`live-soc-adanianlabs.md` §3). Enterprise
+   (~120+ score) and can lock an operator out
+   (`docs/operations/enforcement-traps.md`). Enterprise
    enforcement needs central guardrails, protected-process lists, approvals, and a fleet kill-switch.
 
 ---
@@ -197,7 +207,7 @@ migration so there is never a flag-day rewrite:
 1. **Stabilise first (Phase 0, week 1).** Put the existing engine under **systemd** with restart
    policy (the unit already exists at `deploy/ebpf-engine.service`), rotate the `admin /
    ebpf-soc-demo` demo credential, confirm TLS + backups. Zero new architecture — just close the
-   operational holes in `live-soc-adanianlabs.md`.
+   operational holes recorded in `docs/operations/enforcement-traps.md`.
 2. **Introduce the control plane beside it (Phase 1).** Stand up the control plane in a new
    environment. The existing box becomes **agent #0 of tenant "adanian-internal"**: run the new
    agent build alongside (or the monolith in dual-write mode) so it streams to the control plane
@@ -223,8 +233,8 @@ This is a *security product* — our own posture is part of the product.
   to CI.
 - **Enforcement guardrails.** Central protected-process/allow-lists, per-tenant enforcement mode
   (detect-only default), **change-controlled/approved** destructive actions, and a fleet-wide
-  kill-switch. The `sudo`-lockout incident (`live-soc-adanianlabs.md` §3) is the canonical failure
-  to design against.
+  kill-switch. The `sudo`-lockout incident (`docs/operations/enforcement-traps.md`) is the
+  canonical failure to design against.
 - **Supply chain.** Signed release artifacts, SBOM, build provenance (SLSA-style), pinned
   dependencies. Agents auto-update only from signed bundles; policy bundles are signed too.
 - **Secrets.** No plaintext creds anywhere (kill the demo default). Vault/cloud KMS for control

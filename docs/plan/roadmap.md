@@ -9,17 +9,25 @@ data volume across an un-isolated, un-scaled platform.
 
 ---
 
-## Phase 0 — Foundations & don't-break-the-demo · ~4–6 weeks
+## Phase 0 — Foundations & don't-break-the-demo · ~4–6 weeks · **✅ COMPLETE**
 
 **Goal:** close operational holes, get engineering hygiene in place, and de-risk the split — with
 zero user-visible architecture change.
+
+> **Delivered.** All five binaries build in CI with signing and SBOM
+> (`.github/workflows/ci.yml`); the default credential is gone
+> (`engine/internal/config/config.go` refuses to start without one);
+> [`threat-model.md`](threat-model.md) and
+> [`tenant-isolation-invariant.md`](tenant-isolation-invariant.md) are merged;
+> engines are provisioned under a hardened systemd unit by
+> `scripts/deploy/lib.sh`.
 
 **Workstreams & deliverables**
 
 - **Stabilise the live box** — put the running engine under **systemd** (unit exists at
   `deploy/ebpf-engine.service`) with restart-on-failure; **rotate the `admin/ebpf-soc-demo`
   credential**; verify TLS renewal + DB backup. Fixes the "bare root process" and default-cred
-  holes in `docs/deployment/live-soc-adanianlabs.md`.
+  holes recorded in `docs/operations/enforcement-traps.md`.
 - **CI/CD** — pipeline running `make test`, `go vet`, web `vitest` + `playwright` + `lint.mjs` on
   every PR; produce **signed** release artifacts + a container image; SBOM generation.
 - **IaC baseline** — Terraform for the future control-plane environment (network, K8s, managed
@@ -79,10 +87,19 @@ Kills README limitations **#1 (single host)** and **#2 (single-user auth)**.
 
 ---
 
-## Phase 2 — Detection & response at scale · ~3–4 months
+## Phase 2 — Detection & response at scale · ~3–4 months · **▶ IN PROGRESS**
 
 **Goal:** the MSOC workflow — detect across a fleet, triage cross-tenant, respond with control, and
 integrate with the customer's stack. Addresses **#4 (fixed rules)** and delivers response tooling.
+
+> **Partially delivered.** Enforcement approvals are shipped behind
+> `-require-approval` (`engine/internal/approval/`, wired in
+> `engine/internal/controlplane/choke.go`). The **analyst assistant** — not
+> originally on this list — shipped as a read-only LLM over the same
+> tenant-scoped APIs; see
+> [`../architecture/analyst-assistant.md`](../architecture/analyst-assistant.md).
+> Sigma, OCSF export, case management and threat-intel enrichment are **not
+> started**.
 
 **Workstreams & deliverables**
 

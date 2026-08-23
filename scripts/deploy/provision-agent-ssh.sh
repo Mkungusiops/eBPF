@@ -31,6 +31,47 @@ AGENT_BIN="${7:?agent binary required}"
 DEVCHOKE_OBJ="${8:-}"
 
 CP_SSH="${CP_SSH:?set CP_SSH=<ssh host of the control plane> (to mint the enrollment token)}"
+
+# DATA_MODE governs the SYNTHETIC ACTIVITY GENERATOR on this agent, and it is
+# the reason this variable exists here at all.
+#
+# THE BUG THIS CLOSES. `ebpf-activity.service` runs a loop that every 20-45s
+# fires a script from the attack catalogue, reads /etc/shadow, and connects to
+# five hardcoded "threat actor" IPs. It is a demo aid and it is very effective —
+# it produced a dead-flat ~2,000 alerts/hour, 24 hours a day, on the production
+# estate, of which a third were CRITICAL. That pinned the console's executive
+# posture dial at 93-97 "critical" permanently, on an estate where nothing was
+# happening. A gauge that reads the same on a quiet Sunday as during a breach is
+# not a measurement.
+#
+# It was installed and started UNCONDITIONALLY. `DATA_MODE=none` — the
+# documented switch for "no synthetic data", carefully passed by estate.sh —
+# governed only the control plane's sim-agents and had no effect here. So the
+# estate's "no fake data" flag did not cover the estate's largest source of fake
+# data, and scripts/ci/verify-deploy.sh asserted "no sim-agents running" and
+# passed while three attack generators ran.
+#
+# Default stays `sim` to match scripts/deploy/lib.sh, so a bare run of this
+# script behaves as it always has. estate.sh passes `none`.
+# DATA_MODE governs SYNTHETIC data: the sim-agents on the control plane and, on
+# an agent host, /opt/ebpf-soc/activity.sh — a root systemd service that fires a
+# scripted attack every 20-45s — plus the attacks/ catalogue (reverse shell,
+# persistence, credential theft).
+#
+# DEFAULT IS `none`. It used to be `sim`, which meant the documented install path
+# put a synthetic attack generator and a reverse-shell script catalogue onto
+# whatever host it touched. That is defensible on a laptop and indefensible on a
+# customer's production estate: their own EDR sees it, their NOC sees it, and the
+# alerts it manufactures are indistinguishable from real ones in every panel and
+# every exported report. Only estate.sh passed `none`, and estate.sh is specific
+# to this project's own AWS rig — nobody deploying for a customer would run it.
+#
+# Opt in with DATA_MODE=sim for a demo or a UI-only environment.
+DATA_MODE="${DATA_MODE:-none}"
+case "$DATA_MODE" in
+  sim|real|none) ;;
+  *) die "DATA_MODE must be sim, real or none (got '$DATA_MODE')" ;;
+esac
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 TETRAGON_IMAGE="${TETRAGON_IMAGE:-quay.io/cilium/tetragon:v1.6.1}"
 
@@ -66,16 +107,39 @@ fi
 m 'docker version --format "{{.Server.Version}}" >/dev/null 2>&1' \
   || { m 'systemctl restart docker; sleep 4'; m 'docker version >/dev/null 2>&1' || die "docker not running"; }
 
-if m 'docker ps --format "{{.Names}}" | grep -qx tetragon'; then
-  ok "Tetragon already running"
+# "Already running" is not enough — it must also be running WITH the policy
+# bind mount. A host provisioned before that mount existed keeps its detection
+# set in the container's writable layer, where a `docker rm` deletes it and
+# where the agent cannot write a pushed policy durably. Checking the mount
+# rather than just the process makes this converge an existing estate instead
+# of only helping new hosts.
+if m 'docker ps --format "{{.Names}}" | grep -qx tetragon' \
+   && m 'docker inspect tetragon --format "{{range .Mounts}}{{.Destination}} {{end}}" | grep -q /etc/tetragon/tetragon.tp.d'; then
+  ok "Tetragon already running with the policy mount"
 else
+  m 'docker ps --format "{{.Names}}" | grep -qx tetragon' \
+    && log "recreating Tetragon to add the policy bind mount (policies are re-applied below)"
   log "starting Tetragon ($TETRAGON_IMAGE) — image pull may take ~1-2m"
   # --server-address is REQUIRED: without it Tetragon opens a TCP listener on
   # localhost:54321 and never creates the unix socket the agent dials.
+  # tetragon.tp.d is BIND-MOUNTED from the host, and that is load-bearing twice.
+  #
+  # (1) Without it the policy directory lives in the container's writable layer.
+  #     `docker restart` keeps it, but `docker rm` + recreate DELETES ALL
+  #     DETECTION and the host silently drops to bare execve with nothing
+  #     reporting it — and `docker rm -f tetragon` is this project's own
+  #     documented lockout-recovery step, so that path gets exercised.
+  # (2) It is what lets the agent make a pushed policy DURABLE. Tetragon reads
+  #     this directory only at startup, so a policy added over the gRPC API is
+  #     forgotten on the next daemon restart. With the mount, the agent (root on
+  #     the host) writes the file directly — no docker socket, which would be
+  #     root-on-host and a serious privilege expansion for a security agent.
+  m "mkdir -p /etc/tetragon/tetragon.tp.d"
   m "docker rm -f tetragon >/dev/null 2>&1
      docker run -d --name tetragon --privileged --pid=host --network=host \
        -v /sys/kernel/btf/vmlinux:/var/lib/tetragon/btf:ro \
        -v /var/run/tetragon:/var/run/tetragon \
+       -v /etc/tetragon/tetragon.tp.d:/etc/tetragon/tetragon.tp.d \
        -v /sys/fs/bpf:/sys/fs/bpf \
        --restart=unless-stopped $TETRAGON_IMAGE \
        --server-address unix:///var/run/tetragon/tetragon.sock --btf /var/lib/tetragon/btf >/dev/null 2>&1"
@@ -90,6 +154,33 @@ log "shipping agent binary + policies + attacks + trust material"
 m 'mkdir -p /opt/ebpf-soc/bpf /etc/ebpf-soc /var/lib/ebpf-soc-agent/honey'
 tar --exclude='._*' -cz -C "$REPO_ROOT" policies attacks \
   | m 'cat > /tmp/pa.tgz && tar -xzf /tmp/pa.tgz -C /opt/ebpf-soc && rm -f /tmp/pa.tgz'
+
+# Threat-intelligence feeds. Same path as every other host in the estate, and
+# MERGED rather than replaced: allow.txt is the operator's veto list, and a
+# deploy that overwrote it would silently reinstate every false positive they
+# had already suppressed. Only files absent on the box are written.
+if [[ -d "$REPO_ROOT/deploy/intel" ]]; then
+  m 'install -d -m 0755 /etc/ebpf-soc/intel'
+  # *.txt AND feeds.yaml — the refresh configuration lives beside the indicators
+  # it produces, and a glob that missed it left every agent matching only the
+  # static starter set while reporting itself configured.
+  for f in "$REPO_ROOT"/deploy/intel/*.txt "$REPO_ROOT/deploy/intel/feeds.yaml"; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    # Operator-owned once present: allow.txt suppresses false positives,
+    # feeds.yaml sets the confidence that decides whether a match can contain.
+    case "$base" in
+      allow.txt|feeds.yaml)
+        if m "[ -e /etc/ebpf-soc/intel/$base ] && echo yes" 2>/dev/null | grep -q yes; then
+          continue
+        fi
+        ;;
+    esac
+    cat "$f" | push "/etc/ebpf-soc/intel/$base"
+  done
+  m 'chmod 0644 /etc/ebpf-soc/intel/*.txt 2>/dev/null || true'
+  log "threat-intel feeds shipped to /etc/ebpf-soc/intel"
+fi
 # Write-then-rename: `cat >` truncates the running executable in place and
 # fails with "Text file busy", so a redeploy would silently keep the OLD agent
 # while reporting success. rename(2) swaps the directory entry instead; the
@@ -250,6 +341,43 @@ StandardError=append:/var/log/ebpf-agent.log
 WantedBy=multi-user.target
 EOF
 
+# ── Log rotation ───────────────────────────────────────────────────────────
+# The unit appends to /var/log/ebpf-agent.log with nothing rotating it.
+# Measured on an IDLE estate host: 142 MB in 24 days, alongside a 576 MB
+# events.db. On a busy production host that is much faster, and filling /var on
+# a customer's server is a far more memorable incident than anything this
+# platform would have detected there.
+log "installing logrotate for the agent"
+m 'cat > /etc/logrotate.d/ebpf-agent <<"ROT"
+/var/log/ebpf-agent.log {
+  daily
+  rotate 7
+  maxsize 100M
+  compress
+  delaycompress
+  missingok
+  notifempty
+  copytruncate
+}
+ROT
+chmod 0644 /etc/logrotate.d/ebpf-agent'
+
+# ── Synthetic activity generator (DATA_MODE) ───────────────────────────────
+# Removal is ACTIVE, not merely "skip the install". A host provisioned before
+# this gate existed already has the unit enabled, so a redeploy that only
+# declined to install it would leave it running and the estate would stay
+# exactly as noisy. Stop, disable, then delete — and delete the script too, so
+# a stale unit file cannot resurrect it.
+if [[ "$DATA_MODE" == none ]]; then
+  m 'systemctl stop ebpf-activity >/dev/null 2>&1
+     systemctl disable ebpf-activity >/dev/null 2>&1
+     rm -f /etc/systemd/system/ebpf-activity.service /opt/ebpf-soc/activity.sh
+     pkill -9 -f /opt/ebpf-soc/activity.sh >/dev/null 2>&1
+     systemctl daemon-reload
+     true'
+  ok "DATA_MODE=none — synthetic activity generator stopped and removed"
+else
+
 # Tuned to look like a real SOC feed, not a stress test.
 cat <<'EOF' | push /opt/ebpf-soc/activity.sh
 #!/bin/bash
@@ -290,14 +418,31 @@ StandardError=null
 WantedBy=multi-user.target
 EOF
 
+  warn "DATA_MODE=$DATA_MODE — installing the synthetic activity generator."
+  warn "  It fabricates ~2,000 alerts/hour and will pin the console's posture dial."
+  warn "  Use DATA_MODE=none for an estate whose numbers are meant to be real."
+fi
+
 m 'systemctl daemon-reload
-   systemctl enable ebpf-agent ebpf-activity >/dev/null 2>&1
-   systemctl restart ebpf-agent
-   systemctl restart ebpf-activity'
+   systemctl enable ebpf-agent >/dev/null 2>&1
+   systemctl restart ebpf-agent'
+if [[ "$DATA_MODE" != none ]]; then
+  m 'systemctl enable ebpf-activity >/dev/null 2>&1; systemctl restart ebpf-activity'
+fi
 sleep 4
 m 'systemctl is-active --quiet ebpf-agent' \
   || die "agent service did not start — check: ssh $HOST sudo tail /var/log/ebpf-agent.log"
-ok "agent + activity services running"
+if [[ "$DATA_MODE" == none ]]; then
+  ok "agent running (no synthetic activity — this estate reports real numbers)"
+else
+  ok "agent + synthetic activity services running"
+fi
 
 printf '\n  \033[1m%s\033[0m → tenant \033[1m%s\033[0m  (iface %s)\n' "$HOST" "$TENANT" "$IFACE"
+# The agent's console binds 127.0.0.1 (see agent.yaml above) and is deliberately
+# not published — this is a sensor on a customer host, not a second console. The
+# tunnel is the supported way in, so print that rather than a host:port an
+# operator would try and find refused.
+printf '  console: http://127.0.0.1:8080/  after  ssh -L 8080:127.0.0.1:8080 %s\n' "$HOST"
+printf '           login admin / %s\n' "$CONSOLE_PASS"
 printf '  logs:  ssh %s sudo tail -f /var/log/ebpf-agent.log\n\n' "$HOST"

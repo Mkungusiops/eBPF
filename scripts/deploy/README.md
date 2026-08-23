@@ -17,8 +17,8 @@ reach the host*, which lives in a small **driver**.
               OrbStack (local)          Ubuntu server            Linux server
             ┌────────────────────────┬────────────────────────┬────────────────────────┐
 single-     │ single-tenant-orbstack │ single-tenant-ubuntu   │ single-tenant-linux    │
- tenant     │   engine, -fake        │   engine + Tetragon    │   engine + Tetragon    │
-(engine)    │                        │   (real eBPF)          │   (real eBPF)          │
+ tenant     │   engine + Tetragon    │   engine + Tetragon    │   engine + Tetragon    │
+(engine)    │   (real eBPF)          │   (real eBPF)          │   (real eBPF)          │
             ├────────────────────────┼────────────────────────┼────────────────────────┤
 multi-      │ multi-tenant-orbstack  │ multi-tenant-ubuntu    │ multi-tenant-linux     │
  tenant     │   full console stack   │   full console stack   │   full console stack   │
@@ -42,6 +42,30 @@ production means re-supplying variables whose omission fails **silently**
 (`TLS=1`, a DNS name rather than an IP, `DATA_MODE=none`, and every agent host).
 Each of those omissions has already caused an outage or a false result here; see
 [aws-multi-host.md §4](../../docs/deployment/aws-multi-host.md).
+
+**Want the whole thing locally? Use one command, not two:**
+
+```bash
+./scripts/deploy/estate-orbstack.sh    # or: make deploy-local
+```
+
+[`estate-orbstack.sh`](estate-orbstack.sh) is the local counterpart of
+`estate.sh`: control plane, one **real** agent VM per tenant, and the
+single-tenant engine, in the order that works — agents enrol *into* the control
+plane, so deploying the engine first and the console second leaves two systems
+that have never heard of each other, both reporting success. It creates every
+machine, verifies afterwards (including that the engine did **not** silently
+fall back to `-fake`), and prints the URLs and logins. `--destroy` removes the
+lot.
+
+```bash
+./scripts/deploy/estate-orbstack.sh --only engine     # cp | agents | engine | verify
+./scripts/deploy/estate-orbstack.sh --data-mode sim   # fabricated telemetry, no agent VMs
+./scripts/deploy/estate-orbstack.sh --destroy         # or: make destroy-local
+```
+
+The single scripts below remain the building blocks, and the reference for
+deploying somewhere new.
 
 ```bash
 # Local, on OrbStack — nothing to configure, creates the machine for you:
@@ -73,6 +97,24 @@ Useful knobs:
 | `TARGET_SCHEME` | Set implicitly by `TLS=1`; the scheme browsers use. |
 | `DATA_MODE=sim` | Default. One sim-agent per tenant fabricating telemetry. |
 | `DATA_MODE=none` | No data seeders, and disable any left over. **Use this when real agents are managed separately** — otherwise each redeploy resurrects the simulators alongside them. |
+
+`DATA_MODE` governs **two** things, and for a long time it only reached the
+first:
+
+1. **Control plane** — the per-tenant sim-agents.
+2. **Each agent** — `ebpf-activity.service`, a synthetic attack loop that runs
+   the attack catalogue, reads `/etc/shadow` and connects to hardcoded
+   "threat actor" IPs every 20-45s, forever.
+
+The agent half was installed **unconditionally** until 2026-08-19, so an estate
+deployed with `DATA_MODE=none` still fabricated ~2,000 alerts/hour and the
+console's executive posture dial sat pinned at 93-97 "critical" around the clock.
+`verify-deploy.sh` asserted "no sim-agents running" and passed throughout. See
+[`../../docs/operations/synthetic-telemetry.md`](../../docs/operations/synthetic-telemetry.md).
+
+`DATA_MODE=none` now **removes** the generator rather than merely declining to
+install it — a host provisioned earlier already has the unit enabled — and
+`verify-deploy.sh` fails the deploy if `ebpf-activity` is running on any agent.
 | `DEVCHOKE=1` | Compile + attach the tc device data plane (single-tenant). |
 | `TENANTS` | Space-separated tenant ids (multi-tenant). |
 
@@ -84,10 +126,11 @@ are **idempotent** — re-run to redeploy the latest build onto the same host.
 
 **Single-tenant (engine)** — installs the `ebpf-engine` binary, a `0600`
 `/etc/ebpf-engine/engine.yaml`, and a `systemd` unit; verifies `/login` serves.
-On OrbStack it runs `-fake` (macOS has no eBPF, so events are synthesised — the
-full UI/API are live). On a server it runs Tetragon in Docker and wires the
-engine to it for **real** kernel detection, shipping the repo's `policies/` and
-`attacks/`.
+It runs Tetragon in Docker and wires the engine to it for **real** kernel
+detection, shipping the repo's `policies/` and `attacks/` — on OrbStack too,
+which is a full Linux VM with its own BTF-enabled kernel. `provision_engine`
+probes the target first and falls back to `-fake` only when the kernel is older
+than 5.15 or has no BTF; pass `ENGINE_MODE=fake` to ask for that deliberately.
 
 **Multi-tenant (control plane)** — provisions the whole console stack natively
 under `systemd`:
@@ -113,6 +156,8 @@ Override the tenant list with `TENANTS="acme globex"`; other knobs
 | `driver-orbstack.sh` | reaches an OrbStack machine: `RUN`=`orb … sudo`, `PUT`=machine reads the Mac FS, creates the machine if absent |
 | `driver-ssh.sh` | reaches a server: `RUN`=`ssh … sudo`, `PUT`=`scp`, probes SSH + passwordless sudo |
 | `single-tenant-*.sh`, `multi-tenant-*.sh` | thin entrypoints — set config + source `lib.sh` + a driver + call one `provision_*` |
+| `estate.sh` | the production estate: six SSH hosts, in order, preflighted and verified |
+| `estate-orbstack.sh` | the same platform locally on OrbStack: console + real agent VMs + engine, verified; `--destroy` tears it down |
 
 Adding a target means writing one driver (`RUN`/`PUT` + `TARGET_HOST`); the
 provisioning is reused unchanged. A driver may override `PKG`/`put_dir` for a

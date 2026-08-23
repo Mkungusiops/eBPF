@@ -71,8 +71,10 @@ docs/              you are here
 - **Go 1.25+** and **Node 18+** (Node builds the console; Go embeds it).
 - **Docker or OrbStack** (for Postgres/Keycloak/NATS when running the control plane).
 - **A Linux host with a BTF-enabled kernel ≥ 5.15** for anything touching real
-  eBPF (Tetragon). macOS builds fine but can't run the eBPF data plane natively —
-  use a Linux VM (Multipass/OrbStack) or `-fake` mode.
+  eBPF (Tetragon). macOS builds fine but can't run the eBPF data plane on the
+  Mac itself — use a Linux VM or `-fake` mode. **An OrbStack machine is such a
+  VM**: it has its own BTF-enabled kernel, so `make deploy-local` gives you real
+  Tetragon on your Mac.
 
 ## 5. Build
 
@@ -104,9 +106,13 @@ cross-tenant read-denial tests — keep them passing.
 
 | You want… | Use | Real eBPF? |
 | --- | --- | --- |
-| Hack on the **console / control plane** (multi-tenant, OIDC, RBAC) with realistic data | **OrbStack mirror** → [../deployment/orbstack-local-mirror.md](../deployment/orbstack-local-mirror.md) | No (synthetic via `simagent`) |
+| **The whole platform** — control plane, engine and one real agent per tenant | **`make deploy-local`** → [../deployment/orbstack-local-mirror.md](../deployment/orbstack-local-mirror.md) | **Yes** — Tetragon on the engine and every agent VM |
+| Hack on the **console / control plane** (multi-tenant, OIDC, RBAC) without waiting on agent VMs | `make deploy-local ARGS="--data-mode sim"` | No (synthetic via `simagent`) |
 | Just render the UI / poke the engine API with no kernel | `engine -fake` (synthesizes events) | No |
-| The **engine against real kernel events** (Tetragon) | A Linux host — deploy to a server ([../deployment/ubuntu-server.md](../deployment/ubuntu-server.md)) or an OrbStack Ubuntu machine running Tetragon | Yes |
+| The **engine against real kernel events**, on a server | Deploy to a Linux host ([../deployment/ubuntu-server.md](../deployment/ubuntu-server.md)) | Yes |
+
+The device (per-MAC) choke is the one thing the local estate cannot enforce: it
+needs a two-NIC inline bridge. It stays audit-only on OrbStack.
 
 ## 8. Key concepts (read before deep work)
 

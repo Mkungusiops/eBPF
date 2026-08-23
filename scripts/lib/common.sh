@@ -42,6 +42,17 @@ step_header() {
   printf '\n%s━━ %s ━━%s\n' "$C_BOLD" "$*" "$C_RESET"
 }
 
+# endpoint <label> <url> [note] — one line of a closing "where to reach it" block.
+#
+# Every deploy path ends by telling the operator where the thing now lives, and
+# they were each inventing their own layout. Sharing the formatter means the
+# console URL sits in the same column whether it came from a local OrbStack run
+# or the production estate, which is what makes it scannable when the deploy
+# output above it is several hundred lines of provisioning.
+endpoint() {
+  printf '  %s%-10s%s %s%s\n' "$C_BOLD" "$1" "$C_RESET" "$2" "${3:+   $C_DIM($3)$C_RESET}"
+}
+
 # run CMD… — echo then execute; a no-op under DRY_RUN.
 run() {
   if [[ "${DRY_RUN:-0}" == "1" ]]; then

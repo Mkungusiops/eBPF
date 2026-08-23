@@ -65,8 +65,8 @@ NH=$(jqr "$(GET /api/fleet/hosts)" "len(d['hosts'])")
 if [[ "${NH:-0}" -ge 2 ]]; then ok "tenant $TENANT has $NH agents (the config that exposes the bug)"
 else bad "tenant needs 2+ agents" "found ${NH:-0} — a single-agent tenant cannot show misrouting"; fi
 
-rx()      { $AGENT_RSH "$1" 2>/dev/null | tr -d '\r'; }
-rxo()     { $OTHER_RSH "$1" 2>/dev/null | tr -d '\r'; }
+rx()      { timeout 30 $AGENT_RSH "$1" 2>/dev/null | tr -d '\r'; }
+rxo()     { timeout 30 $OTHER_RSH "$1" 2>/dev/null | tr -d '\r'; }
 alive_o() { rxo "kill -0 $1 2>/dev/null && echo yes || echo no"; }
 alive_t() { rx  "kill -0 $1 2>/dev/null && echo yes || echo no"; }
 

@@ -66,13 +66,16 @@ export CHOKE_USER=admin
 export CHOKE_PASS='your-strong-password-here'
 ```
 
-Defaults are `admin` / `ebpf-soc-demo` (the development credentials).
-**Change these in production.**
+`CHOKE_USER` defaults to `admin`. **`CHOKE_PASS` has no default and is
+required** — the tool exits immediately without it. This tool drives quarantine
+and sever against a live fleet, so a built-in password published in this
+repository would be a credential, not a default.
 
 `chokectl` caches the session cookie per-host in `/tmp/chokectl-cookies-<name>`
-and re-uses it across invocations. The engine has a 10/min per-IP rate
-limit on `/api/login`, and sessions live 24h server-side, so caching
-keeps you under the limit even when running `chokectl` in tight loops.
+and re-uses it across invocations. The engine has a 5/min per-IP rate
+limit on `/api/login` (`-login-rate` in `engine/cmd/engine/flags.go`), and
+sessions live 24h server-side, so caching keeps you under the limit even when
+running `chokectl` in tight loops.
 
 ### Flags
 
@@ -336,7 +339,13 @@ jq -r '.circuits[] | select(.state=="quarantined") | "\(.exec_id) \(.binary)"' t
 ## Makefile shortcuts
 
 The Makefile wraps the most common chokectl operations and adds
-multipass-aware deploy / attack targets that operate on a `VMS` list:
+multipass-aware deploy / attack targets that operate on a `VMS` list.
+
+> The `deploy-all` / `redeploy-all` targets below are the **legacy Multipass
+> fleet** path, kept for the local attack-simulation VMs. They are not how the
+> platform is deployed — that is `make deploy-estate` for production
+> ([aws-multi-host.md](../deployment/aws-multi-host.md)) and `make deploy-local`
+> for the local estate ([orbstack-local-mirror.md](../deployment/orbstack-local-mirror.md)).
 
 ```bash
 # multipass-side fanout (uses VMS env var)
@@ -376,7 +385,7 @@ make fleet-snapshot
 
 ### `429 Too Many Requests` on login
 
-The engine's anti-brute-force limiter caps `/api/login` at 10/minute
+The engine's anti-brute-force limiter caps `/api/login` at 5/minute
 per IP. `chokectl` caches cookies to avoid this, but if you see 429:
 
 ```bash

@@ -36,6 +36,31 @@ SHORT="$(echo "$TENANT" | cut -d- -f1)"
 VM="ebpf-agent-$SHORT"
 TETRAGON_IMAGE="${TETRAGON_IMAGE:-quay.io/cilium/tetragon:v1.6.1}"
 
+# DATA_MODE governs the synthetic activity generator installed below. Same gate
+# as the SSH provisioner (scripts/deploy/provision-agent-ssh.sh) and for the
+# same reason: it fabricates ~2,000 alerts/hour, which pins the console's
+# executive posture dial regardless of what the estate is actually doing.
+# Default `sim` matches scripts/deploy/lib.sh, so a bare run is unchanged.
+# DATA_MODE governs SYNTHETIC data: the sim-agents on the control plane and, on
+# an agent host, /opt/ebpf-soc/activity.sh — a root systemd service that fires a
+# scripted attack every 20-45s — plus the attacks/ catalogue (reverse shell,
+# persistence, credential theft).
+#
+# DEFAULT IS `none`. It used to be `sim`, which meant the documented install path
+# put a synthetic attack generator and a reverse-shell script catalogue onto
+# whatever host it touched. That is defensible on a laptop and indefensible on a
+# customer's production estate: their own EDR sees it, their NOC sees it, and the
+# alerts it manufactures are indistinguishable from real ones in every panel and
+# every exported report. Only estate.sh passed `none`, and estate.sh is specific
+# to this project's own AWS rig — nobody deploying for a customer would run it.
+#
+# Opt in with DATA_MODE=sim for a demo or a UI-only environment.
+DATA_MODE="${DATA_MODE:-none}"
+case "$DATA_MODE" in sim|real|none) ;; *) die "DATA_MODE must be sim, real or none (got '$DATA_MODE')" ;; esac
+# The enrollment token is minted through the control-plane machine's own
+# loopback, so this needs its OrbStack name — which is not derivable from CP_IP.
+CP_MACHINE="${CP_MACHINE:-ebpf-soc}"
+
 log()  { printf '  \033[36m%s\033[0m\n' "$*"; }
 ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
@@ -179,7 +204,7 @@ if m 'test -f /var/lib/ebpf-soc-agent/agent-cert.pem'; then
   ok "already enrolled — reusing persisted identity"
 else
   log "minting a fresh enrollment token for $TENANT"
-  TOKEN="$(orb -m ebpf-soc sudo sh -c "curl -s -X POST http://127.0.0.1:9090/api/admin/enroll-token -H 'Authorization: Bearer $CP_ADMIN_TOKEN' -H 'content-type: application/json' -d '{\"tenant\":\"$TENANT\"}'" \
+  TOKEN="$(orb -m "$CP_MACHINE" sudo sh -c "curl -s -X POST http://127.0.0.1:9090/api/admin/enroll-token -H 'Authorization: Bearer $CP_ADMIN_TOKEN' -H 'content-type: application/json' -d '{\"tenant\":\"$TENANT\"}'" \
             | sed -n 's/.*\"token\":\"\([a-f0-9]*\)\".*/\1/p')"
   [ -n "$TOKEN" ] || die "could not mint an enrollment token (is the CP admin token correct?)"
   log "enrolling into $TENANT at $CP_IP:9443"
@@ -219,6 +244,18 @@ output_log="/var/log/ebpf-agent.log"
 error_log="/var/log/ebpf-agent.log"
 depend() { need docker; after docker; }
 EOF
+
+# ── Synthetic activity generator (DATA_MODE) ───────────────────────────────
+# Removal is ACTIVE: a machine provisioned before this gate existed already has
+# the service enabled, so merely declining to install it would leave it running.
+if [ "$DATA_MODE" = none ]; then
+  m 'rc-service ebpf-activity stop >/dev/null 2>&1
+     rc-update del ebpf-activity default >/dev/null 2>&1
+     pkill -9 -f /opt/ebpf-soc/activity.sh 2>/dev/null
+     rm -f /etc/init.d/ebpf-activity /opt/ebpf-soc/activity.sh
+     true'
+  ok "DATA_MODE=none — synthetic activity generator stopped and removed"
+else
 
 # Tuned to look like a real SOC feed, not a stress test: 1-2 random attack
 # scripts per cycle + one shell chain + a couple of outbound connects, every
@@ -262,8 +299,11 @@ output_log="/dev/null"
 error_log="/dev/null"
 EOF
 
-m 'chmod +x /etc/init.d/ebpf-agent /etc/init.d/ebpf-activity
-   rc-update add ebpf-agent default >/dev/null 2>&1
+fi
+
+m 'chmod +x /etc/init.d/ebpf-agent
+   rc-update add ebpf-agent default >/dev/null 2>&1'
+[ "$DATA_MODE" = none ] || m 'chmod +x /etc/init.d/ebpf-activity
    rc-update add ebpf-activity default >/dev/null 2>&1'
 
 # Clean slate, then start — each step in its own exec session so a fresh
@@ -279,7 +319,7 @@ m 'rc-service ebpf-agent stop >/dev/null 2>&1; rc-service ebpf-activity stop >/d
    true'
 sleep 2
 m 'rc-service ebpf-agent start >/dev/null 2>&1'
-m 'rc-service ebpf-activity start >/dev/null 2>&1'
+[ "$DATA_MODE" = none ] || m 'rc-service ebpf-activity start >/dev/null 2>&1'
 
 # supervise-daemon settles a moment after "started"; retry the status check.
 started=0
@@ -289,4 +329,9 @@ ok "agent + activity services running"
 
 AGENT_IP="$(orb list 2>/dev/null | awk -v v="$VM" '$1==v {print $NF}')"
 printf '\n  \033[1m%s\033[0m → tenant \033[1m%s\033[0m  (agent VM %s)\n' "$VM" "$TENANT" "${AGENT_IP:-?}"
+# The agent's console binds 127.0.0.1 (see agent.yaml above), so the VM's own IP
+# will not serve it — an operator who tries http://$AGENT_IP:8080/ gets a refused
+# connection and concludes the agent is down. Print the address that works.
+printf '  console: http://127.0.0.1:8080/  after  ssh -L 8080:127.0.0.1:8080 %s@orb\n' "$VM"
+printf '           login admin / %s\n' "$CONSOLE_PASS"
 printf '  logs:  orb -m %s sudo tail -f /var/log/ebpf-agent.log\n\n' "$VM"

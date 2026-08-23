@@ -1,15 +1,29 @@
 # Deploy on an Ubuntu server — step by step
 
-The fastest, supported path to a running **eBPF Threat Choke Gateway** on a
-fresh **Ubuntu 22.04 or 24.04** server (cloud VM, bare metal, or hypervisor
-guest). It uses the repo's own automation — [`scripts/setup.sh`](../../scripts/setup.sh)
-for the host, [`deploy/install.sh`](../../deploy/install.sh) for the engine —
-so there is nothing to copy-paste by hand beyond a few commands.
+A manual, explained path to a running **eBPF Threat Choke Gateway** on a fresh
+**Ubuntu 22.04 or 24.04** server (cloud VM, bare metal, or hypervisor guest),
+using [`scripts/setup.sh`](../../scripts/setup.sh) for the host and
+[`deploy/install.sh`](../../deploy/install.sh) for the engine.
 
-> Already deployed and just need to redeploy/upgrade? Jump to
-> [§7 Operations](#7-operations). For the production runbook of the live
-> engine host (and its enforcing-mode traps) see
-> [live-soc-adanianlabs.md](live-soc-adanianlabs.md).
+> **The supported path is one command.** For a normal deploy use the
+> consolidated provisioner, which builds, installs a hardened systemd unit,
+> configures TLS and sets up backups:
+>
+> ```bash
+> SSH_HOST=user@host ./scripts/deploy/single-tenant-ubuntu.sh
+> # production: add TLS=1 TARGET_HOST=<fqdn> TLS_EMAIL=<you@example.com>
+> ```
+>
+> `make deploy-engine SSH_HOST=user@host` is the Makefile alias. See
+> [`scripts/deploy/README.md`](../../scripts/deploy/README.md). Read on only if
+> you want the steps unpacked, or you are deploying somewhere the script cannot
+> reach.
+
+> Deploying the whole estate rather than one engine? Use
+> [aws-multi-host.md](aws-multi-host.md) and `make deploy-estate`. Already
+> deployed and just need to redeploy/upgrade? Jump to
+> [§7 Operations](#7-operations). For enforcing-mode traps see
+> [operations/enforcement-traps.md](../operations/enforcement-traps.md).
 
 ---
 
@@ -166,7 +180,7 @@ pass_hash: "$2a$10$....replace-me...."
 > to enforcing — from the UI, or by setting `enforce: true` and restarting.
 > Enforcing too aggressively can sever high-scoring system binaries (e.g.
 > `sudo`); the shipped thresholds (quarantine 120 / sever 200) are tuned to keep
-> them safe. See the trap notes in [live-soc-adanianlabs.md §3](live-soc-adanianlabs.md).
+> them safe. See [operations/enforcement-traps.md](../operations/enforcement-traps.md).
 
 Apply changes with a restart:
 
@@ -281,7 +295,7 @@ sudo systemctl start ebpf-engine     # recreated empty on boot
 | Dashboard loads but **no alerts / Kernel sensor Disconnected** | Engine can't reach the Tetragon socket. Confirm `tetragon:` path in `engine.yaml` matches `/var/run/tetragon/tetragon.sock` and the container is up. |
 | `502` from nginx | Engine not listening on `:8080`. `systemctl status ebpf-engine`; check `http:` in config. |
 | SSE stream keeps dropping | nginx not using the shipped config (it disables buffering for `/api/stream`). Ensure `deploy/nginx/ebpf-engine.conf` is the active site. |
-| `apt` breaks after enabling enforcement | A Tetragon enforce TracingPolicy (e.g. `override-credential-read`, `Sigkill` on credential reads) killed an apt postinst. Reversible — see [live-soc-adanianlabs.md §4](live-soc-adanianlabs.md). |
+| `apt` breaks after enabling enforcement | A Tetragon enforce TracingPolicy (e.g. `override-credential-read`, `Sigkill` on credential reads) killed an apt postinst. Reversible — see [operations/enforcement-traps.md](../operations/enforcement-traps.md) trap 2. |
 | `sudo` gets killed in enforcing mode | Score thresholds too low for your workload. Boot detect-only, raise `quarantine_at`/`sever_at`, then re-enable. |
 | `/devices` shows `plane=noop` | Expected on a single-NIC host. Per-MAC enforcement needs a 2-NIC inline bridge — see [network-choke-gateway.md](network-choke-gateway.md). |
 

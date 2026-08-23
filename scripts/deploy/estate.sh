@@ -20,10 +20,19 @@
 #                           systemd unit reported active and curl http://<ip>/
 #                           returned 200, so every health check passed through
 #                           the outage.
-#   DATA_MODE=none          defaults to `sim`; a plain redeploy resurrects the
-#                           sim-agents beside the real ones. A sim acks
-#                           STATUS_APPLIED for a process it never touched, which
-#                           is the false-containment condition.
+#   DATA_MODE=none          defaults to `sim`, and is needed in TWO places:
+#                           - control plane: a plain redeploy resurrects the
+#                             sim-agents beside the real ones, and a sim acks
+#                             STATUS_APPLIED for a process it never touched,
+#                             which is the false-containment condition.
+#                           - each AGENT: the provisioner installs a synthetic
+#                             attack loop (ebpf-activity.service). Until
+#                             2026-08-19 that install was unconditional, so this
+#                             flag governed the sims and not the far larger fake
+#                             data source next to them: the estate ran a
+#                             permanent scripted attack producing ~2,000
+#                             alerts/hour, which pinned the executive posture
+#                             dial at 93-97 "critical" around the clock.
 #   the `Host` agent        second agent in acme-corp. Skipping it leaves a
 #                           version-skewed multi-agent tenant — precisely the
 #                           configuration where containment-routing bugs surface.
@@ -160,7 +169,7 @@ if doing agents; then
     tenant="${a%%=*}"; host="${a#*=}"
     step_header "Agent — $host (tenant $tenant)"
     run make deploy-agent TENANT="$tenant" AGENT_HOST="$host" \
-      CP_SSH="$CP_SSH" CP_IP="$CP_PRIVATE_IP"
+      CP_SSH="$CP_SSH" CP_IP="$CP_PRIVATE_IP" DATA_MODE=none
   done
 fi
 
@@ -187,6 +196,22 @@ step_header "Verify"
 run env CP_HOST="$CP_SSH" ENGINE_HOST="$ENGINE_SSH" \
   AGENT_HOSTS="${AGENTS[*]}" \
   ./scripts/ci/verify-deploy.sh
+
+step_header "Endpoints"
+# Both surfaces are deployed with TLS=1 above, so https is the address that
+# works — printing the plaintext one would hand out a URL that redirects at best.
+endpoint console  "https://$CP_DOMAIN/"
+endpoint keycloak "https://$CP_DOMAIN/admin/"
+endpoint engine   "https://$ENGINE_DOMAIN/"
+for a in "${AGENTS[@]}"; do
+  endpoint agent "${a#*=}" "tenant ${a%%=*}"
+done
+endpoint victim "$VICTIM_SSH" "containment target, no agent by design"
+printf '\n'
+dim "An agent's own console binds 127.0.0.1:8080 and is not published. Reach one with"
+dim "  ssh -L 8080:127.0.0.1:8080 <agent-host>   then http://127.0.0.1:8080/"
+dim "  user admin; password: sudo cat /etc/ebpf-soc/agent-console.env"
+dim "Console and Keycloak logins are in .deploy-build/credentials-<host>.txt (0600)."
 
 printf '\n'
 ok "estate deployed and verified: $VERSION"

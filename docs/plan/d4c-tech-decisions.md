@@ -32,7 +32,7 @@ also ship on-prem.
 | **Message bus** | **NATS JetStream** | Apache-2.0 | Synadia Cloud | single binary |
 | **Events (firehose)** | **ClickHouse (OSS engine)** | Apache-2.0 | ClickHouse Cloud | self-hosted |
 | **Control state** | **PostgreSQL + RLS** | PostgreSQL | RDS / Cloud SQL | self-hosted PG |
-| **Object store** | **SeaweedFS** | Apache-2.0 | cloud S3 | SeaweedFS |
+| **Object store** | **SeaweedFS** | Apache-2.0 | cloud S3 | SeaweedFS (decided; not yet integrated in `engine/`) |
 | **Identity** | **Keycloak** (broker) | Apache-2.0 | Cloud-IAM / PhaseTwo | self-hosted |
 | **Console** | evolve React/Vite + BFF auth | MIT | CDN | `go:embed` in control plane |
 
@@ -110,6 +110,12 @@ browser (right call for a security product); (b) **TanStack Query + Router + a
 `TenantProvider`** where the tenant switcher is UX only and the server (`authz`)
 is the sole scope authority; (c) keep it **`go:embed`-served by the control-plane
 binary** for single-artifact on-prem deploys (CDN optional for SaaS).
+
+> **As built:** (a) and (b) shipped. (c) went the other way — the single-tenant
+> engine embeds the bundle (`engine/internal/api/web_embed.go`), but the control
+> plane serves it from **nginx**, which is already terminating TLS in front of
+> it. The single-artifact argument did not survive contact with a deployment
+> that needs a reverse proxy regardless.
 
 ---
 

@@ -11,9 +11,15 @@
 > company-ending for a security vendor"*). Writing the invariant down before the
 > spine is built is what stops it from being retrofitted.
 >
-> **Status:** specification (Phase 0). The mechanisms it describes (ingest,
-> central store, identity/RBAC) are built in Phase 1; this doc is their
-> acceptance test.
+> **Status:** living specification — the mechanisms it describes are built and
+> under test. Layer 1 (cert-derived tenant on ingest) is
+> `engine/internal/ingest/ingest.go`; layer 2 (tenant-scoped tokens) is
+> `engine/internal/identity/`; layer 3 (row-level security) is
+> `engine/internal/centralstore/postgres.go`, with cross-tenant read denial
+> asserted by `TestCrossTenantReadDenial` and bypasses caught statically by
+> `engine/internal/isolationguard/`. **Still open:** per-tenant encryption at
+> rest (§4, layer 3) and the generated cross-tenant API matrix (§7, T4) — today
+> that is spot-tested, not exhaustive. External pen-test (T7) has not run.
 
 ---
 
@@ -233,17 +239,21 @@ keys on a natural identifier instead of `(tenant_id, id)`.
 
 ---
 
-## 8. Definition of done (for the invariant, in Phase 1)
+## 8. Definition of done
 
-- [ ] `tenant_id` is derived from mTLS/RBAC only; no code path trusts a
+- [x] `tenant_id` is derived from mTLS/RBAC only; no code path trusts a
       client-supplied tenant for authorization (T1, T2 green).
-- [ ] A single tenant-scoped data-access layer mediates all storage; the bypass
-      lint passes; per-tenant audit chains verify independently (T3 green).
+- [x] A single tenant-scoped data-access layer mediates all storage; the bypass
+      lint passes (`engine/internal/isolationguard/`); per-tenant audit chains
+      verify independently (T3 green).
 - [ ] The generated cross-tenant API matrix (T4) is a required check and ratchets
-      with new routes.
-- [ ] Cross-tenant access exists only via the audited MSOC role (T5 green).
+      with new routes. **Open** — routes are spot-tested (e.g.
+      `controlplane/choke_routing_test.go`), not exhaustively generated.
+- [x] Cross-tenant access exists only via the audited MSOC role (T5 green).
 - [ ] Side-channel checks (T6) pass; residual infra risks are logged for the
-      pen-test.
-- [ ] A pre-GA external pen-test targets this invariant (T7 scheduled).
+      pen-test. **Open** — per-tenant encryption at rest (§4) is not implemented.
+- [ ] A pre-GA external pen-test targets this invariant (T7). **Not scheduled.**
 
-Until every box is checked, the platform is single-tenant only.
+The four layers are built and enforced in CI. The three open boxes are what
+stands between "isolated in practice" and "isolation proven exhaustively" — they
+are GA blockers, not Phase 1 blockers.

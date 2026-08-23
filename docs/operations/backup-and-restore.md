@@ -161,7 +161,7 @@ TLS=1 TARGET_HOST=<engine-host> SSH_HOST=<engine-ssh> \
 Then verify with the live suite rather than by eye:
 
 ```bash
-./scripts/e2e/all.sh     # 9 suites; exits non-zero if any assertion fails
+./scripts/e2e/all.sh     # 10 suites; exits non-zero if any assertion fails
 ```
 
 ## Related

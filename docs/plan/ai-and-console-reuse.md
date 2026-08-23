@@ -3,8 +3,19 @@
 What to take from [`DataInVizApp_V2`](../../../DataInVizApp_V2), what to build fresh, and the order
 to do it in. Every number here was measured against both trees on 2026-08-16, not estimated.
 
-Companion to [`plan.md`](plan.md) and [`roadmap.md`](roadmap.md). Branch: `feat/soc-assistant`,
-currently level with `main` at `v1.3.0-1-g0c04c1f`.
+Companion to [`plan.md`](plan.md) and [`roadmap.md`](roadmap.md).
+
+> **Status: partially delivered.** Tier 2A — the assistant backend — **shipped**:
+> `engine/internal/assistant/` with its read-only tool registry and the
+> `registry_test.go` ratchet. Tier 2B shipped as `AssistantPanel`, `ChatSidebar`
+> and `AssistantChatProvider` under `web/src/features/assistant/`. **Tier 1A
+> (dependency-injected route APIs) is roughly a quarter done** — `DevicesRoute`
+> takes an `api` prop, `FleetRoute` does not, and there is no `SocApi` or
+> `ChokeApi`. **Tier 1B has not started**: no `.storybook/`, and the coverage
+> numbers in §0 are the 2026-08-16 baseline, not current.
+>
+> The shipped assistant is described in
+> [`../architecture/analyst-assistant.md`](../architecture/analyst-assistant.md).
 
 ---
 

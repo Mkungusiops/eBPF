@@ -45,7 +45,11 @@ PrivateDevices=false
 ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=false
-ReadWritePaths=/var/lib/ebpf-engine /sys/fs/cgroup /sys/fs/bpf
+# /etc/tetragon/tetragon.tp.d is where a console-authored TracingPolicy is
+# persisted so it survives a Tetragon restart. ProtectSystem=strict makes /etc
+# read-only, so without this entry every push degrades to "live, but NOT
+# durable" — correct in what it reports, and quietly useless.
+ReadWritePaths=/var/lib/ebpf-engine /sys/fs/cgroup /sys/fs/bpf /etc/tetragon/tetragon.tp.d
 ReadOnlyPaths=/etc/ebpf-engine
 
 # Service must run as root because it writes to /sys/fs/cgroup/*/cgroup.procs

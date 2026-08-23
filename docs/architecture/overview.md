@@ -1,7 +1,17 @@
-# Architecture & system overview
+# Architecture & system overview — the single-host engine
 
 What this project is, how the pieces fit together, and how an event
 travels from the kernel to an enforcement action and onto the dashboard.
+
+> **Scope.** This describes the **single-tenant engine** (`engine/cmd/engine`) —
+> one binary, one host, its own console. That is the product's core and the
+> thing to understand first, but it is no longer the whole platform. The
+> multi-tenant control plane (`engine/cmd/controlplane`) and the agents that
+> report to it (`engine/cmd/agent`) are a separate deployment with a separate
+> trust model: see [../plan/architecture.md](../plan/architecture.md) for that
+> topology and [../plan/tenant-isolation-invariant.md](../plan/tenant-isolation-invariant.md)
+> for the rule that governs it. The detection, scoring and enforcement described
+> here are shared by both — the agent runs the same host stack.
 
 ## What it is
 
@@ -348,16 +358,24 @@ choke enforces whenever it has the tc backend and is neither `dry_run` nor
 kill-switched. "Observe processes, enforce on devices" is a valid, common
 posture.
 
-## Limitations (current)
+## Limitations (of this variant)
+
+The first three are properties of the single-host engine, **not of the
+platform** — the multi-tenant control plane exists precisely because of them,
+and solves each one. They remain true if you deploy `cmd/engine` on its own.
 
 - **Single host.** One engine ↔ one Tetragon socket. The Postgres backend
-  and the `/fleet` fanout are the first steps toward multi-host, but there
-  is no central fan-in collector yet — the fleet console drives peers
-  individually.
+  and the `/fleet` fanout are the first steps toward multi-host, but this
+  binary has no central fan-in collector — the fleet console drives peers
+  individually. The control plane is the real answer.
 - **Single-user auth.** One admin credential. Sessions are stateless
-  (survive restart) but there is no multi-user/RBAC model.
+  (survive restart) but there is no multi-user/RBAC model. The control plane
+  uses OIDC via Keycloak with tenant-scoped roles.
 - **HTTP only.** TLS termination is done by a reverse proxy (nginx/Caddy) —
   see the deployment guides.
+
+These are properties of the detection and enforcement model itself, and apply
+to both variants:
 - **Fixed scoring rules.** No baseline learning; tuning is manual in
   [scorer.go](../../engine/internal/score/scorer.go) and via the thresholds.
 - **Device choke is operator-driven.** A forwarding node has no per-device
@@ -373,7 +391,11 @@ posture.
   state machine and its design principles.
 - [network-choke-gateway.md](network-choke-gateway.md) — the per-device (MAC)
   data plane and inline-bridge topology.
-- [../deployment/ubuntu-server.md](../deployment/ubuntu-server.md) — the
-  recommended production deployment path.
+- [analyst-assistant.md](analyst-assistant.md) — the read-only LLM analyst that
+  sits beside this console.
+- [../plan/architecture.md](../plan/architecture.md) — the multi-tenant platform
+  this engine became part of.
+- [../deployment/aws-multi-host.md](../deployment/aws-multi-host.md) — the
+  reference production deployment.
 - [../reference/chokectl.md](../reference/chokectl.md) — the fleet CLI.
 </content>

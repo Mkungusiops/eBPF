@@ -59,6 +59,27 @@ against. NOTE: the agent applies conservative local minimums regardless — a
 command can never remove sudo/sshd/systemd protection and cause self-lockout
 (threat-model EN-1/EN-4; the sudo-lockout trap).
 
+### message `ApplyPolicy`
+
+ApplyPolicy changes the host's DETECTION policy — the Tetragon TracingPolicy
+set the kernel is watching with.
+
+It rides the command channel rather than the policy-bundle channel because
+the command channel is the one that exists: signed, acked, audited, and
+dialled OUT by the agent so it works through customer NAT. The agent already
+holds tetragon.FineGuidanceSensorsClient — the same client it calls
+ListTracingPolicies on every heartbeat — and that interface already exposes
+AddTracingPolicy, DeleteTracingPolicy and ConfigureTracingPolicy, all three
+already linked into the shipped binary. The apply path is a method call on an
+open connection, not a new privilege boundary.
+
+SCOPE, deliberately narrow: DETECTION policy only. The ChokePolicy DSL is not
+distributable this way and is excluded, because nothing in the enforcement
+path reads its token buckets — shipping a response policy that cannot take
+effect would be a fiction with a signature on it.
+
+### message `PolicyDoc`
+
 ### message `CommandAck`
 
 ### enum `Status`
@@ -93,6 +114,11 @@ as derived from the client cert — the copy here is for display/telemetry.
 
 DataPlaneState reports both choke data planes so the fleet service can render
 real enforcement posture (architecture.md §3.5 agent registry).
+
+### message `ChokeThresholds`
+
+ChokeThresholds is the per-agent score ladder: the chain score at which each
+rung of the containment ladder engages. Mirrors choke/circuit.Config.
 
 ### message `KernelPolicy`
 

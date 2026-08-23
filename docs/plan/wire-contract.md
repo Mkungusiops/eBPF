@@ -12,11 +12,15 @@
 > pinning it down prevents the two halves from drifting.
 >
 > **Where the IDL lives:** [`engine/proto/ebpfsoc/v1/`](../../engine/proto/ebpfsoc/v1/)
-> (proto3 / gRPC). Code generation is wired in Deliverable 2 (this deliverable is
-> the contract itself, not the generated stubs).
+> (proto3 / gRPC), with generated stubs in
+> [`engine/gen/ebpfsoc/v1/`](../../engine/gen/ebpfsoc/v1/) — regenerate with
+> `make proto`.
 >
-> **Status:** draft for review. Message field mappings marked *"mirrors …"* are
-> finalized against the concrete Go types in Deliverable 2.
+> **Status:** implemented. Enrollment is `engine/internal/enrollment/`, the
+> uplink is `engine/internal/uplink/`, policy pull is
+> `engine/internal/policypull/`, and offline autonomy is exercised by
+> `engine/internal/e2e/autonomy_test.go`. This document is now the reference for
+> the protocol as built; change it and the proto together.
 
 ---
 
@@ -194,13 +198,14 @@ Nothing in this contract makes enforcement depend on the channel being up
 
 ---
 
-## 11. Acceptance (what the next deliverables must satisfy)
+## 11. Acceptance
 
-- [ ] `.proto` compiles and lints clean; stubs generate for Go.
-- [ ] Agent v1 (D2) implements enroll → uplink(resume/dedup) → command(verify/ack)
+- [x] `.proto` compiles and lints clean; stubs generate for Go (`make proto` →
+      `engine/gen/ebpfsoc/v1/`).
+- [x] Agent v1 implements enroll → uplink(resume/dedup) → command(verify/ack)
       → policy(verify) → heartbeat against these definitions, and **passes the
-      offline-enforcement test**.
-- [ ] Ingest (D3) derives tenant from the cert, stamps it, and **ignores any
+      offline-enforcement test** (`engine/internal/e2e/autonomy_test.go`).
+- [x] Ingest derives tenant from the cert, stamps it, and **ignores any
       payload tenant field**, with a test proving a cross-tenant-labelled payload
-      is stamped by cert (isolation T2).
-- [ ] No message on any path carries an authoritative `tenant_id`.
+      is stamped by cert (isolation T2) — `engine/internal/ingest/`.
+- [x] No message on any path carries an authoritative `tenant_id`.

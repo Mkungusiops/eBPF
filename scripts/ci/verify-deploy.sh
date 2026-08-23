@@ -108,6 +108,34 @@ if [[ -n "${AGENT_HOSTS:-}" ]]; then
   for pair in $AGENT_HOSTS; do
     host="${pair#*=}"; tenant="${pair%%=*}"
     check "$host ebpf-agent active" "$(remote "$host" 'systemctl is-active ebpf-agent' || true)" "active"
+
+    # No synthetic activity generator. This is the agent-side half of
+    # DATA_MODE=none and it is the one that was missing.
+    #
+    # `ebpf-activity.service` runs a scripted attack loop — the attack
+    # catalogue, /etc/shadow reads and connections to hardcoded "threat actor"
+    # IPs, every 20-45s, forever. It was installed unconditionally, so an
+    # estate deployed with DATA_MODE=none still fabricated ~2,000 alerts/hour
+    # and the console's executive posture dial sat at 93-97 "critical" around
+    # the clock on hosts where nothing was happening.
+    #
+    # The check above it — "no sim-agents running (DATA_MODE=none)" — passed
+    # throughout, which is precisely why this one is needed: the estate's
+    # no-fake-data assertion did not cover the estate's largest fake-data
+    # source.
+    # `systemctl is-active` PRINTS its answer and also EXITS non-zero for any
+    # non-active state, so `cmd || echo absent` fires on top of "inactive" and
+    # the check reported the two-line value "inactive\nabsent". Take the first
+    # line, and only fall back when nothing was printed at all.
+    act=$(remote "$host" 'systemctl is-active ebpf-activity 2>/dev/null | head -1' || true)
+    act="${act:-absent}"
+    if [[ "$act" == "active" ]]; then
+      err "$host runs ebpf-activity — a synthetic attack loop. Every alert count and the executive posture dial on this estate are fabricated. Redeploy the agent with DATA_MODE=none."
+      FAIL=$((FAIL + 1))
+    else
+      ok "$host has no synthetic activity generator (ebpf-activity: $act)"
+    fi
+
     sum=$(remote "$host" 'sudo sha256sum /opt/ebpf-soc/agent 2>/dev/null | cut -d" " -f1' || true)
     SUMS+=("$sum")
     log "  $host (tenant $tenant) agent sha256 ${sum:0:16}"

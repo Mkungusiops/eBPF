@@ -44,6 +44,114 @@ EOF
 }
 set -a; . "$ENV_FILE"; set +a
 
+# ── SSH connection multiplexing ────────────────────────────────────────────
+#
+# Every remote assertion in every suite is its own `ssh host '...'`, and there
+# are hundreds of them. Each one is a full TCP connect, key exchange and auth,
+# which is slow — and, past a certain rate, is refused: sshd's MaxStartups
+# throttles concurrent unauthenticated connections, so the suite eventually
+# meets a connection that simply never completes.
+#
+# That is not hypothetical. A full run wedged for 28 minutes on a single
+# `ssh engine 'setsid sleep 3600 &'` inside kill-switch.sh, with no error and
+# no timeout, while the same command run by hand returned instantly. The engine
+# was healthy throughout — /healthz answered 200 the whole time — so the
+# failure looked like a product hang and was a harness one.
+#
+# Multiplexing makes every suite reuse ONE connection per host. It removes the
+# connection storm entirely, and it is why this belongs here rather than in
+# each suite: the suites are invoked as separate processes and share nothing
+# except what this file hands them.
+# A SHORT directory, deliberately not mktemp -d.
+#
+# ControlPath is a unix socket path and sun_path caps it at 104 bytes. macOS
+# mktemp -d returns something like
+# /var/folders/h1/qbb8c_fj3f3b7d58jvn4794w0000gn/T/tmp.up70voA3Y4 — 62 bytes
+# before the %C token adds 64 more. ssh then refuses every connection with
+# "ControlPath too long", which it reports on stderr; the helpers send stderr to
+# /dev/null, so every remote call returned EMPTY and the suite reported a
+# healthy estate as comprehensively broken.
+MUXDIR="/tmp/.e2e-mux-$$"
+mkdir -p "$MUXDIR"
+# ControlPath must stay short: it is a unix socket path, and the 104-byte
+# sun_path limit is reached alarmingly easily under a long TMPDIR.
+#
+# -n belongs HERE, in the OPTIONS, not appended by the callers.
+#
+# ssh parses options only up to the hostname; everything after it is the remote
+# command. So `$RSH -n "$cmd"` — with RSH already ending in the host — sends the
+# remote shell the literal command `-n <cmd>`, which fails and returns nothing.
+# Every assertion then compares against an empty string and reports the product
+# broken: "no policies listed", "no pid", "expected throttled, got ''". That is
+# what one run of this suite reported, in full, about a healthy estate.
+MUX="-n -o ControlMaster=auto -o ControlPath=$MUXDIR/%C -o ControlPersist=120 -o BatchMode=yes"
+
+# with_mux rewrites "ssh [opts] host" into "ssh <mux> [opts] host". Empty in,
+# empty out — an unset optional host must stay unset, not become a bare "ssh".
+with_mux() {
+  local rsh="${1:-}"
+  [[ -z "$rsh" ]] && return 0
+  printf 'ssh %s %s' "$MUX" "${rsh#ssh }"
+}
+
+ENGINE_RSH="$(with_mux "${ENGINE_RSH:-}")"
+AGENT_RSH="$(with_mux "${AGENT_RSH:-}")"
+AGENT_B_RSH="$(with_mux "${AGENT_B_RSH:-}")"
+AGENT_C_RSH="$(with_mux "${AGENT_C_RSH:-}")"
+CP_RSH="$(with_mux "${CP_RSH:-}")"
+
+# Tear the shared connections down on the way out. Left running they would hold
+# a socket and a remote sshd process for ControlPersist after the suite ends,
+# which is untidy on a workstation and confusing on a shared runner.
+_mux_cleanup() {
+  local rsh
+  for rsh in "$ENGINE_RSH" "$AGENT_RSH" "$AGENT_B_RSH" "$AGENT_C_RSH" "$CP_RSH"; do
+    [[ -n "$rsh" ]] && $rsh -O exit >/dev/null 2>&1 || true
+  done
+  rm -rf "$MUXDIR"
+}
+trap _mux_cleanup EXIT
+
+# PREFLIGHT: prove the transport works before trusting a single assertion.
+#
+# Every remote helper in every suite ends in `2>/dev/null`, so a FATAL ssh error
+# is indistinguishable from a command that legitimately returned nothing. When
+# ControlPath exceeded the 104-byte socket limit, ssh refused every connection
+# on stderr, all of it was discarded, and the suite confidently reported "no
+# policies listed", "no pid", "expected throttled, got ''" — a full page of
+# product failures against an estate that was completely healthy.
+#
+# A test harness that cannot tell "the answer is no" from "I could not ask" is
+# worse than no harness, because it manufactures incidents. This checks that a
+# known-good remote command returns its known-good answer, and refuses to run
+# otherwise.
+preflight_rsh() {
+  local name="$1" rsh="$2" got
+  [[ -z "$rsh" ]] && return 0
+  got="$(timeout 30 $rsh 'echo __E2E_OK__' 2>/dev/null | tr -d '\r')"
+  if [[ "$got" != "__E2E_OK__" ]]; then
+    printf '\033[31mpreflight FAILED for %s\033[0m\n' "$name" >&2
+    printf '  %s\n' "$rsh" >&2
+    printf '  expected __E2E_OK__, got %q\n' "$got" >&2
+    printf '  ssh says:\n' >&2
+    timeout 30 $rsh 'echo __E2E_OK__' 2>&1 >/dev/null | sed 's/^/    /' >&2
+    return 1
+  fi
+  return 0
+}
+
+PREFLIGHT_RC=0
+preflight_rsh "engine"   "$ENGINE_RSH"  || PREFLIGHT_RC=1
+preflight_rsh "agent A"  "$AGENT_RSH"   || PREFLIGHT_RC=1
+preflight_rsh "agent B"  "$AGENT_B_RSH" || PREFLIGHT_RC=1
+preflight_rsh "agent C"  "$AGENT_C_RSH" || PREFLIGHT_RC=1
+preflight_rsh "cp"       "$CP_RSH"      || PREFLIGHT_RC=1
+if (( PREFLIGHT_RC )); then
+  printf '\nRefusing to run: remote execution is broken, so every assertion below\n' >&2
+  printf 'would report the ESTATE as broken instead of this harness.\n' >&2
+  exit 2
+fi
+
 RC=0
 declare -a RESULTS=()
 
@@ -105,6 +213,22 @@ if [[ -n "${MT_B_USER:-}" ]]; then
      MT_OTHER_TENANT="$A_TENANT" AGENT_RSH="${AGENT_B_RSH:-}" \
      bash "$ROOT/scripts/e2e/multi-tenant.sh"; then RESULTS+=("PASS multi-tenant/$MT_B_TENANT"); else RESULTS+=("FAIL multi-tenant/$MT_B_TENANT"); RC=1; fi
 fi
+
+# The analyst assistant. Read-only by construction, but "read-only" is the
+# security property, not the correctness one: an assistant that answers the
+# wrong question, over the wrong window, about a subject it cannot see is still
+# wrong on an incident console. All three of those shipped, and none of them was
+# visible without a live session.
+section "analyst assistant (surfaces, streaming, grounding)"
+if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" \
+   bash "$ROOT/scripts/e2e/assistant.sh"; then RESULTS+=("PASS assistant"); else RESULTS+=("FAIL assistant"); RC=1; fi
+
+# Enrichment: the behavioural baseline and threat-intel matching. Runs after the
+# assistant suite because one of its checks asks the assistant a question only
+# the enrichment tools can answer, which needs a working model endpoint.
+section "enrichment (behavioural baseline, threat intel)"
+if CONSOLE_URL="$CONSOLE_URL" MT_USER="$MT_USER" MT_PASS="$MT_PASS" \
+   bash "$ROOT/scripts/e2e/enrichment.sh"; then RESULTS+=("PASS enrichment"); else RESULTS+=("FAIL enrichment"); RC=1; fi
 
 # Containment must be ROUTED, not broadcast. Every suite above targets a process
 # on the one host it drives, so none of them would notice a sever ALSO landing on

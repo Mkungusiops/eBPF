@@ -303,6 +303,192 @@ paths:
                   "ttl_seconds": { type: integer }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
+  "/api/assistant":
+    get:
+      tags: ["Other"]
+      operationId: get_api_assistant
+      summary: "handleAssistantCapability"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/assistant/ask":
+    post:
+      tags: ["Other"]
+      operationId: post_api_assistant_ask
+      summary: "handleAssistantAsk"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/assistant/chats":
+    get:
+      tags: ["Other"]
+      operationId: get_api_assistant_chats
+      summary: "handleChats"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "chats": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    post:
+      tags: ["Other"]
+      operationId: post_api_assistant_chats
+      summary: "handleChats"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "chats": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/assistant/chats/":
+    delete:
+      tags: ["Other"]
+      operationId: delete_api_assistant_chats
+      summary: "handleChatByID"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "messages": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    get:
+      tags: ["Other"]
+      operationId: get_api_assistant_chats
+      summary: "handleChatByID"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "messages": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    patch:
+      tags: ["Other"]
+      operationId: patch_api_assistant_chats
+      summary: "handleChatByID"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "messages": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/assistant/stream":
+    post:
+      tags: ["Other"]
+      operationId: post_api_assistant_stream
+      summary: "handleAssistantStream"
+      description: |
+        handleAssistantStream is handleAssistantAsk with the investigation
+        streamed. POST /api/assistant/stream same body as /ask, replies
+        text/event-stream The tenant rules are identical to the non-streaming path
+        and are worth restating because streaming is where they are easiest to
+        lose: the caller's cookie is forwarded verbatim, the history write goes
+        through the same scope-checked recordExchange, and nothing here constructs
+        a runner without a session.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
   "/api/attacks":
     get:
       tags: ["Simulation"]
@@ -317,6 +503,63 @@ paths:
         - $ref: '#/components/parameters/tenant'
       responses:
         "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/baseline":
+    get:
+      tags: ["Other"]
+      operationId: get_api_baseline
+      summary: "handleBaseline"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "anomalies_total": { type: string }
+                  "enabled": { type: string }
+                  "scope": { type: string }
+                  "status": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/baseline/anomalies":
+    get:
+      tags: ["Other"]
+      operationId: get_api_baseline_anomalies
+      summary: "handleBaselineAnomalies"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "findings": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke":
@@ -354,7 +597,25 @@ paths:
       operationId: post_api_choke_annotate
       summary: "handleChokeAnnotate"
       description: |
-        handleChokeAnnotate — cosmetic note; not centrally persisted yet.
+        handleChokeAnnotate refuses, because it cannot do what it was claiming to
+        do. It authorized the caller and returned {"ok": true} WITHOUT EVER
+        READING THE BODY. The console took that as success and toasted "note
+        saved"; the operator wrote a justification onto a containment — the kind
+        of thing that exists to be read back during an incident review — and it
+        went nowhere. On refresh the field was empty again, because no
+        control-plane endpoint emits an annotation at all. This is the same defect
+        family as the tool contract that advertised eleven filter parameters no
+        server read. 501 with the reason is the honest interim: the console can
+        disable the control instead of offering one that discards what is typed
+        into it. The full fix is a hash-chained store.Decision with Action
+        "annotate" and the note as Reason, mirroring the audit write in
+        internal/api/policypush.go — Reason and Actor are both chained, so an
+        annotation becomes tamper-evident evidence rather than decoration. It
+        needs a length cap (the handler accepts an unbounded string) and a look at
+        /api/choke/forensic-snapshot, which reads a fixed RecentDecisions(2000)
+        budget that annotations would start consuming. NOTE: this keeps
+        authorizeRespond. Routing it to handleChokeWriteStub, which is the obvious
+        tidy-up, would silently downgrade this to authorizeRead.
 
         Surface: control-plane, engine.
         Requires the tenant query parameter.
@@ -372,7 +633,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  "ok": { type: boolean }
+                  "error": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
     put:
@@ -380,7 +641,25 @@ paths:
       operationId: put_api_choke_annotate
       summary: "handleChokeAnnotate"
       description: |
-        handleChokeAnnotate — cosmetic note; not centrally persisted yet.
+        handleChokeAnnotate refuses, because it cannot do what it was claiming to
+        do. It authorized the caller and returned {"ok": true} WITHOUT EVER
+        READING THE BODY. The console took that as success and toasted "note
+        saved"; the operator wrote a justification onto a containment — the kind
+        of thing that exists to be read back during an incident review — and it
+        went nowhere. On refresh the field was empty again, because no
+        control-plane endpoint emits an annotation at all. This is the same defect
+        family as the tool contract that advertised eleven filter parameters no
+        server read. 501 with the reason is the honest interim: the console can
+        disable the control instead of offering one that discards what is typed
+        into it. The full fix is a hash-chained store.Decision with Action
+        "annotate" and the note as Reason, mirroring the audit write in
+        internal/api/policypush.go — Reason and Actor are both chained, so an
+        annotation becomes tamper-evident evidence rather than decoration. It
+        needs a length cap (the handler accepts an unbounded string) and a look at
+        /api/choke/forensic-snapshot, which reads a fixed RecentDecisions(2000)
+        budget that annotations would start consuming. NOTE: this keeps
+        authorizeRespond. Routing it to handleChokeWriteStub, which is the obvious
+        tidy-up, would silently downgrade this to authorizeRead.
 
         Surface: control-plane.
         Requires the tenant query parameter.
@@ -398,7 +677,7 @@ paths:
               schema:
                 type: object
                 properties:
-                  "ok": { type: boolean }
+                  "error": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/buckets":
@@ -721,7 +1000,7 @@ paths:
                   "dry_run": { type: string }
                   "enforcing": { type: string }
                   "frames_seen": { type: string }
-                  "kill_switched": { type: boolean }
+                  "kill_switched": { type: string }
                   "links_attached": { type: string }
                   "mode": { type: string }
                   "tracked": { type: string }
@@ -826,15 +1105,31 @@ paths:
     get:
       tags: ["Containment — process plane"]
       operationId: get_api_choke_forensic_snapshot
-      summary: "handleChokeForensicSnapshot"
+      summary: "handleChokeWriteStub"
       description: |
-        GET /api/choke/forensic-snapshot — single JSON dump of every piece of
-        gateway state. Operators download this at the start of an incident
-        response so the live state can't change underfoot during forensics.
+        handleChokeWriteStub answers the interactive Choke/Devices write endpoints
+        with a clean, explicit 501 so the frontend surfaces a tidy message instead
+        of a 404. Wiring these to the signed command dispatcher (fleet-wide
+        SetMode, manual Jail/Thaw, thresholds, kill-switch) is the next increment
+        — held back deliberately because these change enforcement on live agents.
 
-        Surface: engine.
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
       responses:
-        "200": { description: "Success" }
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "error": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/forget":
@@ -1131,21 +1426,6 @@ paths:
         "200": { description: "Success" }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
-  "/api/choke/policy/preview":
-    post:
-      tags: ["Containment — process plane"]
-      operationId: post_api_choke_policy_preview
-      summary: "handleChokePolicyPreview"
-      description: |
-        POST /api/choke/policy/preview — body: {yaml: "..."} Returns {valid,
-        errors, matches: [...]} with the live exec_ids that would activate under
-        the supplied policy. The policy is NOT installed.
-
-        Surface: engine.
-      responses:
-        "200": { description: "Success" }
-        "401": { description: "Unauthenticated" }
-        "404": { description: "Not found, or not visible to this caller" }
   "/api/choke/preset":
     post:
       tags: ["Containment — process plane"]
@@ -1349,14 +1629,18 @@ paths:
                 properties:
                   "audit": { type: string }
                   "counts": { type: string }
+                  "data_plane": { type: string }
                   "dry_run": { type: string }
                   "enforcing": { type: string }
                   "kernel": { type: string }
-                  "kill_switched": { type: boolean }
+                  "kill_switched": { type: string }
+                  "links_attached": { type: string }
                   "mode": { type: string }
+                  "noop": { type: string }
                   "ok": { type: boolean }
                   "supported": { type: boolean }
                   "thresholds": { type: string }
+                  "thresholds_diverge": { type: string }
                   "total": { type: integer }
                   "tracked": { type: string }
         "401": { description: "Unauthenticated" }
@@ -1521,6 +1805,24 @@ paths:
                   "detail": { type: string }
                   "ok": { type: string }
                   "total": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/decision-stats":
+    get:
+      tags: ["Other"]
+      operationId: get_api_decision_stats
+      summary: "handleDecisionStats"
+      description: |
+        handleDecisionStats serves server-computed enforcement-decision counts.
+        ?window_min= window length in minutes (default 30, max 7 days) ?tenant=
+        optional; defaults to the operator's primary tenant
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/decisions":
@@ -2133,6 +2435,78 @@ paths:
         "200": { description: "Success" }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
+  "/api/intel":
+    get:
+      tags: ["Other"]
+      operationId: get_api_intel
+      summary: "handleIntel"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "matches_total": { type: string }
+                  "refresh": { type: string }
+                  "status": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/intel/lookup":
+    get:
+      tags: ["Other"]
+      operationId: get_api_intel_lookup
+      summary: "handleIntelLookup"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/intel/matches":
+    get:
+      tags: ["Other"]
+      operationId: get_api_intel_matches
+      summary: "handleIntelMatches"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "findings": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
   "/api/login":
     post:
       tags: ["Authentication"]
@@ -2176,6 +2550,39 @@ paths:
         "200": { description: "Success" }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
+  "/api/platform-doc":
+    get:
+      tags: ["Other"]
+      operationId: get_api_platform_doc
+      summary: "handlePlatformDoc"
+      description: |
+        handlePlatformDoc serves the product glossary — the same content the
+        engine serves, from the same package, so the two deployments cannot
+        describe their own behaviour differently. GET /api/platform-doc every
+        topic GET /api/platform-doc?topic=x one topic
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "matched": { type: boolean }
+                  "requested": { type: string }
+                  "topic": { type: string }
+                  "topics": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
   "/api/policies":
     get:
       tags: ["Policy"]
@@ -2210,6 +2617,71 @@ paths:
                   "count": { type: integer }
                   "policies": { type: string }
                   "tenant": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/policies/push":
+    post:
+      tags: ["Policy"]
+      operationId: post_api_policies_push
+      summary: "handlePolicyPush"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "acked": { type: string }
+                  "converged": { type: boolean }
+                  "convergence_note": { type: string }
+                  "detail": { type: string }
+                  "dispatched_to": { type: string }
+                  "error": { type: string }
+                  "ok": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    put:
+      tags: ["Policy"]
+      operationId: put_api_policies_push
+      summary: "handlePolicyPush"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "acked": { type: string }
+                  "converged": { type: boolean }
+                  "convergence_note": { type: string }
+                  "detail": { type: string }
+                  "dispatched_to": { type: string }
+                  "error": { type: string }
+                  "ok": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/policy-stats":
@@ -2336,6 +2808,44 @@ paths:
                   "fired": { type: string }
                   "id": { type: string }
                   "ok": { type: boolean }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/sensor-health":
+    get:
+      tags: ["Other"]
+      operationId: get_api_sensor_health
+      summary: "handleSensorHealth"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "agents": { type: string }
+                  "agents_fresh": { type: string }
+                  "agents_losing": { type: string }
+                  "agents_total": { type: integer }
+                  "coverage_caveat": { type: string }
+                  "dropped_records": { type: string }
+                  "expected_policies": { type: string }
+                  "generated_at": { type: string }
+                  "policy_drift": { type: integer }
+                  "policy_versions": { type: string }
+                  "stale_after_seconds": { type: string }
+                  "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/stream":
@@ -2506,9 +3016,11 @@ paths:
               schema:
                 type: object
                 properties:
+                  "can_push_policy": { type: string }
                   "can_respond": { type: string }
                   "cross_tenant": { type: string }
                   "host": { type: string }
+                  "policy_scope": { type: string }
                   "role": { type: string }
                   "subject": { type: string }
                   "tenants": { type: string }

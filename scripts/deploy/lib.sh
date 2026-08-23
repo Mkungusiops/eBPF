@@ -54,17 +54,59 @@ TENANTS="${TENANTS:-adanian-internal acme-corp}"
 #          redeploy resurrects the sims alongside the real agents, and a tenant
 #          then has two agents: enforcement can be dispatched to the sim, which
 #          acks APPLIED for a process it never touched.
-DATA_MODE="${DATA_MODE:-sim}"
+# DATA_MODE governs SYNTHETIC data: the sim-agents on the control plane and, on
+# an agent host, /opt/ebpf-soc/activity.sh — a root systemd service that fires a
+# scripted attack every 20-45s — plus the attacks/ catalogue (reverse shell,
+# persistence, credential theft).
+#
+# DEFAULT IS `none`. It used to be `sim`, which meant the documented install path
+# put a synthetic attack generator and a reverse-shell script catalogue onto
+# whatever host it touched. That is defensible on a laptop and indefensible on a
+# customer's production estate: their own EDR sees it, their NOC sees it, and the
+# alerts it manufactures are indistinguishable from real ones in every panel and
+# every exported report. Only estate.sh passed `none`, and estate.sh is specific
+# to this project's own AWS rig — nobody deploying for a customer would run it.
+#
+# Opt in with DATA_MODE=sim for a demo or a UI-only environment.
+DATA_MODE="${DATA_MODE:-none}"
 PASSWORD_POLICY="length(14) and upperCase(1) and lowerCase(1) and digits(3) and specialChars(3)"
 
 # ─── build (local, linux/amd64, static) ─────────────────────────────────────
 build_binaries() { # engine | controlplane
   mkdir -p "$BUILD_DIR"
-  log "building the console frontend (embedded via go:embed)"
-  ( cd "$REPO_ROOT/web" && npm run build >/dev/null 2>&1 ) || die "web build failed"
+  # SKIP_WEB_BUILD exists for one caller: a script that deploys BOTH surfaces in
+  # a single run and has already built the console for the first. It is opt-in
+  # and conditional on a dist actually being there, so the failure mode it could
+  # cause — shipping a binary with no UI embedded, which builds and serves 404s —
+  # cannot happen by accident. Never set it to reuse a dist from another session:
+  # the whole point of building here is that go:embed cannot warn you.
+  if [[ "${SKIP_WEB_BUILD:-0}" == "1" && -f "$REPO_ROOT/web/dist/index.html" ]]; then
+    log "reusing the console built earlier this run (SKIP_WEB_BUILD=1)"
+  else
+    log "building the console frontend (embedded via go:embed)"
+    ( cd "$REPO_ROOT/web" && npm run build >/dev/null 2>&1 ) || die "web build failed"
+  fi
   # stage the fresh dist into the engine's embed dir so it serves current UI
   rm -rf "$REPO_ROOT/engine/internal/api/web"/* 2>/dev/null || true
   cp -R "$REPO_ROOT/web/dist/." "$REPO_ROOT/engine/internal/api/web/" 2>/dev/null || true
+
+  # Stage the canonical policies/ for go:embed into the control plane, for the
+  # same reason and with the same hazard as the web bundle above.
+  #
+  # This function cross-compiles with a bare `go build`, deliberately not
+  # through the Makefile, so the Makefile's policy-assets target never runs on
+  # a deploy. go:embed cannot warn about an empty directory: the control plane
+  # would build clean and serve a policy list where every YAML body is empty,
+  # which is what the console offers an operator to copy from when they are
+  # writing a detection of their own. It worked on the author's machine only
+  # because a previous `make` had left the staging directory populated.
+  local policy_embed="$REPO_ROOT/engine/internal/policyassets/embedded"
+  mkdir -p "$policy_embed"
+  find "$policy_embed" -mindepth 1 ! -name .keep -exec rm -rf {} + 2>/dev/null || true
+  if ! cp "$REPO_ROOT"/policies/*.yaml "$policy_embed/" 2>/dev/null; then
+    die "no policies in $REPO_ROOT/policies — the control plane would ship with no policy sources"
+  fi
+  log "staged $(ls -1 "$policy_embed"/*.yaml 2>/dev/null | wc -l | tr -d ' ') policy source file(s) for go:embed"
   # Stamp the human-facing release name, exactly as the Makefile does.
   #
   # Go records the commit SHA and dirty flag on its own, so /api/version always
@@ -159,6 +201,51 @@ _assistant_flags() {
   fi
   printf ' -assistant-url %s -assistant-model %s' \
     "$ASSISTANT_URL" "${ASSISTANT_MODEL:-gpt-oss:120b}"
+}
+
+# ── Threat-intelligence feeds ──────────────────────────────────────────────
+# Ship deploy/intel/ to /etc/ebpf-soc/intel on the target.
+#
+# ONE PATH ACROSS THE WHOLE ESTATE, even though the engine keeps its other
+# config under /etc/ebpf-engine. An operator adding an indicator should not have
+# to remember which of two layouts a given box uses, and every binary defaults
+# to this directory (hoststack.DefaultIntelDir).
+#
+# It MERGES rather than replacing: operator-authored feeds and edits to
+# allow.txt live in the same directory, and a deploy that wiped them would
+# silently reintroduce every false positive the operator had already suppressed.
+# Only the files this repo ships are overwritten.
+_ship_intel() {
+  local src="$REPO_ROOT/deploy/intel"
+  [[ -d "$src" ]] || return 0
+  RUN "install -d -m 0755 /etc/ebpf-soc/intel"
+  local f base
+  # *.txt AND feeds.yaml. The glob was .txt only, so the refresh configuration
+  # never reached a single host and every deployment matched whatever static
+  # indicators it happened to have — with /api/intel cheerfully reporting them
+  # loaded. Exactly the silent-coverage failure this component is built around,
+  # arriving through the deploy script rather than the code.
+  for f in "$src"/*.txt "$src/feeds.yaml"; do
+    [[ -e "$f" ]] || continue
+    base="$(basename "$f")"
+    # allow.txt and feeds.yaml are the OPERATOR'S once they exist on the box.
+    # allow.txt holds the suppressions that stop a feed severing something the
+    # estate depends on; feeds.yaml holds confidence tiers that decide whether a
+    # match can contain a process. Overwriting either on every deploy would
+    # silently revert a tuning decision someone made with evidence this repo
+    # does not have.
+    case "$base" in
+      allow.txt|feeds.yaml)
+        if RUN "[ -e /etc/ebpf-soc/intel/$base ]" >/dev/null 2>&1; then
+          dim "keeping the existing /etc/ebpf-soc/intel/$base (operator-owned)"
+          continue
+        fi
+        ;;
+    esac
+    PUT "$f" "/etc/ebpf-soc/intel/$base"
+  done
+  RUN "chmod 0644 /etc/ebpf-soc/intel/*.txt 2>/dev/null || true"
+  ok "threat-intel feeds shipped to /etc/ebpf-soc/intel"
 }
 
 _systemd_unit() { # <name> <description> <ExecStart> [After] [EnvironmentFiles…]
@@ -363,13 +450,29 @@ provision_engine() {
     # (localhost:54321) and never creates a unix socket, but the engine is
     # configured below to dial unix:///var/run/tetragon/tetragon.sock. Without
     # this flag the socket never appears and the engine can't subscribe.
+    # tetragon.tp.d is BIND-MOUNTED from the host, matching what
+    # provision-agent-ssh.sh does for agent hosts. Without it the policy
+    # directory lives in the container's writable layer: the policies below are
+    # docker cp'd into it, which survives `docker restart` but is DELETED by
+    # `docker rm` + recreate — and this function recreates the container on
+    # every deploy. Between deploys the engine host's entire detection set
+    # therefore had exactly one copy, inside a container, with nothing on the
+    # host disk to rebuild it from.
+    #
+    # It is also what makes policy authoring on this host durable at all:
+    # Tetragon reads this directory only at startup, so a policy added over the
+    # API is forgotten on the next daemon restart. With the mount, the engine
+    # (root on the host) writes the file itself.
+    RUN "mkdir -p /etc/tetragon/tetragon.tp.d"
     RUN "docker rm -f tetragon >/dev/null 2>&1 || true
       docker run -d --name tetragon --restart unless-stopped --privileged --pid=host \
         -v /sys/kernel:/sys/kernel -v /var/run/tetragon:/var/run/tetragon \
+        -v /etc/tetragon/tetragon.tp.d:/etc/tetragon/tetragon.tp.d \
         $TETRAGON_IMAGE --server-address unix:///var/run/tetragon/tetragon.sock >/dev/null"
     # ship policies + attacks for real detection
     RUN "mkdir -p /var/lib/ebpf-engine/policies /var/lib/ebpf-engine/attacks"
     tar -C "$REPO_ROOT" -cf - policies attacks 2>/dev/null | RUN "tar -C /var/lib/ebpf-engine -xf - 2>/dev/null || true"
+    _ship_intel
 
     # Tetragon needs a moment to attach its BPF programs and open the gRPC socket;
     # the engine fails to subscribe if it starts first.
@@ -397,6 +500,8 @@ provision_engine() {
     # makes them live immediately without waiting for a restart.
     log "applying TracingPolicies (detection + enforcement)"
     RUN "applied=0; failed=''
+      # With the bind mount above this writes to the HOST directory, so the
+      # copy survives the container being recreated on the next deploy.
       docker exec tetragon mkdir -p /etc/tetragon/tetragon.tp.d >/dev/null 2>&1 || true
       for p in /var/lib/ebpf-engine/policies/*.yaml; do
         [ -f \"\$p\" ] || continue
@@ -498,6 +603,30 @@ devchoke_ifaces: $iface"
 $fleet_hosts
 HOSTS"
 
+  # Choke thresholds. These MUST be written here, and the values must be the
+  # hardened ones — not the binary defaults (5/15/25/40), which are calibrated
+  # for a lab and are dangerous on a real server.
+  #
+  # Measured on the live engine 2026-08-21, running on the defaults because this
+  # heredoc omitted them: 1093 of 1451 tracked processes sat in `severed`,
+  # including /usr/sbin/unix_chkpwd at score 299. unix_chkpwd is the PAM helper
+  # every SSH login and every sudo invokes, and it is NOT in
+  # choke.DefaultSystemCriticalBinaries() — the exemption list covers sshd,
+  # sshd-session, sudo and login, but not the helper they all call. So the box
+  # was one `-enforce` (or one /api/choke/mode POST) away from SIGKILLing its
+  # own authentication stack: threat-model EN-1, the lockout this project has
+  # already paid for once.
+  #
+  # provision-agent-ssh.sh has written these four keys since it was created.
+  # provision_engine never did. That asymmetry is the whole bug — the agent
+  # fleet was safe and the engine was not, on the same estate, from the same
+  # deploy command. Keep the two in sync; if you change one, change both.
+  local thresholds="throttle_at: ${THROTTLE_AT:-20}
+tarpit_at: ${TARPIT_AT:-50}
+quarantine_at: ${QUARANTINE_AT:-120}
+sever_at: ${SEVER_AT:-200}"
+  ok "choke thresholds: ${THROTTLE_AT:-20}/${TARPIT_AT:-50}/${QUARANTINE_AT:-120}/${SEVER_AT:-200} (throttle/tarpit/quarantine/sever)"
+
   log "writing engine config (/etc/ebpf-engine/engine.yaml, 0600)"
   RUN "umask 077; cat > /etc/ebpf-engine/engine.yaml <<'YAML'
 $tetline
@@ -507,9 +636,15 @@ db: /var/lib/ebpf-engine/events.db
 http: ':$ENGINE_PORT'
 secret_path: /var/lib/ebpf-engine/secret
 policies: /var/lib/ebpf-engine/policies
+# Tetragon's startup load directory, bind-mounted from the host above. A policy
+# authored in the console is written here so it survives a daemon restart.
+# Stated explicitly rather than left to the compiled-in flag default, so the
+# deployed config says what the host is actually doing.
+durable_policies: /etc/tetragon/tetragon.tp.d
 attacks: /var/lib/ebpf-engine/attacks
 honeypots: /var/lib/ebpf-engine/honey
 fleet_hosts: /etc/ebpf-engine/fleet.hosts
+$thresholds
 $devlines
 YAML"
   log "writing systemd unit (ebpf-engine)"
@@ -947,6 +1082,7 @@ EOF"
   # verification passes regardless of the IP they dial. Enrollment is
   # bootstrap-token-gated and the command channel is mTLS, so exposing 9443 on
   # the local OrbStack bridge is safe.
+  _ship_intel
   local cpasst; cpasst="$(_assistant_flags /etc/ebpf-soc/assistant.env)"
   [[ -n "$cpasst" ]] && ok "analyst assistant: ${ASSISTANT_MODEL:-gpt-oss:120b} (read-only tools)"
   _systemd_unit ebpf-soc-controlplane "ebpf-soc control plane (multi-tenant)" \

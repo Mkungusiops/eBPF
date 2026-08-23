@@ -45,7 +45,10 @@ jqr()  { printf '%s' "$1" | python3 -c "import sys,json;d=json.load(sys.stdin);p
 # Can the agent reach the victim's service right now? This curl runs ON THE
 # AGENT — it is the traffic under test, so it must never inherit CURL_RESOLVE
 # (which exists only to work around the LOCAL resolver being stale).
-reach() { $AGENT_RSH "curl -s -o /dev/null --max-time 4 http://$VICTIM_IP:$VICTIM_PORT/ && echo yes || echo no" 2>/dev/null | tr -d '\r'; }
+# -n and a bounded ssh, like every other remote helper in this suite: the inner
+# curl is already capped, but an ssh that never establishes is unbounded, and a
+# reachability probe that hangs is indistinguishable from one that says "no".
+reach() { timeout 30 $AGENT_RSH "curl -s -o /dev/null --max-time 4 http://$VICTIM_IP:$VICTIM_PORT/ && echo yes || echo no" 2>/dev/null | tr -d '\r'; }
 
 # ── sign in ────────────────────────────────────────────────────────────────
 TMP="$(mktemp)"
