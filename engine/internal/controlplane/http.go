@@ -17,6 +17,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/edge"
 	"github.com/jeffmk/ebpf-poc-engine/internal/mitre"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyassets"
 )
 
 func (s *Server) buildHTTP() http.Handler {
@@ -39,9 +40,12 @@ func (s *Server) buildHTTP() http.Handler {
 	mux.HandleFunc("/api/policies", s.handlePolicies)
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
 	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
+	mux.HandleFunc("/api/decision-stats", s.handleDecisionStats)
+	mux.HandleFunc("/api/sensor-health", s.handleSensorHealth)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleStream)
 	s.registerAssistantRoutes(mux)
+	s.registerEnrichmentRoutes(mux)
 	s.registerChatRoutes(mux)     // assistant conversation history // analyst assistant (read-only tools, tenant-scoped)
 	s.registerChokeRoutes(mux)    // rich Choke Gateway + Devices API, tenant-scoped
 	s.registerApprovalRoutes(mux) // EN-2 change-control queue for destructive actions
@@ -90,6 +94,36 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		"tenants":      scope,
 		"cross_tenant": authz.HasCrossTenant(p),
 		"can_respond":  authz.CanRespond(p),
+		// can_push_policy is a DEPLOYMENT capability, not only a permission.
+		//
+		// The console's Detections surface is one component serving two planes
+		// that change policy by different means: this one signs a command and
+		// dispatches it to its agents; the single-tenant engine applies
+		// directly to the Tetragon on its own host. Both report the capability
+		// here, so the console gates the authoring surface on what the server
+		// says it can do rather than on which plane it guesses it is talking
+		// to — a deployment with neither (a -fake engine with no Tetragon)
+		// answers false and correctly gets no button.
+		//
+		// Absent means no, which is what makes it safe for an older build that
+		// does not send the field.
+		//
+		// SCOPE is a separate question, answered by whether "tenants" is
+		// present: a push here reaches a fleet and cannot promise convergence,
+		// while the engine reaches one host and can.
+		"can_push_policy": authz.CanRespond(p),
+		// SCOPE, stated rather than inferred.
+		//
+		// The console needs to know whether a policy change reaches a fleet
+		// (dispatched, acked, not converged) or one host (applied). It was
+		// deriving that from whether "tenants" was an array — which is wrong
+		// for exactly the user most likely to push a policy: a cross-tenant
+		// MSOC admin has no tenant list, so tenants is null and the control
+		// plane's own console would have said "this host".
+		//
+		// A deployment that knows the answer should say it. The engine sends no
+		// such field and the console defaults to "host", the narrower claim.
+		"policy_scope": "fleet",
 		// Aliases the reused SOC frontend reads (normalizeWhoami): user + host.
 		"user": p.Subject,
 		"host": host,
@@ -278,9 +312,13 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "alert"}, limit)
+	// Filters are applied AFTER the tenant predicate, so they can only ever
+	// narrow a set the caller was already entitled to read.
+	af := parseCPAlertFilter(r)
+	fetch := cpOverFetch(limit, af.active())
+	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "alert"}, fetch)
 	if err != nil {
-		storeQueryFailed(w, r, tenant, "alert", limit, err)
+		storeQueryFailed(w, r, tenant, "alert", fetch, err)
 		return
 	}
 	type alertView struct {
@@ -306,6 +344,12 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		if a.GetOccurredAt() != nil {
 			at = a.GetOccurredAt().AsTime()
 		}
+		if !af.match(row.AgentID, a, at) {
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
 		out = append(out, alertView{
 			Agent: row.AgentID, Severity: a.GetSeverity(), Title: a.GetTitle(),
 			Description: a.GetDescription(), Score: a.GetScore(), ExecID: a.GetExecId(),
@@ -330,15 +374,30 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			limit = n
 		}
 	}
-	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "event"}, limit)
+	ef := parseCPEventFilter(r)
+	fetch := cpOverFetch(limit, ef.active())
+	rows, err := s.cfg.Store.Query(centralstore.Scope{TenantID: tenant, Kind: "event"}, fetch)
 	if err != nil {
-		storeQueryFailed(w, r, tenant, "event", limit, err)
+		storeQueryFailed(w, r, tenant, "event", fetch, err)
 		return
 	}
 	type eventView struct {
-		Agent      string `json:"agent"`
-		ExecID     string `json:"exec_id"`
-		PID        uint32 `json:"pid"`
+		Agent  string `json:"agent"`
+		ExecID string `json:"exec_id"`
+		PID    uint32 `json:"pid"`
+		// ParentPID is the only process-lineage signal this view carries.
+		//
+		// The agent already sends it on every exec and the wire type has always
+		// had it; this view simply never emitted it, so the console's
+		// correlation graph could draw parent → child edges on the
+		// single-tenant engine and not here. The graph's other lineage source
+		// is the chain embedded in an alert title, which reaches only the
+		// ancestors the sensor watched exec — so a process started before the
+		// agent has no lineage at all without this.
+		//
+		// omitempty: a kprobe event has no meaningful parent, and emitting
+		// "parent_pid": 0 would invite the console to draw an edge to pid 0.
+		ParentPID  uint32 `json:"parent_pid,omitempty"`
 		EventType  string `json:"event_type"`
 		Process    string `json:"process"`
 		Args       string `json:"args"`
@@ -359,8 +418,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		if e.GetOccurredAt() != nil {
 			at = e.GetOccurredAt().AsTime()
 		}
+		if !ef.match(row.AgentID, e, at) {
+			continue
+		}
+		if len(out) >= limit {
+			break
+		}
 		out = append(out, eventView{
-			Agent: row.AgentID, ExecID: e.GetExecId(), PID: e.GetPid(),
+			Agent: row.AgentID, ExecID: e.GetExecId(), PID: e.GetPid(), ParentPID: e.GetParentPid(),
 			EventType: e.GetEventType(), Process: e.GetBinary(), Args: e.GetArgs(),
 			PolicyName: e.GetPolicyName(), DestIP: e.GetDestIp(), DestPort: e.GetDestPort(),
 			Proto: e.GetProto(), RemoteIP: e.GetRemoteIp(), Timestamp: at.UTC().Format(time.RFC3339Nano),
@@ -469,7 +534,11 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		// cpProduct, a hardcoded literal that had never changed and could not
 		// track a release — so the field named "version" was the one thing here
 		// that could not tell you the version.
-		"version":  b.Version,
+		"version": b.Version,
+		// Whether the lab surfaces are exposed here. The console reads this to
+		// decide whether to offer them; a nav entry whose endpoint 404s is
+		// worse than no nav entry at all.
+		"lab_mode": s.cfg.LabMode,
 		"released": b.Released(),
 		"product":  cpProduct,
 	}
@@ -573,15 +642,55 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		storeQueryFailed(w, r, tenant, "event", 5000, err)
 		return
 	}
+	loadedAgents, loadedMode := s.loadedPolicies(tenant)
 	type policyView struct {
 		Name        string `json:"name"`
 		Posts       int    `json:"posts"`
 		Description string `json:"description,omitempty"`
 		MITRE       string `json:"mitre,omitempty"`
 		Tactic      string `json:"tactic,omitempty"`
+		// Loaded is how many of the tenant's agents have this policy enabled in
+		// the kernel right now; KernelMode is the strongest mode any of them
+		// reports. Both are zero/empty for a policy that only appears in
+		// telemetry — it fired, and has since been unloaded.
+		Loaded     int    `json:"loaded_agents"`
+		KernelMode string `json:"kernel_mode,omitempty"`
+		// Expected marks a policy this build ships. The list below is a UNION of
+		// what the kernels have and what recent telemetry mentions, so it
+		// legitimately contains policies that were removed and are simply
+		// lingering in the event window. Only an absent EXPECTED policy is a
+		// coverage gap; without this the console alarmed on the other kind.
+		Expected bool `json:"expected"`
+		// YAML is the source THIS BUILD SHIPS for the policy, and YAMLSource
+		// says so. The control plane runs off-host and cannot read a policy out
+		// of anyone's kernel, so serving the body unlabelled would let the
+		// console imply it is showing live kernel state. An agent on an older
+		// build could carry an older revision of the same file; the gap is
+		// small, and naming the provenance costs one field.
+		//
+		// Absent for a policy this build ships no source for — a
+		// customer-authored one, which has no body anywhere until a
+		// desired-state store keeps what was pushed.
+		YAML       string `json:"yaml,omitempty"`
+		YAMLSource string `json:"yaml_source,omitempty"`
 	}
-	names := make([]string, 0, len(counts))
+	// UNION of what fired and what is loaded.
+	//
+	// Telemetry alone drops a policy that is loaded and quiet — which is the
+	// normal state of a good detection, and the console builds its ATT&CK
+	// coverage from this list, so a quiet policy read as an uncovered
+	// technique. The kernel alone would in turn drop a policy that fired and
+	// has since been unloaded, whose events are still in the window and still
+	// attributed to it. Both are real; both belong here.
+	nameSet := make(map[string]bool, len(counts)+len(loadedAgents))
 	for n := range counts {
+		nameSet[n] = true
+	}
+	for n := range loadedAgents {
+		nameSet[n] = true
+	}
+	names := make([]string, 0, len(nameSet))
+	for n := range nameSet {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -590,12 +699,60 @@ func (s *Server) handlePolicies(w http.ResponseWriter, r *http.Request) {
 		// An unmapped policy yields empty strings, not a guessed technique —
 		// the fleet can run policies this build has never heard of.
 		meta, _ := mitre.Lookup(n)
-		out = append(out, policyView{
+		// A policy is EXPECTED iff this build ships a mapping for it — that map
+		// is exactly the set the platform installs. A customer-pushed policy is
+		// not expected until a desired-state store exists to record that it
+		// should be there.
+		_, expected := mitre.Lookup(n)
+		view := policyView{
 			Name: n, Posts: counts[n],
 			Description: meta.Description, MITRE: meta.Technique, Tactic: meta.Tactic,
-		})
+			Loaded: loadedAgents[n], KernelMode: loadedMode[n], Expected: expected,
+		}
+		if body, ok := policyassets.Lookup(n); ok {
+			view.YAML, view.YAMLSource = body, "shipped"
+		}
+		out = append(out, view)
 	}
 	writeJSON(w, 200, map[string]any{"tenant": tenant, "count": len(out), "policies": out})
+}
+
+// loadedPolicies reports the tracing policies the tenant's KERNELS actually
+// have loaded, from the heartbeat registry (DataPlaneState.kernel_policies),
+// with how many agents run each and the strongest mode any of them reports.
+//
+// This, not telemetry, is where a policy LIST has to come from. Deriving it
+// from policyPosts makes a loaded-but-quiet policy invisible: on the live
+// estate every agent has outbound-connections, privilege-escalation,
+// sensitive-file-access and override-credential-read loaded, two of them at
+// NPOST 0, and /api/policies answered two — so the console's ATT&CK panel
+// reported half the coverage the kernel provides and drew the rest as gaps.
+//
+// Only ENABLED policies count as loaded: a disabled policy is still in the
+// daemon's table but hooks nothing, and lighting an ATT&CK cell from it would
+// claim detection the kernel is not performing. An agent that reports no kernel
+// policies at all (it predates the field, or could not reach Tetragon)
+// contributes nothing rather than erasing what other agents report — silence is
+// not a clean host.
+func (s *Server) loadedPolicies(tenant string) (agents map[string]int, mode map[string]string) {
+	agents, mode = map[string]int{}, map[string]string{}
+	for _, rec := range s.registry.ListTenant(tenant) {
+		seen := map[string]bool{}
+		for _, p := range rec.KernelPolicies {
+			name := p.GetName()
+			if name == "" || !p.GetEnabled() || seen[name] {
+				continue
+			}
+			seen[name] = true
+			agents[name]++
+			// Worst case across the fleet: one host in enforce is the fact an
+			// operator needs, not an average.
+			if mode[name] != "enforce" {
+				mode[name] = p.GetMode()
+			}
+		}
+	}
+	return agents, mode
 }
 
 // handlePolicyStats reports per-policy post counts (the observability tile),

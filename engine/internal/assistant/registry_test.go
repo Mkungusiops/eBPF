@@ -35,12 +35,20 @@ func TestRegisterRejectsEveryContainmentEndpoint(t *testing.T) {
 func TestRegisterRejectsAnythingOffTheAllowlist(t *testing.T) {
 	// A denylist alone fails open. A path nobody predicted must be refused by
 	// default, not admitted by default.
+	//
+	// `/api/policies` used to be in this list and is now legitimately
+	// allowlisted — the assistant needs it to answer ATT&CK coverage questions.
+	// It was replaced rather than deleted: this test is only worth anything if
+	// it keeps probing paths the engine really serves and the assistant really
+	// must not reach.
 	for _, p := range []string{
-		"/api/policies",
-		"/api/run-attack",
-		"/api/whoami",
-		"/api/choke/state",
-		"/",
+		"/api/run-attack",    // mutating, and it launches attack simulations
+		"/api/whoami",        // the caller's identity is not the model's business
+		"/api/choke/state",   // reachable-looking, deliberately not allowlisted
+		"/api/telemetry",     // the raw firehose
+		"/api/verify-chain",  // audit-chain verification, not an analyst read
+		"/api/admin/command", // the command plane
+		"/",                  // the console shell itself
 		"/api/../api/choke/jail",
 	} {
 		r := NewRegistry()
@@ -96,7 +104,7 @@ func TestDenylistCoversEveryContainmentRoute(t *testing.T) {
 	// A completeness test that silently checks an empty set is worse than no
 	// test, so TestRatchetItselfIsLoadBearing below asserts it matches.
 	pathLine := regexp.MustCompile(`(?m)^\s{2}"?(/[^"\s:]+)"?:`)
-	dangerous := regexp.MustCompile(`sever|quarantine|kill-switch|jail|bulk|thaw|preset|threshold|forget|annotate|policy/preview|/mode$|device-mode`)
+	dangerous := regexp.MustCompile(`sever|quarantine|kill-switch|jail|bulk|thaw|preset|threshold|forget|annotate|policy/preview|policies/push|/mode$|device-mode`)
 
 	known := map[string]bool{}
 	for _, p := range containmentPaths {
@@ -171,7 +179,13 @@ func TestReadOnlyClientRefusesMutatingRequests(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := c.Do(req); err == nil {
+		resp, err := c.Do(req)
+		if err == nil {
+			// Reached only on a FAILING assertion — the transport is supposed
+			// to refuse every one of these — but close it anyway so the failure
+			// mode is one clean error rather than an error plus a leaked
+			// connection that makes the next subtest flaky.
+			_ = resp.Body.Close()
 			t.Errorf("%s was allowed through the read-only client", m)
 		}
 	}
@@ -180,8 +194,11 @@ func TestReadOnlyClientRefusesMutatingRequests(t *testing.T) {
 	}
 
 	// A GET must still work, or the guard is useless in a different way.
-	if _, err := c.Get(srv.URL + "/api/alerts"); err != nil {
+	resp, err := c.Get(srv.URL + "/api/alerts")
+	if err != nil {
 		t.Errorf("GET through the read-only client failed: %v", err)
+	} else {
+		_ = resp.Body.Close()
 	}
 }
 

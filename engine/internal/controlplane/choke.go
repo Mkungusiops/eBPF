@@ -59,16 +59,17 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/choke/mode", s.handleChokeMode)         // fleet-wide SetMode
 	mux.HandleFunc("/api/choke/kill-switch", s.handleChokeKill)  // fleet-wide KillSwitch
 	mux.HandleFunc("/api/choke/thresholds", s.handleChokeThresh) // fleet-wide SetThresholds
-	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)     // fleet-wide ApplyPreset
+	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)
+	mux.HandleFunc("/api/policies/push", s.handlePolicyPush) // detection policy over the signed command channel
 	mux.HandleFunc("/api/choke/device-jail", s.handleDeviceJail)
 	mux.HandleFunc("/api/choke/device-thaw", s.handleDeviceThaw)
 	mux.HandleFunc("/api/choke/device-mode", s.handleDeviceMode) // device plane arms independently
 	mux.HandleFunc("/api/choke/device-kill-switch", s.handleDeviceKill)
 	// Engine-local ops with no fleet command (cosmetic / snapshot) — clean 200/501.
 	mux.HandleFunc("/api/choke/annotate", s.handleChokeAnnotate)
-	for _, p := range []string{"/api/choke/policy/preview", "/api/choke/forensic-snapshot"} {
-		mux.HandleFunc(p, s.handleChokeWriteStub)
-	}
+	// policy/preview is gone with its console surface — see the note in
+	// internal/api/http.go. forensic-snapshot keeps its honest 501 stub.
+	mux.HandleFunc("/api/choke/forensic-snapshot", s.handleChokeWriteStub)
 }
 
 // authorizeRespond resolves the operator + requires the RBAC ActionRespond grant
@@ -284,12 +285,117 @@ func requireReasonForDestructive(action, reason string) error {
 // to a host on a guess.
 func irreversible(action string) bool { return action == "sever" }
 
-// chokeThresholds is the engine's default score ladder, surfaced so the console
-// panels render. Defined once because the Choke and Fleet views ship the same
-// numbers to the operator, and two copies of a number are two chances to
-// disagree about when a host severs a process.
-func chokeThresholds() map[string]int {
-	return map[string]int{"throttle_at": 5, "tarpit_at": 15, "quarantine_at": 25, "sever_at": 40}
+// chokeThresholds reports the score ladder the AGENTS are actually running.
+//
+// It used to return the engine's compiled-in defaults as a constant —
+// 5/15/25/40 — because nothing on the wire carried the real values. Every agent
+// on this estate runs 20/50/120/200 (scripts/deploy/provision-agent-ssh.sh
+// writes them), so the multi-tenant console told operators that a chain severs
+// at 40 when the true figure was 200. Verified live on 2026-08-21: the CP
+// served 5/15/25/40 while every agent.yaml on the fleet said otherwise.
+//
+// DataPlaneState.thresholds now carries them per agent, so this reads what the
+// fleet reported. Three cases, all distinguishable by the caller:
+//
+//   - every reporting agent agrees        -> those values
+//   - agents disagree                     -> the SAFEST reading, i.e. the
+//     lowest of each rung across the fleet, because a threshold shown higher
+//     than some host's real one under-warns about that host
+//   - nothing reported it yet             -> nil, and the caller must omit the
+//     field rather than substitute defaults. An absent ladder renders as
+//     "unknown"; a wrong one renders as fact.
+//
+// Fleet disagreement is legitimate — thresholds are agent-local and settable at
+// runtime over the command channel — so it is reported, not averaged away.
+func chokeThresholds(recs []heartbeat.Record) map[string]int {
+	out := map[string]int{}
+	for _, rec := range recs {
+		t := rec.Thresholds
+		if t == nil {
+			continue // agent predates the field; it cannot vote
+		}
+		for k, v := range map[string]int{
+			"throttle_at":   int(t.GetThrottleAt()),
+			"tarpit_at":     int(t.GetTarpitAt()),
+			"quarantine_at": int(t.GetQuarantineAt()),
+			"sever_at":      int(t.GetSeverAt()),
+		} {
+			// A zero rung is an unset rung, not "contain immediately".
+			if v <= 0 {
+				continue
+			}
+			if cur, seen := out[k]; !seen || v < cur {
+				out[k] = v
+			}
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// processPlaneTier reduces the fleet's process-plane backends to one word, on
+// the same rule aggregateDevicePlane uses for the device plane: "noop" only
+// when every agent says noop, "partial" when some can enforce in the kernel and
+// others cannot. An agent that has not reported the field yet abstains rather
+// than being counted as noop, because "we do not know" and "it is not attached"
+// are different facts and only one of them is a defect.
+func processPlaneTier(recs []heartbeat.Record) string {
+	live, noop := 0, 0
+	for _, rec := range recs {
+		switch rec.ProcessPlane {
+		case "":
+			continue
+		case "noop":
+			noop++
+		default:
+			live++
+		}
+	}
+	switch {
+	case live == 0 && noop == 0:
+		return "unknown"
+	case live == 0:
+		return "noop"
+	case noop == 0:
+		return "cilium-ebpf"
+	default:
+		return "partial"
+	}
+}
+
+// processPlaneLinks sums attached cgroup links across the fleet. Zero with a
+// non-noop tier is the process-plane equivalent of the device plane's
+// bridge-master trap: the program loaded and is attached nowhere.
+func processPlaneLinks(recs []heartbeat.Record) int {
+	total := 0
+	for _, rec := range recs {
+		total += int(rec.ProcessLinks)
+	}
+	return total
+}
+
+// thresholdsDiverge reports whether the reporting agents disagree about any
+// rung, so the console can say so instead of presenting one host's ladder as
+// the fleet's.
+func thresholdsDiverge(recs []heartbeat.Record) bool {
+	var first *ebpfsocv1.ChokeThresholds
+	for _, rec := range recs {
+		if rec.Thresholds == nil {
+			continue
+		}
+		if first == nil {
+			first = rec.Thresholds
+			continue
+		}
+		t := rec.Thresholds
+		if t.GetThrottleAt() != first.GetThrottleAt() || t.GetTarpitAt() != first.GetTarpitAt() ||
+			t.GetQuarantineAt() != first.GetQuarantineAt() || t.GetSeverAt() != first.GetSeverAt() {
+			return true
+		}
+	}
+	return false
 }
 
 // dispatchChoke builds a Jail/Thaw command, routes it to the agent actually
@@ -906,12 +1012,36 @@ func (s *Server) handleChokeForget(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "forgotten": n})
 }
 
-// handleChokeAnnotate — cosmetic note; not centrally persisted yet.
+// handleChokeAnnotate refuses, because it cannot do what it was claiming to do.
+//
+// It authorized the caller and returned {"ok": true} WITHOUT EVER READING THE
+// BODY. The console took that as success and toasted "note saved"; the operator
+// wrote a justification onto a containment — the kind of thing that exists to
+// be read back during an incident review — and it went nowhere. On refresh the
+// field was empty again, because no control-plane endpoint emits an annotation
+// at all. This is the same defect family as the tool contract that advertised
+// eleven filter parameters no server read.
+//
+// 501 with the reason is the honest interim: the console can disable the
+// control instead of offering one that discards what is typed into it.
+//
+// The full fix is a hash-chained store.Decision with Action "annotate" and the
+// note as Reason, mirroring the audit write in internal/api/policypush.go —
+// Reason and Actor are both chained, so an annotation becomes tamper-evident
+// evidence rather than decoration. It needs a length cap (the handler accepts
+// an unbounded string) and a look at /api/choke/forensic-snapshot, which reads
+// a fixed RecentDecisions(2000) budget that annotations would start consuming.
+//
+// NOTE: this keeps authorizeRespond. Routing it to handleChokeWriteStub, which
+// is the obvious tidy-up, would silently downgrade this to authorizeRead.
 func (s *Server) handleChokeAnnotate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizeRespond(w, r); !ok {
 		return
 	}
-	writeJSON(w, 200, map[string]any{"ok": true})
+	writeJSON(w, http.StatusNotImplemented, map[string]any{
+		"error": "this control plane cannot store an annotation yet, so it will not pretend to. " +
+			"The note was NOT saved. Record it in your ticketing system until annotations are persisted.",
+	})
 }
 
 // handleDeviceJail — jail LAN devices by MAC (exec_id "device:<mac>").
@@ -1093,15 +1223,32 @@ func (s *Server) handleChokeStateGW(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, map[string]any{
-		"mode":          mode,
-		"dry_run":       dryRun,
-		"kill_switched": false,
+		"mode":    mode,
+		"dry_run": dryRun,
+		// OMITTED, not false. No heartbeat field carries the agent's
+		// kill-switch state (grep kill_switch in the proto: only the outbound
+		// Command has one), so the control plane cannot know it. Emitting
+		// `false` told an operator who had just engaged the emergency stop that
+		// enforcement was still armed — the same three-state lesson as
+		// audit.supported one line below. nil renders as "unknown".
+		"kill_switched": nil,
 		"enforcing":     enforcing,
 		"tracked":       tracked,
 		"counts":        counts,
-		// Agents don't report their thresholds on the heartbeat yet; surface the
-		// engine defaults so the panel renders. (Editing is the write increment.)
-		"thresholds": chokeThresholds(),
+		// The ladder the AGENTS are running, read off the heartbeat. Omitted
+		// entirely (nil) when no agent has reported one, so the console shows
+		// "unknown" rather than the engine's defaults dressed up as fact.
+		"thresholds":         chokeThresholds(recs),
+		"thresholds_diverge": thresholdsDiverge(recs),
+		// The PROCESS data plane the agents report, aggregated exactly the way
+		// the device plane already is on /api/choke/device-state. Both wire
+		// fields existed from the start and neither was populated, so the
+		// control plane could not tell an agent with a live cgroup/BPF plane
+		// from one on the userspace noop fallback — and it renders as
+		// "enforcing" either way. Live on this estate every agent reports
+		// "noop": the per-PID token buckets are modelled, not in the kernel.
+		"data_plane":     processPlaneTier(recs),
+		"links_attached": processPlaneLinks(recs),
 		// NOT {"ok":true}. The control plane does not hash-chain decisions
 		// centrally, so claiming the chain is intact renders a green "intact ·
 		// 0 rows" in the header for a check that never ran. supported=false is
@@ -1432,11 +1579,17 @@ func (s *Server) handleDeviceState(w http.ResponseWriter, r *http.Request) {
 	// agents can enforce and others cannot.
 	dataPlane, links, frames, devSeen := aggregateDevicePlane(recs)
 	writeJSON(w, 200, map[string]any{
-		"data_plane":    dataPlane,
-		"mode":          mode,
-		"enforcing":     enforcing,
-		"dry_run":       dryRun,
-		"kill_switched": false,
+		"data_plane": dataPlane,
+		"mode":       mode,
+		"enforcing":  enforcing,
+		"dry_run":    dryRun,
+		// OMITTED, not false. No heartbeat field carries the agent's
+		// kill-switch state (grep kill_switch in the proto: only the outbound
+		// Command has one), so the control plane cannot know it. Emitting
+		// `false` told an operator who had just engaged the emergency stop that
+		// enforcement was still armed — the same three-state lesson as
+		// audit.supported one line below. nil renders as "unknown".
+		"kill_switched": nil,
 		"tracked":       known,
 		"devices_known": known,
 		"devices_seen":  devSeen,

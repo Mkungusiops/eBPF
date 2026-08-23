@@ -360,13 +360,40 @@ func (s *PGStore) Count(scope Scope) (int, error) {
 	return n, err
 }
 
+// MaxQueryRows caps any single read, however large a limit the caller asks for.
+//
+// On 2026-08-05 this platform went down because an unbounded read met a missing
+// index: 2.8M-row sorts exhausted the connection pool, every read endpoint
+// returned 500, and the disk filled with 20GB of sort spill. The index was
+// added; the unbounded read was not. Five control-plane handlers still pass a
+// caller-supplied ?limit straight through, and one multiplies it by four, so
+// ?limit=1000000 becomes a four-million-row LIMIT — the same shape, needing
+// only read privilege to fire.
+//
+// Capped HERE rather than in each handler because here is the one place every
+// one of them funnels through, including QueryAcross. Handler-side clamps are
+// five things to remember; this is one. chatstore/postgres.go caps at its store
+// boundary for the same reason, which is why its handlers can Atoi safely.
+const MaxQueryRows = 10000
+
+// clampRows applies the default and the cap. Split out so the bound can be
+// tested without a live Postgres — the outage it prevents is not something to
+// verify only in production.
+func clampRows(limit int) int {
+	if limit <= 0 {
+		return 1000
+	}
+	if limit > MaxQueryRows {
+		return MaxQueryRows
+	}
+	return limit
+}
+
 func (s *PGStore) Query(scope Scope, limit int) ([]Row, error) {
 	if scope.TenantID == "" {
 		return nil, ErrNoScope
 	}
-	if limit <= 0 {
-		limit = 1000
-	}
+	limit = clampRows(limit)
 	var out []Row
 	err := s.withTenant(scope.TenantID, func(tx *sql.Tx) error {
 		// Newest-first: an operator console shows recent activity, and the LIMIT

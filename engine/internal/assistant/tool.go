@@ -92,7 +92,6 @@ var containmentPaths = []string{
 	"/api/choke/thresholds",
 	"/api/choke/forget",
 	"/api/choke/annotate",
-	"/api/choke/policy/preview",
 	// Fleet-wide variants. These were MISSED by the hand-written list and found
 	// by TestDenylistCoversEveryContainmentRoute once its regex was fixed —
 	// which is the entire argument for having that test. They are the most
@@ -101,6 +100,12 @@ var containmentPaths = []string{
 	"/api/fleet/preset",
 	"/api/fleet/thaw",
 	"/api/fleet/thresholds",
+	// Detection-policy authoring. Loads eBPF into the kernel of every host in
+	// the tenant (control plane) or of this host (engine), and removal takes a
+	// detection away fleet-wide. Strictly more consequential than a threshold
+	// change, and it was reachable: the ratchet's "dangerous" regex matched
+	// none of these words, so the completeness test passed over it in silence.
+	"/api/policies/push",
 }
 
 // Errors from Register. Distinct so the ratchet test can assert WHICH rule
@@ -117,6 +122,16 @@ var (
 // nobody predicted would pass a denylist check and be reachable. Requiring an
 // explicit allowlist entry means a new endpoint is invisible to the assistant
 // until someone deliberately adds it here.
+// Every entry is matched EXACTLY, except one ending in "/" which matches a
+// prefix — so widening this list is always a deliberate line, never a side
+// effect of a path someone else added under a shared root.
+//
+// Note what is NOT here and never should be: /api/run-attack (mutating and
+// obviously so), /api/whoami (the caller's identity is not the assistant's
+// business), and every /api/choke and /api/fleet route that changes posture
+// rather than reporting it. The device and fleet entries below are the
+// reporting halves of pairs whose acting halves sit on containmentPaths — read
+// device-state, never device-mode; read fleet/state, never fleet/preset.
 var readAllowlist = []string{
 	"/api/alerts",
 	"/api/alert-stats",
@@ -124,7 +139,41 @@ var readAllowlist = []string{
 	"/api/decisions",
 	"/api/process/",
 	"/api/choke/processes",
-	"/api/mitre",
+	// The device plane, read-only. Three console surfaces are mounted over
+	// this and had no tool that could see it.
+	"/api/choke/devices",
+	"/api/choke/device-state",
+	"/api/choke/device-flows",
+	// The fleet, read-only.
+	"/api/fleet/hosts",
+	"/api/fleet/state",
+	// Detection coverage. This is what actually answers an ATT&CK question:
+	// the mapping lives on the policies. "/api/mitre" used to sit here and is
+	// gone — NO SUCH ROUTE EXISTS on either server, and never did. It was a
+	// phantom capability: allowlisted, never registered as a tool, and named
+	// in the prompt's list of panels, so the model was invited to reason about
+	// coverage it had no way to read.
+	"/api/policies",
+	"/api/policy-stats",
+	// The two enrichment layers, read-only. Both are reporting halves with no
+	// acting half at all: feeds are files an operator owns, and the behavioural
+	// profile is learned, never set. There is deliberately no route to add an
+	// indicator or reset a profile, so nothing here has a dangerous twin the
+	// way /api/choke/device-state has /api/choke/device-mode.
+	"/api/baseline",
+	"/api/baseline/anomalies",
+	"/api/intel",
+	"/api/intel/matches",
+	"/api/intel/lookup",
+	// The product's own vocabulary. Not telemetry — it is what the words on
+	// this console MEAN — but it belongs here for exactly the same reason
+	// everything else does: without it the model answers "what is a tarpit"
+	// from its general knowledge of security products, fluently and wrongly,
+	// about a term that has a specific meaning in this codebase.
+	"/api/platform-doc",
+	// Whether the telemetry can be trusted at all. A quiet window and a broken
+	// feed are identical in the counts and opposite in meaning.
+	"/api/system-health",
 }
 
 // Registry holds the tools the model may call. Safe for concurrent use.
