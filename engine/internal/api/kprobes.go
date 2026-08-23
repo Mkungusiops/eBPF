@@ -1,7 +1,11 @@
 package api
 
 import (
+	"context"
+	"time"
+
 	"encoding/json"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
 	"net/http"
 	"os/exec"
 	"strconv"
@@ -36,7 +40,22 @@ func runTetraList() (string, error) {
 //	1    outbound-connections    enabled   0          (global)    generic_kprobe  1.17 MB        enforce   12      0          0
 //
 // Columns are space-padded; we split on whitespace runs and map by header.
-func parseTetraList(raw string) []policyStat {
+// parseTetraList scrapes `tetra tracingpolicy list`. The second return says
+// whether the TABLE WAS RECOGNISED — which is not the same question as how many
+// rows it had, and conflating the two produced a false alarm on the one surface
+// that must never raise one.
+//
+// The parser only starts reading after a header line beginning with "ID". A
+// `tetra` that printed a warning, changed its format, or failed while still
+// exiting 0 therefore yields an empty slice that is indistinguishable from a
+// kernel with genuinely no policies loaded. Callers used to treat "the command
+// exited 0" as "I know what the kernel has", so an unrecognised output became
+// "every expected detection is MISSING" — a fabricated coverage gap, reported
+// as fact, on the trust surface.
+//
+// With the flag, a caller can say "I could not read the kernel" instead, which
+// is both true and useful.
+func parseTetraList(raw string) ([]policyStat, bool) {
 	var (
 		out  []policyStat
 		hdr  []string
@@ -107,23 +126,98 @@ func parseTetraList(raw string) []policyStat {
 			out = append(out, row)
 		}
 	}
-	return out
+	// body is true only once the "ID" header was seen, i.e. only once the
+	// output was recognised as the policy table.
+	return out, body
 }
 
 func (s *Server) handlePolicyStats(w http.ResponseWriter, r *http.Request) {
-	raw, err := runTetraList()
 	w.Header().Set("Content-Type", "application/json")
-	if err != nil {
+	stats, ok, via := kernelPolicies(r.Context())
+	if !ok {
+		// 503 with the reason, not an empty list. An empty stats array is
+		// indistinguishable from "no policies loaded", and the assistant's
+		// policy_stats tool reads this endpoint — an LLM told "zero policies"
+		// will report the host as undefended.
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_ = json.NewEncoder(w).Encode(map[string]any{
-			"error": "tetra unavailable: " + err.Error(),
-			"raw":   raw,
+			"error": "cannot read kernel policy state (" + via + ")",
+			"via":   via,
 		})
 		return
 	}
-	stats := parseTetraList(raw)
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"stats": stats,
-		"raw":   raw,
+		"via":   via,
 	})
+}
+
+// kernelPolicies reads the loaded policy set, preferring the gRPC API this
+// process already holds a connection to and falling back to the CLI scrape.
+//
+// The second return says whether the answer is TRUSTWORTHY. Both paths can fail
+// silently in their own way — gRPC by having no client configured, the scrape
+// by producing output this build cannot parse — and a caller that cannot tell
+// "no policies" from "no answer" reports a fabricated coverage gap.
+//
+// The shell-out stays as the fallback rather than being deleted: an agent that
+// never called ConfigurePolicyApplier has no client, and four e2e scripts parse
+// the same table independently.
+func kernelPolicies(ctx context.Context) (stats []policyStat, ok bool, via string) {
+	if c, _ := currentApplier(); c != nil {
+		grpcCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		if list, err := policyapply.List(grpcCtx, c); err == nil {
+			out := make([]policyStat, 0, len(list))
+			for _, p := range list {
+				state := "disabled"
+				if p.Enabled {
+					state = "enabled"
+				}
+				out = append(out, policyStat{
+					ID:    strconv.FormatUint(p.ID, 10),
+					Name:  p.Name,
+					State: state,
+					// The CLI joined sensors with a comma; match it so a
+					// consumer cannot tell the two paths apart by shape.
+					Sensors:      strings.Join(p.Sensors, ","),
+					KernelMemory: humanBytes(p.MemBytes),
+					Mode:         p.Mode,
+					NPost:        int(p.Posts),
+				})
+			}
+			return out, true, "grpc"
+		}
+		// Fall through to the scrape rather than failing: a daemon that
+		// answered the write path but not this read is still worth asking the
+		// other way.
+	}
+	raw, err := runTetraList()
+	if err != nil {
+		return nil, false, "unavailable"
+	}
+	stats, recognised := parseTetraList(raw)
+	if !recognised {
+		return nil, false, "unparsed"
+	}
+	return stats, true, "cli"
+}
+
+// humanBytes renders a byte count the way `tetra` prints its KERNELMEMORY
+// column, so the gRPC and CLI read paths produce the same string for the same
+// policy. An empty result for zero, not "0 B" — the CLI omits it too.
+func humanBytes(b uint64) string {
+	if b == 0 {
+		return ""
+	}
+	const unit = 1024
+	if b < unit {
+		return strconv.FormatUint(b, 10) + " B"
+	}
+	div, exp := uint64(unit), 0
+	for n := b / unit; n >= unit; n /= unit {
+		div *= unit
+		exp++
+	}
+	return strconv.FormatFloat(float64(b)/float64(div), 'f', 2, 64) + " " + []string{"KB", "MB", "GB", "TB"}[exp]
 }

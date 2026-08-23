@@ -67,6 +67,11 @@ type Server struct {
 	// onto the bus without going through main's send() helper.
 	outbound chan<- Broadcast
 	auth     *Auth
+	// enrichment reads the behavioural baseline and the indicator set. Wired
+	// after construction like the gateway, and nil on a deployment running
+	// neither layer — the /api/baseline and /api/intel handlers 503 with a
+	// reason in that case.
+	enrichment EnrichmentSource
 	// gateway is wired in after construction via SetGateway() so the HTTP
 	// listener can start before all the choke wiring has finished.
 	gateway *choke.Gateway
@@ -131,22 +136,41 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/events", s.handleEvents)
 	mux.HandleFunc("/api/alerts", s.handleAlerts)
 	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
+	mux.HandleFunc("/api/decision-stats", s.handleDecisionStats)
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleSSE)
+	// Detection authoring on this host. Auth and CSRF come from the middleware
+	// that wraps this mux; the handler adds the method check and the safety
+	// rules (reason required, enforce refused).
+	mux.HandleFunc("/api/policies/push", s.handlePolicyPush)
+	mux.HandleFunc("/api/sensor-health", s.handleSensorHealth)
 	mux.HandleFunc("/api/whoami", s.auth.HandleWhoami)
 	mux.HandleFunc("/api/logout", s.auth.HandleLogout)
 	mux.HandleFunc("/api/policies", s.handlePolicies)
-	mux.HandleFunc("/api/attacks", s.handleAttackList)
-	mux.HandleFunc("/api/run-attack", s.handleAttackRun)
-	mux.HandleFunc("/api/honeypots", s.handleHoneypots)
+	// Lab-only surfaces. Registered always so the 404 below is uniform, but the
+	// handlers refuse unless lab mode is explicitly on. See labOnly.
+	mux.HandleFunc("/api/attacks", s.labOnly(s.handleAttackList))
+	mux.HandleFunc("/api/run-attack", s.labOnly(s.handleAttackRun))
+	mux.HandleFunc("/api/honeypots", s.labOnly(s.handleHoneypots))
 	mux.HandleFunc("/api/policy-stats", s.handlePolicyStats)
 	mux.HandleFunc("/api/version", s.handleVersion)
 	mux.HandleFunc("/api/system-health", s.handleSystemHealth)
 	mux.HandleFunc("/api/decisions", s.handleDecisions)
 	mux.HandleFunc("/api/verify-chain", s.handleVerifyChain)
 	mux.HandleFunc("/api/origin", s.handleOrigin)
+	// Enrichment: the behavioural baseline and threat-intel matching. All
+	// reads — nothing here edits a baseline or an indicator set. (Detection
+	// CONTENT is editable, via /api/policies/push above; this comment used to
+	// say otherwise and predates that route.)
+	mux.HandleFunc("/api/baseline", s.handleBaseline)
+	mux.HandleFunc("/api/baseline/anomalies", s.handleBaselineAnomalies)
+	mux.HandleFunc("/api/intel", s.handleIntel)
+	mux.HandleFunc("/api/intel/matches", s.handleIntelMatches)
+	mux.HandleFunc("/api/intel/lookup", s.handleIntelLookup)
+	mux.HandleFunc("/api/platform-doc", s.handlePlatformDoc)
 	mux.HandleFunc("/api/assistant", s.handleAssistantCapability)
 	mux.HandleFunc("/api/assistant/ask", s.handleAssistantAsk)
+	mux.HandleFunc("/api/assistant/stream", s.handleAssistantStream)
 	// Chat history is Postgres+RLS only, and this engine is single-tenant
 	// SQLite — so it has none. The route still exists to say so HONESTLY.
 	//
@@ -167,7 +191,22 @@ func (s *Server) Start(addr string) error {
 	mux.HandleFunc("/api/choke/manual", s.handleChokeManual)
 	mux.HandleFunc("/api/choke/kill-switch", s.handleChokeKillSwitch)
 	mux.HandleFunc("/api/choke/policies", s.handleChokePolicies)
-	mux.HandleFunc("/api/choke/policy/preview", s.handleChokePolicyPreview)
+	// /api/choke/policy/preview is GONE with the console surface that used it.
+	//
+	// It dry-ran a ChokePolicy against the live snapshot, and the console
+	// labelled it "never installs". The deeper reason to remove it: what it
+	// previewed has no effect on any host. buckets.rate_per_sec is parsed,
+	// validated and installed into tokens.Manager (choke/gateway.go:656) and
+	// then read by nothing — the only .Allow()/.AllowN() call sites in the tree
+	// are the three self-recursive definitions inside choke/tokens/tokens.go.
+	// The kernel BPF map is fed from enforce.DefaultThrottlerConfig()
+	// (gateway.go:631), a compiled-in constant. Previewing a rule that cannot
+	// take effect is a demo, and it was on the containment console.
+	//
+	// The DSL parser (internal/policy) and the shipped policies/choke/*.yaml
+	// stay: they are the design for a response-policy language, and the fleet
+	// distribution work will need them. What is removed is the surface that
+	// implied they were live.
 	// Enterprise actions: presets, bulk, forget, thaw, annotate, snapshot, drill-in.
 	mux.HandleFunc("/api/choke/preset", s.handleChokePreset)
 	mux.HandleFunc("/api/choke/mode", s.handleChokeMode)
@@ -376,7 +415,45 @@ func (s *Server) handleVersion(w http.ResponseWriter, r *http.Request) {
 		"built_at":   b.BuiltAt,
 		"started_at": startedAt.Format(time.RFC3339),
 		"server_now": time.Now().UTC().Format(time.RFC3339),
+		// Whether this deployment exposes the lab surfaces. The console reads it
+		// to decide whether to offer them at all — a nav entry whose endpoint
+		// 404s is worse than no nav entry.
+		"lab_mode": LabMode,
 	})
+}
+
+// LabMode gates the demo/lab surfaces: the attack catalogue, the attack runner
+// and the honeypot panel. Default FALSE — a production deployment must opt in.
+//
+// These three are not a rough edge, they are a liability on a customer estate:
+//
+//   - /api/run-attack shells out to a script AS ROOT on the host this binary is
+//     defending (api/attacks.go, exec.Command("bash", abs); the unit has no
+//     User=). Behind a single shared `admin` credential there is no per-operator
+//     attribution, so it is an unattributable root RCE-by-catalogue on a
+//     production security appliance. It also makes genuine outbound HTTPS,
+//     which trips the customer's own egress monitoring.
+//   - the control plane's twin writes FABRICATED alerts straight into the
+//     tenant's real telemetry table, where alert-stats, MITRE coverage and every
+//     exported report count them as real findings.
+//   - /api/honeypots on the control plane reports decoy hits that no host
+//     produced.
+//
+// Kept rather than deleted because they are genuinely useful in a lab and in
+// this repo's own e2e suite. Enable with -lab-mode (or LAB_MODE=1).
+var LabMode bool
+
+// labOnly answers 404 — not 403 — when lab mode is off. A 403 confirms the
+// endpoint exists; on a surface that can execute code, that is a hint worth
+// withholding.
+func (s *Server) labOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !LabMode {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	}
 }
 
 // handleAlertStats serves server-computed counts for a window — the numbers the
@@ -399,6 +476,26 @@ func (s *Server) handleAlertStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.store.AlertStats(from, to, buckets)
 	if err != nil {
 		log.Printf("alert stats: %v", err)
+		http.Error(w, "stats failed", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, stats)
+}
+
+// handleDecisionStats returns a server-computed count of enforcement decisions
+// for a window — the counterpart of /api/alert-stats.
+//
+// The console's "Response actions" cell used to count rows in a 200-row browser
+// buffer, so any window longer than those 200 rows span reported exactly 200:
+// the fetch limit rendered as a measurement. See store.DecisionStats.
+func (s *Server) handleDecisionStats(w http.ResponseWriter, r *http.Request) {
+	windowMin := intParam(r, "window_min", 30, 60*24*7)
+	to := time.Now().UTC()
+	from := to.Add(-time.Duration(windowMin) * time.Minute)
+	stats, err := s.store.DecisionStats(from, to)
+	if err != nil {
+		log.Printf("decision stats: %v", err)
 		http.Error(w, "stats failed", http.StatusInternalServerError)
 		return
 	}
@@ -543,21 +640,35 @@ func queryLimit(r *http.Request, def, max int) int {
 }
 
 func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
-	events, err := s.store.RecentEvents(queryLimit(r, 500, 5000))
+	limit := queryLimit(r, 500, 5000)
+	f := parseEventFilter(r)
+	// Read past the newest `limit` when filtering, or a narrow filter over a
+	// busy window returns nothing and reads as "there is none of that".
+	fetch := limit
+	if f.active() {
+		fetch = overFetch(limit, 5000)
+	}
+	events, err := s.store.RecentEvents(fetch)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, events)
+	writeJSON(w, filterEvents(events, f, limit))
 }
 
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
-	alerts, err := s.store.RecentAlerts(queryLimit(r, 200, 2000))
+	limit := queryLimit(r, 200, 2000)
+	f := parseAlertFilter(r)
+	fetch := limit
+	if f.active() {
+		fetch = overFetch(limit, 2000)
+	}
+	alerts, err := s.store.RecentAlerts(fetch)
 	if err != nil {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	writeJSON(w, alerts)
+	writeJSON(w, filterAlerts(alerts, f, limit))
 }
 
 func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {

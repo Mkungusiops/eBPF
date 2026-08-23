@@ -474,11 +474,17 @@ func (a *Auth) HandleWhoami(w http.ResponseWriter, r *http.Request) {
 	}
 	resolveServerIdentity()
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]string{
+	_ = json.NewEncoder(w).Encode(map[string]any{
 		"user":      s.User,
 		"hostname":  serverHostname,
 		"server_ip": serverIP,
 		"csrf":      s.CSRF,
+		// Whether this deployment can change detection policy, which on a
+		// single host means "is there a Tetragon connection to apply through".
+		// The console gates its authoring surface on this rather than on which
+		// plane it thinks it is talking to: a fake/dev engine has no Tetragon
+		// and must not offer a button that cannot work.
+		"can_push_policy": CanPushPolicy(),
 	})
 }
 

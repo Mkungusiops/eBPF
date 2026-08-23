@@ -12,6 +12,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/api"
 	"github.com/jeffmk/ebpf-poc-engine/internal/logging"
 	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 )
 
@@ -119,6 +120,17 @@ func ConfigureConsoleDirs(policiesDir, attacksDir, honeypotDir string) {
 	} else {
 		log.Printf("honeypots: seeded at %s", honeypotDir)
 	}
+}
+
+// ConfigurePolicyApplier hands the API layer the Tetragon connection it needs
+// to load and unload TracingPolicies.
+//
+// The engine has always dialled Tetragon for its event stream, but the client
+// stayed a local in main, so nothing else in the process could use it. Without
+// this the console could show precisely which detections the kernel had and
+// offer no way to change one — the customer's only route was SSH.
+func ConfigurePolicyApplier(c policyapply.Client, durableDir string) {
+	api.SetPolicyApplier(c, durableDir)
 }
 
 // NotifyShutdown cancels ctx on SIGINT/SIGTERM so the background loops, the

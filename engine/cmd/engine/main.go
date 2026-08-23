@@ -97,11 +97,27 @@ func main() {
 	// The gateway is captured here rather than read from a global on every
 	// event: by this point it is fully wired, and a pipeline that cannot
 	// observe a half-built gateway cannot dispatch enforcement through one.
+	// Behavioural baseline + threat-intel enrichment. Shared with cmd/agent
+	// through hoststack for the reason internal/eventpipe itself exists: a
+	// scoring change that lands on one build target and not the other means two
+	// hosts on the same version disagree about what is worth containing.
+	enrich := hoststack.NewEnrichment(hoststack.DefaultEnrichment(), st.DB(), st.Dialect(), st)
+	enrich.Start(ctx, 5*time.Minute)
+	httpSrv.SetEnrichment(enrich)
+
 	pipe := &eventpipe.Pipeline{
 		Store:     st,
 		Tree:      pt,
 		Broadcast: broadcast,
 		Gateway:   stack.Gateway,
+	}
+	enrich.Attach(pipe)
+
+	// Lab surfaces off unless asked for. /api/run-attack executes a script as
+	// root on the host this binary is defending, so the default has to be off.
+	api.LabMode = cfg.labMode
+	if cfg.labMode {
+		log.Println("LAB MODE: attack catalogue, attack runner and honeypot panel are EXPOSED — not for a customer estate")
 	}
 
 	if cfg.fakeMode {
@@ -120,6 +136,10 @@ func main() {
 	defer conn.Close()
 
 	client := tetragon.NewFineGuidanceSensorsClient(conn)
+
+	// The same connection now backs detection authoring, not just the event
+	// stream: one client, one socket, no docker exec and no new privilege.
+	hoststack.ConfigurePolicyApplier(client, cfg.DurablePolicyDir)
 
 	stream, err := client.GetEvents(ctx, &tetragon.GetEventsRequest{})
 	if err != nil {

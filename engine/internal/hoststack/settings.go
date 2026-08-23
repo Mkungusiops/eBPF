@@ -22,14 +22,18 @@ const (
 	DefaultAttacksDir   = "attacks"
 	DefaultHoneypotsDir = "/var/lib/ebpf-engine/honey"
 	DefaultChokeDir     = "policies/choke"
-	DefaultThrottleAt   = 5
-	DefaultTarpitAt     = 15
-	DefaultQuarantineAt = 25
-	DefaultSeverAt      = 40
-	DefaultBPFCgroup    = "/sys/fs/cgroup"
-	DefaultStoreKind    = "sqlite"
-	DefaultLogFormat    = "text"
-	DefaultLogLevel     = "info"
+	// DefaultDurablePolicyDir is the directory Tetragon loads TracingPolicies
+	// from at startup, bind-mounted from the host by the deploy. Writing a
+	// pushed policy here is what makes it survive a daemon restart.
+	DefaultDurablePolicyDir = "/etc/tetragon/tetragon.tp.d"
+	DefaultThrottleAt       = 5
+	DefaultTarpitAt         = 15
+	DefaultQuarantineAt     = 25
+	DefaultSeverAt          = 40
+	DefaultBPFCgroup        = "/sys/fs/cgroup"
+	DefaultStoreKind        = "sqlite"
+	DefaultLogFormat        = "text"
+	DefaultLogLevel         = "info"
 
 	// DefaultCgroupRoot re-exports the cgroup package's own constant so the
 	// flag default and the merge check cannot be spelled differently.
@@ -76,6 +80,9 @@ type Settings struct {
 	PoliciesDir  string
 	AttacksDir   string
 	HoneypotsDir string
+	// DurablePolicyDir is where a pushed policy is persisted so it survives a
+	// Tetragon restart. Writable only because the deploy bind-mounts it.
+	DurablePolicyDir string
 
 	// Storage. DBPath is the SQLite file; PgDSN carries the connection string
 	// when StoreKind is "postgres". Both are also reported (DSN redacted) as
@@ -152,6 +159,7 @@ func (s *Settings) ApplyFile(f *config.File) {
 	config.ApplyString(&s.AttacksDir, f.AttacksDir, DefaultAttacksDir)
 	config.ApplyString(&s.HoneypotsDir, f.HoneypotsDir, DefaultHoneypotsDir)
 	config.ApplyString(&s.ChokeDir, f.ChokeDir, DefaultChokeDir)
+	config.ApplyString(&s.DurablePolicyDir, f.DurablePolicyDir, DefaultDurablePolicyDir)
 	config.ApplyBool(&s.DryRun, f.DryRun, false)
 	config.ApplyBool(&s.Enforce, f.Enforce, false)
 	config.ApplyInt(&s.ThrottleAt, f.ThrottleAt, DefaultThrottleAt)

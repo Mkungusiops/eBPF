@@ -108,12 +108,21 @@ func main() {
 	sensors := &sensorRegistry{}
 	upBuf := startControlPlane(ctx, cfg, stack, hostname, sensors)
 
+	// Behavioural baseline + threat-intel enrichment. Built from the same
+	// shared helper the engine uses: enrichment changes the SCORE, so an agent
+	// that primes its baseline and an engine that does not would reach
+	// different containment decisions from identical behaviour.
+	enrich := hoststack.NewEnrichment(hoststack.DefaultEnrichment(), st.DB(), st.Dialect(), st)
+	enrich.Start(ctx, 5*time.Minute)
+	httpSrv.SetEnrichment(enrich)
+
 	pipe := &eventpipe.Pipeline{
 		Store:     st,
 		Tree:      pt,
 		Broadcast: broadcast,
 		Gateway:   stack.Gateway,
 	}
+	enrich.Attach(pipe)
 	if upBuf != nil {
 		// Tee telemetry to the control plane. Left nil when standalone, so an
 		// agent with no uplink behaves exactly as it did before Phase 1.
@@ -139,6 +148,14 @@ func main() {
 	// the kernel really has so the console can show host posture rather than
 	// just the engine's half of it.
 	sensors.set(client)
+	// The agent serves the same console mux as the engine (api.NewServer above),
+	// and package api reads kernel policy state through whatever client it was
+	// given. Without this the agent held a live Tetragon connection while its
+	// own console fell back to `docker exec tetragon tetra …` — the fragile,
+	// docker-socket-requiring path — for a read this connection answers.
+	// DurablePolicyDir is the agent's own (applier.go), already the value
+	// its policy writes use.
+	hoststack.ConfigurePolicyApplier(client, DurablePolicyDir)
 
 	stream, err := client.GetEvents(ctx, &tetragon.GetEventsRequest{})
 	if err != nil {

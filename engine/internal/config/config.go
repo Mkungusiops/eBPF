@@ -38,22 +38,25 @@ type File struct {
 	// Path to the HMAC signing secret used for session cookies. Auto-
 	// generated 0600 on first start if missing. Empty -> default
 	// /etc/ebpf-engine/secret.
-	SecretPath     string `yaml:"secret_path"`
-	PoliciesDir    string `yaml:"policies"`
-	AttacksDir     string `yaml:"attacks"`
-	HoneypotsDir   string `yaml:"honeypots"`
-	ChokeDir       string `yaml:"choke_policies"`
-	DryRun         *bool  `yaml:"dry_run"`
-	Enforce        *bool  `yaml:"enforce"`
-	ThrottleAt     *int   `yaml:"throttle_at"`
-	TarpitAt       *int   `yaml:"tarpit_at"`
-	QuarantineAt   *int   `yaml:"quarantine_at"`
-	SeverAt        *int   `yaml:"sever_at"`
-	CgroupRoot     string `yaml:"cgroup_root"`
-	SystemCritical string `yaml:"system_critical"`
-	FleetHosts     string `yaml:"fleet_hosts"`
-	BPFObj         string `yaml:"bpf_obj"`
-	BPFCgroup      string `yaml:"bpf_cgroup"`
+	SecretPath  string `yaml:"secret_path"`
+	PoliciesDir string `yaml:"policies"`
+	// DurablePolicyDir is Tetragon's startup load directory. A policy pushed
+	// from the console is written here so it survives a daemon restart.
+	DurablePolicyDir string `yaml:"durable_policies"`
+	AttacksDir       string `yaml:"attacks"`
+	HoneypotsDir     string `yaml:"honeypots"`
+	ChokeDir         string `yaml:"choke_policies"`
+	DryRun           *bool  `yaml:"dry_run"`
+	Enforce          *bool  `yaml:"enforce"`
+	ThrottleAt       *int   `yaml:"throttle_at"`
+	TarpitAt         *int   `yaml:"tarpit_at"`
+	QuarantineAt     *int   `yaml:"quarantine_at"`
+	SeverAt          *int   `yaml:"sever_at"`
+	CgroupRoot       string `yaml:"cgroup_root"`
+	SystemCritical   string `yaml:"system_critical"`
+	FleetHosts       string `yaml:"fleet_hosts"`
+	BPFObj           string `yaml:"bpf_obj"`
+	BPFCgroup        string `yaml:"bpf_cgroup"`
 	// Network (per-device / MAC) choke data plane. DevchokeObj points at a
 	// compiled devchoke.o; DevchokeIfaces is a comma-separated list of LAN /
 	// bridge-slave interfaces to attach tc ingress+egress to; DevchokeProtect

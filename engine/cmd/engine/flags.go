@@ -40,6 +40,7 @@ type engineConfig struct {
 	// counterpart in cmd/agent: an agent is a production sensor, and a build
 	// that can fabricate its own telemetry is not one.
 	fakeMode bool
+	labMode  bool
 	// loginRate is the per-IP login attempt budget guarding the dashboard.
 	loginRate int
 	// fleetHosts points at a chokectl-format hosts file and turns on the Tier 1
@@ -83,6 +84,9 @@ func (c *engineConfig) bind(fs *flag.FlagSet) {
 	fs.StringVar(&c.DBPath, "db", hoststack.DefaultDBPath, "SQLite database path")
 	fs.StringVar(&c.HTTPAddr, "http", hoststack.DefaultHTTPAddr, "HTTP listen address")
 	fs.BoolVar(&c.fakeMode, "fake", false, "synthesize events instead of connecting to Tetragon (dev/UI mode)")
+	fs.BoolVar(&c.labMode, "lab-mode", false,
+		"expose the demo/lab surfaces (attack catalogue, attack runner, honeypot panel). OFF by default: "+
+			"/api/run-attack executes a script AS ROOT on the host this binary is defending")
 	fs.StringVar(&c.AuthUser, "user", hoststack.DefaultAuthUser, "dashboard username")
 	// SECURITY (Phase 0, deliverable #3): no plaintext credential default.
 	// Historically this defaulted to a known demo string, which meant every
@@ -99,6 +103,7 @@ func (c *engineConfig) bind(fs *flag.FlagSet) {
 	fs.StringVar(&c.AttacksDir, "attacks", hoststack.DefaultAttacksDir, "directory containing allowlisted attack scripts (for quick-fire panel)")
 	fs.StringVar(&c.HoneypotsDir, "honeypots", hoststack.DefaultHoneypotsDir, "directory where decoy files are seeded; access fires alerts when watched by sensitive-files policy")
 	// Phase 1+2: choke gateway
+	fs.StringVar(&c.DurablePolicyDir, "durable-policies", hoststack.DefaultDurablePolicyDir, "directory Tetragon loads TracingPolicies from at startup; a pushed policy is persisted here so it survives a daemon restart")
 	fs.StringVar(&c.ChokeDir, "choke-policies", hoststack.DefaultChokeDir, "directory containing ChokePolicy YAMLs (DSL); empty disables policy-driven choking")
 	fs.BoolVar(&c.DryRun, "dry-run", false, "shadow mode: record decisions but do not execute enforcement actions")
 	fs.BoolVar(&c.Enforce, "enforce", false, "enable real enforcement (kill/throttle); when false, decisions are logged only")
