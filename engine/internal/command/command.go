@@ -11,7 +11,9 @@
 package command
 
 import (
+	"crypto/sha256"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
 	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
 )
 
@@ -36,6 +39,21 @@ type Applier interface {
 	ApplyPreset(name string) error
 	KillSwitch(halt bool, reason string, plane ebpfsocv1.Plane) error
 	SetProtectedList(binaries, macs []string) error
+}
+
+// PolicyApplier is the OPTIONAL half of Applier that changes detection policy.
+//
+// Optional so an agent build without a Tetragon connection — or a test fake —
+// simply reports the action unsupported rather than failing to compile. The
+// Processor checks for it and answers STATUS_REJECTED when it is absent, which
+// is the honest reply: this agent cannot do that, as distinct from it tried and
+// failed.
+type PolicyApplier interface {
+	// ApplyPolicies loads or replaces each document and removes each name.
+	// Returns a per-policy outcome map so a PARTIAL application is reportable:
+	// an aggregate boolean over four policies where two loaded would leave the
+	// operator believing all four did.
+	ApplyPolicies(docs []*ebpfsocv1.PolicyDoc, remove []string) (map[string]string, error)
 }
 
 // TargetOwner is the optional half of Applier that answers "is this Jail/Thaw
@@ -87,7 +105,17 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 	}
 
 	// 2. Signature — the fleet signer must have authorized these exact bytes.
-	if !p.verify.Verify(Canonical(c), c.GetSignature()) {
+	//
+	// A nil canonical form means this build cannot represent the action, so it
+	// cannot check what it would be agreeing to. Verifying against nil would
+	// compare a signature over EMPTY bytes and could accept it; refusing is the
+	// only safe reading of "I do not understand this command".
+	canon := Canonical(c)
+	if canon == nil {
+		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED,
+			"unsupported action: this agent cannot canonicalise it, so its signature cannot be checked")
+	}
+	if !p.verify.Verify(canon, c.GetSignature()) {
 		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, "invalid or missing signature")
 	}
 
@@ -147,6 +175,37 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 		// minimum so sudo/sshd/systemd can never be stripped, even by a valid
 		// signature (the sudo-lockout defense).
 		err = p.applier.SetProtectedList(unionProtected(u.GetProtectedBinaries(), p.alwaysProtected), u.GetProtectedMacs())
+	case *ebpfsocv1.Command_ApplyPolicy:
+		// Detection policy. Rejected outright when this agent has no policy
+		// applier — "I cannot" is a different answer from "I tried and failed",
+		// and an operator watching a fleet needs to tell them apart.
+		pa, ok := p.applier.(PolicyApplier)
+		if !ok {
+			return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED,
+				"this agent cannot apply detection policy (no Tetragon connection)")
+		}
+		ap := a.ApplyPolicy
+		var outcomes map[string]string
+		outcomes, err = pa.ApplyPolicies(ap.GetPolicies(), ap.GetRemove())
+		// A PARTIAL application must not ack as applied. Four policies where
+		// two loaded leaves the host in a state matching neither the old set
+		// nor the requested one, and an aggregate "applied" would hide it.
+		if err == nil {
+			var failed []string
+			for name, outcome := range outcomes {
+				// policyapply.Succeeded, not a literal: a removal reports
+				// "removed" rather than "ok", and testing the literal acked
+				// every successful removal as REJECTED.
+				if !policyapply.Succeeded(outcome) {
+					failed = append(failed, name+": "+outcome)
+				}
+			}
+			if len(failed) > 0 {
+				sort.Strings(failed)
+				return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED,
+					"partially applied — "+strings.Join(failed, "; "))
+			}
+		}
 	default:
 		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, "unknown or empty command action")
 	}
@@ -189,7 +248,11 @@ func Canonical(c *ebpfsocv1.Command) []byte {
 	fmt.Fprintf(&b, "id=%s;exp=%d;", c.GetCommandId(), c.GetExpiresAt().GetSeconds())
 	switch a := c.GetAction().(type) {
 	case *ebpfsocv1.Command_SetMode:
-		fmt.Fprintf(&b, "set_mode=%d", a.SetMode.GetMode())
+		// Plane is IN the signature. It was not, and the agent acts on it
+		// (Handle -> applier.SetMode(mode, plane)), so anyone able to modify
+		// the stream could retarget a validly-signed mode change at the other
+		// enforcement plane and the signature would still verify.
+		fmt.Fprintf(&b, "set_mode=%d,plane=%d", a.SetMode.GetMode(), a.SetMode.GetPlane())
 	case *ebpfsocv1.Command_Jail:
 		fmt.Fprintf(&b, "jail=%s,%d,%s", a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier())
 	case *ebpfsocv1.Command_Thaw:
@@ -200,10 +263,37 @@ func Canonical(c *ebpfsocv1.Command) []byte {
 	case *ebpfsocv1.Command_ApplyPreset:
 		fmt.Fprintf(&b, "preset=%s", a.ApplyPreset.GetPreset())
 	case *ebpfsocv1.Command_KillSwitch:
-		fmt.Fprintf(&b, "killswitch=%v,%s", a.KillSwitch.GetHaltAllEnforcement(), a.KillSwitch.GetReason())
+		// Same omission, on the one control that exists to stop everything: a
+		// signed process-plane halt could be flipped to the device plane, so
+		// the operator's emergency stop lands on the wrong plane while process
+		// enforcement keeps killing. threat-model EN-2/CH-5.
+		fmt.Fprintf(&b, "killswitch=%v,%s,plane=%d",
+			a.KillSwitch.GetHaltAllEnforcement(), a.KillSwitch.GetReason(), a.KillSwitch.GetPlane())
 	case *ebpfsocv1.Command_UpdateProtectedList:
 		u := a.UpdateProtectedList
 		fmt.Fprintf(&b, "protected=%s|%s", strings.Join(u.GetProtectedBinaries(), ","), strings.Join(u.GetProtectedMacs(), ","))
+	case *ebpfsocv1.Command_ApplyPolicy:
+		// The policy BODIES are hashed, not inlined: a 10 KB YAML in the signed
+		// string would make every signature verification allocate the whole
+		// bundle, and the hash binds the content just as tightly. Name, mode
+		// and the removal list are inlined because they are short and each one
+		// changes what the command DOES — mode especially, since "enforce"
+		// decides whether the policy can kill.
+		ap := a.ApplyPolicy
+		fmt.Fprintf(&b, "applypolicy=")
+		for _, d := range ap.GetPolicies() {
+			sum := sha256.Sum256([]byte(d.GetYaml()))
+			fmt.Fprintf(&b, "%s:%s:%x,", d.GetName(), d.GetMode(), sum[:8])
+		}
+		fmt.Fprintf(&b, "|remove=%s|reason=%s", strings.Join(ap.GetRemove(), ","), ap.GetReason())
+	default:
+		// An action this build does not know how to canonicalise must NOT be
+		// signable. Falling through left the signature covering only
+		// "id=…;exp=…", so any two commands of an unhandled kind sharing an id
+		// and expiry had identical signatures — and a future action added to
+		// the proto without a case here would ship unsigned in all but name.
+		// Returning nil makes Sign/Verify fail closed instead.
+		return nil
 	}
 	return []byte(b.String())
 }

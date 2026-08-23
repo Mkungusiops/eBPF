@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
 )
 
 // gatewayApplier adapts control-plane commands onto the local choke gateway.
@@ -24,6 +26,11 @@ import (
 type gatewayApplier struct {
 	gw    *choke.Gateway
 	devGW *choke.DeviceGateway
+	// sensors carries the Tetragon client so this applier can change DETECTION
+	// policy, not just enforcement state. nil in tests and in a build with no
+	// Tetragon connection, which makes ApplyPolicies report the action
+	// unsupported rather than panic.
+	sensors *sensorRegistry
 }
 
 // SetMode arms or disarms one plane. PLANE_DEVICE targets the network gateway;
@@ -214,3 +221,55 @@ func (a gatewayApplier) SetProtectedList(binaries, macs []string) error {
 	}
 	return nil
 }
+
+// ApplyPolicies loads, re-loads and removes Tetragon TracingPolicies, making
+// gatewayApplier satisfy command.PolicyApplier.
+//
+// # Why this is a method call and not a file push
+//
+// The agent already holds tetragon.FineGuidanceSensorsClient — it calls
+// ListTracingPolicies on it every heartbeat — and that interface already
+// exposes AddTracingPolicy, DeleteTracingPolicy and ConfigureTracingPolicy. All
+// three are already linked into the shipped binary. So changing detection
+// policy needs no new dependency, no docker socket, and no new privilege: it is
+// one more call on a connection that is already open.
+//
+// # Add is create-only, so a replace is delete-then-add
+//
+// Tetragon's AddTracingPolicy fails on a name that already exists. The deploy
+// provisioner learned this and does delete-then-add; so does this. The delete
+// is best-effort precisely because the common case is a policy that is not
+// there yet, where the delete legitimately fails and the add must still run.
+//
+// # This is the IN-MEMORY half
+//
+// Tetragon reads /etc/tetragon/tetragon.tp.d only at startup, so a policy
+// loaded this way is forgotten when the daemon restarts. Durability is the
+// deploy-side bind mount plus a file write; without it this is a live change
+// that does not survive a container restart. The caller is told which half it
+// got — see the per-policy outcome map, and DurablePolicyDir below.
+func (a gatewayApplier) ApplyPolicies(docs []*ebpfsocv1.PolicyDoc, remove []string) (map[string]string, error) {
+	if a.sensors == nil {
+		return nil, errors.New("no Tetragon connection on this agent")
+	}
+	client := a.sensors.get()
+	if client == nil {
+		return nil, errors.New("no Tetragon connection on this agent")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Translate the wire type and hand off. The rules — delete-then-add, mode
+	// set explicitly, durability reported apart from liveness — live in
+	// internal/policyapply so the single-tenant engine runs the same ones.
+	in := make([]policyapply.Doc, 0, len(docs))
+	for _, d := range docs {
+		in = append(in, policyapply.Doc{Name: d.GetName(), YAML: d.GetYaml(), Mode: d.GetMode()})
+	}
+	return policyapply.Apply(ctx, client, DurablePolicyDir, in, remove), nil
+}
+
+// DurablePolicyDir is where Tetragon loads TracingPolicies from at startup. The
+// deploy bind-mounts it from the host so the agent can write here directly.
+// A variable rather than the package constant so tests can redirect it.
+var DurablePolicyDir = policyapply.DefaultDurableDir

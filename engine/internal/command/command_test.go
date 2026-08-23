@@ -8,6 +8,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
 	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
 )
 
@@ -373,4 +374,172 @@ func (r *recordingApplier) SetProtectedList(bins, _ []string) error {
 		return r.onProtected(bins)
 	}
 	return nil
+}
+
+// A signed command whose target PLANE is outside the signature can be
+// retargeted in flight and still verify. On the kill switch — the one control
+// that exists to stop everything — that means an operator's process-plane halt
+// lands on the device plane while process enforcement keeps killing.
+func TestPlaneIsCoveredBySignature(t *testing.T) {
+	proc := &ebpfsocv1.Command{
+		CommandId: "c1",
+		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{
+			HaltAllEnforcement: true, Reason: "break glass", Plane: ebpfsocv1.Plane_PLANE_PROCESS,
+		}},
+	}
+	dev := &ebpfsocv1.Command{
+		CommandId: "c1",
+		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{
+			HaltAllEnforcement: true, Reason: "break glass", Plane: ebpfsocv1.Plane_PLANE_DEVICE,
+		}},
+	}
+	if string(Canonical(proc)) == string(Canonical(dev)) {
+		t.Fatal("a process-plane and a device-plane kill switch sign identically — the plane can be flipped in flight")
+	}
+
+	pm := &ebpfsocv1.Command{CommandId: "c2", Action: &ebpfsocv1.Command_SetMode{
+		SetMode: &ebpfsocv1.SetMode{Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, Plane: ebpfsocv1.Plane_PLANE_PROCESS}}}
+	dm := &ebpfsocv1.Command{CommandId: "c2", Action: &ebpfsocv1.Command_SetMode{
+		SetMode: &ebpfsocv1.SetMode{Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, Plane: ebpfsocv1.Plane_PLANE_DEVICE}}}
+	if string(Canonical(pm)) == string(Canonical(dm)) {
+		t.Fatal("SetMode signs identically across planes — arming one plane could be redirected to the other")
+	}
+}
+
+// An action this build cannot canonicalise must be unsignable and unverifiable,
+// not silently signed over "id=…;exp=…" alone.
+func TestUnknownActionIsNotSignable(t *testing.T) {
+	if got := Canonical(&ebpfsocv1.Command{CommandId: "c3"}); got != nil {
+		t.Fatalf("Canonical of an actionless command = %q, want nil so signing fails closed", got)
+	}
+}
+
+// ── ApplyPolicy: the ack gate ────────────────────────────────────────────────
+//
+// Command_ApplyPolicy had no test at all, which is how a one-word change to an
+// outcome code silently inverted the ack for every successful removal. These
+// drive the gate itself, not the predicate it calls — the predicate can be
+// correct while the gate ignores it.
+
+// policyApplier is a fakeApplier that also satisfies PolicyApplier, returning
+// whatever per-policy outcomes a test asks for.
+type policyApplier struct {
+	fakeApplier
+	outcomes map[string]string
+	err      error
+	gotDocs  []string
+	gotRm    []string
+}
+
+func (p *policyApplier) ApplyPolicies(docs []*ebpfsocv1.PolicyDoc, remove []string) (map[string]string, error) {
+	for _, d := range docs {
+		p.gotDocs = append(p.gotDocs, d.GetName())
+	}
+	p.gotRm = append(p.gotRm, remove...)
+	return p.outcomes, p.err
+}
+
+func policyProc(t *testing.T, pa *policyApplier) (*Processor, signing.Signer) {
+	t.Helper()
+	s, v, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewProcessor(v, pa, []string{"sudo"}), s
+}
+
+func policyCmd(t *testing.T, s signing.Signer, docs []*ebpfsocv1.PolicyDoc, remove []string) *ebpfsocv1.Command {
+	t.Helper()
+	return sign(s, &ebpfsocv1.Command{
+		CommandId: "p1",
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action: &ebpfsocv1.Command_ApplyPolicy{ApplyPolicy: &ebpfsocv1.ApplyPolicy{
+			Policies: docs, Remove: remove, Reason: "test"}},
+	})
+}
+
+// The regression that prompted all of this: a removal reports "removed", not
+// "ok". Testing the literal acked every SUCCESSFUL removal as REJECTED — the
+// operator was told their removal failed while the policy was gone from the
+// kernel.
+func TestSuccessfulRemovalAcksApplied(t *testing.T) {
+	pa := &policyApplier{outcomes: map[string]string{"old-policy": policyapply.Removed}}
+	p, s := policyProc(t, pa)
+
+	a := p.Handle(policyCmd(t, s, nil, []string{"old-policy"}))
+
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("a successful removal acked %v (%q), want APPLIED", a.GetStatus(), a.GetDetail())
+	}
+	if len(pa.gotRm) != 1 || pa.gotRm[0] != "old-policy" {
+		t.Fatalf("the removal did not reach the applier: %v", pa.gotRm)
+	}
+}
+
+func TestSuccessfulApplyAcksApplied(t *testing.T) {
+	pa := &policyApplier{outcomes: map[string]string{"p": policyapply.OK}}
+	p, s := policyProc(t, pa)
+
+	a := p.Handle(policyCmd(t, s, []*ebpfsocv1.PolicyDoc{{Name: "p", Yaml: "y", Mode: "monitor"}}, nil))
+
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("acked %v (%q), want APPLIED", a.GetStatus(), a.GetDetail())
+	}
+}
+
+// A partial application must not ack as applied: four policies where two
+// loaded leaves the host matching neither the old set nor the requested one.
+func TestPartialApplyAcksRejectedAndNamesTheFailures(t *testing.T) {
+	pa := &policyApplier{outcomes: map[string]string{
+		"good":   policyapply.OK,
+		"gone":   policyapply.Removed,
+		"broken": "failed: symbol not found",
+	}}
+	p, s := policyProc(t, pa)
+
+	a := p.Handle(policyCmd(t, s, []*ebpfsocv1.PolicyDoc{{Name: "good", Yaml: "y"}}, nil))
+
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_REJECTED {
+		t.Fatalf("a partial apply acked %v, want REJECTED", a.GetStatus())
+	}
+	if !strings.Contains(a.GetDetail(), "broken") {
+		t.Fatalf("the ack must name the failure, got %q", a.GetDetail())
+	}
+	// The ones that worked are not noise in the failure list.
+	if strings.Contains(a.GetDetail(), "good") || strings.Contains(a.GetDetail(), "gone") {
+		t.Fatalf("successful policies were listed as failures: %q", a.GetDetail())
+	}
+}
+
+// Live-but-not-durable is NOT success. The policy is running now and vanishes
+// at the next Tetragon restart, and an ack calling that "applied" hides the one
+// fact the operator has to act on.
+func TestLiveButNotDurableAcksRejected(t *testing.T) {
+	pa := &policyApplier{outcomes: map[string]string{
+		"p": policyapply.NotDurable + "/etc/tetragon/tetragon.tp.d is not present",
+	}}
+	p, s := policyProc(t, pa)
+
+	a := p.Handle(policyCmd(t, s, []*ebpfsocv1.PolicyDoc{{Name: "p", Yaml: "y"}}, nil))
+
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_REJECTED {
+		t.Fatalf("a non-durable policy acked %v, want REJECTED — it is lost on the next restart", a.GetStatus())
+	}
+	if !strings.Contains(a.GetDetail(), "NOT durable") {
+		t.Fatalf("the ack should carry the durability warning, got %q", a.GetDetail())
+	}
+}
+
+// An agent with no Tetragon must say "I cannot", which is a different answer
+// from "I tried and failed".
+func TestApplyPolicyOnAnApplierThatCannotAcksRejected(t *testing.T) {
+	p, s, _ := newProc(t) // plain fakeApplier — not a PolicyApplier
+	a := p.Handle(policyCmd(t, s, []*ebpfsocv1.PolicyDoc{{Name: "p", Yaml: "y"}}, nil))
+
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_REJECTED {
+		t.Fatalf("acked %v, want REJECTED", a.GetStatus())
+	}
+	if !strings.Contains(a.GetDetail(), "cannot apply detection policy") {
+		t.Fatalf("detail %q should distinguish inability from failure", a.GetDetail())
+	}
 }
