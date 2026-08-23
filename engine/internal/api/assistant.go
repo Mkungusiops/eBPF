@@ -62,8 +62,13 @@ func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// ?surface= names the console panel asking, so the agent list comes back
+	// scoped to what makes sense there — "Explain this process chain" is the
+	// right button over a process tree and a nonsense one over a device
+	// inventory. Absent or unknown returns the full set, which is what an older
+	// console gets and is harmless.
 	out := assistantCapabilityResponse{Enabled: true, Model: cfg.Model}
-	for _, a := range assistant.Agents() {
+	for _, a := range assistant.AgentsFor(r.URL.Query().Get("surface")) {
 		out.Agents = append(out.Agents, assistantAgent{ID: a.ID, Title: a.Title, Conversational: a.Conversational})
 	}
 	writeJSONStatus(w, http.StatusOK, out)
@@ -73,6 +78,62 @@ type assistantAskRequest struct {
 	Agent    string `json:"agent"`
 	Question string `json:"question"`
 	ExecID   string `json:"exec_id"`
+	// Surface is which console panel asked. Framing only — it changes what the
+	// model is told, never what it may read.
+	Surface string `json:"surface"`
+	// History is the conversation so far, oldest first, excluding this
+	// question.
+	//
+	// CLIENT-SUPPLIED, because this deployment has no chat store to load it
+	// from — see handleAssistantChatsUnavailable. That is safe but it is worth
+	// being explicit about why: nothing in here widens what may be READ (tool
+	// authorization comes from the session cookie, which this cannot touch),
+	// and assistant.SanitiseHistory strips roles other than user/assistant so a
+	// crafted "system" turn cannot rewrite the evidence rules. What a caller
+	// can do is mislead the model about their own earlier conversation, which
+	// misleads only themselves.
+	History []assistantMessage `json:"history"`
+}
+
+// assistantMessage is one prior turn on the wire.
+type assistantMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+	// Grounded is what the console recorded for that answer when it arrived.
+	//
+	// CLIENT-ASSERTED on this deployment, because there is no chat store to
+	// check it against. It is worth being exact about what that does and does
+	// not permit: it can suppress the ungrounded REFUSAL on a follow-up in the
+	// caller's own session, and it can do nothing else — it never reaches a
+	// tool, never widens what may be read, and never leaves that session. The
+	// control plane ignores it entirely and uses its own stored flag.
+	Grounded bool `json:"grounded,omitempty"`
+}
+
+// history converts the wire form, bounded by the assistant package, and reports
+// whether the thread carries any previously-grounded answer.
+func (r assistantAskRequest) history() ([]assistant.Message, bool) {
+	if len(r.History) == 0 {
+		return nil, false
+	}
+	// Bounded BEFORE conversion as well as inside SanitiseHistory: the body cap
+	// is 64KB, which is a lot of two-byte messages, and building a slice of
+	// them to immediately discard it is work an unauthenticated-adjacent caller
+	// should not be able to ask for.
+	const maxWire = 64
+	in := r.History
+	if len(in) > maxWire {
+		in = in[len(in)-maxWire:]
+	}
+	out := make([]assistant.Message, 0, len(in))
+	grounded := false
+	for _, m := range in {
+		out = append(out, assistant.Message{Role: m.Role, Content: m.Content})
+		if m.Role == "assistant" && m.Grounded {
+			grounded = true
+		}
+	}
+	return assistant.SanitiseHistory(out), grounded
 }
 
 func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
@@ -114,8 +175,10 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
 		Cookie:   r.Header.Get("Cookie"),
+		Surface:  req.Surface,
 		MaxCalls: cfg.MaxToolCalls,
 	}
+	runner.History, runner.HistoryGrounded = req.history()
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
@@ -132,10 +195,84 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	// handling, not telemetry — a post-incident review must be able to
 	// reconstruct which conclusions were assisted.
 	slog.Info("assistant answered",
-		"agent", req.Agent, "exec_id", req.ExecID,
+		"agent", req.Agent, "surface", req.Surface, "exec_id", req.ExecID,
 		"steps", len(ans.Steps), "truncated", ans.Truncated, "duration", ans.Duration)
 
 	writeJSONStatus(w, http.StatusOK, ans)
+}
+
+// handleAssistantStream is handleAssistantAsk with the investigation streamed.
+//
+//	POST /api/assistant/stream   same body as /ask, replies text/event-stream
+//
+// Kept beside the request/response endpoint rather than replacing it. The
+// non-streaming one is what a script, a test or a client behind a buffering
+// proxy uses, and it is the fallback the console drops to when the stream
+// cannot be established — an assistant that only works over SSE is an assistant
+// that stops working the first time something in the path buffers.
+func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	cfg := s.assistantCfg
+	if !cfg.Enabled() || cfg.APIKey() == "" {
+		writeJSONStatus(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "the assistant is not configured on this deployment"})
+		return
+	}
+
+	var req assistantAskRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
+		return
+	}
+	if strings.TrimSpace(req.Agent) == "" {
+		writeJSONStatus(w, http.StatusBadRequest, map[string]string{"error": "agent is required"})
+		return
+	}
+
+	// Establish the stream BEFORE running. Headers cannot be set once the first
+	// event is written, so a failure to upgrade has to be answerable as an
+	// ordinary JSON error while that is still possible.
+	stream, ok := assistant.NewStreamWriter(w)
+	if !ok {
+		writeJSONStatus(w, http.StatusInternalServerError,
+			map[string]string{"error": "this server cannot stream"})
+		return
+	}
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := contextWithTimeout(r, timeout)
+	defer cancel()
+
+	runner := &assistant.Runner{
+		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Tools:    assistant.DefaultTools(),
+		Client:   assistant.NewReadOnlyClient(timeout, nil),
+		BaseURL:  s.selfBaseURL(),
+		Cookie:   r.Header.Get("Cookie"),
+		Surface:  req.Surface,
+		MaxCalls: cfg.MaxToolCalls,
+		OnStep:   stream.Step,
+	}
+	runner.History, runner.HistoryGrounded = req.history()
+
+	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
+	if err != nil {
+		// Same rule as the non-streaming path: log the detail, send a generic
+		// message. The error can carry an upstream provider string.
+		slog.Warn("assistant stream failed", "agent", req.Agent, "error", err)
+		stream.Error("the assistant could not complete this request")
+		return
+	}
+	slog.Info("assistant answered (streamed)",
+		"agent", req.Agent, "surface", req.Surface, "exec_id", req.ExecID,
+		"steps", len(ans.Steps), "truncated", ans.Truncated, "duration", ans.Duration)
+	stream.Answer(ans)
 }
 
 // ── local helpers ──────────────────────────────────────────────────────────

@@ -146,6 +146,22 @@ func DefaultSystemCriticalBinaries() []string {
 		// manual override, which deliberately bypasses this list.
 		"/usr/bin/sudo",
 		"/usr/bin/su",
+		// The PAM credential helper every one of the above shells out to.
+		// sshd, sshd-session, sudo, su and login were all protected while the
+		// helper they all call was not — and it is the process that actually
+		// performs the /etc/shadow read, so it is the one that accumulates
+		// score. Measured on the live engine 2026-08-21: unix_chkpwd reached
+		// 299 against a sever threshold of 40, with 1093 processes in `severed`
+		// state. Protecting the callers and not the callee protects nothing:
+		// arming enforcement would have SIGKILLed authentication.
+		//
+		// score.IsAuthStackCredentialRead now stops it accumulating that score
+		// in the first place. This entry is the second line of defence, because
+		// the first one depends on correctly identifying the parent and this
+		// one does not.
+		"/usr/sbin/unix_chkpwd",
+		"/sbin/unix_chkpwd",
+		"/usr/bin/unix_chkpwd",
 		"/usr/lib/systemd/systemd",
 		"/usr/lib/systemd/systemd-logind",
 		"/usr/lib/systemd/systemd-journald",

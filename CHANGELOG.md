@@ -13,6 +13,95 @@ never report it.
 
 ---
 
+## [Unreleased] — Behavioural baselines, threat intel, and a conversational assistant
+
+Three additions, all layered on the existing chain scorer rather than replacing
+it. A deployment that configures none of them behaves exactly as it did before.
+
+### Added — behavioural baselines (`internal/baseline`)
+
+Per-deployment learning of what is normal: which executables run here, which
+parent launches which child, which user runs what, and when the host is active.
+Counts decay with a 14-day half-life. The lineage facet is the one that matters
+— it expresses "nginx has never launched a shell on this host", which no static
+rule can.
+
+- **Assess before observe.** Judging an event after folding it into the profile
+  makes it normal by definition; the feature would appear to work and report
+  nothing forever. Pinned by a test.
+- **No scoring before ready.** A fresh profile thinks everything is novel, which
+  on day one flags every process on the box. Readiness gates scoring, and the
+  API reports *progress* so "still learning" is distinguishable from "nothing
+  found" — the same distinction `/api/system-health` draws for telemetry.
+- **Primes from stored history** and **persists across restarts**, so an
+  established host is warm at startup rather than blind for its warm-up window.
+  Without persistence, every deploy would disable anomaly detection fleet-wide.
+- **Only ever adds points**, capped at 12 per event and 25 per chain. Novelty
+  can reach *high* alone but never *critical*: a package upgrade legitimately
+  execs hundreds of never-seen binaries and must not contain its own package
+  manager. Negative scoring was rejected outright — it would let an attacker pad
+  a chain with routine activity to drop below the containment threshold.
+
+The control plane keeps a **per-tenant** profile alongside the sensors'
+per-host ones, assembled from the ingest stream. Agents cannot do this: an agent
+never knows its own tenant, by design. Fed from ingest rather than by querying
+`telemetry`, because that aggregate is the query shape that caused the
+2026-08-05 outage.
+
+### Added — threat-intelligence enrichment (`internal/intel`)
+
+IP, CIDR, domain and SHA-256 matching against feed files, at detection on the
+sensors and at ingest on the control plane.
+
+- **Matching is local.** Feeds are pulled in; an observed address is never sent
+  out. A query-time reputation API would disclose the customer's traffic graph
+  to a vendor and put a third party in the detection path.
+- **Connections outrank command lines.** A socket argument scores full weight; the
+  same address named in `argv` scores half — an argument is an intention, a
+  socket is a fact.
+- **Binary hashing is gated on baseline novelty**, so digests are computed for
+  the interesting set rather than on every exec.
+- **False-positive resistance is structural**: private/loopback/link-local/CGNAT
+  addresses never match, bare public suffixes (`com`, `co.uk`) are rejected at
+  load, over-broad CIDRs are rejected, and `allow.txt` is checked first and is
+  never overwritten by a deploy.
+- Feed refresh is **optional and off by default**; a failed fetch keeps the last
+  good copy, because degrading to zero indicators is indistinguishable from a
+  clean estate.
+
+### Added — assistant conversation memory
+
+`Run` built every request from the system prompt and the newest question alone.
+Prior turns were **persisted, rendered, and never sent to the model** — so "what
+about that host?" had no referent and every message was the analyst's first.
+
+The control plane now replays the thread from its own chat store (authoritative,
+and scope-checked by the same ownership rule that guards the write); the
+single-tenant engine, which has no chat store, accepts a bounded client-supplied
+thread. Both are sanitised identically: only `user`/`assistant` roles survive, so
+a forged `system` turn cannot rewrite the evidence rules, and tool-call
+structures are dropped so a fabricated tool result cannot be laundered into the
+transcript.
+
+### Added — assistant capability
+
+- Five enrichment tools (`baseline_profile`, `behavioural_anomalies`,
+  `threat_intel_status`, `threat_intel_matches`, `lookup_indicator`).
+- `explain_platform`, backed by `internal/platformdoc` and `/api/platform-doc`:
+  the product's own vocabulary, so "what is a tarpit" is answered from this
+  codebase rather than from the model's general knowledge of security products.
+- Server-applied filters on `list_alerts` and `list_events` (severity, host,
+  exec id, binary, policy, free text), replacing pull-200-rows-and-read.
+
+### Added — console
+
+**Behaviour & Intel** panel. Readiness and feed counts are stated *above* the
+findings, because an empty list means three different things — enrichment off,
+baseline still learning, or zero indicators loaded — and only the band can tell
+them apart.
+
+---
+
 ## [1.0.0] — 2026-08-12 — Enterprise handover
 
 First release cut for handover. The theme of this release is **honest

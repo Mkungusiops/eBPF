@@ -3,7 +3,9 @@ import {
   createAssistantApi,
   type AssistantAnswer,
   type AssistantApi,
-  type AssistantCapability
+  type AssistantCapability,
+  type AssistantStep,
+  type AssistantSurface
 } from "./api";
 
 export interface UseAssistantOptions {
@@ -11,6 +13,8 @@ export interface UseAssistantOptions {
   api?: AssistantApi;
   /** Exec id of the process under investigation, when there is one. */
   execId?: string;
+  /** Which console panel this assistant is mounted on. */
+  surface?: AssistantSurface;
 }
 
 export interface AssistantState {
@@ -18,7 +22,28 @@ export interface AssistantState {
   answer: AssistantAnswer | null;
   /** The agent currently running, so the UI can mark which button is busy. */
   running: string | null;
+  /**
+   * Tool calls completed SO FAR in the run currently in flight.
+   *
+   * The panel's own design notes say progress must be named rather than spun,
+   * because a bare spinner held for the fifteen seconds a tool loop takes reads
+   * as "hung". Until the stream existed there was nothing to name it with and
+   * the panel showed a fixed "Reading telemetry…" string that was true of every
+   * run and informative about none.
+   */
+  liveSteps: AssistantStep[];
   error: string | null;
+  /**
+   * The agent that takes a typed QUESTION, or null while capability is loading.
+   *
+   * Exposed rather than left for each call site to work out, because working it
+   * out is exactly what went wrong: the panel hard-coded `summarise-incident`
+   * for free text, so an analyst who typed "is this host compromised?" received
+   * an incident summary instead of an answer. The sidebar had the same bug with
+   * a different hard-coded agent and was fixed alone. One derivation, used by
+   * both, is what stops it happening a third time.
+   */
+  conversationalAgent: string | null;
   ask: (agentId: string, question?: string) => void;
   cancel: () => void;
   reset: () => void;
@@ -37,12 +62,13 @@ export interface AssistantState {
  *  - Nothing is set on an unmounted component. A drill panel closes the moment
  *    an analyst moves on, which is exactly when a slow answer lands.
  */
-export function useAssistant({ api, execId }: UseAssistantOptions = {}): AssistantState {
+export function useAssistant({ api, execId, surface }: UseAssistantOptions = {}): AssistantState {
   const clientRef = useRef<AssistantApi>(api ?? createAssistantApi());
   const [capability, setCapability] = useState<AssistantCapability | null>(null);
   const [answer, setAnswer] = useState<AssistantAnswer | null>(null);
   const [running, setRunning] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [liveSteps, setLiveSteps] = useState<AssistantStep[]>([]);
 
   const inFlight = useRef<AbortController | null>(null);
   const mounted = useRef(true);
@@ -60,7 +86,7 @@ export function useAssistant({ api, execId }: UseAssistantOptions = {}): Assista
   useEffect(() => {
     const ctl = new AbortController();
     clientRef.current
-      .capability(ctl.signal)
+      .capability(surface, ctl.signal)
       .then((cap) => {
         if (mounted.current) setCapability(cap);
       })
@@ -70,7 +96,7 @@ export function useAssistant({ api, execId }: UseAssistantOptions = {}): Assista
         }
       });
     return () => ctl.abort();
-  }, []);
+  }, [surface]);
 
   const cancel = useCallback(() => {
     inFlight.current?.abort();
@@ -94,13 +120,27 @@ export function useAssistant({ api, execId }: UseAssistantOptions = {}): Assista
 
       setRunning(agentId);
       setError(null);
+      setLiveSteps([]);
       // The previous answer is cleared on a NEW question. Leaving it visible
       // beside a spinner invites reading a stale answer as the new one — on an
       // incident console that is a wrong conclusion, not a cosmetic issue.
       setAnswer(null);
 
-      clientRef.current
-        .ask({ agent: agentId, question, execId, signal: ctl.signal })
+      const client = clientRef.current;
+      const req = { agent: agentId, question, execId, surface, signal: ctl.signal };
+      // Stream when the client can, so the analyst watches the investigation
+      // happen. Fall back otherwise — a buffering proxy or an older engine must
+      // degrade to the request/response answer, not to no answer.
+      const run = client.askStream
+        ? client.askStream({
+            ...req,
+            onStep: (step) => {
+              if (mounted.current && !ctl.signal.aborted) setLiveSteps((prev) => [...prev, step]);
+            }
+          })
+        : client.ask(req);
+
+      run
         .then((res) => {
           if (!mounted.current || ctl.signal.aborted) return;
           setAnswer(res);
@@ -112,8 +152,14 @@ export function useAssistant({ api, execId }: UseAssistantOptions = {}): Assista
           setRunning(null);
         });
     },
-    [execId]
+    [execId, surface]
   );
 
-  return { capability, answer, running, error, ask, cancel, reset };
+  // Selected on the FLAG, never on list position. Both belts, because the
+  // position version shipped once and turned "Hello" into a process-chain
+  // analysis.
+  const conversationalAgent =
+    capability?.agents.find((a) => a.conversational)?.id ?? capability?.agents[0]?.id ?? null;
+
+  return { capability, answer, running, error, liveSteps, conversationalAgent, ask, cancel, reset };
 }

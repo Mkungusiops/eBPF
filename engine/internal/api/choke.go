@@ -576,7 +576,12 @@ func (s *Server) handleChokeJail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		PIDs               []uint32 `json:"pids"`
+		PIDs []uint32 `json:"pids"`
+		// ExecID is the identifier an ALERT carries. The console's
+		// alert-to-contain path sends it; without this field the engine
+		// silently ignored it and answered 400 "no pids matched", because an
+		// alert has no pid and no binary to fall back on.
+		ExecID             string   `json:"exec_id"`
 		Binary             string   `json:"binary"`
 		Descendants        bool     `json:"descendants"`
 		Action             string   `json:"action"`
@@ -623,6 +628,19 @@ func (s *Server) handleChokeJail(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// exec_id resolves through the process tree, which is the only route an
+	// ALERT has to a target: an alert carries exec_id and nothing else — no
+	// pid, no binary. Before this, the console's alert-to-contain path could
+	// not name a target at all and every attempt answered 400.
+	//
+	// The tree is authoritative here rather than the /proc scan: it knows the
+	// pid that exec_id belonged to even for a process that has since exited,
+	// and a jail on a dead pid is a harmless no-op with an honest audit row.
+	if body.ExecID != "" && s.tree != nil {
+		if n, ok := s.tree.Get(body.ExecID); ok && n.PID != 0 {
+			want[n.PID] = true
+		}
+	}
 	if body.Descendants {
 		// Expand each currently-selected pid with its descendants.
 		seeds := make([]uint32, 0, len(want))
@@ -636,7 +654,7 @@ func (s *Server) handleChokeJail(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if len(want) == 0 {
-		http.Error(w, "no pids matched (provide pids[], binary, or both)", http.StatusBadRequest)
+		http.Error(w, "no pids matched (provide exec_id, pids[], binary, or a combination)", http.StatusBadRequest)
 		return
 	}
 

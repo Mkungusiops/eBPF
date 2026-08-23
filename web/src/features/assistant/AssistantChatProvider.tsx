@@ -14,8 +14,9 @@
  * also means a drill panel on ANY page can hand over, including pages whose
  * shells were written before this existed.
  */
-import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChatSidebar } from "./ChatSidebar";
+import type { AssistantSurface } from "./api";
 import type { UseChatsOptions } from "./useChats";
 
 export interface AssistantHandover {
@@ -25,6 +26,13 @@ export interface AssistantHandover {
   question?: string;
   /** Tenant or host this console is showing, for the header's scope chip. */
   scopeLabel?: string;
+  /**
+   * The panel the handover came from, so the wider view opens knowing not just
+   * WHICH process is under investigation but WHAT KIND OF PANEL the analyst was
+   * standing on. Without it, expanding from Devices Assurance produced a
+   * sidebar that had forgotten it was ever about devices.
+   */
+  surface?: AssistantSurface;
 }
 
 interface AssistantChatValue {
@@ -33,6 +41,27 @@ interface AssistantChatValue {
   openAssistant: (handover?: AssistantHandover) => void;
   closeAssistant: () => void;
   toggleAssistant: () => void;
+  /**
+   * Whether this deployment has an assistant at all. null while unknown.
+   *
+   * The console needs it for one specific decision: Behaviour & Intel was taken
+   * out of the side menu and is now opened FROM the assistant. The assistant is
+   * opt-in and off by default, while enrichment is on by default — so on a
+   * deployment with no model configured that panel would be unreachable. The
+   * nav entry comes back when this is false, which is the whole reason the flag
+   * is here rather than assumed.
+   */
+  available: boolean | null;
+  /**
+   * Register a way to open the Behaviour & Reputation panel.
+   *
+   * The provider is mounted at the app root, above the surface that owns the
+   * panel's open state, so it cannot reach it directly. The owner registers a
+   * callback and the sidebar shows its "view the findings" link only while one
+   * is registered — so on a route with no such panel the link simply is not
+   * offered, rather than being offered and doing nothing.
+   */
+  setFindingsOpener: (open: (() => void) | null) => void;
 }
 
 const Ctx = createContext<AssistantChatValue | null>(null);
@@ -55,6 +84,34 @@ export function AssistantChatProvider({
 }: { children: ReactNode } & Pick<UseChatsOptions, "chatApi" | "assistantApi">) {
   const [open, setOpen] = useState(false);
   const [handover, setHandover] = useState<AssistantHandover>({});
+  const [available, setAvailable] = useState<boolean | null>(null);
+  const [findingsOpener, setFindingsOpenerState] = useState<(() => void) | null>(null);
+
+  // One capability probe at the root, on mount. The drill panels each ask again
+  // when they open; this one exists so the NAV can decide whether Behaviour &
+  // Intel needs its own entry, which has to be answered before anything is
+  // opened.
+  useEffect(() => {
+    const ctl = new AbortController();
+    fetch("/api/assistant", { credentials: "same-origin", signal: ctl.signal })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { enabled?: boolean } | null) => {
+        if (!ctl.signal.aborted) setAvailable(d?.enabled === true);
+      })
+      // Unreachable is treated as UNAVAILABLE, not unknown: the fallback nav
+      // entry appearing is harmless, and a panel nobody can reach is not.
+      .catch(() => {
+        if (!ctl.signal.aborted) setAvailable(false);
+      });
+    return () => ctl.abort();
+  }, []);
+
+  // Wrapped in an updater because React invokes a bare function passed to a
+  // state setter — storing a callback needs `() => fn`, and getting that wrong
+  // calls the opener instead of remembering it.
+  const setFindingsOpener = useCallback((fn: (() => void) | null) => {
+    setFindingsOpenerState(() => fn);
+  }, []);
 
   const openAssistant = useCallback((next?: AssistantHandover) => {
     // Only replace the subject when the caller supplies one, so opening from
@@ -67,8 +124,8 @@ export function AssistantChatProvider({
   const toggleAssistant = useCallback(() => setOpen((v) => !v), []);
 
   const value = useMemo(
-    () => ({ open, openAssistant, closeAssistant, toggleAssistant }),
-    [open, openAssistant, closeAssistant, toggleAssistant]
+    () => ({ open, openAssistant, closeAssistant, toggleAssistant, available, setFindingsOpener }),
+    [open, openAssistant, closeAssistant, toggleAssistant, available, setFindingsOpener]
   );
 
   return (
@@ -80,6 +137,8 @@ export function AssistantChatProvider({
         execId={handover.execId}
         initialQuestion={handover.question}
         scopeLabel={handover.scopeLabel}
+        surface={handover.surface}
+        onOpenFindings={findingsOpener ?? undefined}
         {...apis}
       />
     </Ctx.Provider>

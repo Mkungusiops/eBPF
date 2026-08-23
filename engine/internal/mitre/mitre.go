@@ -84,3 +84,19 @@ func Policies() []string {
 	sort.Strings(names)
 	return names
 }
+
+// PolicyNames is every detection policy this build ships a mapping for — the
+// set a host is EXPECTED to have loaded.
+//
+// Used by the sensor-health surface to turn "no alerts from this policy" into
+// the two different facts it can be: the policy is loaded and the estate is
+// quiet, or the policy is not loaded and the estate has a blind spot. Those
+// look identical in an alert count, and only one of them is good news.
+func PolicyNames() []string {
+	out := make([]string, 0, len(byPolicy))
+	for name := range byPolicy {
+		out = append(out, name)
+	}
+	sort.Strings(out)
+	return out
+}

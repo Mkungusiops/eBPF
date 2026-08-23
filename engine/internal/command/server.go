@@ -3,6 +3,7 @@ package command
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"log"
 	"sync"
 	"time"
 
@@ -108,7 +109,15 @@ func (d *Dispatcher) Enqueue(agentID string, c *ebpfsocv1.Command) string {
 	if cmd.GetExpiresAt() == nil {
 		cmd.ExpiresAt = timestamppb.New(time.Now().Add(d.signTTL))
 	}
-	cmd.Signature = d.signer.Sign(Canonical(cmd))
+	// Refuse to sign what we cannot canonicalise. Signing nil would produce a
+	// valid signature over empty bytes — authorising an action whose contents
+	// the signature does not cover.
+	canon := Canonical(cmd)
+	if canon == nil {
+		log.Printf("[dispatch] REFUSING to sign an uncanonicalisable command for %s (%T) — add a Canonical case", agentID, cmd.GetAction())
+		return ""
+	}
+	cmd.Signature = d.signer.Sign(canon)
 	d.mu.Lock()
 	d.queues[agentID] = append(d.queues[agentID], cmd)
 	d.wake(agentID)

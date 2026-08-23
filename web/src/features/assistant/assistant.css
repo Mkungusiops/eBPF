@@ -348,6 +348,25 @@
   font-weight: 600;
 }
 
+/* A restatement of an already-grounded conversation.
+ *
+ * Muted, NOT the danger colour. The distinction is the whole point: the red
+ * banner means "this may be fabricated", and firing it at someone who asked
+ * "are you sure?" trains them to ignore red — which is the one thing the red
+ * banner cannot afford. This says something weaker and true: the answer is
+ * real, it just reflects a reading taken a few minutes ago rather than now. */
+.asst__derived {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 8px;
+  padding: 6px 9px;
+  border: 1px solid color-mix(in srgb, currentColor 22%, transparent);
+  border-radius: 5px;
+  opacity: 0.72;
+  font-size: 11.5px;
+}
+
 /* ══ Platform assistant slide-over ═══════════════════════════════════════════
  *
  * docs/plan/platform-assistant.md §5.
@@ -892,4 +911,44 @@
 .asst__expand:hover {
   color: rgb(var(--text));
   border-color: rgb(var(--accent));
+}
+
+/* Behaviour & reputation status, in the assistant sidebar.
+ *
+ * This exists because the panel it links to left the side menu. It is the one
+ * fact a conversation cannot be relied on to volunteer: whether the detector is
+ * actually running. Warn styling when it is off, still learning, or has no
+ * indicators loaded — the three states an empty finding list can mean. */
+.chat__enrich {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 12px;
+  border-bottom: 1px solid color-mix(in srgb, currentColor 10%, transparent);
+  font-size: 11.5px;
+  opacity: 0.78;
+}
+.chat__enrich.is-warn {
+  color: rgb(var(--warn, 251 191 36));
+  opacity: 1;
+}
+.chat__enrich-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat__enrich button {
+  border: 1px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-radius: 5px;
+  padding: 3px 8px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.chat__enrich button:hover {
+  background: color-mix(in srgb, currentColor 12%, transparent);
 }

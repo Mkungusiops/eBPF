@@ -63,6 +63,22 @@ type Record struct {
 	Buckets   []*ebpfsocv1.BucketSummary
 	Cgroups   []*ebpfsocv1.CgroupSummary
 	Processes []*ebpfsocv1.ProcessSummary
+	// ProcessPlane / ProcessLinks are the PROCESS choke data plane, the
+	// counterpart of DevicePlane / DeviceLinks above. Both wire fields existed
+	// from the start and neither was ever populated by the agent, so a control
+	// plane could not tell a live cgroup/BPF data plane from the noop fallback.
+	ProcessPlane string
+	ProcessLinks int32
+	// Thresholds is the score ladder the agent is ACTUALLY running. Nil from an
+	// agent predating the field — callers must fall back rather than render a
+	// zero ladder, since 0/0/0/0 reads as "contains everything immediately".
+	Thresholds *ebpfsocv1.ChokeThresholds
+	// DroppedRecords is telemetry this agent has PERMANENTLY lost to the uplink
+	// buffer cap — evidence that will never arrive, as distinct from
+	// BufferDepth, which is a backlog that still will. DroppedBroadcast is the
+	// agent's local console missing live frames, which is not an evidence gap.
+	DroppedRecords   uint64
+	DroppedBroadcast uint64
 }
 
 // KernelEnforcing reports whether this host has a kernel-level enforcement
@@ -140,7 +156,12 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 		rec.DevicesSeen = dp.GetDevicesSeen()
 		rec.DeviceMode = dp.GetDeviceMode()
 		rec.KernelPolicies = dp.GetKernelPolicies()
+		rec.ProcessPlane = dp.GetProcessPlane()
+		rec.ProcessLinks = dp.GetProcessLinks()
+		rec.Thresholds = dp.GetThresholds()
 	}
+	rec.DroppedRecords = req.GetDroppedRecords()
+	rec.DroppedBroadcast = req.GetDroppedBroadcast()
 	r.mu.Lock()
 	r.agents[key(tenant, agent)] = rec
 	r.mu.Unlock()

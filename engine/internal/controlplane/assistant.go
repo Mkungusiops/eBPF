@@ -43,11 +43,16 @@ type cpAgent struct {
 func (s *Server) registerAssistantRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/assistant", s.handleAssistantCapability)
 	mux.HandleFunc("/api/assistant/ask", s.handleAssistantAsk)
+	mux.HandleFunc("/api/assistant/stream", s.handleAssistantStream)
 }
 
 func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if _, ok := s.principal(r); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
 		return
 	}
 	cfg := s.cfg.Assistant
@@ -63,8 +68,11 @@ func (s *Server) handleAssistantCapability(w http.ResponseWriter, r *http.Reques
 		writeJSON(w, http.StatusOK, assistantCapability{
 			Agents: []cpAgent{}, Reason: cfg.APIKeyEnv + " is not set on this host"})
 	default:
+		// ?surface= names the console panel asking, so the agent list comes back
+		// scoped to what makes sense there. Absent or unknown returns the full
+		// set — which is what an older console gets, and is harmless.
 		out := assistantCapability{Enabled: true, Model: cfg.Model}
-		for _, a := range assistant.Agents() {
+		for _, a := range assistant.AgentsFor(r.URL.Query().Get("surface")) {
 			out.Agents = append(out.Agents, cpAgent{ID: a.ID, Title: a.Title, Conversational: a.Conversational})
 		}
 		writeJSON(w, http.StatusOK, out)
@@ -83,6 +91,51 @@ type cpAskRequest struct {
 	// leave no record. Persistence is opt-in per ask, not a mode you can forget
 	// you are in.
 	ChatID string `json:"chat_id"`
+	// Surface is which console panel asked. Framing only — it changes what the
+	// model is told, never what it may read. On a multi-tenant control plane
+	// that separation is the point: tenant scope comes from the session cookie
+	// and nothing a caller puts here can widen it.
+	Surface string `json:"surface"`
+}
+
+// historyFor loads the conversation so far from the CHAT STORE, not from the
+// request.
+//
+// The control plane already persists every exchange, scoped and RLS-protected,
+// so the authoritative transcript is on the server. Reading it here rather than
+// trusting a client-supplied thread means the model sees what was actually
+// said, and it means the ownership check that guards the write also guards the
+// read: ListMessages takes the caller's Scope, so a chat id belonging to
+// another operator returns nothing rather than someone else's conversation.
+//
+// Failure is never fatal to the ask. Losing history costs the model context;
+// refusing the question because history could not be loaded costs the analyst
+// their answer during an incident.
+func (s *Server) historyFor(r *http.Request, req cpAskRequest) ([]assistant.Message, bool) {
+	sc, ok := s.chatScopeFor(r, req)
+	if !ok {
+		return nil, false // incognito ask, or history disabled — both mean no context
+	}
+	// One more than the replay bound, so the cap is applied to the newest turns
+	// rather than by an arbitrary database limit.
+	msgs, err := s.chats.ListMessages(sc, req.ChatID, 64)
+	if err != nil {
+		slog.Warn("assistant history: could not load prior turns", "chat", req.ChatID, "error", err)
+		return nil, false
+	}
+	out := make([]assistant.Message, 0, len(msgs))
+	grounded := false
+	for _, m := range msgs {
+		out = append(out, assistant.Message{Role: m.Role, Content: m.Content})
+		// Whether this conversation has ANY verified reading behind it, taken
+		// from what was stored at the time rather than re-derived — on this
+		// deployment the transcript is the server's own record, so the flag is
+		// a fact and not a client assertion.
+		if m.Role == "assistant" && m.Grounded {
+			grounded = true
+		}
+	}
+	return assistant.SanitiseHistory(out), grounded
 }
 
 func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
@@ -90,6 +143,25 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
+	// AUTHENTICATE FIRST.
+	//
+	// This gate was missing. The tools forward the caller's cookie and every
+	// read endpoint they hit checks the tenant, so an unauthenticated caller
+	// could never obtain data — the tool calls simply failed and the run
+	// returned the ungrounded refusal. But it could still START A RUN, which
+	// means an unauthenticated request to a public control plane drove a full
+	// tool-calling loop against a paid inference endpoint. Confidentiality was
+	// intact; cost and availability were not, and "it fails safe downstream" is
+	// not a reason to leave the front door open.
+	//
+	// Checked here rather than relying on the tools failing, because the answer
+	// to "who may ask this assistant anything" should not be an emergent
+	// property of six other handlers.
+	if _, ok := s.principal(r); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+
 	cfg := s.cfg.Assistant
 	if !cfg.Enabled() || cfg.APIKey() == "" {
 		writeJSON(w, http.StatusServiceUnavailable,
@@ -127,8 +199,10 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		// would read across tenants, which is the isolation invariant this
 		// product is built on.
 		Cookie:   r.Header.Get("Cookie"),
+		Surface:  req.Surface,
 		MaxCalls: cfg.MaxToolCalls,
 	}
+	runner.History, runner.HistoryGrounded = s.historyFor(r, req)
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
@@ -148,12 +222,106 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	// Who asked what, about which incident. In a SOC that is evidence handling:
 	// a post-incident review has to be able to tell which conclusions were
 	// assisted.
-	slog.Info("assistant answered", "agent", req.Agent, "exec_id", req.ExecID,
+	slog.Info("assistant answered", "agent", req.Agent, "surface", req.Surface, "exec_id", req.ExecID,
 		"steps", len(ans.Steps), "grounded", ans.Grounded, "duration", ans.Duration)
 
 	s.recordExchange(r, req, ans)
 
 	writeJSON(w, http.StatusOK, ans)
+}
+
+// handleAssistantStream is handleAssistantAsk with the investigation streamed.
+//
+//	POST /api/assistant/stream   same body as /ask, replies text/event-stream
+//
+// The tenant rules are identical to the non-streaming path and are worth
+// restating because streaming is where they are easiest to lose: the caller's
+// cookie is forwarded verbatim, the history write goes through the same
+// scope-checked recordExchange, and nothing here constructs a runner without a
+// session.
+func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	// AUTHENTICATE FIRST.
+	//
+	// This gate was missing. The tools forward the caller's cookie and every
+	// read endpoint they hit checks the tenant, so an unauthenticated caller
+	// could never obtain data — the tool calls simply failed and the run
+	// returned the ungrounded refusal. But it could still START A RUN, which
+	// means an unauthenticated request to a public control plane drove a full
+	// tool-calling loop against a paid inference endpoint. Confidentiality was
+	// intact; cost and availability were not, and "it fails safe downstream" is
+	// not a reason to leave the front door open.
+	//
+	// Checked here rather than relying on the tools failing, because the answer
+	// to "who may ask this assistant anything" should not be an emergent
+	// property of six other handlers.
+	if _, ok := s.principal(r); !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return
+	}
+
+	cfg := s.cfg.Assistant
+	if !cfg.Enabled() || cfg.APIKey() == "" {
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]string{"error": "the assistant is not configured on this deployment"})
+		return
+	}
+
+	var req cpAskRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "malformed request"})
+		return
+	}
+	if strings.TrimSpace(req.Agent) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "agent is required"})
+		return
+	}
+
+	// Upgrade before running: once the first event is written the status and
+	// headers are already sent, so an un-streamable writer has to be reported
+	// while a JSON error is still possible.
+	stream, ok := assistant.NewStreamWriter(w)
+	if !ok {
+		writeJSON(w, http.StatusInternalServerError,
+			map[string]string{"error": "this server cannot stream"})
+		return
+	}
+
+	timeout := cfg.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := contextWithTimeout(r, timeout)
+	defer cancel()
+
+	runner := &assistant.Runner{
+		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Tools:    assistant.DefaultTools(),
+		Client:   assistant.NewReadOnlyClient(timeout, nil),
+		BaseURL:  s.selfBaseURL(),
+		Cookie:   r.Header.Get("Cookie"),
+		Surface:  req.Surface,
+		MaxCalls: cfg.MaxToolCalls,
+		OnStep:   stream.Step,
+	}
+	runner.History, runner.HistoryGrounded = s.historyFor(r, req)
+
+	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
+	if err != nil {
+		slog.Warn("assistant stream failed", "agent", req.Agent, "error", err)
+		s.recordQuestion(r, req)
+		stream.Error("the assistant could not complete this request")
+		return
+	}
+
+	slog.Info("assistant answered (streamed)", "agent", req.Agent, "surface", req.Surface,
+		"exec_id", req.ExecID, "steps", len(ans.Steps), "grounded", ans.Grounded, "duration", ans.Duration)
+
+	s.recordExchange(r, req, ans)
+	stream.Answer(ans)
 }
 
 // recordExchange stores the question and the answer, when the caller asked for

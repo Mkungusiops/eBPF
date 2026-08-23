@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
+	"github.com/jeffmk/ebpf-poc-engine/internal/baseline"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/chatstore"
@@ -49,6 +50,13 @@ func main() {
 		assistantURL   = flag.String("assistant-url", "", "OpenAI-compatible base URL for the analyst assistant; empty disables it")
 		assistantModel = flag.String("assistant-model", "gpt-oss:120b", "model id for the analyst assistant")
 
+		// Threat-intelligence feeds. A DIRECTORY of files, never a remote API:
+		// matching is local so an observable is never disclosed to a third
+		// party (internal/intel/doc.go). Default points at the deploy layout;
+		// a missing directory is logged and matching stays off.
+		intelDir = flag.String("intel-dir", "/etc/ebpf-soc/intel",
+			"directory of threat-intelligence feed files; empty disables indicator matching")
+
 		storeKind = flag.String("store", "sqlite", "central store backend: sqlite | postgres | clickhouse")
 		dbPath    = flag.String("db", "controlplane.db", "SQLite path (store=sqlite)")
 		pgDSN     = flag.String("pg-dsn", "", "Postgres DSN (store=postgres); RLS-enforced central store")
@@ -64,6 +72,9 @@ func main() {
 		// can respond, and a tenant with one on-call engineer must not be locked
 		// out of containing a threat. Turn it on where a staffed SOC makes the
 		// second pair of eyes real rather than an obstacle.
+		labMode = flag.Bool("lab-mode", false,
+			"expose the demo/lab surfaces (attack catalogue, synthetic attack injector, honeypot panel). "+
+				"OFF by default: on a customer deployment these write fabricated findings into the tenant's real evidence store.")
 		requireApproval = flag.Bool("require-approval", false,
 			"hold quarantine/sever and fleet-wide arming until a SECOND operator approves (EN-2 change-control)")
 		oidcIssuer = flag.String("oidc-issuer", "", "OIDC issuer URL (Keycloak realm); enables the BFF login flow")
@@ -206,14 +217,42 @@ func main() {
 	// openChatStore.
 	chats := openChatStore(*storeKind, *pgDSN)
 
+	var baselineStore *baseline.TenantStore
+	if *storeKind == "postgres" && *pgDSN != "" {
+		bs, bErr := baseline.OpenPostgres(*pgDSN, centralstore.AppRole)
+		if bErr != nil {
+			// Not fatal. Losing per-tenant profile PERSISTENCE costs the
+			// cross-host view its memory across restarts; refusing to start
+			// costs the estate its control plane. Detection on every sensor is
+			// unaffected either way.
+			log.Printf("[baseline] tenant profiles will not persist: %v", bErr)
+		} else {
+			baselineStore = bs
+			defer func() { _ = bs.Close() }()
+			log.Printf("[baseline] per-tenant profiles persisted (postgres, RLS as %s)", centralstore.AppRole)
+		}
+	}
+
 	cp, err := controlplane.New(controlplane.Config{
 		CA: ca, ServerName: *serverName, FleetSigner: fleetSigner, FleetKeyID: "fleet-1",
 		Store: store, Firehose: firehose, CertTTL: *certTTL, EnrollTTL: *enrollTTL,
 		UplinkEndpoint: *serverName + *grpcAddr, CommandEndpoint: *serverName + *grpcAddr,
 		AdminToken: *adminToken, BFF: bffH, Logf: log.Printf,
 		RequireApproval: *requireApproval || os.Getenv("CP_REQUIRE_APPROVAL") == "1",
+		LabMode:         *labMode || os.Getenv("CP_LAB_MODE") == "1",
 		Assistant:       assistantConfig(*assistantURL, *assistantModel),
 		Chats:           chats,
+		// Threat-intel feeds. Matching happens on the sensors too; this copy
+		// gives the control plane a TENANT-WIDE view of what matched, which no
+		// individual agent can produce.
+		IntelDir: *intelDir,
+		// Per-tenant behavioural profiles, persisted under RLS. Postgres only:
+		// this is tenant-partitioned data, and RLS is what keeps one tenant's
+		// behavioural profile out of another's. There is no SQLite equivalent,
+		// so rather than persist it with weaker isolation than every other
+		// tenant table, that deployment keeps profiles in memory — exactly the
+		// reasoning openChatStore already applies to conversations.
+		BaselineStore: baselineStore,
 	})
 	if err != nil {
 		log.Fatalf("controlplane: %v", err)

@@ -1,0 +1,18 @@
+# Starter indicator set — RESERVED DOCUMENTATION RANGES ONLY.
+#
+# Deliberately not real threat intelligence. Every address here is from
+# RFC 5737 (TEST-NET) or RFC 2606, so this file is safe to ship, cannot
+# generate a false positive against anything real, and gives a fresh
+# deployment something to prove the pipeline end to end with:
+#
+#   curl http://198.51.100.7/  →  a threat-intel match on the console
+#
+# Replace it with a real feed. `low` confidence is intentional: nothing in
+# here should be able to contain a production process by itself.
+
+198.51.100.7	test-c2-endpoint	low
+198.51.100.8	test-c2-endpoint	low
+203.0.113.42	test-exfil-endpoint	low
+192.0.2.66	test-dropper-host	low
+malware.example	test-malware-domain	low
+c2.example	test-c2-domain	low

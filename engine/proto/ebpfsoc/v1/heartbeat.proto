@@ -46,6 +46,22 @@ message HeartbeatRequest {
   repeated BucketSummary buckets = 8;
   repeated CgroupSummary cgroups = 9;
   repeated ProcessSummary processes = 10;
+  // Telemetry this agent has PERMANENTLY LOST — records evicted by the uplink
+  // buffer cap because the control plane could not be reached for long enough
+  // to fill it.
+  //
+  // Distinct from buffer_depth above, which is a backlog that will still drain.
+  // This is the count that never arrives, and it is the honest answer to the
+  // question a customer asks before putting an agent on production hosts: "are
+  // you dropping events?" The agent already logs it as a TELEMETRY GAP; nothing
+  // carried it to the console, so the fleet view could show a healthy agent
+  // that had silently discarded a day of evidence.
+  uint64 dropped_records = 11;
+  // Live-stream frames discarded because a console subscriber could not keep
+  // up. Local to the agent's own debug console rather than a gap in the
+  // evidence store, so it is reported separately and must never be added to
+  // dropped_records.
+  uint64 dropped_broadcast = 12;
 }
 
 // BucketSummary is one kernel token bucket — the per-PID rate limit the choke

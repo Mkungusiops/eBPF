@@ -164,3 +164,59 @@ func TestEscalateAlertReasonSetIsBounded(t *testing.T) {
 		t.Fatalf("a severity escalation must still alert after the reason cap")
 	}
 }
+
+// AddIfAbsent exists for the kprobe path, which learns of a process from a side
+// effect rather than from its exec. The weaker record must never clobber a
+// richer one that an exec already built.
+func TestAddIfAbsentDoesNotClobberAnExecNode(t *testing.T) {
+	tr := New(time.Minute)
+	tr.Add(&Node{ExecID: "e1", PID: 10, Binary: "/usr/bin/sudo", Args: "-n true", StartTime: time.Now()})
+
+	if inserted := tr.AddIfAbsent(&Node{ExecID: "e1", PID: 10, Binary: "/usr/bin/sudo"}); inserted {
+		t.Fatal("AddIfAbsent must not insert over an existing node")
+	}
+	n, _ := tr.Get("e1")
+	if n.Args != "-n true" {
+		t.Fatalf("the exec node's args were clobbered: %q", n.Args)
+	}
+
+	if inserted := tr.AddIfAbsent(&Node{ExecID: "e2", PID: 11, Binary: "/usr/bin/sudo"}); !inserted {
+		t.Fatal("AddIfAbsent must insert when the id is absent")
+	}
+}
+
+// THE DEFECT THIS FIXES. sudo fork()s and the CHILD calls setuid(0) between
+// clone() and execve(); Tetragon gives that child its own exec_id and never
+// emits a ProcessExec for it. Without a node, AddScore silently no-ops and
+// ChainScore returns 0, so the +15 for T1548 never reaches the alert threshold.
+// Measured live: 22 of 22 sudo setuid kprobes had no matching exec.
+func TestForkChildScoreReachesTheChainOnceSynthesised(t *testing.T) {
+	tr := New(time.Minute)
+	tr.Add(&Node{ExecID: "shell", PID: 1, Binary: "/bin/bash", StartTime: time.Now()})
+	tr.Add(&Node{ExecID: "sudo", PID: 2, ParentID: "shell", Binary: "/usr/bin/sudo", StartTime: time.Now()})
+
+	// The forked child the exec stream never announces.
+	const child = "sudo-fork-child"
+	if _, ok := tr.AddScore(child, 15, "process_kprobe:privilege-escalation"); ok {
+		t.Fatal("precondition: an unknown exec_id must not accept score")
+	}
+	if got := tr.ChainScore(child); got != 0 {
+		t.Fatalf("precondition: ChainScore for an unknown id = %d, want 0", got)
+	}
+
+	tr.AddIfAbsent(&Node{ExecID: child, PID: 2, ParentID: "sudo", Binary: "/usr/bin/sudo", StartTime: time.Now()})
+	if _, ok := tr.AddScore(child, 15, "process_kprobe:privilege-escalation"); !ok {
+		t.Fatal("after synthesis the score must land")
+	}
+	if got := tr.ChainScore(child); got != 15 {
+		t.Fatalf("ChainScore = %d, want 15 — the setuid points must reach the chain", got)
+	}
+	// And it must join the REAL chain, so ancestors are attributed.
+	names := []string{}
+	for _, n := range tr.Ancestors(child, 8) {
+		names = append(names, n.Binary)
+	}
+	if len(names) != 3 || names[0] != "/bin/bash" {
+		t.Fatalf("synthesised node did not join the chain: %v", names)
+	}
+}

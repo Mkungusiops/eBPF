@@ -91,9 +91,12 @@ func (s *Server) handleFleetState(w http.ResponseWriter, r *http.Request) {
 	for _, rec := range s.registry.ListTenant(tenant) {
 		mode, _, dryRun := chokePosture([]heartbeat.Record{rec})
 		hosts = append(hosts, hostResult{Name: rec.AgentID, OK: true, Data: map[string]any{
-			"mode": mode, "dry_run": dryRun, "kill_switched": false,
-			"tracked": len(rec.Chokes), "counts": chokeStateCounts(rec.Chokes),
-			"thresholds": chokeThresholds(),
+			"mode": mode, "dry_run": dryRun,
+			// nil, not false — no heartbeat field carries it, so the control
+			// plane cannot know. See the note in choke.go.
+			"kill_switched": nil,
+			"tracked":       len(rec.Chokes), "counts": chokeStateCounts(rec.Chokes),
+			"thresholds": chokeThresholds([]heartbeat.Record{rec}),
 			// NOT {"ok":true}. The control plane does not hash-chain decisions
 			// centrally, so claiming the chain is intact renders a green
 			// "intact · 0 rows" for a check that never ran. supported=false is

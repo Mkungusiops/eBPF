@@ -12,6 +12,7 @@ package tetrabridge
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/cilium/tetragon/api/v1/tetragon"
 
@@ -22,11 +23,25 @@ import (
 //
 // The event loop must never stall on a slow console subscriber: dropping a UI
 // update is recoverable, wedging the loop that feeds enforcement is not.
+// broadcastDropped counts SSE frames discarded because a subscriber could not
+// keep up.
+//
+// The drop itself is correct — blocking the event loop on a slow browser would
+// stall sensing — but it was SILENT, and "are you dropping events?" is the
+// question a customer asks before putting an agent on production hosts. An
+// uncounted drop means the honest answer was "we don't know".
+var broadcastDropped atomic.Uint64
+
+// BroadcastDropped reports how many live-stream frames have been discarded
+// since start. Surfaced on the sensor-health endpoint.
+func BroadcastDropped() uint64 { return broadcastDropped.Load() }
+
 func Send(ch chan<- api.Broadcast, b api.Broadcast) {
 	select {
 	case ch <- b:
 	default:
-		// drop on overflow rather than block the event loop
+		// Drop on overflow rather than block the event loop — but count it.
+		broadcastDropped.Add(1)
 	}
 }
 

@@ -14,10 +14,12 @@ import (
 	"github.com/cilium/tetragon/api/v1/tetragon"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/command"
 	"github.com/jeffmk/ebpf-poc-engine/internal/cpclient"
 	"github.com/jeffmk/ebpf-poc-engine/internal/hoststack"
 	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
+	"github.com/jeffmk/ebpf-poc-engine/internal/tetrabridge"
 	"github.com/jeffmk/ebpf-poc-engine/internal/uplink"
 )
 
@@ -37,6 +39,15 @@ func (r *sensorRegistry) set(c tetragon.FineGuidanceSensorsClient) {
 	r.mu.Lock()
 	r.c = c
 	r.mu.Unlock()
+}
+
+// get returns the Tetragon client, or nil before the event stream has been
+// dialled. Callers must handle nil: the command channel comes up before the
+// stream does, so a policy command can genuinely arrive first.
+func (r *sensorRegistry) get() tetragon.FineGuidanceSensorsClient {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.c
 }
 
 // kernelPolicies reports Tetragon's TracingPolicies as the KERNEL has them, for
@@ -134,7 +145,7 @@ func startControlPlane(ctx context.Context, cfg *agentConfig, stack *hoststack.S
 		if err != nil {
 			log.Fatalf("controlplane: -fleet-pubkey: %v", err)
 		}
-		proc = command.NewProcessor(verifier, gatewayApplier{gw: stack.Gateway, devGW: stack.DeviceGateway}, critBins)
+		proc = command.NewProcessor(verifier, gatewayApplier{gw: stack.Gateway, devGW: stack.DeviceGateway, sensors: sensors}, critBins)
 		log.Printf("[controlplane] command channel enabled (%d protected binaries guardrail)", len(critBins))
 	} else {
 		log.Printf("[controlplane] command channel DISABLED (no -fleet-pubkey); telemetry + heartbeat only")
@@ -191,10 +202,30 @@ func startControlPlane(ctx context.Context, cfg *agentConfig, stack *hoststack.S
 					// it the console reports the engine's mode as if it were
 					// the host's posture — see kernelPolicies.
 					KernelPolicies: kpols,
+					// The ladder this agent is REALLY running. The control
+					// plane hardcoded the engine's binary defaults (5/15/25/40)
+					// because nothing on the wire carried them, and every
+					// deployed agent runs 20/50/120/200 — so the console
+					// misreported the sever threshold by 5x. See
+					// ChokeThresholds in common.proto.
+					Thresholds: chokeThresholds(stack.Gateway),
+					// The process plane, reported for the same reason the
+					// device plane above is: these two fields have existed in
+					// DataPlaneState since it was written and were never
+					// populated, so the control plane could not tell an agent
+					// with a live cgroup/BPF data plane from one running the
+					// noop backend. It renders as "enforcing" either way.
+					ProcessPlane: stack.BPFTier(),
+					ProcessLinks: int32(stack.BPFLinks()),
 				},
 				BufferDepth: uint64(upBuf.PendingDepth()),
-				Chokes:      chokeSummaries(stack.Gateway),
-				Devices:     deviceSummaries(stack.DeviceGateway),
+				// Evidence permanently lost, and frames the local console
+				// missed. Both were already counted and neither reached the
+				// fleet view — see dropped_records in heartbeat.proto.
+				DroppedRecords:   upBuf.Dropped(),
+				DroppedBroadcast: tetrabridge.BroadcastDropped(),
+				Chokes:           chokeSummaries(stack.Gateway),
+				Devices:          deviceSummaries(stack.DeviceGateway),
 				// Drill detail for the console's Choke Gateway page. Without
 				// these the multi-tenant console renders those panels empty
 				// on every tenant, permanently.
@@ -222,4 +253,20 @@ func hostOnly(hostport string) string {
 		return h
 	}
 	return hostport
+}
+
+// chokeThresholds reports the ladder this agent is actually running, so the
+// control plane stops publishing the engine's compiled-in defaults as if they
+// were the fleet's configuration. See ChokeThresholds in common.proto.
+func chokeThresholds(g *choke.Gateway) *ebpfsocv1.ChokeThresholds {
+	if g == nil {
+		return nil
+	}
+	c := g.Thresholds()
+	return &ebpfsocv1.ChokeThresholds{
+		ThrottleAt:   int32(c.ThrottleAt),
+		TarpitAt:     int32(c.TarpitAt),
+		QuarantineAt: int32(c.QuarantineAt),
+		SeverAt:      int32(c.SeverAt),
+	}
 }

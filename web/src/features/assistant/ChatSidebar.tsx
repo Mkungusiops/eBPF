@@ -21,6 +21,7 @@ import {
   Loader2,
   Pin,
   Plus,
+  Radar,
   Search,
   Send,
   Shield,
@@ -32,6 +33,7 @@ import { AnswerText } from "./AnswerText";
 import { parseSteps, type ChatMessage } from "./chatApi";
 import { groupChats } from "./chatGroups";
 import { useChats, type UseChatsOptions } from "./useChats";
+import { enrichmentSummaryText, useEnrichmentSummary } from "../common/enrichmentSummary";
 import "./assistant.css";
 
 export interface ChatSidebarProps extends UseChatsOptions {
@@ -46,6 +48,14 @@ export interface ChatSidebarProps extends UseChatsOptions {
   initialQuestion?: string;
   /** Tenant or host this console is showing, displayed as a scope chip. */
   scopeLabel?: string;
+  /**
+   * Opens the Behaviour & Reputation panel, when the surrounding route has one.
+   *
+   * That panel left the side menu and is now reached from here, so this link is
+   * its entry point. Undefined on a route that has no such panel — the link is
+   * then not offered at all, rather than offered and inert.
+   */
+  onOpenFindings?: () => void;
 }
 
 /** Named starters. A bare prompt makes an analyst invent the question. */
@@ -65,10 +75,12 @@ export function ChatSidebar({
   execId,
   initialQuestion,
   scopeLabel,
+  surface,
+  onOpenFindings,
   chatApi,
   assistantApi
 }: ChatSidebarProps) {
-  const chat = useChats({ chatApi, assistantApi, active: open });
+  const chat = useChats({ chatApi, assistantApi, active: open, surface });
   const [draft, setDraft] = useState("");
   const [listOpen, setListOpen] = useState(true);
   const [width, setWidth] = useState<number>(() => readWidth());
@@ -192,6 +204,8 @@ export function ChatSidebar({
 
         <HistoryBanner status={chat.status} reason={chat.reason} />
 
+        <EnrichmentStrip open={open} onOpenFindings={onOpenFindings} />
+
         <section className="chat__list-wrap">
           <button
             type="button"
@@ -305,7 +319,14 @@ export function ChatSidebar({
           {chat.sending ? (
             <div className="asst__running" role="status" aria-live="polite">
               <Loader2 size={13} className="asst__spin" aria-hidden />
-              <span>Reading the console…</span>
+              {/* Named, not spun — the same rule the drill panel follows. The
+                  last completed read changes every few hundred milliseconds,
+                  which is what tells an analyst the run is alive. */}
+              <span>
+                {chat.liveSteps.length
+                  ? `Read ${chat.liveSteps[chat.liveSteps.length - 1].tool} · ${chat.liveSteps.length} source${chat.liveSteps.length === 1 ? "" : "s"} so far`
+                  : "Reading the console…"}
+              </span>
               <button type="button" className="asst__cancel" onClick={chat.cancel}>
                 Stop
               </button>
@@ -420,14 +441,31 @@ function Turn({ message }: { message: ChatMessage }) {
   }
 
   return (
-    <article className={message.grounded === false ? "asst__answer chat__a chat__a--ungrounded" : "asst__answer chat__a"}>
+    <article
+      className={
+        message.grounded === false && message.derived !== true && message.no_claim !== true
+          ? "asst__answer chat__a chat__a--ungrounded"
+          : "asst__answer chat__a"
+      }
+    >
       {/* An answer the engine could not ground is the one an analyst most needs
           flagged. Measured behaviour, not a theoretical case: under urgent
           framing the model fabricated an entire incident. */}
-      {message.grounded === false ? (
+      {message.grounded === false && message.derived !== true && message.no_claim !== true ? (
         <p className="asst__ungrounded" role="alert">
           <AlertTriangle size={12} aria-hidden />
           Not grounded in telemetry — treat as unverified.
+        </p>
+      ) : null}
+
+      {/* A restatement of an already-verified thread. Deliberately NOT the red
+          unverified banner — the analyst asked a follow-up and got an honest
+          answer to it — but still labelled, because a restatement can be stale
+          in a way a fresh reading is not. */}
+      {message.derived === true ? (
+        <p className="asst__derived">
+          <AlertTriangle size={12} aria-hidden />
+          From earlier in this conversation — nothing re-read just now.
         </p>
       ) : null}
 
@@ -461,5 +499,40 @@ function Turn({ message }: { message: ChatMessage }) {
         {message.model ? <span>{message.model}</span> : null}
       </div>
     </article>
+  );
+}
+
+/**
+ * Whether the detector is alive, stated as a fact — plus the way into the
+ * evidence.
+ *
+ * This strip is the price of taking Behaviour & Intel out of the side menu. The
+ * panel showed one thing at a glance that a conversation cannot: an empty
+ * finding list means the layer is OFF, or the baseline is STILL LEARNING, or NO
+ * INDICATORS are loaded, and those are not interchangeable. An analyst who has
+ * to ask a question to discover that their detector is switched off will not
+ * ask, because nothing prompts them to.
+ *
+ * So it is not something the assistant says when questioned. It is on screen
+ * whenever the sidebar is open, next to the link that opens the full findings.
+ */
+function EnrichmentStrip({ open, onOpenFindings }: { open: boolean; onOpenFindings?: () => void }) {
+  const summary = useEnrichmentSummary(open);
+  const text = enrichmentSummaryText(summary);
+  // Nothing known yet, and nothing to link to: say nothing rather than render an
+  // empty bar that looks like a failed load.
+  if (!text && !onOpenFindings) return null;
+  const warn = summary.unavailable || summary.baselineReady === false || summary.indicators === 0;
+
+  return (
+    <div className={warn ? "chat__enrich is-warn" : "chat__enrich"}>
+      <Radar size={12} aria-hidden />
+      <span className="chat__enrich-text">{text || "Behaviour & reputation"}</span>
+      {onOpenFindings ? (
+        <button type="button" onClick={onOpenFindings}>
+          View the findings
+        </button>
+      ) : null}
+    </div>
   );
 }

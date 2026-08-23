@@ -24,6 +24,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/approval"
 	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
 	"github.com/jeffmk/ebpf-poc-engine/internal/authz"
+	"github.com/jeffmk/ebpf-poc-engine/internal/baseline"
 	"github.com/jeffmk/ebpf-poc-engine/internal/bff"
 	"github.com/jeffmk/ebpf-poc-engine/internal/centralstore"
 	"github.com/jeffmk/ebpf-poc-engine/internal/chatstore"
@@ -32,6 +33,7 @@ import (
 	"github.com/jeffmk/ebpf-poc-engine/internal/fleet"
 	"github.com/jeffmk/ebpf-poc-engine/internal/heartbeat"
 	"github.com/jeffmk/ebpf-poc-engine/internal/ingest"
+	"github.com/jeffmk/ebpf-poc-engine/internal/intel"
 	"github.com/jeffmk/ebpf-poc-engine/internal/mtls"
 	"github.com/jeffmk/ebpf-poc-engine/internal/signing"
 )
@@ -63,6 +65,21 @@ type Config struct {
 	// while Store stays the authoritative read source. nil = single-store.
 	Firehose ingest.Sink
 
+	// IntelDir is the threat-intelligence feed directory. Empty disables
+	// indicator matching on this control plane; the sensors still match with
+	// their own copy, so this governs the tenant-wide view, not detection.
+	IntelDir string
+	// IntelRefresh optionally downloads feeds. Off unless it names feeds AND
+	// an interval — see internal/intel/refresh.go for why the default is off.
+	IntelRefresh intel.RefreshConfig
+	// BaselineWarmup gates the per-tenant behavioural profile. Zero uses the
+	// package default.
+	BaselineWarmup baseline.Warmup
+	// BaselineStore persists the per-tenant profiles under RLS. nil keeps them
+	// in memory only, so they relearn from scratch on every restart — which is
+	// what a non-Postgres deployment gets, and what every test gets.
+	BaselineStore *baseline.TenantStore
+
 	CertTTL   time.Duration // issued agent-cert lifetime
 	EnrollTTL time.Duration // bootstrap-token lifetime
 
@@ -85,6 +102,12 @@ type Config struct {
 	// Deployments with a staffed SOC turn it on; the automatic score-driven
 	// enforcement on each agent is never gated either way.
 	RequireApproval bool
+
+	// LabMode exposes the demo surfaces — the attack catalogue, the synthetic
+	// attack injector and the honeypot panel. Default false: on a customer
+	// deployment those endpoints write fabricated findings into the tenant's
+	// real evidence store. See labOnly in attacks.go.
+	LabMode bool
 
 	Logf func(string, ...any)
 }
@@ -120,6 +143,13 @@ type Server struct {
 	// stats caches computed alert-window aggregates briefly, so N open console
 	// tabs do not each trigger the same scan. See alertstats.go.
 	stats *statsCache
+	// enrich holds the per-tenant behavioural profiles and the indicator set.
+	// nil when neither is configured, in which case the enrichment endpoints
+	// answer 503 with a reason rather than 404 — "switched off" and "broken"
+	// must be distinguishable.
+	enrich *tenantEnricher
+	// intelRefresh is the optional feed downloader, reported by /api/intel.
+	intelRefresh *intel.Refresher
 }
 
 // New builds the gRPC + HTTP surfaces. It does not listen; call Serve (or drive
@@ -167,6 +197,37 @@ func New(cfg Config) (*Server, error) {
 		chats:      cfg.Chats,
 	}
 
+	// Per-tenant enrichment. Built before the gRPC server so the ingest sink
+	// can be wrapped: the tenant profile is fed FROM the ingest stream, never
+	// by querying the telemetry table — that aggregate is the query shape that
+	// took this control plane down on 2026-08-05.
+	s.enrich = newTenantEnricher(loadIntelSet(cfg.IntelDir, cfg.Logf), cfg.BaselineWarmup)
+	s.enrich.store = cfg.BaselineStore
+	// Restored HERE, in New, rather than in Serve: ingest can begin the instant
+	// the gRPC server starts, and a record arriving before the restore would
+	// create an empty profile that Restore then overwrites — losing whatever
+	// arrived in between and, worse, making the loss depend on timing.
+	s.enrich.restore(cfg.Logf)
+	// Same feeds.yaml the sensors read, from the same directory layout, so the
+	// control plane's tenant-wide view is matched against the same indicators
+	// the sensors scored against. A control plane richer or poorer in intel
+	// than its own fleet reports findings the fleet never saw, or misses ones
+	// it did.
+	if refresh, rerr := intel.LoadRefreshConfig(cfg.IntelDir); rerr != nil {
+		cfg.Logf("[intel] feed refresh DISABLED — %v", rerr)
+	} else if !cfg.IntelRefresh.Enabled() {
+		cfg.IntelRefresh = refresh
+	}
+	if cfg.IntelRefresh.Dir == "" {
+		cfg.IntelRefresh.Dir = cfg.IntelDir
+	}
+	if cfg.IntelRefresh.Enabled() && s.enrich.set != nil {
+		s.intelRefresh = intel.NewRefresher(cfg.IntelRefresh, s.enrich.set)
+	}
+	if s.enrich.set != nil {
+		logEnrichmentStartup(s.enrich.set.Status(), len(s.enrich.tenants()))
+	}
+
 	gs := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsCfg)))
 	ebpfsocv1.RegisterEnrollmentServiceServer(gs, enrollment.NewServer(cfg.CA, s.tokens, cfg.CertTTL, cfg.UplinkEndpoint, cfg.CommandEndpoint))
 	// Store satisfies ingest.Sink; when a firehose is configured, fan out to it.
@@ -174,7 +235,10 @@ func New(cfg Config) (*Server, error) {
 	if cfg.Firehose != nil {
 		telemetrySink = ingest.NewFanOut(cfg.Store, cfg.Logf, cfg.Firehose)
 	}
-	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(telemetrySink))
+	// Enrichment sits in FRONT of the store, not behind it: it needs the
+	// tenant-stamped record, and it must never be able to stop the store write.
+	// See Sink.Put.
+	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(WrapSink(telemetrySink, s.enrich)))
 	ebpfsocv1.RegisterCommandServiceServer(gs, s.dispatcher)
 	ebpfsocv1.RegisterHeartbeatServiceServer(gs, heartbeat.NewServer(s.registry, 30*time.Second))
 	ebpfsocv1.RegisterPolicyServiceServer(gs, fleet.NewPolicyServer(s.fleet))
@@ -214,6 +278,19 @@ func (s *Server) Serve(ctx context.Context, grpcAddr, httpAddr string) error {
 	errc := make(chan error, 2)
 	go func() { errc <- s.gs.Serve(grpcLis) }()
 	go func() { errc <- httpSrv.Serve(httpLis) }()
+
+	// The feed refresher, started HERE rather than in New: New builds a server
+	// without owning a lifetime, and a goroutine started there would outlive
+	// every test that constructs one. It was constructed and never run for one
+	// commit, which is the shape of bug this whole package is written to make
+	// visible — /api/intel would have reported refresh enabled while nothing
+	// ever fetched.
+	if s.intelRefresh != nil {
+		go s.intelRefresh.Run(ctx)
+	}
+	// Per-tenant profile persistence. Started alongside the refresher and for
+	// the same reason: New builds a server without owning a lifetime.
+	go s.enrich.runFlush(ctx, 5*time.Minute, s.cfg.Logf)
 	s.cfg.Logf("[controlplane] gRPC(mTLS)=%s http=%s", grpcLis.Addr(), httpLis.Addr())
 
 	select {

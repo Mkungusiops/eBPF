@@ -141,7 +141,7 @@ func (x CommandAck_Status) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CommandAck_Status.Descriptor instead.
 func (CommandAck_Status) EnumDescriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8, 0}
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{10, 0}
 }
 
 type CommandAck_TargetMatch int32
@@ -200,7 +200,7 @@ func (x CommandAck_TargetMatch) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use CommandAck_TargetMatch.Descriptor instead.
 func (CommandAck_TargetMatch) EnumDescriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8, 1}
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{10, 1}
 }
 
 type Command struct {
@@ -221,6 +221,7 @@ type Command struct {
 	//	*Command_ApplyPreset
 	//	*Command_KillSwitch
 	//	*Command_UpdateProtectedList
+	//	*Command_ApplyPolicy
 	Action        isCommand_Action `protobuf_oneof:"action"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -361,6 +362,15 @@ func (x *Command) GetUpdateProtectedList() *UpdateProtectedList {
 	return nil
 }
 
+func (x *Command) GetApplyPolicy() *ApplyPolicy {
+	if x != nil {
+		if x, ok := x.Action.(*Command_ApplyPolicy); ok {
+			return x.ApplyPolicy
+		}
+	}
+	return nil
+}
+
 type isCommand_Action interface {
 	isCommand_Action()
 }
@@ -393,6 +403,10 @@ type Command_UpdateProtectedList struct {
 	UpdateProtectedList *UpdateProtectedList `protobuf:"bytes,16,opt,name=update_protected_list,json=updateProtectedList,proto3,oneof"`
 }
 
+type Command_ApplyPolicy struct {
+	ApplyPolicy *ApplyPolicy `protobuf:"bytes,17,opt,name=apply_policy,json=applyPolicy,proto3,oneof"`
+}
+
 func (*Command_SetMode) isCommand_Action() {}
 
 func (*Command_Jail) isCommand_Action() {}
@@ -406,6 +420,8 @@ func (*Command_ApplyPreset) isCommand_Action() {}
 func (*Command_KillSwitch) isCommand_Action() {}
 
 func (*Command_UpdateProtectedList) isCommand_Action() {}
+
+func (*Command_ApplyPolicy) isCommand_Action() {}
 
 type SetMode struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -801,6 +817,155 @@ func (x *UpdateProtectedList) GetProtectedMacs() []string {
 	return nil
 }
 
+// ApplyPolicy changes the host's DETECTION policy — the Tetragon TracingPolicy
+// set the kernel is watching with.
+//
+// It rides the command channel rather than the policy-bundle channel because
+// the command channel is the one that exists: signed, acked, audited, and
+// dialled OUT by the agent so it works through customer NAT. The agent already
+// holds tetragon.FineGuidanceSensorsClient — the same client it calls
+// ListTracingPolicies on every heartbeat — and that interface already exposes
+// AddTracingPolicy, DeleteTracingPolicy and ConfigureTracingPolicy, all three
+// already linked into the shipped binary. The apply path is a method call on an
+// open connection, not a new privilege boundary.
+//
+// SCOPE, deliberately narrow: DETECTION policy only. The ChokePolicy DSL is not
+// distributable this way and is excluded, because nothing in the enforcement
+// path reads its token buckets — shipping a response policy that cannot take
+// effect would be a fiction with a signature on it.
+type ApplyPolicy struct {
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Policies []*PolicyDoc           `protobuf:"bytes,1,rep,name=policies,proto3" json:"policies,omitempty"`
+	// Names to DELETE from the kernel, applied after the adds so one command can
+	// replace a policy set atomically from the operator's point of view.
+	Remove []string `protobuf:"bytes,2,rep,name=remove,proto3" json:"remove,omitempty"`
+	// Why. Recorded in the ack — a detection change on a production estate needs
+	// an operator's reason as much as a containment does.
+	Reason        string `protobuf:"bytes,3,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyPolicy) Reset() {
+	*x = ApplyPolicy{}
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyPolicy) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyPolicy) ProtoMessage() {}
+
+func (x *ApplyPolicy) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyPolicy.ProtoReflect.Descriptor instead.
+func (*ApplyPolicy) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ApplyPolicy) GetPolicies() []*PolicyDoc {
+	if x != nil {
+		return x.Policies
+	}
+	return nil
+}
+
+func (x *ApplyPolicy) GetRemove() []string {
+	if x != nil {
+		return x.Remove
+	}
+	return nil
+}
+
+func (x *ApplyPolicy) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type PolicyDoc struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// metadata.name as Tetragon knows it. Authoritative for delete and reconcile.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The TracingPolicy YAML verbatim; AddTracingPolicyRequest takes exactly
+	// this. Typically 1-10 KB.
+	Yaml string `protobuf:"bytes,2,opt,name=yaml,proto3" json:"yaml,omitempty"`
+	// "monitor" or "enforce". Empty leaves whatever the YAML declares.
+	//
+	// Carried separately because it decides whether a policy can KILL: an
+	// enforcing TracingPolicy acts independently of the choke ladder, with no
+	// audit row and no kill-switch (threat-model EN-3). Changing it must be
+	// explicit, and the signature must cover it.
+	Mode          string `protobuf:"bytes,3,opt,name=mode,proto3" json:"mode,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PolicyDoc) Reset() {
+	*x = PolicyDoc{}
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PolicyDoc) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PolicyDoc) ProtoMessage() {}
+
+func (x *PolicyDoc) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PolicyDoc.ProtoReflect.Descriptor instead.
+func (*PolicyDoc) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PolicyDoc) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *PolicyDoc) GetYaml() string {
+	if x != nil {
+		return x.Yaml
+	}
+	return ""
+}
+
+func (x *PolicyDoc) GetMode() string {
+	if x != nil {
+		return x.Mode
+	}
+	return ""
+}
+
 type CommandAck struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	CommandId string                 `protobuf:"bytes,1,opt,name=command_id,json=commandId,proto3" json:"command_id,omitempty"`
@@ -820,7 +985,7 @@ type CommandAck struct {
 
 func (x *CommandAck) Reset() {
 	*x = CommandAck{}
-	mi := &file_ebpfsoc_v1_command_proto_msgTypes[8]
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +997,7 @@ func (x *CommandAck) String() string {
 func (*CommandAck) ProtoMessage() {}
 
 func (x *CommandAck) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_command_proto_msgTypes[8]
+	mi := &file_ebpfsoc_v1_command_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +1010,7 @@ func (x *CommandAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CommandAck.ProtoReflect.Descriptor instead.
 func (*CommandAck) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{8}
+	return file_ebpfsoc_v1_command_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *CommandAck) GetCommandId() string {
@@ -888,7 +1053,7 @@ var File_ebpfsoc_v1_command_proto protoreflect.FileDescriptor
 const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\n" +
 	"\x18ebpfsoc/v1/command.proto\x12\n" +
-	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xfe\x04\n" +
+	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xbc\x05\n" +
 	"\aCommand\x12\x1d\n" +
 	"\n" +
 	"command_id\x18\x01 \x01(\tR\tcommandId\x127\n" +
@@ -905,7 +1070,8 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\fapply_preset\x18\x0e \x01(\v2\x17.ebpfsoc.v1.ApplyPresetH\x00R\vapplyPreset\x129\n" +
 	"\vkill_switch\x18\x0f \x01(\v2\x16.ebpfsoc.v1.KillSwitchH\x00R\n" +
 	"killSwitch\x12U\n" +
-	"\x15update_protected_list\x18\x10 \x01(\v2\x1f.ebpfsoc.v1.UpdateProtectedListH\x00R\x13updateProtectedListB\b\n" +
+	"\x15update_protected_list\x18\x10 \x01(\v2\x1f.ebpfsoc.v1.UpdateProtectedListH\x00R\x13updateProtectedList\x12<\n" +
+	"\fapply_policy\x18\x11 \x01(\v2\x17.ebpfsoc.v1.ApplyPolicyH\x00R\vapplyPolicyB\b\n" +
 	"\x06action\"c\n" +
 	"\aSetMode\x12/\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x1b.ebpfsoc.v1.EnforcementModeR\x04mode\x12'\n" +
@@ -932,7 +1098,15 @@ const file_ebpfsoc_v1_command_proto_rawDesc = "" +
 	"\x05plane\x18\x03 \x01(\x0e2\x11.ebpfsoc.v1.PlaneR\x05plane\"k\n" +
 	"\x13UpdateProtectedList\x12-\n" +
 	"\x12protected_binaries\x18\x01 \x03(\tR\x11protectedBinaries\x12%\n" +
-	"\x0eprotected_macs\x18\x02 \x03(\tR\rprotectedMacs\"\x96\x04\n" +
+	"\x0eprotected_macs\x18\x02 \x03(\tR\rprotectedMacs\"p\n" +
+	"\vApplyPolicy\x121\n" +
+	"\bpolicies\x18\x01 \x03(\v2\x15.ebpfsoc.v1.PolicyDocR\bpolicies\x12\x16\n" +
+	"\x06remove\x18\x02 \x03(\tR\x06remove\x12\x16\n" +
+	"\x06reason\x18\x03 \x01(\tR\x06reason\"G\n" +
+	"\tPolicyDoc\x12\x12\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
+	"\x04yaml\x18\x02 \x01(\tR\x04yaml\x12\x12\n" +
+	"\x04mode\x18\x03 \x01(\tR\x04mode\"\x96\x04\n" +
 	"\n" +
 	"CommandAck\x12\x1d\n" +
 	"\n" +
@@ -975,7 +1149,7 @@ func file_ebpfsoc_v1_command_proto_rawDescGZIP() []byte {
 }
 
 var file_ebpfsoc_v1_command_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_ebpfsoc_v1_command_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_ebpfsoc_v1_command_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_ebpfsoc_v1_command_proto_goTypes = []any{
 	(Plane)(0),                    // 0: ebpfsoc.v1.Plane
 	(CommandAck_Status)(0),        // 1: ebpfsoc.v1.CommandAck.Status
@@ -988,13 +1162,15 @@ var file_ebpfsoc_v1_command_proto_goTypes = []any{
 	(*ApplyPreset)(nil),           // 8: ebpfsoc.v1.ApplyPreset
 	(*KillSwitch)(nil),            // 9: ebpfsoc.v1.KillSwitch
 	(*UpdateProtectedList)(nil),   // 10: ebpfsoc.v1.UpdateProtectedList
-	(*CommandAck)(nil),            // 11: ebpfsoc.v1.CommandAck
-	(*timestamppb.Timestamp)(nil), // 12: google.protobuf.Timestamp
-	(EnforcementMode)(0),          // 13: ebpfsoc.v1.EnforcementMode
+	(*ApplyPolicy)(nil),           // 11: ebpfsoc.v1.ApplyPolicy
+	(*PolicyDoc)(nil),             // 12: ebpfsoc.v1.PolicyDoc
+	(*CommandAck)(nil),            // 13: ebpfsoc.v1.CommandAck
+	(*timestamppb.Timestamp)(nil), // 14: google.protobuf.Timestamp
+	(EnforcementMode)(0),          // 15: ebpfsoc.v1.EnforcementMode
 }
 var file_ebpfsoc_v1_command_proto_depIdxs = []int32{
-	12, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
-	12, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
+	14, // 0: ebpfsoc.v1.Command.issued_at:type_name -> google.protobuf.Timestamp
+	14, // 1: ebpfsoc.v1.Command.expires_at:type_name -> google.protobuf.Timestamp
 	4,  // 2: ebpfsoc.v1.Command.set_mode:type_name -> ebpfsoc.v1.SetMode
 	5,  // 3: ebpfsoc.v1.Command.jail:type_name -> ebpfsoc.v1.Jail
 	6,  // 4: ebpfsoc.v1.Command.thaw:type_name -> ebpfsoc.v1.Thaw
@@ -1002,19 +1178,21 @@ var file_ebpfsoc_v1_command_proto_depIdxs = []int32{
 	8,  // 6: ebpfsoc.v1.Command.apply_preset:type_name -> ebpfsoc.v1.ApplyPreset
 	9,  // 7: ebpfsoc.v1.Command.kill_switch:type_name -> ebpfsoc.v1.KillSwitch
 	10, // 8: ebpfsoc.v1.Command.update_protected_list:type_name -> ebpfsoc.v1.UpdateProtectedList
-	13, // 9: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
-	0,  // 10: ebpfsoc.v1.SetMode.plane:type_name -> ebpfsoc.v1.Plane
-	0,  // 11: ebpfsoc.v1.KillSwitch.plane:type_name -> ebpfsoc.v1.Plane
-	1,  // 12: ebpfsoc.v1.CommandAck.status:type_name -> ebpfsoc.v1.CommandAck.Status
-	12, // 13: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
-	2,  // 14: ebpfsoc.v1.CommandAck.target_match:type_name -> ebpfsoc.v1.CommandAck.TargetMatch
-	11, // 15: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
-	3,  // 16: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
-	16, // [16:17] is the sub-list for method output_type
-	15, // [15:16] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	11, // 9: ebpfsoc.v1.Command.apply_policy:type_name -> ebpfsoc.v1.ApplyPolicy
+	15, // 10: ebpfsoc.v1.SetMode.mode:type_name -> ebpfsoc.v1.EnforcementMode
+	0,  // 11: ebpfsoc.v1.SetMode.plane:type_name -> ebpfsoc.v1.Plane
+	0,  // 12: ebpfsoc.v1.KillSwitch.plane:type_name -> ebpfsoc.v1.Plane
+	12, // 13: ebpfsoc.v1.ApplyPolicy.policies:type_name -> ebpfsoc.v1.PolicyDoc
+	1,  // 14: ebpfsoc.v1.CommandAck.status:type_name -> ebpfsoc.v1.CommandAck.Status
+	14, // 15: ebpfsoc.v1.CommandAck.applied_at:type_name -> google.protobuf.Timestamp
+	2,  // 16: ebpfsoc.v1.CommandAck.target_match:type_name -> ebpfsoc.v1.CommandAck.TargetMatch
+	13, // 17: ebpfsoc.v1.CommandService.Commands:input_type -> ebpfsoc.v1.CommandAck
+	3,  // 18: ebpfsoc.v1.CommandService.Commands:output_type -> ebpfsoc.v1.Command
+	18, // [18:19] is the sub-list for method output_type
+	17, // [17:18] is the sub-list for method input_type
+	17, // [17:17] is the sub-list for extension type_name
+	17, // [17:17] is the sub-list for extension extendee
+	0,  // [0:17] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_command_proto_init() }
@@ -1031,6 +1209,7 @@ func file_ebpfsoc_v1_command_proto_init() {
 		(*Command_ApplyPreset)(nil),
 		(*Command_KillSwitch)(nil),
 		(*Command_UpdateProtectedList)(nil),
+		(*Command_ApplyPolicy)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
@@ -1038,7 +1217,7 @@ func file_ebpfsoc_v1_command_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_command_proto_rawDesc), len(file_ebpfsoc_v1_command_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   9,
+			NumMessages:   11,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

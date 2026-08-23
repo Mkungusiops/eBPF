@@ -293,3 +293,86 @@ describe("ChatSidebar", () => {
     await waitFor(() => expect(screen.queryByText("Reading the console…")).toBeNull());
   });
 });
+
+/**
+ * A follow-up that restates an already-grounded conversation must NOT wear the
+ * red unverified banner.
+ *
+ * The red banner means "this may be fabricated". Firing it at an analyst who
+ * asked "are you sure?" trains them to ignore red — which is the one thing that
+ * banner cannot afford to lose. The weaker, true statement goes in its place.
+ */
+describe("derived answers", () => {
+  it("labels a restatement instead of calling it unverified", async () => {
+    open({
+      chatApi: fakeChatApi({
+        listMessages: async (): Promise<ChatMessage[]> => [
+          {
+            id: "m1",
+            chat_id: "c1",
+            role: "assistant",
+            content: "Yes — 6 indicators, as I said a moment ago.",
+            grounded: false,
+            derived: true,
+            created_at: "2026-08-16T10:05:00Z"
+          }
+        ]
+      })
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "curl on host-3" }));
+    expect(await screen.findByText(/From earlier in this conversation/)).toBeTruthy();
+    expect(screen.queryByText(/Not grounded in telemetry/)).toBeNull();
+  });
+
+  it("still flags an answer with nothing behind it at all", async () => {
+    open({
+      chatApi: fakeChatApi({
+        listMessages: async (): Promise<ChatMessage[]> => [
+          {
+            id: "m1",
+            chat_id: "c1",
+            role: "assistant",
+            content: "There are 14 critical alerts on web-01.",
+            grounded: false,
+            created_at: "2026-08-16T10:05:00Z"
+          }
+        ]
+      })
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "curl on host-3" }));
+    expect(await screen.findByText(/Not grounded in telemetry/)).toBeTruthy();
+    expect(screen.queryByText(/From earlier in this conversation/)).toBeNull();
+  });
+});
+
+/**
+ * A greeting must not wear the red "unverified" banner.
+ *
+ * "Unverified" and "nothing to verify" are different states. Warning an analyst
+ * that a greeting might be fabricated teaches them to ignore the banner that
+ * exists for genuinely ungrounded claims — which is the one thing it cannot
+ * afford to lose.
+ */
+describe("no-claim replies", () => {
+  it("shows no warning on a greeting", async () => {
+    open({
+      chatApi: fakeChatApi({
+        listMessages: async (): Promise<ChatMessage[]> => [
+          {
+            id: "m1",
+            chat_id: "c1",
+            role: "assistant",
+            content: "Hi — quiet here right now. What do you need?",
+            grounded: false,
+            no_claim: true,
+            created_at: "2026-08-21T10:05:00Z"
+          }
+        ]
+      })
+    });
+    await userEvent.click(await screen.findByRole("button", { name: "curl on host-3" }));
+    expect(await screen.findByText(/quiet here right now/)).toBeTruthy();
+    expect(screen.queryByText(/Not grounded in telemetry/)).toBeNull();
+    expect(screen.queryByText(/From earlier in this conversation/)).toBeNull();
+  });
+});

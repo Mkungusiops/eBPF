@@ -26,6 +26,12 @@ type Node struct {
 	// descriptions.
 	AlertBand int `json:"alert_band"`
 
+	// anomalyBudget is how many BEHAVIOURAL points have already been added to
+	// the chain rooted here (see AddAnomaly). Held on the root for the same
+	// reason AlertBand is: chain scores are inherited, so a per-process budget
+	// would reset on every child and impose no ceiling at all.
+	anomalyBudget int
+
 	// alertedReasons is the set of distinct findings already reported for this
 	// chain. Band escalation alone is not enough: whichever event happens to
 	// cross a band first claims the alert, and a later, more informative event
@@ -61,6 +67,24 @@ func (t *Tree) Add(n *Node) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.nodes[n.ExecID] = n
+}
+
+// AddIfAbsent inserts n only when the tree has no node for its exec_id, and
+// reports whether it inserted.
+//
+// Distinct from Add, which overwrites. The caller is the kprobe path, which
+// learns of a process from a SIDE EFFECT of it rather than from its exec, so
+// the node it can build is poorer — no real args, no real start time. An exec
+// for the same id arriving later must win, and Add would let the weaker record
+// clobber the stronger one.
+func (t *Tree) AddIfAbsent(n *Node) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if _, ok := t.nodes[n.ExecID]; ok {
+		return false
+	}
+	t.nodes[n.ExecID] = n
+	return true
 }
 
 func (t *Tree) Get(execID string) (*Node, bool) {
@@ -105,18 +129,11 @@ func (t *Tree) EscalateAlert(execID string, band int, reason string) bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	root, ok := t.nodes[execID]
+	root, ok := t.rootOf(execID)
 	if !ok {
 		// No node means no chain to attribute this to. Let it alert rather
 		// than swallowing it — silence here would hide a real event.
 		return true
-	}
-	for i := 0; i < 10 && root.ParentID != ""; i++ {
-		parent, ok := t.nodes[root.ParentID]
-		if !ok {
-			break
-		}
-		root = parent
 	}
 
 	escalated := band > root.AlertBand
@@ -140,6 +157,66 @@ func (t *Tree) EscalateAlert(execID string, band int, reason string) bool {
 	}
 
 	return escalated || novel
+}
+
+// rootOf walks to the chain root. Caller holds the lock.
+//
+// Bounded at 10 hops, matching ChainScore: a cycle introduced by a malformed
+// parent id must not be able to hang the event path.
+func (t *Tree) rootOf(execID string) (*Node, bool) {
+	root, ok := t.nodes[execID]
+	if !ok {
+		return nil, false
+	}
+	for i := 0; i < 10 && root.ParentID != ""; i++ {
+		parent, ok := t.nodes[root.ParentID]
+		if !ok {
+			break
+		}
+		root = parent
+	}
+	return root, true
+}
+
+// AddAnomaly adds behavioural-baseline points to a chain under a CEILING, and
+// returns how many were actually applied.
+//
+// Separate from AddScore because behavioural points need a budget that rule
+// points do not. Rule hits are discrete events — reading /etc/shadow twice is
+// two real findings. Novelty is not: a host that has just been updated execs
+// hundreds of binaries it has never seen, every one of them legitimately novel,
+// and with no ceiling that ordinary maintenance would march a chain to critical
+// and contain the package manager.
+//
+// The budget lives on the chain root, so `budget` bounds the WHOLE session
+// rather than each process in it. Once spent, later novelty on the same chain
+// still produces reasons for the analyst to read — it just stops adding score.
+func (t *Tree) AddAnomaly(execID string, delta, budget int) int {
+	if delta <= 0 {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	root, ok := t.rootOf(execID)
+	if !ok {
+		return 0
+	}
+	remaining := budget - root.anomalyBudget
+	if remaining <= 0 {
+		return 0
+	}
+	if delta > remaining {
+		delta = remaining
+	}
+	root.anomalyBudget += delta
+
+	n, ok := t.nodes[execID]
+	if !ok {
+		return 0
+	}
+	n.Score += delta
+	n.Events = append(n.Events, "baseline:anomaly")
+	return delta
 }
 
 func (t *Tree) Ancestors(execID string, max int) []*Node {

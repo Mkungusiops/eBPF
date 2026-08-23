@@ -41,7 +41,7 @@ import {
 import { AnswerText } from "./AnswerText";
 import { useAssistant } from "./useAssistant";
 import { useAssistantChat } from "./AssistantChatProvider";
-import type { AssistantApi } from "./api";
+import type { AssistantApi, AssistantSurface } from "./api";
 import "./assistant.css";
 
 export interface AssistantPanelProps {
@@ -51,10 +51,23 @@ export interface AssistantPanelProps {
   execId?: string;
   /** Shown above the actions so the analyst knows what "this" refers to. */
   subjectLabel?: string;
+  /**
+   * Which of the console's panels this is.
+   *
+   * subjectLabel is for the ANALYST and never leaves the browser; this is for
+   * the MODEL. The two were conflated, which is how a panel could announce
+   * "Investigating the device fleet" to the operator while the assistant behind
+   * it had no idea it was looking at devices — and no device tool either.
+   */
+  surface?: AssistantSurface;
 }
 
-export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProps) {
-  const { capability, answer, running, error, ask, cancel } = useAssistant({ api, execId });
+export function AssistantPanel({ api, execId, subjectLabel, surface }: AssistantPanelProps) {
+  const { capability, answer, running, error, liveSteps, conversationalAgent, ask, cancel } = useAssistant({
+    api,
+    execId,
+    surface
+  });
   const assistantChat = useAssistantChat();
   const [question, setQuestion] = useState("");
   const [traceOpen, setTraceOpen] = useState(false);
@@ -83,10 +96,17 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
 
   const submitFreeText = () => {
     const q = question.trim();
-    if (!q || busy) return;
-    // Free text runs through the incident agent: it carries the same evidence
-    // rules, so an ad-hoc question cannot bypass "do not invent values".
-    ask("summarise-incident", q);
+    if (!q || busy || !conversationalAgent) return;
+    // THE CONVERSATIONAL AGENT, selected by flag.
+    //
+    // This used to be a hard-coded `summarise-incident`, so every typed question
+    // on all eight panels was answered with an incident summary regardless of
+    // what was asked — "is this host compromised?" returned a handover report.
+    // It is the same defect that was found and fixed in the sidebar, which had
+    // hard-coded a different agent; only the sidebar was fixed. The evidence
+    // rules the old comment was protecting are in sharedRules and apply to every
+    // agent, so nothing is given up by routing correctly.
+    ask(conversationalAgent, q);
     setQuestion("");
   };
 
@@ -112,7 +132,7 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
           <button
             type="button"
             className="asst__expand"
-            onClick={() => assistantChat.openAssistant({ execId })}
+            onClick={() => assistantChat.openAssistant({ execId, surface })}
             title="Continue this investigation in the assistant sidebar"
           >
             <Maximize2 size={11} aria-hidden />
@@ -164,7 +184,7 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
         <button
           type="button"
           className="asst__send"
-          disabled={busy || !question.trim()}
+          disabled={busy || !question.trim() || !conversationalAgent}
           onClick={submitFreeText}
           aria-label="Send question"
         >
@@ -175,7 +195,14 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
       {busy ? (
         <div className="asst__running" role="status" aria-live="polite">
           <Loader2 size={13} className="asst__spin" aria-hidden />
-          <span>Reading telemetry…</span>
+          {/* Named, not spun. The last completed read is the honest answer to
+              "what is it doing", and it changes every few hundred ms, which is
+              what distinguishes working from hung. */}
+          <span>
+            {liveSteps.length
+              ? `Read ${liveSteps[liveSteps.length - 1].tool} · ${liveSteps.length} source${liveSteps.length === 1 ? "" : "s"} so far`
+              : "Reading telemetry…"}
+          </span>
           <button type="button" className="asst__cancel" onClick={cancel}>
             <X size={11} aria-hidden /> Cancel
           </button>
@@ -191,10 +218,17 @@ export function AssistantPanel({ api, execId, subjectLabel }: AssistantPanelProp
 
       {answer ? (
         <article className="asst__answer">
-          {answer.grounded === false ? (
+          {answer.grounded === false && answer.derived !== true && answer.no_claim !== true ? (
             <p className="asst__ungrounded" role="alert">
               <AlertTriangle size={12} aria-hidden />
               Not grounded in telemetry — treat as unverified.
+            </p>
+          ) : null}
+
+          {answer.derived === true ? (
+            <p className="asst__derived">
+              <AlertTriangle size={12} aria-hidden />
+              From earlier in this conversation — nothing re-read just now.
             </p>
           ) : null}
 

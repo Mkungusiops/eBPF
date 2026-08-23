@@ -53,4 +53,82 @@ describe("createAssistantApi", () => {
     expect(cap.reason).toContain("502");
     vi.unstubAllGlobals();
   });
+
+  // ── streaming ────────────────────────────────────────────────────────────
+
+  /**
+   * Feeds the SSE body in DELIBERATELY AWKWARD chunks — split mid-frame, mid
+   * JSON, and with two frames in one chunk.
+   *
+   * This is the whole risk in the streaming client. A per-chunk parser works
+   * perfectly on loopback, where frames arrive whole, and corrupts under any
+   * real latency or any proxy that repacks the stream. The bug would surface as
+   * missing progress lines in production and a green test suite locally.
+   */
+  function streamResponse(chunks: string[], status = 200) {
+    const encoder = new TextEncoder();
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      }
+    });
+    return new Response(body, { status, headers: { "Content-Type": "text/event-stream" } });
+  }
+
+  it("reassembles SSE frames split across chunk boundaries", async () => {
+    const answer = { agent: "ask", content: "quiet", steps: [], model: "m", duration: "1s", grounded: true };
+    const fetchMock = vi.fn().mockResolvedValue(
+      streamResponse([
+        'event: step\ndata: {"tool":"list_aler',           // split mid-JSON
+        'ts","path":"/api/alerts","bytes":9,"duration":"3ms"}\n\nevent: st',
+        'ep\ndata: {"tool":"fleet_state","path":"/api/fleet/state","bytes":4,"duration":"2ms"}\n\n',
+        `event: answer\ndata: ${JSON.stringify(answer)}\n\n`
+      ])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createAssistantApi();
+
+    const steps: string[] = [];
+    const got = await api.askStream!({
+      agent: "ask",
+      question: "how is it?",
+      surface: "kpi-drill",
+      onStep: (s) => steps.push(s.tool)
+    });
+
+    expect(steps).toEqual(["list_alerts", "fleet_state"]);
+    expect(got.content).toBe("quiet");
+    // The surface must reach the server, or the model does not know which panel asked.
+    expect(JSON.parse(String((fetchMock.mock.calls[0][1] as RequestInit).body)).surface).toBe("kpi-drill");
+    vi.unstubAllGlobals();
+  });
+
+  it("treats a stream that ends without an answer as a failure", async () => {
+    // Silence must never read as success. Rendering an empty answer would look
+    // exactly like the assistant having found nothing to say.
+    const fetchMock = vi.fn().mockResolvedValue(
+      streamResponse(['event: step\ndata: {"tool":"list_alerts","path":"/api/alerts","bytes":2,"duration":"1ms"}\n\n'])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createAssistantApi();
+
+    await expect(
+      api.askStream!({ agent: "ask", onStep: () => {} })
+    ).rejects.toThrow(/without an answer/);
+    vi.unstubAllGlobals();
+  });
+
+  it("surfaces a streamed error event as a thrown error", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      streamResponse(['event: error\ndata: {"error":"the assistant could not complete this request"}\n\n'])
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const api = createAssistantApi();
+
+    await expect(api.askStream!({ agent: "ask", onStep: () => {} })).rejects.toThrow(
+      /could not complete/
+    );
+    vi.unstubAllGlobals();
+  });
 });

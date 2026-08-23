@@ -1,0 +1,19 @@
+# Never match these, whatever a feed says. Checked before every source.
+#
+# This file is the operator's veto. It exists because a single false positive on
+# infrastructure the estate depends on is worse than a hundred missed
+# indicators: a high-confidence match can carry a chain to the critical band,
+# and critical drives containment.
+#
+# Private, loopback and link-local addresses are ALREADY excluded in code and do
+# not need listing here — put PUBLIC addresses and domains the estate legitimately
+# depends on, which a feed might list because someone else abused the same
+# shared host.
+
+# The platform's own inference endpoint. A shared-host feed entry against this
+# would make every assistant question look like C2 traffic.
+openweights.adanianlabs.io
+
+# The estate's own published surfaces.
+console.adanianlabs.io
+engine.adanianlabs.io

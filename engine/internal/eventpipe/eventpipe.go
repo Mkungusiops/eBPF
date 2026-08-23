@@ -29,10 +29,14 @@ import (
 	"github.com/cilium/tetragon/api/v1/tetragon"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/api"
+	"github.com/jeffmk/ebpf-poc-engine/internal/baseline"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
+	"github.com/jeffmk/ebpf-poc-engine/internal/findings"
+	"github.com/jeffmk/ebpf-poc-engine/internal/intel"
 	"github.com/jeffmk/ebpf-poc-engine/internal/metrics"
 	"github.com/jeffmk/ebpf-poc-engine/internal/score"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
+	"github.com/jeffmk/ebpf-poc-engine/internal/sysproc"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tetrabridge"
 	"github.com/jeffmk/ebpf-poc-engine/internal/tree"
 )
@@ -59,7 +63,34 @@ type Pipeline struct {
 	// the uplink is additive, never a step the enforcement path waits on.
 	EventSink func(*store.Event)
 	AlertSink func(*store.Alert)
+
+	// Baseline is the host's learned behavioural profile. nil disables
+	// behavioural scoring entirely, which is what a test or an older wiring
+	// gets — every enrichment field here is independently optional, so a
+	// deployment that configures neither behaves exactly as it did before.
+	Baseline *baseline.Profile
+	// Intel is the loaded indicator set. nil disables indicator matching.
+	Intel *intel.Set
+	// Hasher computes binary digests for hash-feed matching. Consulted ONLY
+	// for binaries the baseline flags as novel — see hashIfNovel for why that
+	// gating is what makes the feature affordable on the event path.
+	Hasher *intel.Hasher
+	// Findings is the bounded ring of recent enrichment results the console
+	// and the assistant read. nil discards them; scoring is unaffected.
+	Findings *findings.Ring
 }
+
+// chainAnomalyBudget caps how much BEHAVIOURAL score one process chain may
+// accumulate, across every event on it.
+//
+// 25 sits above the high band (20) and below critical (40). A chain that is
+// behaviourally novel from top to bottom can therefore reach high on novelty
+// alone — which is right, that is a genuinely unusual session — but reaching
+// CRITICAL, the band that drives the harshest containment, always requires
+// corroboration from a rule hit or an indicator match. Novelty is evidence, not
+// a verdict, and a host in the middle of a package upgrade must not be able to
+// contain its own package manager.
+const chainAnomalyBudget = 25
 
 // Consume drains the Tetragon stream until it closes, then returns.
 //
@@ -105,26 +136,43 @@ func (p *Pipeline) HandleExec(ev *tetragon.ProcessExec) {
 	if ev.Parent != nil {
 		parentID = ev.Parent.ExecId
 	}
+	// Resolved once, here, and used for the tree node, the score, the baseline
+	// and the stored event alike — so every layer reasons about, and the
+	// console displays, the same executable. See effectiveBinary.
+	binary := effectiveBinary(pr.Binary, pr.Pid.GetValue())
 	node := &tree.Node{
 		ExecID:    pr.ExecId,
 		PID:       pr.Pid.GetValue(),
 		ParentID:  parentID,
-		Binary:    pr.Binary,
+		Binary:    binary,
 		Args:      pr.Arguments,
 		UID:       pr.Uid.GetValue(),
 		StartTime: time.Now(),
 	}
 	p.Tree.Add(node)
 
-	delta, reason, finding := score.Score("process_exec", pr.Binary, pr.Arguments, "", pr.Uid.GetValue())
+	delta, reason, finding := score.Score("process_exec", binary, pr.Arguments, "", pr.Uid.GetValue())
 	if delta > 0 {
 		p.Tree.AddScore(pr.ExecId, delta, "process_exec")
 	}
 
 	parentPID := uint32(0)
+	parentBinary := ""
 	if ev.Parent != nil {
 		parentPID = ev.Parent.Pid.GetValue()
+		// Resolved too: the baseline's highest-value facet is the parent→child
+		// edge, and an unresolved parent makes every edge below a re-exec
+		// unique per run. That is how "/proc/self/fd" ended up as a parent in
+		// the console's lineage reasons.
+		parentBinary = effectiveBinary(ev.Parent.Binary, parentPID)
 	}
+
+	// Behavioural baseline and indicator matching, layered on the rule score.
+	// Runs before checkAlert so an event the rules alone would leave below the
+	// threshold can still alert when it is novel AND talking to a known-bad
+	// address — the case a static rule table cannot express.
+	enr := p.enrichExec(pr.ExecId, binary, parentBinary, pr.Arguments,
+		pr.Uid.GetValue(), pr.Pid.GetValue(), node.StartTime)
 
 	e := &store.Event{
 		Timestamp: time.Now(),
@@ -132,7 +180,7 @@ func (p *Pipeline) HandleExec(ev *tetragon.ProcessExec) {
 		PID:       pr.Pid.GetValue(),
 		ParentPID: parentPID,
 		ExecID:    pr.ExecId,
-		Binary:    pr.Binary,
+		Binary:    binary,
 		Args:      pr.Arguments,
 		UID:       pr.Uid.GetValue(),
 	}
@@ -146,7 +194,7 @@ func (p *Pipeline) HandleExec(ev *tetragon.ProcessExec) {
 	p.enqueueEvent(e)
 	metrics.IncEvent("process_exec")
 	tetrabridge.Send(p.Broadcast, api.Broadcast{Type: "event", Payload: e})
-	p.checkAlert(pr.ExecId, reason, finding)
+	p.checkAlert(pr.ExecId, reason, finding, enr)
 }
 
 // HandleKprobe records a policy-triggered kernel probe — the file reads,
@@ -159,18 +207,82 @@ func (p *Pipeline) HandleKprobe(ev *tetragon.ProcessKprobe) {
 	policyName := ev.PolicyName
 
 	argStr := tetrabridge.ExtractKprobeArgs(ev.Args)
+	binary := effectiveBinary(pr.Binary, pr.Pid.GetValue())
 
-	delta, reason, finding := score.Score("process_kprobe", pr.Binary, argStr, policyName, pr.Uid.GetValue())
-	if delta > 0 {
-		p.Tree.AddScore(pr.ExecId, delta, "process_kprobe:"+policyName)
+	// A kprobe can be the FIRST event this pipeline ever sees for an exec_id,
+	// and until that id has a tree node its score has nowhere to land.
+	//
+	// The case that matters is a privilege transition inside a fork. sudo does
+	// not call setuid(0) in the process the shell exec'd: it fork()s, and the
+	// CHILD calls setuid(0) in the window between clone() and execve().
+	// Tetragon gives that child its own exec_id (exec_id is nodename:ktime:pid
+	// and the ktime is new) and never emits a ProcessExec for it — the v1.6.1
+	// gRPC API has no clone event at all. So AddScore below looked the id up,
+	// missed, returned a (nil, false) that nobody checked, and the 15 points
+	// for T1548 were dropped on the floor.
+	//
+	// Measured on the live engine 2026-08-22: 22 of 22 privilege-escalation
+	// kprobes on /usr/bin/sudo had no matching exec, and ChainScore returned 0
+	// for every one. The only setuid alerts the box produced came from
+	// sshd-auth, which survives purely because sshd-session execve()s it, so
+	// its exec_id IS in the tree (9 of 9 matched).
+	//
+	// ev.Parent is the exec'd parent, so the synthesised node joins the real
+	// chain and ChainScore inherits everything above it. AddIfAbsent, not Add:
+	// a genuine exec for this id must win if one ever arrives.
+	if p.Tree != nil {
+		kparentID := ""
+		if ev.Parent != nil {
+			kparentID = ev.Parent.ExecId
+		}
+		if p.Tree.AddIfAbsent(&tree.Node{
+			ExecID:    pr.ExecId,
+			PID:       pr.Pid.GetValue(),
+			ParentID:  kparentID,
+			Binary:    binary,
+			Args:      pr.Arguments,
+			UID:       pr.Uid.GetValue(),
+			StartTime: time.Now(),
+		}) {
+			metrics.IncEvent("kprobe_synthesised_node")
+		}
 	}
+
+	delta, reason, finding := score.Score("process_kprobe", binary, argStr, policyName, pr.Uid.GetValue())
+
+	// The host's own login stack reading the shadow file is not a finding.
+	// Resolved from the tree first and the event second: Tetragon populates
+	// ev.Parent, but the tree is the authority on the chain everywhere else in
+	// this file, and a kprobe whose exec we missed still has an ancestor there.
+	// See score.IsAuthStackCredentialRead for the measurement behind this.
+	if delta > 0 && (score.IsAuthStackCredentialRead(binary, p.parentBinary(pr.ExecId, ev.Parent), policyName) ||
+		score.IsRoutinePrivilegeTransition(binary, policyName)) {
+		delta, reason, finding = 0, "", ""
+		metrics.IncEvent("auth_stack_suppressed")
+	}
+
+	if delta > 0 {
+		if _, ok := p.Tree.AddScore(pr.ExecId, delta, "process_kprobe:"+policyName); !ok {
+			// Unreachable after the synthesis above. Counted rather than
+			// ignored because this exact silent drop cost the platform its
+			// T1548 detection once already, and a discarded (nil, false) is
+			// invisible in every log and every dashboard.
+			metrics.IncEvent("score_dropped_no_node")
+		}
+	}
+
+	// An outbound-connections event carries the destination of a connection
+	// that actually happened, which is the strongest observable this platform
+	// produces. Matched at full weight; the same address merely named on a
+	// command line is halved.
+	enr := p.enrichKprobe(pr.ExecId, policyName, binary, argStr, pr.Pid.GetValue(), time.Now())
 
 	e := &store.Event{
 		Timestamp:  time.Now(),
 		EventType:  "process_kprobe",
 		PID:        pr.Pid.GetValue(),
 		ExecID:     pr.ExecId,
-		Binary:     pr.Binary,
+		Binary:     binary,
 		Args:       argStr,
 		UID:        pr.Uid.GetValue(),
 		PolicyName: policyName,
@@ -185,7 +297,59 @@ func (p *Pipeline) HandleKprobe(ev *tetragon.ProcessKprobe) {
 	p.enqueueEvent(e)
 	metrics.IncEvent("process_kprobe")
 	tetrabridge.Send(p.Broadcast, api.Broadcast{Type: "event", Payload: e})
-	p.checkAlert(pr.ExecId, reason, finding)
+	p.checkAlert(pr.ExecId, reason, finding, enr)
+}
+
+// effectiveBinary returns the executable path to REASON about for a process.
+//
+// Tetragon reports the executable as the kernel sees it, and a process that
+// re-exec'd through a file descriptor is reported as "/proc/self/fd/<n>". That
+// is not an identity: it names a descriptor number, it differs run to run, and
+// no path-based rule can match it.
+//
+// Measured on the live engine 2026-08-21, this cost real accuracy in three
+// separate places at once:
+//
+//   - systemd's own re-exec ("--deserialize 43", parent PID 1) read /etc/passwd
+//     and /etc/shadow eleven times, scored 109 and alerted CRITICAL — the auth
+//     suppression could not recognise it because the path was not systemd's;
+//   - the behavioural baseline keyed it as the "executable" `9`, which reached
+//     6,116 observations and collided with every other numeric basename;
+//   - the console attributed the alert to "/proc/self/fd/9", which is not a
+//     process an analyst can look up or act on.
+//
+// So the fd path is resolved back to the real one through /proc/<pid>/exe. The
+// lookup is gated on the "/proc/" prefix, so the common path costs one string
+// comparison and nothing else; a process that has already exited resolves to ""
+// and the caller keeps the kernel-reported path rather than inventing one.
+func effectiveBinary(binary string, pid uint32) string {
+	if !strings.HasPrefix(binary, "/proc/") {
+		return binary
+	}
+	if resolved := sysproc.ResolveExe(pid); resolved != "" {
+		return resolved
+	}
+	return binary
+}
+
+// parentBinary resolves the immediate parent's executable path for an event.
+//
+// The tree is consulted first because it is the authority on the chain
+// everywhere else in this file, and it holds the parent even when the daemon
+// sends a kprobe whose parent block is absent. evParent is the fallback for the
+// window before an exec has been folded in.
+func (p *Pipeline) parentBinary(execID string, evParent *tetragon.Process) string {
+	if p.Tree != nil {
+		if n, ok := p.Tree.Get(execID); ok && n.ParentID != "" {
+			if parent, ok := p.Tree.Get(n.ParentID); ok && parent.Binary != "" {
+				return parent.Binary
+			}
+		}
+	}
+	if evParent != nil {
+		return effectiveBinary(evParent.Binary, evParent.Pid.GetValue())
+	}
+	return ""
 }
 
 func (p *Pipeline) enqueueEvent(e *store.Event) {
@@ -200,7 +364,7 @@ func (p *Pipeline) enqueueAlert(a *store.Alert) {
 	}
 }
 
-func (p *Pipeline) checkAlert(execID, reason, finding string) {
+func (p *Pipeline) checkAlert(execID, reason, finding string, enr enrichment) {
 	chainScore := p.Tree.ChainScore(execID)
 
 	// Gateway runs on every event regardless of alert threshold so a process
@@ -210,6 +374,30 @@ func (p *Pipeline) checkAlert(execID, reason, finding string) {
 
 	if chainScore < 10 {
 		return
+	}
+
+	// Enrichment supplies a finding of its own when the rules produced none.
+	//
+	// Without this, an event whose ONLY signal is enrichment — a never-seen
+	// binary reaching a known C2 address, matching no rule — carries an empty
+	// finding, and EscalateAlert's per-chain reason set cannot tell it from any
+	// other unscored event on the same chain. The alert would be suppressed as
+	// a duplicate of something it has nothing in common with. The finding is
+	// the enrichment KIND, not the full reason text, for the reason the scorer
+	// already learned: a finding that embeds a path or an address is unique per
+	// event and deduplicates nothing.
+	if finding == "" {
+		switch {
+		case len(enr.matches) > 0:
+			finding = "threat-intel-match"
+		case len(enr.reasons) > 0:
+			finding = "behavioural-anomaly"
+		}
+	}
+	if reason == "" {
+		reason = enr.describe()
+	} else if extra := enr.describe(); extra != "" {
+		reason = reason + " — " + extra
 	}
 	// Alert on an escalation in severity, or on a finding this chain has not
 	// reported before — not on every event. Chain scores are cumulative and

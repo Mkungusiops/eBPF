@@ -34,6 +34,7 @@ message Command {
     ApplyPreset apply_preset = 14;
     KillSwitch kill_switch = 15;
     UpdateProtectedList update_protected_list = 16;
+    ApplyPolicy apply_policy = 17;
   }
 }
 
@@ -90,6 +91,47 @@ message KillSwitch {
 message UpdateProtectedList {
   repeated string protected_binaries = 1;
   repeated string protected_macs = 2;
+}
+
+// ApplyPolicy changes the host's DETECTION policy — the Tetragon TracingPolicy
+// set the kernel is watching with.
+//
+// It rides the command channel rather than the policy-bundle channel because
+// the command channel is the one that exists: signed, acked, audited, and
+// dialled OUT by the agent so it works through customer NAT. The agent already
+// holds tetragon.FineGuidanceSensorsClient — the same client it calls
+// ListTracingPolicies on every heartbeat — and that interface already exposes
+// AddTracingPolicy, DeleteTracingPolicy and ConfigureTracingPolicy, all three
+// already linked into the shipped binary. The apply path is a method call on an
+// open connection, not a new privilege boundary.
+//
+// SCOPE, deliberately narrow: DETECTION policy only. The ChokePolicy DSL is not
+// distributable this way and is excluded, because nothing in the enforcement
+// path reads its token buckets — shipping a response policy that cannot take
+// effect would be a fiction with a signature on it.
+message ApplyPolicy {
+  repeated PolicyDoc policies = 1;
+  // Names to DELETE from the kernel, applied after the adds so one command can
+  // replace a policy set atomically from the operator's point of view.
+  repeated string remove = 2;
+  // Why. Recorded in the ack — a detection change on a production estate needs
+  // an operator's reason as much as a containment does.
+  string reason = 3;
+}
+
+message PolicyDoc {
+  // metadata.name as Tetragon knows it. Authoritative for delete and reconcile.
+  string name = 1;
+  // The TracingPolicy YAML verbatim; AddTracingPolicyRequest takes exactly
+  // this. Typically 1-10 KB.
+  string yaml = 2;
+  // "monitor" or "enforce". Empty leaves whatever the YAML declares.
+  //
+  // Carried separately because it decides whether a policy can KILL: an
+  // enforcing TracingPolicy acts independently of the choke ladder, with no
+  // audit row and no kill-switch (threat-model EN-3). Changing it must be
+  // explicit, and the signature must cover it.
+  string mode = 3;
 }
 
 message CommandAck {

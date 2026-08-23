@@ -77,6 +77,30 @@ message DataPlaneState {
   // previously reported devices_known for both, so a fleet where the data plane
   // saw nothing looked identical to one where it saw everything.
   uint32 devices_seen = 9;
+  // The score ladder the agent is ACTUALLY running.
+  //
+  // Without this the control plane could not know it, so chokeThresholds() in
+  // internal/controlplane/choke.go returned the ENGINE BINARY DEFAULTS as a
+  // constant — 5/15/25/40. Every deployed agent runs 20/50/120/200 (written by
+  // scripts/deploy/provision-agent-ssh.sh), so the multi-tenant console told
+  // every operator that a chain severs at 40 when the real figure is 200: a
+  // number wrong by 5x, on the panel an operator consults before deciding
+  // whether something is about to be contained.
+  //
+  // It is per-agent rather than per-fleet because thresholds are agent-local
+  // and runtime-settable (SetThresholds over the command channel), so a fleet
+  // can legitimately be heterogeneous — and the console has to be able to SHOW
+  // that rather than average it away.
+  ChokeThresholds thresholds = 10;
+}
+
+// ChokeThresholds is the per-agent score ladder: the chain score at which each
+// rung of the containment ladder engages. Mirrors choke/circuit.Config.
+message ChokeThresholds {
+  int32 throttle_at = 1;
+  int32 tarpit_at = 2;
+  int32 quarantine_at = 3;
+  int32 sever_at = 4;
 }
 
 // KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —

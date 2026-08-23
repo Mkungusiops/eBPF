@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createAssistantApi, type AssistantAgent, type AssistantApi } from "./api";
+import {
+  createAssistantApi,
+  type AssistantAgent,
+  type AssistantApi,
+  type AssistantStep,
+  type AssistantSurface
+} from "./api";
 import { createChatApi, HISTORY_DISABLED, type Chat, type ChatApi, type ChatMessage } from "./chatApi";
 import { AssistantError } from "./api";
 
@@ -9,6 +15,16 @@ export interface UseChatsOptions {
   assistantApi?: AssistantApi;
   /** Only load history once the sidebar is actually open. */
   active?: boolean;
+  /**
+   * The panel the conversation was handed over FROM, when it was.
+   *
+   * The sidebar is not itself one of the eight panels — opened from the nav it
+   * carries no surface and gets the full agent list, which is right for a
+   * platform-wide chat. But a conversation handed over from a drill must arrive
+   * knowing where it came from, or "the same conversation, opened wider" is
+   * only true of the transcript and not of what the assistant understands.
+   */
+  surface?: AssistantSurface;
 }
 
 /**
@@ -35,6 +51,12 @@ export interface ChatsState {
   messages: ChatMessage[];
   /** The agent currently answering, so the composer can show progress. */
   sending: boolean;
+  /**
+   * Tool calls completed so far in the exchange in flight, so the sidebar can
+   * name what the assistant is doing instead of holding a spinner for the
+   * fifteen-to-twenty seconds a tool loop takes.
+   */
+  liveSteps: AssistantStep[];
   /** An error from THIS exchange — never from history bookkeeping. */
   askError: string | null;
   query: string;
@@ -48,7 +70,7 @@ export interface ChatsState {
 }
 
 
-export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptions = {}): ChatsState {
+export function useChats({ chatApi, assistantApi, active = true, surface }: UseChatsOptions = {}): ChatsState {
   const chatsRef = useRef<ChatApi>(chatApi ?? createChatApi());
   const askRef = useRef<AssistantApi>(assistantApi ?? createAssistantApi());
 
@@ -58,6 +80,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [sending, setSending] = useState(false);
+  const [liveSteps, setLiveSteps] = useState<AssistantStep[]>([]);
   const [askError, setAskError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   /**
@@ -85,6 +108,20 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
 
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
+  /**
+   * The rendered thread, mirrored into a ref so send() can read it without
+   * depending on it.
+   *
+   * A dependency on `messages` would rebuild send on every appended turn,
+   * including the optimistic one send itself just wrote — and every consumer
+   * holding the previous identity (the composer's submit handler, the drill
+   * panel's handover) would be calling a stale closure mid-conversation. The
+   * ref is read at call time and is always current.
+   */
+  const messagesRef = useRef<ChatMessage[]>([]);
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
   /**
    * Conversations this session just created, whose transcript we already hold.
    *
@@ -171,7 +208,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
     if (!active) return;
     const ctl = new AbortController();
     const pending = askRef.current
-      .capability(ctl.signal)
+      .capability(surface, ctl.signal)
       .then((cap) => cap.agents ?? [])
       .catch(() => [] as AssistantAgent[]);
     agentsPending.current = pending;
@@ -179,7 +216,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
       if (mounted.current && !ctl.signal.aborted) setAgents(list);
     });
     return () => ctl.abort();
-  }, [active]);
+  }, [active, surface]);
 
   const select = useCallback((chatId: string | null) => {
     setActiveId(chatId);
@@ -217,6 +254,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
       inFlight.current = ctl;
       setSending(true);
       setAskError(null);
+      setLiveSteps([]);
 
       // Ensure a conversation exists BEFORE asking, so the exchange has
       // somewhere to be recorded. When history is off this stays null and the
@@ -240,6 +278,18 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
         }
       }
 
+      // Snapshot the thread BEFORE the optimistic question is appended: the
+      // server expects history to exclude the question being asked, and
+      // sending it twice makes the model answer it as though it had already
+      // been answered once.
+      const priorTurns = messagesRef.current
+        .filter((m) => m.role === "user" || m.role === "assistant")
+        .map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+          grounded: m.grounded
+        }));
+
       // Show the question immediately. The answer can take twenty seconds and a
       // composer that empties into nothing reads as a dropped message.
       const optimistic: ChatMessage = {
@@ -253,13 +303,37 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
       setMessages((prev) => [...prev, optimistic]);
 
       try {
-        const answer = await askRef.current.ask({
+        const req = {
           agent: agentId,
           question: text,
           execId,
+          surface,
           chatId: chatId ?? undefined,
+          // The conversation so far — everything ALREADY on screen, which is
+          // why it is captured before the optimistic question is appended.
+          //
+          // Without this the model saw only the newest message, so a follow-up
+          // like "what about that host?" arrived with no referent and every
+          // turn was treated as the analyst's first. The control plane replaces
+          // this with its own stored thread; the single-tenant engine, which
+          // has no chat store, depends on it.
+          history: priorTurns,
           signal: ctl.signal
-        });
+        };
+        // Stream when the client can; fall back to the complete response
+        // otherwise. platform-assistant.md §3 called abortable streaming
+        // non-negotiable for a sidebar conversation and §6 recorded it as the
+        // deferred step — this is it, and the abort path is the AbortController
+        // that was already here.
+        const client = askRef.current;
+        const answer = client.askStream
+          ? await client.askStream({
+              ...req,
+              onStep: (step) => {
+                if (mounted.current && !ctl.signal.aborted) setLiveSteps((prev) => [...prev, step]);
+              }
+            })
+          : await client.ask(req);
         if (!mounted.current || ctl.signal.aborted) return;
         setMessages((prev) => [
           ...prev,
@@ -273,6 +347,8 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
             // The engine's judgement, carried through verbatim. Defaulting this
             // to true would make every answer look verified.
             grounded: answer.grounded === true,
+            derived: answer.derived === true,
+            no_claim: answer.no_claim === true,
             created_at: new Date().toISOString()
           }
         ]);
@@ -283,7 +359,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
         if (mounted.current && !ctl.signal.aborted) setSending(false);
       }
     },
-    [activeId, status, agents]
+    [activeId, status, agents, surface]
   );
 
   // History bookkeeping. These update the list optimistically and refetch
@@ -320,6 +396,7 @@ export function useChats({ chatApi, assistantApi, active = true }: UseChatsOptio
     activeId,
     messages,
     sending,
+    liveSteps,
     askError,
     query,
     setQuery,

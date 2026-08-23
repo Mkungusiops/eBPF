@@ -33,9 +33,20 @@ var simAttacks = []simAttack{
 }
 
 func (s *Server) registerAttackRoutes(mux *http.ServeMux) {
-	mux.HandleFunc("/api/attacks", s.handleAttacks)
-	mux.HandleFunc("/api/honeypots", s.handleHoneypots)
-	mux.HandleFunc("/api/run-attack", s.handleRunAttack)
+	// Lab-only. The file header has said "to be removed later" since it was
+	// written; this is that removal, made reversible by a flag instead of a
+	// delete because the e2e suite and lab demos still want them.
+	//
+	// The control-plane variants are the more dangerous half of the pair:
+	// handleRunAttack does not run anything, it FABRICATES an alert and writes
+	// it into the tenant's real telemetry table, where /api/alert-stats, the
+	// MITRE coverage panel and every exported report count it as a genuine
+	// finding. handleHoneypots reports decoy hits from Go constants that no
+	// host produced. An analyst investigating either is investigating nothing,
+	// and an auditor reading the export is reading a fiction.
+	mux.HandleFunc("/api/attacks", s.labOnly(s.handleAttacks))
+	mux.HandleFunc("/api/honeypots", s.labOnly(s.handleHoneypots))
+	mux.HandleFunc("/api/run-attack", s.labOnly(s.handleRunAttack))
 }
 
 func (s *Server) handleAttacks(w http.ResponseWriter, r *http.Request) {
@@ -97,4 +108,18 @@ func (s *Server) handleRunAttack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, 200, map[string]any{"ok": true, "id": atk.ID, "fired": atk.Name})
+}
+
+
+// labOnly answers 404 when this deployment is not a lab. 404 rather than 403:
+// a 403 confirms the endpoint exists, and one of the endpoints behind this gate
+// writes to the evidence store.
+func (s *Server) labOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.LabMode {
+			http.NotFound(w, r)
+			return
+		}
+		h(w, r)
+	}
 }

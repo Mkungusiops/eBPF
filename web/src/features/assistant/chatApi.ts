@@ -41,6 +41,14 @@ export interface ChatMessage {
    * never assessed — see the Go-side test that pins this.
    */
   grounded: boolean;
+  /**
+   * True when the answer restated an already-grounded conversation rather than
+   * reading anything new. Rendered as its own, softer notice — it is not an
+   * unverified answer, but it is not a fresh reading either.
+   */
+  derived?: boolean;
+  /** True when the reply makes no claim about the estate (a greeting). */
+  no_claim?: boolean;
   created_at: string;
 }
 

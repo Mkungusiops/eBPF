@@ -54,12 +54,13 @@ is a single SQLite file (WAL) by default, or Postgres when configured.
 | [docs/deployment/ubuntu-server.md](docs/deployment/ubuntu-server.md) | Recommended step-by-step deploy on a fresh Ubuntu server |
 | [docs/deployment/tarball-quickstart.md](docs/deployment/tarball-quickstart.md) | Fastest path: `make tarball`, scp, run |
 | [docs/deployment/network-choke-gateway.md](docs/deployment/network-choke-gateway.md) | Inline transparent-bridge gateway for the device choke |
-| [docs/deployment/azure.md](docs/deployment/azure.md) | Azure deployment guide |
-| [docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md) | Durable local mirror of the multi-tenant console (OrbStack + systemd) |
+| [docs/deployment/aws-multi-host.md](docs/deployment/aws-multi-host.md) | **The reference deployment** — full platform across AWS hosts (`make deploy-estate`) |
+| [docs/deployment/orbstack-local-mirror.md](docs/deployment/orbstack-local-mirror.md) | The full local estate on OrbStack (`make deploy-local`) |
 | [docs/production-rollout/README.md](docs/production-rollout/README.md) | Mass-deployment + day-2 operating model for many gateways |
 | [CHANGELOG.md](CHANGELOG.md) | Release history, and what `/api/version` reports |
 | [docs/operations/backup-and-restore.md](docs/operations/backup-and-restore.md) | **Backup, restore, data-plane wipe and full rebuild** — every procedure verified live |
 | [docs/operations/reset-engine-and-policies.md](docs/operations/reset-engine-and-policies.md) | Reset the engine and reload policies |
+| [docs/operations/enforcement-traps.md](docs/operations/enforcement-traps.md) | **How enforcement locks you out of your own host**, and how to recover |
 | [docs/reference/chokectl.md](docs/reference/chokectl.md) | `chokectl` fleet CLI reference |
 | [docs/frontend-dev/README.md](docs/frontend-dev/README.md) | The embedded React console (stack, entries, parity gate) |
 | [docs/development/build-plan.md](docs/development/build-plan.md) | Original build plan (historical) |

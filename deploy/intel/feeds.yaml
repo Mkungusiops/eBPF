@@ -1,0 +1,55 @@
+# Threat-intelligence feed refresh.
+#
+# The presence of this file is what ENABLES refreshing. Delete it and the
+# deployment matches only the indicator files already on disk — which is the
+# correct posture for an air-gapped estate, and the default everywhere else.
+#
+# Read by the engine, every agent and the control plane from their own feed
+# directory, so the whole estate matches against the same indicators. A control
+# plane richer in intel than its own sensors reports findings the sensors never
+# scored on.
+#
+# A failed fetch KEEPS THE LAST GOOD COPY. Degrading to an empty indicator set
+# would be indistinguishable from a clean estate, which is the one failure this
+# component must never have.
+
+interval: 6h
+timeout: 60s
+
+feeds:
+  # abuse.ch Feodo Tracker — botnet C2 servers (Dridex, Emotet, TrickBot,
+  # QakBot, BazarLoader). Plain IPs, one per line, `#` comments. Among the
+  # lowest false-positive feeds published, and the closest match to what this
+  # platform observes: the outbound-connections kprobe reports a destination
+  # address, and this is a list of destination addresses.
+  - name: feodo-c2
+    url: https://feodotracker.abuse.ch/downloads/ipblocklist.txt
+    confidence: medium
+
+  # NOT abuse.ch SSLBL. It was in this list until it was fetched and read:
+  # the file has carried no indicators since it was deprecated on 2025-01-03,
+  # only a header saying so. A feed that returns 200 with zero usable entries is
+  # the most expensive kind to configure, because /api/intel would show it
+  # loaded and it would contribute nothing forever.
+
+  # abuse.ch URLhaus — hosts distributing malware payloads. Hosts-file format
+  # ("0.0.0.0 example"), handled by the feed-line normaliser. This is the feed
+  # that catches a downloader BEFORE the connection completes, because the host
+  # appears on the curl/wget command line.
+  - name: urlhaus-hosts
+    url: https://urlhaus.abuse.ch/downloads/hostfile/
+    confidence: medium
+
+# ── Why every feed above is `medium` and not `high` ─────────────────────────
+#
+# Confidence is not an opinion about the feed's quality, it is a CONTAINMENT
+# SETTING. High scores 30, which can carry a chain to the critical band on its
+# own, and critical drives the harshest enforcement tier this platform has. A
+# single stale entry on a shared-hosting IP would then be able to sever a
+# production process without a human in the loop.
+#
+# Medium scores 18 — high band, prominent on the console, and short of
+# automatic critical. Promote a feed to `high` once THIS estate has run it long
+# enough to know its false-positive rate. That is a deliberate operator
+# decision, and it should be made with evidence rather than inherited from a
+# default written by someone who has never seen this network.

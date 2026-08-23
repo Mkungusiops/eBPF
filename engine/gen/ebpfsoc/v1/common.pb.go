@@ -214,7 +214,22 @@ type DataPlaneState struct {
 	// agent merely knows about (neighbour table, DHCP). The control plane
 	// previously reported devices_known for both, so a fleet where the data plane
 	// saw nothing looked identical to one where it saw everything.
-	DevicesSeen   uint32 `protobuf:"varint,9,opt,name=devices_seen,json=devicesSeen,proto3" json:"devices_seen,omitempty"`
+	DevicesSeen uint32 `protobuf:"varint,9,opt,name=devices_seen,json=devicesSeen,proto3" json:"devices_seen,omitempty"`
+	// The score ladder the agent is ACTUALLY running.
+	//
+	// Without this the control plane could not know it, so chokeThresholds() in
+	// internal/controlplane/choke.go returned the ENGINE BINARY DEFAULTS as a
+	// constant — 5/15/25/40. Every deployed agent runs 20/50/120/200 (written by
+	// scripts/deploy/provision-agent-ssh.sh), so the multi-tenant console told
+	// every operator that a chain severs at 40 when the real figure is 200: a
+	// number wrong by 5x, on the panel an operator consults before deciding
+	// whether something is about to be contained.
+	//
+	// It is per-agent rather than per-fleet because thresholds are agent-local
+	// and runtime-settable (SetThresholds over the command channel), so a fleet
+	// can legitimately be heterogeneous — and the console has to be able to SHOW
+	// that rather than average it away.
+	Thresholds    *ChokeThresholds `protobuf:"bytes,10,opt,name=thresholds,proto3" json:"thresholds,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -312,6 +327,83 @@ func (x *DataPlaneState) GetDevicesSeen() uint32 {
 	return 0
 }
 
+func (x *DataPlaneState) GetThresholds() *ChokeThresholds {
+	if x != nil {
+		return x.Thresholds
+	}
+	return nil
+}
+
+// ChokeThresholds is the per-agent score ladder: the chain score at which each
+// rung of the containment ladder engages. Mirrors choke/circuit.Config.
+type ChokeThresholds struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ThrottleAt    int32                  `protobuf:"varint,1,opt,name=throttle_at,json=throttleAt,proto3" json:"throttle_at,omitempty"`
+	TarpitAt      int32                  `protobuf:"varint,2,opt,name=tarpit_at,json=tarpitAt,proto3" json:"tarpit_at,omitempty"`
+	QuarantineAt  int32                  `protobuf:"varint,3,opt,name=quarantine_at,json=quarantineAt,proto3" json:"quarantine_at,omitempty"`
+	SeverAt       int32                  `protobuf:"varint,4,opt,name=sever_at,json=severAt,proto3" json:"sever_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChokeThresholds) Reset() {
+	*x = ChokeThresholds{}
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChokeThresholds) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChokeThresholds) ProtoMessage() {}
+
+func (x *ChokeThresholds) ProtoReflect() protoreflect.Message {
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChokeThresholds.ProtoReflect.Descriptor instead.
+func (*ChokeThresholds) Descriptor() ([]byte, []int) {
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *ChokeThresholds) GetThrottleAt() int32 {
+	if x != nil {
+		return x.ThrottleAt
+	}
+	return 0
+}
+
+func (x *ChokeThresholds) GetTarpitAt() int32 {
+	if x != nil {
+		return x.TarpitAt
+	}
+	return 0
+}
+
+func (x *ChokeThresholds) GetQuarantineAt() int32 {
+	if x != nil {
+		return x.QuarantineAt
+	}
+	return 0
+}
+
+func (x *ChokeThresholds) GetSeverAt() int32 {
+	if x != nil {
+		return x.SeverAt
+	}
+	return 0
+}
+
 // KernelPolicy is one Tetragon TracingPolicy as the KERNEL currently has it —
 // not as a config file describes it. The distinction matters: a policy edited on
 // disk but never reloaded still runs its old version, and a policy deleted at
@@ -340,7 +432,7 @@ type KernelPolicy struct {
 
 func (x *KernelPolicy) Reset() {
 	*x = KernelPolicy{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -352,7 +444,7 @@ func (x *KernelPolicy) String() string {
 func (*KernelPolicy) ProtoMessage() {}
 
 func (x *KernelPolicy) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[2]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -365,7 +457,7 @@ func (x *KernelPolicy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KernelPolicy.ProtoReflect.Descriptor instead.
 func (*KernelPolicy) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{2}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{3}
 }
 
 func (x *KernelPolicy) GetName() string {
@@ -425,7 +517,7 @@ type ProcessEvent struct {
 
 func (x *ProcessEvent) Reset() {
 	*x = ProcessEvent{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -437,7 +529,7 @@ func (x *ProcessEvent) String() string {
 func (*ProcessEvent) ProtoMessage() {}
 
 func (x *ProcessEvent) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[3]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -450,7 +542,7 @@ func (x *ProcessEvent) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProcessEvent.ProtoReflect.Descriptor instead.
 func (*ProcessEvent) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{3}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *ProcessEvent) GetOccurredAt() *timestamppb.Timestamp {
@@ -561,7 +653,7 @@ type Alert struct {
 
 func (x *Alert) Reset() {
 	*x = Alert{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -573,7 +665,7 @@ func (x *Alert) String() string {
 func (*Alert) ProtoMessage() {}
 
 func (x *Alert) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[4]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -586,7 +678,7 @@ func (x *Alert) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Alert.ProtoReflect.Descriptor instead.
 func (*Alert) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{4}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *Alert) GetOccurredAt() *timestamppb.Timestamp {
@@ -690,7 +782,7 @@ type Decision struct {
 
 func (x *Decision) Reset() {
 	*x = Decision{}
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -702,7 +794,7 @@ func (x *Decision) String() string {
 func (*Decision) ProtoMessage() {}
 
 func (x *Decision) ProtoReflect() protoreflect.Message {
-	mi := &file_ebpfsoc_v1_common_proto_msgTypes[5]
+	mi := &file_ebpfsoc_v1_common_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -715,7 +807,7 @@ func (x *Decision) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Decision.ProtoReflect.Descriptor instead.
 func (*Decision) Descriptor() ([]byte, []int) {
-	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{5}
+	return file_ebpfsoc_v1_common_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *Decision) GetId() int64 {
@@ -884,7 +976,7 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x06kernel\x18\x03 \x01(\tR\x06kernel\x12\x12\n" +
 	"\x04arch\x18\x04 \x01(\tR\x04arch\x12#\n" +
 	"\rbtf_available\x18\x05 \x01(\bR\fbtfAvailable\x12\x17\n" +
-	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\x96\x03\n" +
+	"\aboot_id\x18\x06 \x01(\tR\x06bootId\"\xd3\x03\n" +
 	"\x0eDataPlaneState\x12#\n" +
 	"\rprocess_plane\x18\x01 \x01(\tR\fprocessPlane\x12#\n" +
 	"\rprocess_links\x18\x02 \x01(\x05R\fprocessLinks\x12!\n" +
@@ -896,7 +988,17 @@ const file_ebpfsoc_v1_common_proto_rawDesc = "" +
 	"\x0fkernel_policies\x18\a \x03(\v2\x18.ebpfsoc.v1.KernelPolicyR\x0ekernelPolicies\x12\x1f\n" +
 	"\vframes_seen\x18\b \x01(\x04R\n" +
 	"framesSeen\x12!\n" +
-	"\fdevices_seen\x18\t \x01(\rR\vdevicesSeen\"\xa8\x01\n" +
+	"\fdevices_seen\x18\t \x01(\rR\vdevicesSeen\x12;\n" +
+	"\n" +
+	"thresholds\x18\n" +
+	" \x01(\v2\x1b.ebpfsoc.v1.ChokeThresholdsR\n" +
+	"thresholds\"\x8f\x01\n" +
+	"\x0fChokeThresholds\x12\x1f\n" +
+	"\vthrottle_at\x18\x01 \x01(\x05R\n" +
+	"throttleAt\x12\x1b\n" +
+	"\ttarpit_at\x18\x02 \x01(\x05R\btarpitAt\x12#\n" +
+	"\rquarantine_at\x18\x03 \x01(\x05R\fquarantineAt\x12\x19\n" +
+	"\bsever_at\x18\x04 \x01(\x05R\aseverAt\"\xa8\x01\n" +
 	"\fKernelPolicy\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04mode\x18\x02 \x01(\tR\x04mode\x12\x18\n" +
@@ -981,29 +1083,31 @@ func file_ebpfsoc_v1_common_proto_rawDescGZIP() []byte {
 }
 
 var file_ebpfsoc_v1_common_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_ebpfsoc_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_ebpfsoc_v1_common_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_ebpfsoc_v1_common_proto_goTypes = []any{
 	(EnforcementMode)(0),          // 0: ebpfsoc.v1.EnforcementMode
 	(*AgentInfo)(nil),             // 1: ebpfsoc.v1.AgentInfo
 	(*DataPlaneState)(nil),        // 2: ebpfsoc.v1.DataPlaneState
-	(*KernelPolicy)(nil),          // 3: ebpfsoc.v1.KernelPolicy
-	(*ProcessEvent)(nil),          // 4: ebpfsoc.v1.ProcessEvent
-	(*Alert)(nil),                 // 5: ebpfsoc.v1.Alert
-	(*Decision)(nil),              // 6: ebpfsoc.v1.Decision
-	(*timestamppb.Timestamp)(nil), // 7: google.protobuf.Timestamp
+	(*ChokeThresholds)(nil),       // 3: ebpfsoc.v1.ChokeThresholds
+	(*KernelPolicy)(nil),          // 4: ebpfsoc.v1.KernelPolicy
+	(*ProcessEvent)(nil),          // 5: ebpfsoc.v1.ProcessEvent
+	(*Alert)(nil),                 // 6: ebpfsoc.v1.Alert
+	(*Decision)(nil),              // 7: ebpfsoc.v1.Decision
+	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
 }
 var file_ebpfsoc_v1_common_proto_depIdxs = []int32{
 	0, // 0: ebpfsoc.v1.DataPlaneState.mode:type_name -> ebpfsoc.v1.EnforcementMode
 	0, // 1: ebpfsoc.v1.DataPlaneState.device_mode:type_name -> ebpfsoc.v1.EnforcementMode
-	3, // 2: ebpfsoc.v1.DataPlaneState.kernel_policies:type_name -> ebpfsoc.v1.KernelPolicy
-	7, // 3: ebpfsoc.v1.ProcessEvent.occurred_at:type_name -> google.protobuf.Timestamp
-	7, // 4: ebpfsoc.v1.Alert.occurred_at:type_name -> google.protobuf.Timestamp
-	7, // 5: ebpfsoc.v1.Decision.occurred_at:type_name -> google.protobuf.Timestamp
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	4, // 2: ebpfsoc.v1.DataPlaneState.kernel_policies:type_name -> ebpfsoc.v1.KernelPolicy
+	3, // 3: ebpfsoc.v1.DataPlaneState.thresholds:type_name -> ebpfsoc.v1.ChokeThresholds
+	8, // 4: ebpfsoc.v1.ProcessEvent.occurred_at:type_name -> google.protobuf.Timestamp
+	8, // 5: ebpfsoc.v1.Alert.occurred_at:type_name -> google.protobuf.Timestamp
+	8, // 6: ebpfsoc.v1.Decision.occurred_at:type_name -> google.protobuf.Timestamp
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_ebpfsoc_v1_common_proto_init() }
@@ -1017,7 +1121,7 @@ func file_ebpfsoc_v1_common_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_ebpfsoc_v1_common_proto_rawDesc), len(file_ebpfsoc_v1_common_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

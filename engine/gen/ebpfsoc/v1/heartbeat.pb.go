@@ -55,11 +55,27 @@ type HeartbeatRequest struct {
 	// Capped like chokes/devices above: this is a fleet SCAN surface, not the
 	// authoritative interactive one, and an uncapped per-heartbeat dump of every
 	// process on every host would cost more than the panels are worth.
-	Buckets       []*BucketSummary  `protobuf:"bytes,8,rep,name=buckets,proto3" json:"buckets,omitempty"`
-	Cgroups       []*CgroupSummary  `protobuf:"bytes,9,rep,name=cgroups,proto3" json:"cgroups,omitempty"`
-	Processes     []*ProcessSummary `protobuf:"bytes,10,rep,name=processes,proto3" json:"processes,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Buckets   []*BucketSummary  `protobuf:"bytes,8,rep,name=buckets,proto3" json:"buckets,omitempty"`
+	Cgroups   []*CgroupSummary  `protobuf:"bytes,9,rep,name=cgroups,proto3" json:"cgroups,omitempty"`
+	Processes []*ProcessSummary `protobuf:"bytes,10,rep,name=processes,proto3" json:"processes,omitempty"`
+	// Telemetry this agent has PERMANENTLY LOST — records evicted by the uplink
+	// buffer cap because the control plane could not be reached for long enough
+	// to fill it.
+	//
+	// Distinct from buffer_depth above, which is a backlog that will still drain.
+	// This is the count that never arrives, and it is the honest answer to the
+	// question a customer asks before putting an agent on production hosts: "are
+	// you dropping events?" The agent already logs it as a TELEMETRY GAP; nothing
+	// carried it to the console, so the fleet view could show a healthy agent
+	// that had silently discarded a day of evidence.
+	DroppedRecords uint64 `protobuf:"varint,11,opt,name=dropped_records,json=droppedRecords,proto3" json:"dropped_records,omitempty"`
+	// Live-stream frames discarded because a console subscriber could not keep
+	// up. Local to the agent's own debug console rather than a gap in the
+	// evidence store, so it is reported separately and must never be added to
+	// dropped_records.
+	DroppedBroadcast uint64 `protobuf:"varint,12,opt,name=dropped_broadcast,json=droppedBroadcast,proto3" json:"dropped_broadcast,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *HeartbeatRequest) Reset() {
@@ -160,6 +176,20 @@ func (x *HeartbeatRequest) GetProcesses() []*ProcessSummary {
 		return x.Processes
 	}
 	return nil
+}
+
+func (x *HeartbeatRequest) GetDroppedRecords() uint64 {
+	if x != nil {
+		return x.DroppedRecords
+	}
+	return 0
+}
+
+func (x *HeartbeatRequest) GetDroppedBroadcast() uint64 {
+	if x != nil {
+		return x.DroppedBroadcast
+	}
+	return 0
 }
 
 // BucketSummary is one kernel token bucket — the per-PID rate limit the choke
@@ -661,7 +691,7 @@ var File_ebpfsoc_v1_heartbeat_proto protoreflect.FileDescriptor
 const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\n" +
 	"\x1aebpfsoc/v1/heartbeat.proto\x12\n" +
-	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\x8d\x04\n" +
+	"ebpfsoc.v1\x1a\x17ebpfsoc/v1/common.proto\x1a\x1fgoogle/protobuf/timestamp.proto\"\xe3\x04\n" +
 	"\x10HeartbeatRequest\x124\n" +
 	"\n" +
 	"agent_info\x18\x01 \x01(\v2\x15.ebpfsoc.v1.AgentInfoR\tagentInfo\x129\n" +
@@ -675,7 +705,9 @@ const file_ebpfsoc_v1_heartbeat_proto_rawDesc = "" +
 	"\abuckets\x18\b \x03(\v2\x19.ebpfsoc.v1.BucketSummaryR\abuckets\x123\n" +
 	"\acgroups\x18\t \x03(\v2\x19.ebpfsoc.v1.CgroupSummaryR\acgroups\x128\n" +
 	"\tprocesses\x18\n" +
-	" \x03(\v2\x1a.ebpfsoc.v1.ProcessSummaryR\tprocesses\"\x87\x01\n" +
+	" \x03(\v2\x1a.ebpfsoc.v1.ProcessSummaryR\tprocesses\x12'\n" +
+	"\x0fdropped_records\x18\v \x01(\x04R\x0edroppedRecords\x12+\n" +
+	"\x11dropped_broadcast\x18\f \x01(\x04R\x10droppedBroadcast\"\x87\x01\n" +
 	"\rBucketSummary\x12\x10\n" +
 	"\x03pid\x18\x01 \x01(\rR\x03pid\x12 \n" +
 	"\frate_per_sec\x18\x02 \x01(\x04R\n" +

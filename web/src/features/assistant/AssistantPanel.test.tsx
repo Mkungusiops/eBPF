@@ -11,7 +11,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { AssistantPanel } from "./AssistantPanel";
-import type { AssistantApi, AssistantAnswer } from "./api";
+import type { AssistantApi, AssistantAnswer, AssistantAskRequest, AssistantSurface } from "./api";
 
 const answer: AssistantAnswer = {
   agent: "explain-chain",
@@ -29,6 +29,10 @@ function fakeApi(over: Partial<AssistantApi> = {}): AssistantApi {
       enabled: true,
       model: "gpt-oss:20b",
       agents: [
+        // Ordered and flagged the way the server orders and flags them:
+        // conversational first. A fake that does not match the contract tests
+        // nothing about the contract.
+        { id: "ask", title: "Ask a question", conversational: true },
         { id: "explain-chain", title: "Explain this process chain" },
         { id: "summarise-incident", title: "Summarise this incident" }
       ]
@@ -107,5 +111,53 @@ describe("AssistantPanel", () => {
     // The actions remain usable — the assistant failing must not strand the
     // analyst inside their own investigation.
     expect(screen.getByRole("button", { name: /Summarise this incident/ })).toBeEnabled();
+  });
+
+  it("routes a typed question to the conversational agent, not a fixed-task button", async () => {
+    // THE BUG THIS PINS. The panel hard-coded `summarise-incident` for free
+    // text, so every typed question on all eight surfaces came back as an
+    // incident summary — ask "is this host compromised?" and receive a shift
+    // handover. It is the same defect that was found and fixed in the sidebar,
+    // which had hard-coded a different agent; only the sidebar was fixed.
+    const user = userEvent.setup();
+    const ask = vi.fn(async (_req: AssistantAskRequest) => answer);
+    render(<AssistantPanel api={fakeApi({ ask })} />);
+
+    const input = await screen.findByRole("textbox", { name: /Ask the analyst assistant/ });
+    await user.type(input, "is this host compromised?");
+    await user.click(screen.getByRole("button", { name: /Send question/ }));
+
+    await waitFor(() => expect(ask).toHaveBeenCalled());
+    expect(ask.mock.calls[0][0]).toMatchObject({
+      agent: "ask",
+      question: "is this host compromised?"
+    });
+  });
+
+  it("tells the engine which panel it is mounted on", async () => {
+    // subjectLabel is for the analyst and never leaves the browser; `surface`
+    // is for the model. Conflating them is how a panel could announce
+    // "Investigating the device fleet" above an assistant that did not know it
+    // was looking at devices.
+    const user = userEvent.setup();
+    const ask = vi.fn(async (_req: AssistantAskRequest) => answer);
+    const capability = vi.fn(async (_surface?: AssistantSurface) => ({
+      enabled: true,
+      model: "gpt-oss:20b",
+      agents: [
+        { id: "ask", title: "Ask a question", conversational: true },
+        { id: "assess-device-exposure", title: "Assess device exposure" }
+      ]
+    }));
+    render(<AssistantPanel api={fakeApi({ ask, capability })} surface="devices-assurance" />);
+
+    // The capability call is scoped, so the panel is offered the buttons that
+    // can actually be answered there.
+    await waitFor(() => expect(capability).toHaveBeenCalled());
+    expect(capability.mock.calls[0][0]).toBe("devices-assurance");
+
+    await user.click(await screen.findByRole("button", { name: /Assess device exposure/ }));
+    await waitFor(() => expect(ask).toHaveBeenCalled());
+    expect(ask.mock.calls[0][0]).toMatchObject({ surface: "devices-assurance" });
   });
 });
