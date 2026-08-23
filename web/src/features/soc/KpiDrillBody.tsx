@@ -123,7 +123,10 @@ export function KpiDrillBody({
           ))}
         </div>
       </section>
-      <AssistantPanel />
+      {/* No exec id: this panel is about estate-wide counts for a window, not
+          one process. The surface is what tells the assistant that — without it
+          this mount passed no context at all and the model had to guess. */}
+      <AssistantPanel surface="kpi-drill" subjectLabel="the current window" />
     </div>
   );
 }

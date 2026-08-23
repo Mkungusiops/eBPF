@@ -51,7 +51,14 @@ export interface KernelPosture {
 export interface ChokeState {
   mode?: ChokeMode;
   dry_run?: boolean;
-  kill_switched?: boolean;
+  /**
+   * null when the deployment cannot observe it. The control plane has no
+   * heartbeat field for the agent's kill-switch, so it reports null rather
+   * than the literal `false` it used to send — a definite "Standby" for a
+   * bypass that may well be engaged. Callers must not derive a toggle
+   * direction from an unknown.
+   */
+  kill_switched?: boolean | null;
   tracked?: number;
   counts?: Partial<Record<ChokeStateName, number>>;
   thresholds?: Thresholds;
@@ -219,28 +226,7 @@ export interface PolicyBucket {
   burst?: number;
 }
 
-export interface PolicyDocument {
-  metadata?: {
-    name?: string;
-    description?: string;
-  };
-  match?: {
-    binaries?: string[];
-    states?: string[];
-  };
-  buckets?: PolicyBucket[];
-  deny_syscalls?: string[];
-  deny_paths?: string[];
-}
 
-export interface PolicyPreviewResponse {
-  valid?: boolean;
-  errors?: string[];
-  policy?: PolicyDocument;
-  matches?: CircuitEntry[];
-  // Size of the live tracked snapshot the policy was evaluated against.
-  scanned?: number;
-}
 
 export interface StreamEnvelope {
   type?: "heartbeat" | "event" | "alert" | "process_exit" | "decision" | string;

@@ -21,9 +21,18 @@ export function DevicesAssuranceView({
   protectedCount: number;
   onExport: (kind: "report" | "bundle") => void;
 }) {
-  const needing = metrics.activeThreats + metrics.contained;
-  const coverage = needing === 0 ? 100 : Math.round((metrics.contained / needing) * 100);
-  const postureTone = metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
+  // Coverage is contained-over-(contained+uncontained). With no threat count
+  // there is no denominator, and the old `needing === 0 ? 100` turned that
+  // absence into a perfect score — the single line that pinned device coverage
+  // at 100% no matter what the estate was doing.
+  const coverage = metrics.activeThreats === null
+    ? null
+    : (metrics.activeThreats + metrics.contained) === 0
+      ? 100
+      : Math.round((metrics.contained / (metrics.activeThreats + metrics.contained)) * 100);
+  const postureTone = metrics.posture === null
+    ? "muted"
+    : metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
   const enforcing = metrics.mode === "enforcing";
   const planeOk = metrics.auditOk;
   return (
@@ -33,14 +42,14 @@ export function DevicesAssuranceView({
           <header>
             <h3>Network posture</h3>
             <span className="cc-assur-score">
-              {metrics.posture}
-              <small>/100</small>
+              {metrics.posture === null ? "n/a" : metrics.posture}
+              {metrics.posture === null ? null : <small>/100</small>}
             </span>
           </header>
           <div className="cc-assur-drivers">
-            <div className={`cc-assur-driver ${coverage >= 80 ? "good" : "warn"}`}>
+            <div className={`cc-assur-driver ${coverage === null ? "" : coverage >= 80 ? "good" : "warn"}`}>
               <span>Containment coverage</span>
-              <strong>{coverage}%</strong>
+              <strong>{coverage === null ? "n/a" : `${coverage}%`}</strong>
             </div>
             <div className={`cc-assur-driver ${enforcing ? "good" : "warn"}`}>
               <span>Enforcement</span>
@@ -121,7 +130,7 @@ export function DevicesAssuranceView({
           </div>
         </article>
       </div>
-      <AssistantPanel subjectLabel="the device fleet" />
+      <AssistantPanel surface="devices-assurance" subjectLabel="the device fleet" />
     </section>
   );
 }

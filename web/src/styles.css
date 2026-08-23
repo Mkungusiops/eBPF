@@ -174,3 +174,165 @@ textarea {
   outline: 2px solid rgb(var(--text));
   outline-offset: 2px;
 }
+
+/* Sensor Health & Coverage — see SensorHealthBody.tsx. */
+.soc-sensor { display: flex; flex-direction: column; gap: 14px; }
+.soc-sensor-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+.soc-sensor-summary > div { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.07); border-radius: 8px; padding: 10px 12px; }
+.soc-sensor-summary strong { display: block; font-size: 22px; font-variant-numeric: tabular-nums; }
+.soc-sensor-summary strong.is-hot { color: #f4556e; }
+.soc-sensor-caveat { margin: 0; font-size: 12px; opacity: 0.6; }
+.soc-sensor-list { display: flex; flex-direction: column; gap: 8px; }
+.soc-sensor-row { border: 1px solid rgba(255,255,255,0.08); border-left-width: 3px; border-radius: 8px; padding: 10px 12px; }
+.soc-sensor-row.is-ok { border-left-color: #2f9e5e; }
+.soc-sensor-row.is-degraded { border-left-color: #f5b13d; }
+.soc-sensor-row.is-stale { border-left-color: #f4556e; }
+.soc-sensor-row.is-unknown { border-left-color: #6b7a8c; }
+.soc-sensor-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.soc-sensor-head strong { font-family: var(--mono, monospace); font-size: 13px; }
+.soc-sensor-status { text-transform: uppercase; font-size: 10px; letter-spacing: 0.08em; opacity: 0.75; }
+.soc-sensor-head em { margin-left: auto; font-style: normal; font-size: 11px; opacity: 0.6; }
+.soc-sensor-kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12px; }
+.soc-sensor-kv > span { opacity: 0.6; }
+.soc-sensor-kv > strong { font-variant-numeric: tabular-nums; font-weight: 600; }
+.soc-sensor-kv > strong.is-hot { color: #f4556e; }
+.soc-sensor-issues { margin: 8px 0 0; padding-left: 16px; font-size: 12px; opacity: 0.8; }
+.soc-sensor-policies { border-top: 1px solid rgba(255,255,255,0.07); padding-top: 10px; }
+.soc-sensor-drift { border: 1px solid rgba(244,85,110,0.4); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.soc-sensor-drift strong { display: block; color: #f4556e; margin-bottom: 4px; }
+.soc-sensor-drift ul { margin: 6px 0 0; padding-left: 16px; }
+.soc-sensor-drift code { font-family: var(--mono, monospace); }
+
+/* Detections — see DetectionsBody.tsx. */
+.soc-detections { display: flex; flex-direction: column; gap: 14px; }
+.soc-detections-alarm { display: flex; gap: 10px; align-items: flex-start; border: 1px solid rgba(244,85,110,0.4); border-radius: 8px; padding: 10px 12px; font-size: 12px; }
+.soc-detections-alarm strong { display: block; color: #f4556e; margin-bottom: 3px; }
+.soc-detections-alarm span { opacity: 0.85; }
+.soc-detections-list { display: flex; flex-direction: column; gap: 8px; }
+.soc-detections-card { border: 1px solid rgba(255,255,255,0.08); border-left: 3px solid #2f9e5e; border-radius: 8px; padding: 10px 12px; }
+.soc-detections-card.is-missing { border-left-color: #f4556e; }
+.soc-detections-card p { margin: 6px 0 0; font-size: 12px; opacity: 0.7; }
+.soc-detections-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.soc-detections-head strong { font-family: var(--mono, monospace); font-size: 13px; }
+.soc-detections-loaded { margin-left: auto; font-size: 11px; opacity: 0.7; }
+.soc-detections-push { border-top: 1px solid rgba(255,255,255,0.07); padding-top: 12px; }
+.soc-detections-form { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.soc-detections-form label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; }
+.soc-detections-form label > span { opacity: 0.7; }
+.soc-detections-form input, .soc-detections-form textarea { width: 100%; border: 1px solid var(--border); border-radius: 6px; background: var(--field-bg); color: var(--text); padding: 8px 10px; font-family: var(--mono, monospace); font-size: 12px; }
+
+/* The push form defines its own field tokens.
+ *
+ * The rule above always referenced --border, --field-bg and --text, and the SOC
+ * surface defines none of them: --border and --field-bg exist only inside
+ * .choke-route, and styles.css's --text is an RGB TRIPLET for rgb(var(--text)),
+ * so `color: var(--text)` expanded to `color: 230 234 241` and was dropped.
+ * Every one of those declarations was therefore inert, and the textarea an
+ * operator writes a detection into rendered as an unbordered, unfilled box —
+ * the one surface on this console where the input IS the work. Values match
+ * ChokeRoute.css so the two authoring surfaces look like the same product.
+ */
+.soc-detections-form {
+  --border: rgba(148, 163, 184, 0.12);
+  --field-bg: rgba(10, 13, 20, 0.3);
+}
+.theme-light .soc-detections-form {
+  --border: rgba(26, 34, 48, 0.12);
+  --field-bg: #f7f9fc;
+}
+.soc-detections-form input, .soc-detections-form textarea { color: rgb(var(--text)); }
+.soc-detections-form input:focus-visible, .soc-detections-form textarea:focus-visible {
+  outline: 2px solid rgb(var(--accent)); outline-offset: 1px;
+}
+
+/* Starting points, above the fields they fill in. */
+.soc-detections-start { display: flex; flex-direction: column; gap: 6px; }
+.soc-detections-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.soc-detections-chip {
+  border: 1px solid var(--border); border-radius: 999px; padding: 5px 12px;
+  background: var(--field-bg); color: rgb(var(--text)); font-size: 12px; cursor: pointer;
+}
+.soc-detections-chip:hover { border-color: rgb(var(--accent) / 0.5); }
+.soc-detections-chip.is-on { border-color: rgb(var(--accent)); color: rgb(var(--accent)); }
+
+/* What to change once a template is loaded, in the order to change it. */
+.soc-detections-guide {
+  display: flex; flex-direction: column; gap: 6px; font-size: 12px;
+  border-left: 2px solid rgb(var(--accent)); padding: 8px 12px;
+}
+.soc-detections-guide ol { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 3px; opacity: 0.85; }
+
+/* Pre-flight problems, between the fields and the dispatch button. */
+.soc-detections-check { border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 6px; }
+.soc-detections-check.bad { border: 1px solid rgba(244,85,110,0.4); }
+.soc-detections-check.warn { border: 1px solid rgba(194,130,10,0.45); }
+.soc-detections-check ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px; opacity: 0.9; }
+
+/* Taking a policy back off the fleet. */
+.soc-detections-remove-open { margin-top: 6px; font-size: 11px; opacity: 0.75; }
+.soc-detections-remove { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; font-size: 12px;
+  --border: rgba(148, 163, 184, 0.12); --field-bg: rgba(10, 13, 20, 0.3); }
+.theme-light .soc-detections-remove { --border: rgba(26, 34, 48, 0.12); --field-bg: #f7f9fc; }
+.soc-detections-remove label { display: flex; flex-direction: column; gap: 4px; }
+.soc-detections-remove label > span { opacity: 0.7; }
+.soc-detections-remove input { width: 100%; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--field-bg); color: rgb(var(--text)); padding: 8px 10px; font-size: 12px; }
+.soc-detections-warn { color: #f4556e; }
+.soc-detections-outcome { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; }
+.soc-detections-outcome code { font-family: var(--mono, monospace); }
+.soc-detections-cardactions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }
+.soc-detections-editing { border-left-color: #c2820a; }
+.soc-detections-restore { font-size: 12px; padding: 5px 12px; }
+
+/* An issue is a finding plus what to do about it. Without the second half the
+   whole panel is a wall of numbers behind a READ-ONLY badge. */
+.soc-sensor-issues li { display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px; align-items: flex-start; }
+.soc-sensor-remedy { opacity: 0.75; font-size: 11px; line-height: 1.45; }
+
+/* The containment verdict. Stated in every case, including the healthy one —
+   the panel previously looked identical whether a host could contain anything
+   or not. Tone follows the verdict, and an unreadable posture is never green. */
+.soc-sensor-containment { display: flex; flex-direction: column; gap: 3px; padding: 8px 10px; margin: 8px 0;
+  border-left: 2px solid rgba(148,163,184,0.4); font-size: 12px; }
+.soc-sensor-containment span { opacity: 0.8; font-size: 11px; line-height: 1.45; }
+.soc-sensor-containment.verdict-full { border-left-color: #2f9e5e; }
+.soc-sensor-containment.verdict-partial { border-left-color: #6b7a8c; }
+.soc-sensor-containment.verdict-partial-degraded { border-left-color: #c2820a; }
+.soc-sensor-containment.verdict-partial-unknown { border-left-color: #6b7a8c; }
+.soc-sensor-containment.verdict-kill-only { border-left-color: #c2820a; }
+.soc-sensor-containment.verdict-none { border-left-color: #f4556e; }
+
+/* Notes: true, worth saying, not faults. Deliberately quieter than issues and
+   carrying no warning icon — these do not lower status or count as attention. */
+.soc-sensor-notes { margin: 6px 0 0; padding-left: 16px; display: flex; flex-direction: column; gap: 4px;
+  font-size: 11px; opacity: 0.65; line-height: 1.45; }
+
+/* A finding is a statement, a remedy, and — where the platform can act — a
+   control that acts. Notes carry actions too: the operator does not care which
+   channel a finding arrived on, only whether there is something to press. */
+.soc-sensor-findingactions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.soc-sensor-notes li { display: flex; flex-direction: column; gap: 3px; align-items: flex-start; }
+
+/* Arming the ladder and releasing the kill-switch are confirmed, with a
+   reason, because both turn enforcement back on globally. */
+.soc-sensor-confirm { display: flex; flex-direction: column; gap: 8px; margin: 10px 0; padding: 10px 12px;
+  border: 1px solid rgba(194,130,10,0.45); border-radius: 8px; font-size: 12px; }
+.soc-sensor-confirm span { opacity: 0.8; font-size: 11px; line-height: 1.45; }
+.soc-sensor-confirm label { display: flex; flex-direction: column; gap: 4px; }
+.soc-sensor-confirm input { border: 1px solid rgba(148,163,184,0.2); border-radius: 6px;
+  background: rgba(10,13,20,0.3); color: rgb(var(--text)); padding: 7px 10px; font-size: 12px; }
+.theme-light .soc-sensor-confirm input { background: #f7f9fc; border-color: rgba(26,34,48,0.12); }
+.soc-sensor-result { margin: 8px 0; padding: 8px 12px; border-radius: 8px; font-size: 12px; }
+.soc-sensor-result.ok { border: 1px solid rgba(47,158,94,0.4); }
+.soc-sensor-result.bad { border: 1px solid rgba(244,85,110,0.4); }
+.theme-light .soc-detections-warn { color: #e11d48; }
+.soc-detections-note { font-size: 11px; opacity: 0.7; margin: 0; }
+.soc-detections-result { margin-top: 10px; border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }
+.soc-detections-result.ok { border: 1px solid rgba(47,158,94,0.4); }
+.soc-detections-result.bad { border: 1px solid rgba(244,85,110,0.4); }
+.soc-detections-caveat { opacity: 0.7; }
+.soc-detections-explain { border: 1px solid rgba(255,255,255,0.08); border-radius: 8px; padding: 10px 12px; font-size: 12px; opacity: 0.85; }
+.soc-detections-explain p { margin: 0 0 6px; }
+.soc-detections-explain ul { margin: 0; padding-left: 16px; display: flex; flex-direction: column; gap: 3px; }
+.soc-detections-unknown { border: 1px solid rgba(107,122,140,0.5); border-radius: 8px; padding: 10px 12px; font-size: 12px; opacity: 0.8; }
+.soc-detections-card.is-unknown { border-left-color: #6b7a8c; }

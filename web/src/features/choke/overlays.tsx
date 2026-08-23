@@ -125,9 +125,19 @@ export function ChokeOverlays({
           await refreshAll();
         }}
         onAnnotate={async (execId, note) => {
-          await annotateCircuit(execId, note);
-          pushToast(note ? "note saved" : "note cleared", "ok");
-          await refreshCircuits();
+          // "note saved" used to fire unconditionally. On the control plane the
+          // endpoint returned {"ok": true} without ever reading the body, so
+          // the operator was told their justification was recorded and it was
+          // discarded — then the field came back empty on refresh with no
+          // explanation. The server now refuses honestly, so the console has to
+          // relay the refusal rather than congratulate the user on it.
+          try {
+            await annotateCircuit(execId, note);
+            pushToast(note ? "note saved" : "note cleared", "ok");
+            await refreshCircuits();
+          } catch (error) {
+            pushToast(error instanceof Error ? error.message : "note NOT saved", "warn");
+          }
         }}
         onCopy={onCopy}
       />

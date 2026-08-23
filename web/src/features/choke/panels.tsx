@@ -3,7 +3,7 @@
 // mirrors (cgroup tiers, BPF token buckets) that show enforcement actually
 // landed. Each one reads a snapshot the route already fetched.
 import { useEffect, useMemo, useState } from "react";
-import type { BucketEntry, CgroupMap, CircuitEntry, PolicyPreviewResponse, Thresholds } from "./types";
+import type { BucketEntry, CgroupMap, CircuitEntry, Thresholds } from "./types";
 import {
   STATE_ORDER,
   bucketFlagsLabel,
@@ -301,89 +301,3 @@ export function BucketList({ buckets }: { buckets: BucketEntry[] }) {
   );
 }
 
-export function PolicyPreview({
-  preview,
-  error,
-  checking,
-  circuits,
-}: {
-  preview: PolicyPreviewResponse | null;
-  error: string;
-  checking: boolean;
-  circuits: CircuitEntry[];
-}) {
-  if (checking) return <LoadingState label="Evaluating policy" />;
-  if (error) return <ErrorState title="Policy invalid" body={error} />;
-  if (!preview) {
-    return (
-      <EmptyState
-        title="No preview yet"
-        body="Edit the policy and hit Preview matches to dry-run it against the live snapshot. 'Build from live' seeds one that matches what's tracked right now."
-      />
-    );
-  }
-  if (preview.valid === false) return <ErrorState title="Policy invalid" body={(preview.errors || []).join("; ")} />;
-
-  const doc = preview.policy;
-  const matches = preview.matches || [];
-  const scanned = preview.scanned ?? circuits.length;
-  const targetStates = doc?.match?.states && doc.match.states.length > 0 ? doc.match.states : ["any non-pristine"];
-  const buckets = doc?.buckets || [];
-  const denySyscalls = doc?.deny_syscalls || [];
-  const denyPaths = doc?.deny_paths || [];
-
-  // Live state distribution so an empty match set is explained, not mysterious.
-  const liveStates = new Map<string, number>();
-  for (const c of circuits) {
-    const s = c.state || "pristine";
-    liveStates.set(s, (liveStates.get(s) || 0) + 1);
-  }
-  const liveSummary = STATE_ORDER.map((s) => (liveStates.get(s) ? `${s}×${liveStates.get(s)}` : null))
-    .filter(Boolean)
-    .join(" · ");
-
-  return (
-    <div className="choke-preview">
-      <div className="choke-preview-head">
-        <span className="choke-preview-ok">valid</span>
-        <strong>{doc?.metadata?.name || "unnamed"}</strong>
-        <span className="choke-preview-count">{matches.length} matched · {scanned} scanned</span>
-      </div>
-      {doc?.metadata?.description ? <p className="choke-preview-desc">{doc.metadata.description}</p> : null}
-
-      <div className="choke-preview-effects">
-        <div><span>targets</span><strong>{(doc?.match?.binaries || []).join(", ") || "—"}</strong></div>
-        <div><span>when state</span><strong>{targetStates.join(", ")}</strong></div>
-        {buckets.length > 0 ? (
-          <div><span>throttles</span><strong>{buckets.map((b) => `${b.dimension} @ ${b.rate_per_sec ?? "?"}/s`).join(", ")}</strong></div>
-        ) : null}
-        {denySyscalls.length > 0 ? <div><span>deny syscalls</span><strong>{denySyscalls.join(", ")}</strong></div> : null}
-        {denyPaths.length > 0 ? <div><span>deny paths</span><strong>{denyPaths.join(", ")}</strong></div> : null}
-      </div>
-
-      {matches.length === 0 ? (
-        <div className="choke-preview-nomatch">
-          <strong>No live matches</strong>
-          <span>
-            Nothing in the tracked snapshot ({scanned} processes) matches these binaries in state{" "}
-            {targetStates.join("/")}.
-          </span>
-          {liveSummary ? <span>Live states: {liveSummary}.</span> : null}
-          <span className="choke-muted">Use “Build from live” to target what’s actually running.</span>
-        </div>
-      ) : (
-        <div className="choke-preview-list">
-          {matches.slice(0, 50).map((entry) => (
-            <div key={entry.exec_id || entry.pid}>
-              <StateBadge state={entry.state} />
-              <span>{entry.pid || "-"}</span>
-              <span className="truncate" title={entry.binary || ""}>{entry.binary || "(unknown)"}</span>
-              <strong>{entry.score || 0}</strong>
-            </div>
-          ))}
-          {matches.length > 50 ? <span className="choke-muted">+{matches.length - 50} more</span> : null}
-        </div>
-      )}
-    </div>
-  );
-}

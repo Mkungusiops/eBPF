@@ -82,6 +82,24 @@ export function useDeviceActions({
 
   const toggleKillSwitch = useCallback(async () => {
     if (!state) return;
+    // Do NOT derive a direction from an unknown state.
+    //
+    // The control plane cannot observe the agent's kill-switch — no heartbeat
+    // field carries it — so it reports null. `!null` is true, which meant the
+    // toggle always resolved to "engage": the emergency bypass could be turned
+    // ON from the console and never OFF again, and an operator trying to
+    // restore enforcement would bypass it a second time instead.
+    //
+    // Refusing is the safe failure here. On the single-tenant engine the state
+    // IS observed and the toggle behaves normally; on the control plane the
+    // control is disabled with the reason, until the agent reports it.
+    if (state.kill_switched === null || state.kill_switched === undefined) {
+      pushToast(
+        "kill-switch state is not reported by this deployment — engage or disengage it on the agent's own console",
+        "warn"
+      );
+      return;
+    }
     const on = !state.kill_switched;
     const result = await requestConfirm({
       title: on ? "Engage kill-switch" : "Disengage kill-switch",

@@ -83,9 +83,19 @@ export function buildDeviceAssuranceHtml(args: {
   const { metrics: m, counts, links, frames, protectedCount, devices, when } = args;
   const esc = (s: string) =>
     String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
-  const needing = m.activeThreats + m.contained;
-  const coverage = needing === 0 ? 100 : Math.round((m.contained / needing) * 100);
-  const tone = m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
+  // Null-safe, and rendered as "n/a" rather than interpolated. A template
+  // literal will happily print the string "null" into a board report, and tsc
+  // does not flag it — which is how `${postureText}` in the HTML below would
+  // have shipped a report reading "posture: null / 100".
+  const coverage = m.activeThreats === null
+    ? null
+    : (m.activeThreats + m.contained) === 0
+      ? 100
+      : Math.round((m.contained / (m.activeThreats + m.contained)) * 100);
+  const postureText = m.posture === null ? "n/a" : String(m.posture);
+  const coverageText = coverage === null ? "n/a" : `${coverage}%`;
+  const auditRowsText = m.auditRows === null ? "not counted" : m.auditRows.toLocaleString();
+  const tone = m.posture === null ? "#6b7a8c" : m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
   const rung = (r: string) => counts[r] || 0;
   const deviceRows =
     devices.length === 0
@@ -127,12 +137,12 @@ export function buildDeviceAssuranceHtml(args: {
     <h1>Network Containment Assurance Report</h1>
     <div class="sub">Device enforcement plane · generated ${esc(when.toLocaleString())}</div>
   </div>
-  <div class="posture"><div class="num">${m.posture}</div><div class="lbl">Posture / 100</div></div>
+  <div class="posture"><div class="num">${postureText}</div><div class="lbl">Posture / 100</div></div>
 </div>
 <div class="tiles">
   <div class="tile"><div class="v">${m.tracked.toLocaleString()}</div><div class="l">Devices tracked</div></div>
   <div class="tile"><div class="v">${m.contained}</div><div class="l">Contained</div></div>
-  <div class="tile"><div class="v">${coverage}%</div><div class="l">Coverage</div></div>
+  <div class="tile"><div class="v">${coverageText}</div><div class="l">Coverage</div></div>
   <div class="tile"><div class="v">${protectedCount}</div><div class="l">Protected assets</div></div>
 </div>
 <h2>Containment ladder</h2>

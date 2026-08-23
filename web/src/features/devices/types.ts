@@ -25,7 +25,14 @@ export interface DeviceDataPlaneState {
   mode?: DeviceMode;
   enforcing?: boolean;
   dry_run?: boolean;
-  kill_switched?: boolean;
+  /**
+   * null when the deployment cannot observe it. The control plane has no
+   * heartbeat field for the agent's kill-switch, so it reports null rather
+   * than the literal `false` it used to send — a definite "Standby" for a
+   * bypass that may well be engaged. Callers must not derive a toggle
+   * direction from an unknown.
+   */
+  kill_switched?: boolean | null;
   tracked?: number;
   devices_known?: number;
   counts?: DeviceStateCounts;

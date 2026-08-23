@@ -10,7 +10,9 @@ import type * as React from "react";
 import {
   EMPTY_SOC_SNAPSHOT,
   type AlertStats,
+  type DecisionStats,
   fetchAlertStats,
+  fetchDecisionStats,
   MAX_BUFFERED_ALERTS,
   MAX_BUFFERED_DECISIONS,
   MAX_BUFFERED_EVENTS,
@@ -18,6 +20,7 @@ import {
   normalizeAlert,
   normalizeEvent
 } from "./api";
+import { estateTypicalRate, weightedHourlyRates } from "./risk";
 import type { StreamFrame } from "../../lib/types";
 import type { SocDecision, SocSnapshot } from "./types";
 
@@ -164,6 +167,100 @@ export function useAlertStats(rangeMin: number, buckets: number) {
   }, [buckets, rangeMin]);
 
   return { stats, supported };
+}
+
+/**
+ * Server-computed decision counts for the selected window.
+ *
+ * Same shape and cadence as useAlertStats, and the same honesty rule: a failed
+ * fetch clears the numbers rather than leaving the previous window's on screen
+ * under a new label. `supported` false means the caller must fall back to the
+ * buffered count AND say it is a floor.
+ */
+export function useDecisionStats(rangeMin: number) {
+  const [stats, setStats] = useState<DecisionStats | null>(null);
+  const [supported, setSupported] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const tick = async () => {
+      const next = await fetchDecisionStats(rangeMin, controller.signal);
+      if (cancelled) return;
+      if (next) {
+        setStats(next);
+        setSupported(true);
+      } else {
+        setStats(null);
+        setSupported(false);
+      }
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 15_000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, [rangeMin]);
+
+  return { stats, supported };
+}
+
+/**
+ * The estate's own typical weighted alert rate, from a week of hourly buckets.
+ *
+ * A SEPARATE, SLOW fetch, deliberately not folded into useAlertStats. That hook
+ * re-requests every 15 seconds and re-requests again whenever the operator
+ * changes range; a seven-day aggregate on that cadence is the request pattern
+ * that took the control plane down on 2026-08-05. This one is fixed at 7 days
+ * regardless of the selected range — the baseline is a property of the estate,
+ * not of the window being viewed — and refreshes every ten minutes, because a
+ * week's median does not move faster than that.
+ *
+ * Returns null while loading, when the endpoint is absent, or when there is too
+ * little history to say. The caller must treat null as UNKNOWN and fall back to
+ * the fixed scale, saying so — not as zero.
+ */
+export function useEstateBaseline() {
+  const [typicalRate, setTypicalRate] = useState<number | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const controller = new AbortController();
+    const windowMin = 7 * 24 * 60;
+    const buckets = 168; // one per hour across the week
+    const tick = async () => {
+      const next = await fetchAlertStats(windowMin, buckets, controller.signal);
+      if (cancelled) return;
+      if (!next || next.buckets.length === 0) {
+        setTypicalRate(null);
+        return;
+      }
+      const bucketMinutes = windowMin / next.buckets.length;
+      setTypicalRate(
+        estateTypicalRate(
+          weightedHourlyRates(
+            next.buckets.map((b) => ({
+              critical: b.counts.critical,
+              high: b.counts.high,
+              medium: b.counts.medium
+            })),
+            bucketMinutes
+          )
+        )
+      );
+    };
+    void tick();
+    const id = window.setInterval(() => void tick(), 600_000);
+    return () => {
+      cancelled = true;
+      controller.abort();
+      window.clearInterval(id);
+    };
+  }, []);
+
+  return typicalRate;
 }
 
 export function useNow(intervalMs: number) {

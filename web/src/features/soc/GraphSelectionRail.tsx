@@ -159,7 +159,7 @@ export function GraphSelectionRail({
         </p>
       ) : null}
       {drillExecId ? (
-        <AssistantPanel execId={drillExecId} subjectLabel="the selected process" />
+        <AssistantPanel surface="graph" execId={drillExecId} subjectLabel="the selected process" />
       ) : null}
     </aside>
   );

@@ -95,3 +95,46 @@ export const DEVICE_TERMINAL: TerminalPolicy = {
   confirmNote:
     "cuts this device off the network. It stays severed until released — press again to confirm."
 };
+
+/**
+ * The audit chain has THREE states, and collapsing them to a boolean makes a
+ * false statement in one direction or the other.
+ *
+ * The single-tenant engine hash-chains its decisions and answers
+ * `{ok: true, total: N}`. The multi-tenant control plane does NOT chain
+ * centrally — each agent chains its own — and answers
+ * `{ok: false, supported: false}`. A surface that tests only `ok === false`
+ * therefore reports BROKEN on every multi-tenant deployment, permanently, for
+ * a check that was never run.
+ *
+ * Measured on console.adanianlabs.io 2026-08-22: the Choke Gateway footer read
+ * "chain broken @ ?", the System Health tile read "broken", the assurance
+ * banner read "CHAIN BROKEN" in alarm red, and the downloadable board report
+ * carried `audit.intact: false` — all four telling a customer its
+ * tamper-evidence had failed when the control plane simply does not maintain a
+ * central chain. That is the single worst thing to be wrong about on a
+ * compliance surface.
+ *
+ * This lives in common/ rather than in one of the callers because the same
+ * verdict is rendered in six places across the Choke and Devices surfaces, and
+ * the fix has already been applied to two of them and missed on the other four
+ * once — see the drift note at the top of ChokeRoute.tsx.
+ */
+export type AuditVerdict = "verified" | "broken" | "unverifiable";
+
+export function auditVerdict(audit?: { ok?: boolean; supported?: boolean } | null): AuditVerdict {
+  if (!audit) return "unverifiable";
+  if (audit.supported === false) return "unverifiable";
+  return audit.ok === false ? "broken" : "verified";
+}
+
+/** Short label for a status pill or footer. */
+export function auditVerdictLabel(verdict: AuditVerdict): string {
+  if (verdict === "unverifiable") return "not verified here";
+  return verdict === "broken" ? "broken" : "verified";
+}
+
+/** Whether this verdict should be rendered as an alarm. "unverifiable" must not be. */
+export function auditVerdictIsAlarm(verdict: AuditVerdict): boolean {
+  return verdict === "broken";
+}

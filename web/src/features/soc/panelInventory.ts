@@ -74,7 +74,8 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     title: "MITRE ATT&CK coverage",
     risk: "L",
     mode: "read-only",
-    description: "Technique and tactic counts derived from alerts and policy metadata.",
+    description:
+      "Technique and tactic counts derived from alerts and policy metadata. Hit counts are kernel probe posts since sensor start, not alerts in the selected window.",
     api: ["/api/policies", "/api/alerts"]
   },
   {
@@ -110,12 +111,14 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     api: ["/api/events", "/api/stream"]
   },
   {
-    id: "policy-viewer-modal",
-    title: "Policy viewer",
-    risk: "M",
-    mode: "read-only",
-    description: "Read-only policy and policy-stat viewer.",
-    api: ["/api/policies", "/api/policy-stats"]
+    id: "detections-modal",
+    title: "Detections",
+    risk: "H",
+    // No longer read-only: it can dispatch a signed detection-policy change to
+    // every agent in the tenant.
+    mode: "write",
+    description: "Kernel-loaded detection policies per host, missing and enforcing ones named, and a signed push.",
+    api: ["/api/policies", "/api/policies/push"]
   },
   {
     id: "quick-fire-attacks-modal",
@@ -175,13 +178,28 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     storage: ["soc.hpUI.search", "soc.hpUI.filter", "soc.hpUI.sortBy", "soc.hpUI.sortDir"]
   },
   {
-    id: "kprobe-performance-modal",
-    title: "Kprobe performance",
+    id: "behaviour-modal",
+    title: "Behaviour & Reputation",
     risk: "H",
     mode: "read-only",
-    description: "Policy post counts and rate placeholders from policy stats.",
-    api: ["/api/policy-stats"],
-    storage: ["soc.kprobeThreshold", "soc.kprobeUI.search", "soc.kprobeUI.filter"]
+    description:
+      "What this deployment has learned is normal, what departed from it, and what matched a threat-intelligence feed.",
+    api: ["/api/baseline", "/api/baseline/anomalies", "/api/intel", "/api/intel/matches", "/api/intel/lookup"],
+    storage: []
+  },
+  {
+    id: "sensor-health-modal",
+    title: "Sensor Health & Coverage",
+    risk: "H",
+    mode: "read-only",
+    // Was "Kprobe performance", described here as "rate placeholders" — which
+    // undersold it (the rate was real, just derived in the browser) and
+    // oversold it (throughput is not performance). The question it answers now
+    // is whether detection is running, everywhere it should be, and whether
+    // evidence is being lost.
+    description: "Agent liveness, kernel policy load state, data-plane attachment, and evidence loss.",
+    api: ["/api/sensor-health", "/api/policy-stats"],
+    storage: []
   },
   {
     id: "time-machine-modal",

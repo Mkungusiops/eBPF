@@ -196,9 +196,25 @@ async function exportPdf(model: ExportModel, sections: Set<ExportSection>) {
   if (sections.has("decisions")) {
     autoTable(doc, {
       startY: heading("Enforcement decisions"),
-      head: [["Action", "State", "Target", "Reason", "Time"]],
-      body: (model.decisions.length ? model.decisions.slice(0, 120) : [{ action: "—", state: "", target: "no decisions logged", reason: "", ok: true, timestamp: "" }]).map((d) => [d.action, d.state, d.target, d.reason, d.timestamp]),
-      styles: { fontSize: 7.5, cellPadding: 4 }, headStyles: { fillColor: NAVY, textColor: [255, 255, 255] }, margin: { left: M, right: M }
+      // OUTCOME is not optional on an audit artefact.
+      //
+      // Without it a decision whose real outcome is
+      // "skipped: system-critical chain (auto-only; manual override allowed)"
+      // prints as "Action: sever / State: contained" — the PDF asserts a
+      // containment that never happened, in the document most likely to be the
+      // one an auditor actually reads. The field was already computed and the
+      // CSV already emitted it; only this table dropped it, and
+      // decisionHonesty.test.ts asserted on the CSV header alone, which is how
+      // the two drifted apart.
+      head: [["Action", "State", "Target", "Reason", "Outcome", "Time"]],
+      body: (model.decisions.length
+        ? model.decisions.slice(0, 120)
+        : [{ action: "—", state: "", target: "no decisions logged", reason: "", outcome: "", timestamp: "" }]
+      ).map((d) => [d.action, d.state, d.target, d.reason, d.outcome, d.timestamp]),
+      // Six columns in 515pt of portrait will shred the free-text Reason
+      // unless it and Outcome are given room explicitly.
+      columnStyles: { 3: { cellWidth: 120 }, 4: { cellWidth: 100 } },
+      styles: { fontSize: 7, cellPadding: 4 }, headStyles: { fillColor: NAVY, textColor: [255, 255, 255] }, margin: { left: M, right: M }
     });
   }
   if (sections.has("events")) {

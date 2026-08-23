@@ -655,15 +655,26 @@ export function PoliciesBody({
       </div>
       {filtered.length ? (
         <div className="soc-policy-list">
-          {filtered.map(({ policy, stat, alerts: alertCount, last }) => {
+          {filtered.map(({ policy, stat, last }) => {
             const tech = techniqueId(policy.mitre);
             return (
               <article key={policy.name} className="soc-policy-card">
                 <div className="soc-policy-main">
                   <div className="soc-policy-title">
                     <strong>{policy.name}</strong>
-                    <span className={cx("soc-policy-mode", stat?.status ? "is-on" : "")}>
-                      {stat?.status || "loaded"}
+                    {/* The kernel's own word for this policy, or nothing.
+                        This used to fall back to the literal string "loaded"
+                        whenever stat.status was absent — and on the control
+                        plane it is ALWAYS absent, because handlePolicyStats
+                        returns {name, posts} and nothing else. So every policy
+                        on every fleet deployment claimed to be loaded,
+                        including one no agent has. A positive claim about
+                        kernel state with no evidence behind it is worse than a
+                        blank. `loaded_agents` comes from the heartbeat and is
+                        real; prefer it, and say "unknown" when neither is. */}
+                    <span className={cx("soc-policy-mode", (stat?.status || policy.loadedAgents) ? "is-on" : "")}>
+                      {stat?.status
+                        || (policy.loadedAgents ? `loaded on ${policy.loadedAgents}` : "unknown")}
                     </span>
                     {policy.mitre ? (
                       <span className="soc-tech-pill">
@@ -676,8 +687,19 @@ export function PoliciesBody({
                     <span>
                       kernel posts <b>{stat ? fmtNum(stat.posts) : "—"}</b>
                     </span>
+                    {/* THE `alerts` COLUMN IS GONE, and cannot come back in
+                        this data model. It counted alert.policyName, and an
+                        alert has no policy field: a live row is
+                        {description, event_ids, exec_id, id, score, severity,
+                        timestamp, title}. internal/mitre/mitre.go says why —
+                        alerts are built from a CUMULATIVE CHAIN SCORE, not from
+                        one policy, so there is no single policy to attribute
+                        one to. The column therefore read 0 for every policy
+                        forever, including one with 2,142 kernel posts, which
+                        reads as "this detection never fires".
+                        Kernel posts and last-triggered are real and stay. */}
                     <span>
-                      alerts <b className={alertCount ? "is-hot" : ""}>{fmtNum(alertCount)}</b>
+                      kernel mode <b>{policy.kernelMode || "—"}</b>
                     </span>
                     <span>
                       last triggered <b>{last ? relTime(last, now) : "—"}</b>

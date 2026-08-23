@@ -197,14 +197,6 @@
 .choke-panel-actions,
 .choke-chip-row,
 .choke-row-actions,
-.choke-policy-actions {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  /* Wrap on narrow viewports so toolbar chips never force horizontal scroll. */
-  flex-wrap: wrap;
-}
 
 .choke-brand-mark {
   color: var(--text);
@@ -259,7 +251,6 @@
 .choke-search,
 .choke-table-toolbar input,
 .choke-tape-search,
-.choke-policy-grid textarea,
 .choke-confirm input,
 .choke-jail-tools input,
 .choke-jail-modal footer input,
@@ -282,7 +273,6 @@
 
 .choke-search:focus,
 .choke-table-toolbar input:focus,
-.choke-policy-grid textarea:focus,
 .choke-confirm input:focus,
 .choke-jail-tools input:focus,
 .choke-command-card input:focus,
@@ -1346,21 +1336,8 @@
   bottom: 56px;
 }
 
-.choke-policy-workbench {
-  padding: 0 20px 20px;
-}
 
-.choke-policy-grid {
-  display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
-  gap: 14px;
-}
 
-.choke-policy-grid textarea {
-  min-height: 240px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  resize: vertical;
-}
 
 .choke-empty {
   display: grid;
@@ -2045,10 +2022,7 @@
   .choke-ops-row,
   .choke-grid,
   .choke-ti-ribbon,
-  .choke-policy-grid {
-    grid-template-columns: 1fr;
-  }
-
+  
   .choke-status-cluster,
   .choke-user-cluster,
   .choke-filter-strip {
@@ -2091,11 +2065,7 @@
   .choke-topbar-row,
   .choke-ti-ribbon,
   .choke-grid,
-  .choke-policy-workbench {
-    padding-right: 12px;
-    padding-left: 12px;
-  }
-
+  
   .choke-kpi {
     width: 100%;
   }
@@ -2317,12 +2287,6 @@
   display: block;
 }
 
-/* ── Policy Workbench: richer dry-run result ───────────────────────────── */
-.choke-policy-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
 
 .choke-preview {
   min-width: 0;

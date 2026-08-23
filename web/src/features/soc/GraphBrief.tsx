@@ -10,7 +10,7 @@ import { FileText, GitBranch, Server, ShieldAlert } from "lucide-react";
 import { countSeverities } from "./analytics";
 import { cx } from "./components";
 import { shortGraphLabel } from "./format";
-import { peerFromEvent } from "./telemetry";
+import { extractFilePath, peerFromEvent } from "./telemetry";
 import type { SocAlert, SocEvent } from "./types";
 
 export function GraphBrief({
@@ -29,8 +29,27 @@ export function GraphBrief({
   const graphCounts = useMemo(() => countSeverities(alerts), [alerts]);
   const policyCount = useMemo(() => new Set(events.map((event) => event.policyName).filter(Boolean)).size, [events]);
   const policyEventCount = useMemo(() => events.filter((event) => event.policyName).length, [events]);
+  // Count indicators the SAME way the canvas draws them (graphModel.ts).
+  //
+  // This read only `event.path`, a field the single-tenant engine has never
+  // had — store.Event is {timestamp, event_type, pid, parent_pid, exec_id,
+  // binary, args, uid, policy_name} and nothing else. So the card printed
+  // "0 indicators observed" on every window, forever, while the graph two
+  // inches away drew /etc/passwd, /etc/shadow and /etc/sudoers nodes pulled
+  // out of `args` by the very same derivation. Measured live 2026-08-22 on a
+  // 30m window: 0 reported against 6 on the canvas.
   const indicatorCount = useMemo(
-    () => new Set(events.map((event) => event.path || peerFromEvent(event)).filter(Boolean)).size,
+    () =>
+      new Set(
+        events
+          .map(
+            (event) =>
+              event.path ||
+              (event.policyName ? extractFilePath(event.args) : undefined) ||
+              peerFromEvent(event)
+          )
+          .filter(Boolean)
+      ).size,
     [events]
   );
   const criticalPathCount = graphCounts.critical + graphCounts.high;

@@ -19,7 +19,7 @@ import {
   topProcessRows
 } from "./analytics";
 import { SEVERITIES, type AckState, type SortField } from "./dashboard";
-import { useAlertStats } from "./hooks";
+import { useAlertStats, useDecisionStats, useEstateBaseline } from "./hooks";
 import {
   aggregateNetwork,
   eventSpark,
@@ -28,7 +28,7 @@ import {
   filterEvents,
   mitreCoverage
 } from "./telemetry";
-import { RISK_HALF_SCALE_PER_HOUR, riskScoreFromRate } from "./risk";
+import { estateHalfScale, riskScoreAgainst } from "./risk";
 import type { Severity, SocSnapshot } from "./types";
 
 export function useSocWindowModel({
@@ -89,6 +89,7 @@ export function useSocWindowModel({
   // Server-computed counts win whenever available; the buffer-derived versions
   // are the fallback for servers without the endpoint. See useAlertStats.
   const { stats: serverStats, supported: statsSupported } = useAlertStats(rangeMin, TIMELINE_BUCKETS);
+  const { stats: decisionStats, supported: decisionStatsSupported } = useDecisionStats(rangeMin);
   const bufferCounts = useMemo(() => countSeverities(rangeAlerts), [rangeAlerts]);
   const bufferPreviousCounts = useMemo(() => countSeverities(previousRangeAlerts), [previousRangeAlerts]);
   const counts = serverStats ? serverStats.counts : bufferCounts;
@@ -123,23 +124,84 @@ export function useSocWindowModel({
   );
   const riskPerHour = rangeMin > 0 ? (weightedAlerts * 60) / rangeMin : 0;
   const previousRiskPerHour = rangeMin > 0 ? (previousWeightedAlerts * 60) / rangeMin : 0;
-  const riskScore = riskScoreFromRate(riskPerHour);
+
+  // Scaled to THIS ESTATE's own typical rate, not a fixed constant.
+  //
+  // The fixed 200/hr half-scale gave the dial no dynamic range on a busy
+  // estate: it sat near the top permanently and distinguished nothing, which is
+  // the clamp defect one layer out. Measuring against the estate's own normal
+  // means a quiet estate that gets busy moves, and a busy estate that gets
+  // worse also moves.
+  //
+  // The trade is real and is disclosed rather than hidden: an estate that is
+  // chronically bad now reads "normal". That is why riskPerHour and
+  // riskBaselineRate are both handed to the band — the dial answers "compared
+  // with usual here", and the absolute numbers beside it answer "and how bad is
+  // usual". Neither is sufficient alone.
+  const riskBaselineRate = useEstateBaseline();
+  const riskHalfScale = estateHalfScale(riskBaselineRate);
+  const riskScore = riskScoreAgainst(riskPerHour, riskHalfScale);
+  // The prior window's score, on the SAME half-scale, so the band can show a
+  // delta in the dial's own units.
+  //
+  // The band used to be handed `riskPerHour - previousRiskPerHour` — a
+  // difference of weighted alerts per HOUR — and printed it immediately under a
+  // gauge reading 0..100. Live on the engine that rendered as "100/100" above
+  // "-9252 vs prior 5m": the dial had not moved at all and the number beneath
+  // it claimed a five-figure fall. Two units, one visual group, and no reader
+  // can reconcile them. The rate is still on screen in the line below, where it
+  // is labelled "weighted alerts/hr" and means something.
+  const previousRiskScore = riskScoreAgainst(previousRiskPerHour, riskHalfScale);
   // Nothing "pegs" any more — the curve is asymptotic, so there is always
   // headroom and a worsening estate always moves the dial. Saturated now means
   // the rate is an order of magnitude past half-scale, which is a real reading
   // rather than an artefact of the clamp.
-  const riskSaturated = riskPerHour >= RISK_HALF_SCALE_PER_HOUR * 10;
-  const riskLabel = riskScore >= 80 ? "critical" : riskScore >= 45 ? "high" : riskScore >= 18 ? "elevated" : "low";
+  const riskSaturated = riskPerHour >= riskHalfScale * 10;
+  // The label is CAPPED BY WHAT IS ACTUALLY ON FIRE.
+  //
+  // The score is now relative to the estate's own baseline, so 86/100 means
+  // "roughly twenty times your usual rate" — a true and useful statement. But
+  // the word "Critical" beside it is read as "critical alerts are happening",
+  // and the tiles immediately to its right said 0 critical and 0 high while the
+  // dial said Critical. Two readings of one estate contradicting each other on
+  // one screen is how a console loses an operator's trust, and the earlier
+  // metric-honesty pass fixed four defects of exactly this kind.
+  //
+  // So severity language now requires severity: "critical" needs a critical
+  // alert in the window, "high" needs a high or a critical. The NUMBER is
+  // untouched — a busy-for-you estate still reads 86 and still moves — only the
+  // word is held to what the alert counts can support.
+  const severityCeiling = counts.critical > 0 ? 3 : counts.high > 0 ? 2 : 1;
+  const rawBand = riskScore >= 80 ? 3 : riskScore >= 45 ? 2 : riskScore >= 18 ? 1 : 0;
+  const band = Math.min(rawBand, severityCeiling);
+  const riskLabel = band >= 3 ? "critical" : band >= 2 ? "high" : band >= 1 ? "elevated" : "low";
+  // Counted from the SERVER's window totals, not the browser buffer.
+  //
+  // These two numbers sit directly beside the CRITICAL and HIGH KPI tiles,
+  // which have always used `counts` (server-side, whole window). This one
+  // counted the capped alert buffer instead, so the same screen reported 52
+  // priority alerts here and 88 in the tiles two inches away, for the same five
+  // minutes. The executive band's own header comment warns about exactly this
+  // mixing of populations; it was mixing them.
+  //
+  // Ack state is browser-local, so it is only knowable for alerts the buffer
+  // holds. Subtracting it from the server totals is exact while the buffer
+  // covers the window, and outside it can only UNDER-subtract — which leaves
+  // the queue reading longer than it is, the safe direction for a number whose
+  // job is "how much containment work is outstanding".
   const openContainment = useMemo(() => {
-    let critical = 0;
-    let high = 0;
+    let ackedCritical = 0;
+    let ackedHigh = 0;
     for (const alert of rangeAlerts) {
-      if ((ackStates[alert.id] || "new") !== "new") continue;
-      if (alert.severity === "critical") critical += 1;
-      else if (alert.severity === "high") high += 1;
+      if ((ackStates[alert.id] || "new") === "new") continue;
+      if (alert.severity === "critical") ackedCritical += 1;
+      else if (alert.severity === "high") ackedHigh += 1;
     }
-    return { critical, high };
-  }, [ackStates, rangeAlerts]);
+    return {
+      critical: Math.max(0, counts.critical - ackedCritical),
+      high: Math.max(0, counts.high - ackedHigh)
+    };
+  }, [ackStates, counts, rangeAlerts]);
   // Decisions scoped to the selected window. The exec band sits under a window
   // selector and every other cell in it is windowed, so an all-time count there
   // read as "actions taken in the last 5m" when it meant "ever".
@@ -267,14 +329,22 @@ export function useSocWindowModel({
     filteredAlerts,
     serverStats,
     statsSupported,
+    decisionStats,
+    decisionStatsSupported,
     counts,
     previousCounts,
     hiddenTimelineSet,
     riskScore,
+    previousRiskScore,
     riskLabel,
     riskPerHour,
     previousRiskPerHour,
     riskSaturated,
+    // The estate's own typical rate, or null when there is too little history.
+    // Handed out so the band can state what the dial is measuring against —
+    // a baseline-relative score with the baseline hidden is a number nobody
+    // can check.
+    riskBaselineRate,
     openContainment,
     eps,
     activeProcesses,

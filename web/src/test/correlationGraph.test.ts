@@ -118,3 +118,41 @@ describe("buildCorrelationGraph device nodes", () => {
     expect(g.nodes.some((n) => n.group === "device")).toBe(false);
   });
 })
+
+// Reported from the live console: "I can't see the legend options in the graph
+// — device, contained, attack etc." Three of these were real; the rest were
+// correct-empty. These pin the three.
+
+describe("the node budget cannot let volume outrank severity", () => {
+  it("keeps a high-scoring process over a noisy benign one", () => {
+    // Reproduces the measured live case: apt-get scored 43 and was dropped for
+    // run-parts, which scored 0 but was seen a hundred times.
+    const alerts = [
+      { id: "a1", timestamp: new Date().toISOString(), severity: "critical", score: 43,
+        title: "Suspicious chain: /usr/bin/apt-get (score 43)", description: "x", execId: "e-apt" }
+    ] as never[];
+    const events = [] as never[];
+    for (let i = 0; i < 40; i += 1) {
+      (events as unknown[]).push({
+        id: `e${i}`, eventType: "process_exec", timestamp: new Date().toISOString(),
+        process: `/usr/bin/noise${i % 30}`, execId: `noise-${i}`, pid: 1000 + i
+      });
+    }
+    const graph = buildCorrelationGraph(alerts, events);
+    const apt = graph.nodes.find((n) => n.label.includes("apt-get"));
+    expect(apt, "a scored process must never be cut for benign chatter").toBeTruthy();
+    expect(apt?.cls).toBe("attack");
+  });
+});
+
+describe("loopback is not an external peer", () => {
+  it("does not draw a peer node for the host talking to itself", () => {
+    const events = [
+      { id: "e1", eventType: "process_exec", timestamp: new Date().toISOString(),
+        process: "/usr/bin/curl", args: "curl 127.0.0.1:8090/healthz", execId: "x1", pid: 1 }
+    ] as never[];
+    const graph = buildCorrelationGraph([] as never[], events);
+    const peers = graph.nodes.filter((n) => n.group === "peer" || n.group === "device");
+    expect(peers, "127.0.0.1 must not become a peer — it invents a destination").toEqual([]);
+  });
+});

@@ -165,7 +165,7 @@ export function ProcessActionModal({
         </section>
         {drill.execId ? (
           <section className="soc-narrative">
-            <AssistantPanel execId={drill.execId} subjectLabel={drill.binary || drill.execId} />
+            <AssistantPanel surface="process-action" execId={drill.execId} subjectLabel={drill.binary || drill.execId} />
           </section>
         ) : null}
       </div>

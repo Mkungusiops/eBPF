@@ -7,7 +7,6 @@ import type {
   ChokeState,
   CircuitEntry,
   Decision,
-  PolicyPreviewResponse,
   ProcessDetailPayload,
   SysProcDetail,
   SysProcEntry,
@@ -230,9 +229,6 @@ export function setMode(enforcing: boolean, reason: string): Promise<unknown> {
   return postJSON("/api/choke/mode", { enforcing, reason });
 }
 
-export function previewPolicy(yaml: string): Promise<PolicyPreviewResponse> {
-  return postJSON<PolicyPreviewResponse>("/api/choke/policy/preview", { yaml });
-}
 
 export function annotateCircuit(execId: string, note: string): Promise<unknown> {
   return postJSON("/api/choke/annotate", { exec_id: execId, note });

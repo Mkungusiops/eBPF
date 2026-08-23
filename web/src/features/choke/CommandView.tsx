@@ -1,20 +1,20 @@
 // The Command lens — the operating view. Threat-intelligence ribbon, the
 // three-column workbench (engine diagnostics · tracked processes · decision
-// tape), the bulk-action bar, and the dry-run policy workbench.
+// tape) and the bulk-action bar.
 //
 // It takes the route's hook bundles rather than forty individual props: the
 // view is a projection of the whole route state, and threading each field
 // separately would mean a signature nobody reads and a rename in three files
 // every time a filter is added.
 import type { ChokeAction, CircuitEntry, Thresholds } from "./types";
+import { auditVerdict } from "../common/enforcement";
 import { ACTIONS, bucketizeDecisions, countCgroupPids } from "./utils";
 import { formatWindow, toggleSetValue } from "./constants";
 import type { ChokeData } from "./useChokeData";
 import type { useChokeFilters } from "./useChokeFilters";
 import type { useChokePosture } from "./useChokePosture";
-import type { usePolicyWorkbench } from "./usePolicyWorkbench";
 import { MiniPanel, Panel, RankedList, Sparkline, StateLadder } from "./components";
-import { BucketList, CgroupTiers, EngineStack, PolicyPreview, ThresholdPanel } from "./panels";
+import { BucketList, CgroupTiers, EngineStack, ThresholdPanel } from "./panels";
 import { ProcessTable } from "./ProcessTable";
 import { DecisionTape } from "./DecisionTape";
 
@@ -22,7 +22,6 @@ export function CommandView({
   data,
   filters,
   posture,
-  workbench,
   density,
   acked,
   onDensity,
@@ -38,7 +37,6 @@ export function CommandView({
   data: ChokeData;
   filters: ReturnType<typeof useChokeFilters>;
   posture: ReturnType<typeof useChokePosture>;
-  workbench: ReturnType<typeof usePolicyWorkbench>;
   density: "normal" | "compact";
   acked: Set<number>;
   onDensity: () => void;
@@ -69,9 +67,22 @@ export function CommandView({
         <MiniPanel title="Signal Patterns" meta={`${filters.topReasons.length} reasons`}>
           <RankedList rows={filters.topReasons} onPick={(key) => filters.setGlobalSearch(`"${key}"`)} />
         </MiniPanel>
-        <MiniPanel title="System Health" meta={chokeState?.audit?.ok === false ? "chain broken" : mode}>
+        {/* Three states, not two — see auditVerdict. Testing only `ok === false`
+            made this tile read "chain broken" on every multi-tenant deployment,
+            for a chain the control plane does not maintain centrally. */}
+        <MiniPanel
+          title="System Health"
+          meta={auditVerdict(chokeState?.audit) === "broken" ? "chain broken" : mode}
+        >
           <div className="choke-kv-mini">
-            <span>audit</span><strong>{chokeState?.audit?.ok === false ? "broken" : `${chokeState?.audit?.total || 0} rows`}</strong>
+            <span>audit</span>
+            <strong>
+              {auditVerdict(chokeState?.audit) === "broken"
+                ? "broken"
+                : auditVerdict(chokeState?.audit) === "unverifiable"
+                  ? "not verified here"
+                  : `${chokeState?.audit?.total || 0} rows`}
+            </strong>
             <span>tracked</span><strong>{chokeState?.tracked || circuits.length}</strong>
             <span>bpf</span><strong>{buckets.length}</strong>
             <span>cgroups</span><strong>{countCgroupPids(cgroups)}</strong>
@@ -222,21 +233,21 @@ export function CommandView({
         </div>
       )}
 
-      <section className="choke-policy-workbench" data-panel="policy-workbench">
-        <Panel title="Policy Workbench" actions={<span className="choke-muted">dry-run · evaluates against the live snapshot, never installs</span>}>
-          <div className="choke-policy-grid">
-            <div className="choke-policy-editor">
-              <textarea value={workbench.policyYaml} onChange={(event) => workbench.setPolicyYaml(event.target.value)} spellCheck={false} />
-              <div className="choke-policy-actions">
-                <button className="choke-action-button" type="button" onClick={workbench.insertSamplePolicy}>Insert sample</button>
-                <button className="choke-action-button" type="button" onClick={workbench.insertLivePolicy} title="Build a policy from the processes currently tracked so preview returns real matches">Build from live</button>
-                <button className="choke-action-button ok" type="button" onClick={() => void workbench.runPolicyPreview()} disabled={disabled || workbench.policyChecking || isFleetConsole} title={isFleetConsole ? engineOnlyHint : undefined}>{workbench.policyChecking ? "Checking…" : "Preview matches"}</button>
-              </div>
-            </div>
-            <PolicyPreview preview={workbench.policyPreview} error={workbench.policyError} checking={workbench.policyChecking} circuits={circuits} />
-          </div>
-        </Panel>
-      </section>
+      {/* The Policy Workbench was here, and it is deliberately gone.
+          It edited the ChokePolicy DSL (apiVersion: chokegw/v1) and was
+          labelled "dry-run · never installs". That was the smaller half of the
+          problem. The larger half: what it would have installed does nothing.
+          `buckets.rate_per_sec` is parsed, validated and installed into
+          tokens.Manager (choke/gateway.go:656) and then read by NOBODY —
+          grep for .Allow(/.AllowN( across the tree returns only the three
+          self-recursive definitions inside choke/tokens/tokens.go. The kernel
+          BPF map is fed from enforce.DefaultThrottlerConfig()
+          (gateway.go:631), a compiled-in constant, never from a policy.
+          So the DSL has no effect on any host, including the three policies
+          that ship in policies/choke/. A better editor for it would have been
+          a better editor for nothing.
+          The fleet-wide response knob that DOES reach hosts — over the signed,
+          acknowledged command channel — is the threshold ladder above. */}
     </>
   );
 }

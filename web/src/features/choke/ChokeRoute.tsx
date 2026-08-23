@@ -28,7 +28,6 @@ import { useChokeFilters } from "./useChokeFilters";
 import { useChokePosture } from "./useChokePosture";
 import { useChokeActions } from "./useChokeActions";
 import { useChokeHotkeys } from "./useChokeHotkeys";
-import { usePolicyWorkbench } from "./usePolicyWorkbench";
 import { buildCommandItems } from "./commandItems";
 import { PopoverHeader } from "./components";
 import {
@@ -78,7 +77,6 @@ export function ChokeRoute(): React.ReactElement {
     windowMin: filters.windowMin,
     currentWindowDecisions: filters.currentWindowDecisions,
   });
-  const workbench = usePolicyWorkbench(data.circuits);
   const actions = useChokeActions({
     chokeState: data.chokeState,
     setChokeState: data.setChokeState,
@@ -251,7 +249,6 @@ export function ChokeRoute(): React.ReactElement {
           data={data}
           filters={filters}
           posture={posture}
-          workbench={workbench}
           density={viewPrefs.density}
           acked={alertPrefs.ackedDecisionIds}
           onDensity={toggleDensity}
@@ -387,7 +384,13 @@ function LayeredPanels({
             </div>
             <div><span>decisions</span><strong>{chokeState?.audit?.total || 0}</strong></div>
             <div><span>head</span><strong>{String(chokeState?.audit?.head_hash || chokeState?.audit?.head || chokeState?.audit?.tip || "-").slice(0, 32)}</strong></div>
-            {chokeState?.audit?.ok === false ? <div><span>bad at</span><strong>{chokeState.audit.bad_at}</strong></div> : null}
+            {/* Only for a chain that is genuinely broken. On the control plane
+                `ok === false` also means "not maintained here", and this row
+                was rendering a break LOCATION — usually undefined — for a break
+                that never happened. */}
+            {chokeState?.audit?.supported !== false && chokeState?.audit?.ok === false ? (
+              <div><span>bad at</span><strong>{chokeState.audit.bad_at || "unknown"}</strong></div>
+            ) : null}
           </div>
           <div className="choke-popover-actions">
             <button type="button" onClick={onAuditCopy}>Copy head</button>
@@ -447,7 +450,16 @@ function exportAssuranceReport(
       active_threats: commandMetrics.activeThreats,
       contained: commandMetrics.contained,
       tracked: commandMetrics.tracked,
-      audit: { intact: commandMetrics.auditOk, records: commandMetrics.auditRows, head_hash: headHash || null },
+      // Three states in the DOWNLOADABLE report too, and this is the copy most
+      // likely to reach an auditor. `intact: false` for a chain the control
+      // plane never checked is a written claim that tamper-evidence failed;
+      // null says "not asserted", and `status` says why.
+      audit: {
+        status: commandMetrics.auditSupported === false ? "not-verified-here" : commandMetrics.auditOk ? "intact" : "broken",
+        intact: commandMetrics.auditSupported === false ? null : commandMetrics.auditOk,
+        records: commandMetrics.auditRows,
+        head_hash: headHash || null
+      },
       containment_ladder: LADDER.reduce<Record<string, number>>((acc, r) => ({ ...acc, [r]: stateCounts[r] || 0 }), {}),
       thresholds,
       window_minutes: windowMin,
@@ -501,9 +513,19 @@ function buildAssuranceReportHtml(args: {
   const { metrics: m, stateCounts, thresholds, decisionsInWindow, windowLabel, topBinaries, headHash, user, when } = args;
   const esc = (s: string) =>
     String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c] as string));
-  const needing = m.activeThreats + m.contained;
-  const coverage = needing === 0 ? 100 : Math.round((m.contained / needing) * 100);
-  const tone = m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
+  // Null-safe, and rendered as "n/a" rather than interpolated. A template
+  // literal will happily print the string "null" into a board report, and tsc
+  // does not flag it — which is how `${postureText}` in the HTML below would
+  // have shipped a report reading "posture: null / 100".
+  const coverage = m.activeThreats === null
+    ? null
+    : (m.activeThreats + m.contained) === 0
+      ? 100
+      : Math.round((m.contained / (m.activeThreats + m.contained)) * 100);
+  const postureText = m.posture === null ? "n/a" : String(m.posture);
+  const coverageText = coverage === null ? "n/a" : `${coverage}%`;
+  const auditRowsText = m.auditRows === null ? "not counted" : m.auditRows.toLocaleString();
+  const tone = m.posture === null ? "#6b7a8c" : m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
   const rung = (r: string) => stateCounts[r] || 0;
   const topRows =
     topBinaries.length === 0
@@ -540,12 +562,12 @@ function buildAssuranceReportHtml(args: {
     <h1>Containment Assurance Report</h1>
     <div class="sub">Process enforcement · generated ${esc(when.toLocaleString())} · by ${esc(user)}</div>
   </div>
-  <div class="posture"><div class="num">${m.posture}</div><div class="lbl">Posture / 100</div></div>
+  <div class="posture"><div class="num">${postureText}</div><div class="lbl">Posture / 100</div></div>
 </div>
 <div class="tiles">
   <div class="tile"><div class="v" style="color:${m.activeThreats ? "#d23a4f" : "#2f9e5e"}">${m.activeThreats}</div><div class="l">Active threats</div></div>
   <div class="tile"><div class="v">${m.contained}</div><div class="l">Contained</div></div>
-  <div class="tile"><div class="v">${coverage}%</div><div class="l">Threats contained</div></div>
+  <div class="tile"><div class="v">${coverageText}</div><div class="l">Threats contained</div></div>
   <div class="tile"><div class="v" style="color:${m.auditSupported === false ? "#6b7a8c" : m.auditOk ? "#2f9e5e" : "#d23a4f"}">${m.auditSupported === false ? "Not verified here" : m.auditOk ? "Intact" : "BROKEN"}</div><div class="l">Audit chain</div></div>
 </div>
 <h2>Containment ladder</h2>
@@ -567,7 +589,7 @@ function buildAssuranceReportHtml(args: {
 <h2>Top enforced binaries (${esc(windowLabel)})</h2>
 <table><tr><th>Binary</th><th style="text-align:right">Decisions</th></tr>${topRows}</table>
 <h2>Evidence anchor</h2>
-<p>Audit chain records: <strong>${m.auditRows.toLocaleString()}</strong>. Tamper-evident head hash:</p>
+<p>Audit chain records: <strong>${auditRowsText}</strong>. Tamper-evident head hash:</p>
 <p class="mono">${esc(headHash || "—")}</p>
 <div class="foot">This report is a point-in-time summary of live enforcement state. Every containment decision is recorded in a hash-chained, tamper-evident audit log; the head hash above anchors this report to that chain.</div>
 <script>window.onload=function(){setTimeout(function(){window.print();},250);};</script>

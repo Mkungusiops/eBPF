@@ -7,7 +7,7 @@
 import type { Selection as D3Selection, SimulationLinkDatum, SimulationNodeDatum } from "d3";
 import { shortGraphLabel } from "./format";
 import { processChainFromAlert } from "./analytics";
-import { extractFilePath, isDevicePeer, peerFromEvent } from "./telemetry";
+import { extractFilePath, isDevicePeer, isLoopbackPeer, peerFromEvent } from "./telemetry";
 import type { SocAlert, SocEvent } from "./types";
 
 export type GraphClass = "attack" | "threat" | "baseline";
@@ -224,9 +224,38 @@ export function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): C
     if (peer) agg.peers.add(peer);
   }
 
-  // Keep the heaviest processes so the graph stays legible, then attach each
-  // one's correlated policy / file / peer nodes and the edges between them.
-  const topProcs = [...procs.values()].sort((a, b) => b.weight - a.weight).slice(0, 26);
+  // Keep the graph legible without letting VOLUME outrank SEVERITY.
+  //
+  // The cut used to be `sort by weight, slice(0, 26)`, and weight is almost
+  // entirely event volume (0.3 per event) rather than score (max(1, score/18)
+  // per alert). So a process the scorer rated 46 carried weight ~3 and lost its
+  // slot to a benign binary seen a hundred times — and because `cls` is only
+  // assigned to process nodes that survive this cut, the ATTACK and THREAT
+  // legend entries had nothing to colour while the alerts sat in the queue
+  // beside them. That is the reported defect: "I can't see the legend options
+  // in the graph."
+  //
+  // Measured live on engine.adanianlabs.io, 2026-08-22, 120m window: 6 of the
+  // 17 attack-class processes — /usr/lib/apt/methods/http (46), .../gpgv (46),
+  // /usr/bin/apt-get (43), /usr/sbin/cron (40), /usr/sbin/nginx (27) and
+  // sftp-server (26) — were dropped, while /usr/bin/run-parts (score 0,
+  // weight 13.9) held a slot.
+  //
+  // Severity now takes the first SCORED_SLOTS places, ordered by score; the
+  // remaining budget still goes to the heaviest processes, so the benign
+  // context that supplies the lineage edges does not vanish with it.
+  const NODE_BUDGET = 26;
+  const SCORED_SLOTS = 18;
+  const allProcs = [...procs.values()];
+  const scoredProcs = allProcs
+    .filter((proc) => classifyGraphScore(proc.score) !== "baseline")
+    .sort((a, b) => b.score - a.score || b.weight - a.weight)
+    .slice(0, SCORED_SLOTS);
+  const scoredKeys = new Set(scoredProcs.map((proc) => proc.key));
+  const restProcs = allProcs
+    .filter((proc) => !scoredKeys.has(proc.key))
+    .sort((a, b) => b.weight - a.weight);
+  const topProcs = [...scoredProcs, ...restProcs].slice(0, NODE_BUDGET);
   const keptProcKeys = new Set(topProcs.map((proc) => proc.key));
 
   const nodes = new Map<string, GraphNode>();
@@ -279,7 +308,7 @@ export function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): C
       addNode(id, file, "file", 1);
       addLink(proc.key, id, 1);
     }
-    for (const peer of [...proc.peers].slice(0, 4)) {
+    for (const peer of [...proc.peers].filter((p) => !isLoopbackPeer(p)).slice(0, 4)) {
       // A LAN destination becomes a device node (this process talked to a host
       // on our network); a public one stays a peer (reached out to the internet).
       const device = isDevicePeer(peer);
@@ -291,6 +320,40 @@ export function buildCorrelationGraph(alerts: SocAlert[], events: SocEvent[]): C
   for (const pair of chainLinks) {
     const [source, target] = pair.split("||");
     if (keptProcKeys.has(source) && keptProcKeys.has(target)) addLink(source, target, 1.5);
+  }
+
+  // Lineage recovered from parent_pid, for the hosts where the alert title
+  // cannot supply it.
+  //
+  // The title chain is built from the engine's in-memory process tree, so it
+  // only reaches ancestors the engine watched exec. On a host whose alerting
+  // processes were started BEFORE the engine — a docker daemon, a long-lived
+  // sshd — the walk stops immediately and every chain is one binary long.
+  // Measured on the live single-tenant engine: 4 of 120 alerts had a chain
+  // longer than one, so the graph was 18 process nodes joined by 9 edges, most
+  // of them isolated dots. The control plane, whose agents observe their own
+  // shorter-lived processes, had 76 of 120.
+  //
+  // The event stream carries parent_pid regardless, so the relationship is
+  // recoverable here. Pids are reused, so this is an approximation and is
+  // bounded to what is defensible: the LAST exec seen for a pid inside this
+  // window, exec events only, and never a self-link. A wrong edge draws a line
+  // between two processes that did run on this host in this window; it cannot
+  // invent a process, and no enforcement decision is taken from an edge.
+  const labelByPid = new Map<number, string>();
+  for (const event of events) {
+    if (event.eventType !== "process_exec" || !event.pid) continue;
+    labelByPid.set(event.pid, labelFor(event.execId, event.process));
+  }
+  for (const event of events) {
+    if (event.eventType !== "process_exec" || !event.parentPid) continue;
+    const parent = labelByPid.get(event.parentPid);
+    if (!parent) continue; // parent never observed in this window — say nothing
+    const child = labelFor(event.execId, event.process);
+    const source = `process:${parent}`;
+    const target = `process:${child}`;
+    if (source === target) continue;
+    if (keptProcKeys.has(source) && keptProcKeys.has(target)) addLink(source, target, 1.2);
   }
 
   const graphNodes = [...nodes.values()];

@@ -120,7 +120,9 @@ export function WatchlistBody({
 
       {results.length === 0 ? (
         <p className="soc-graph-selection-empty">
-          Nothing watched yet. Add a path, IP, or binary above and it will be matched live against every alert and event in range.
+          Nothing watched yet. Add a path, IP, or binary above and it will be matched live against the
+          alerts and events loaded for the selected window. Terms are stored in this browser only —
+          they are not shared with the rest of the shift and do not survive clearing site data.
         </p>
       ) : (
         <div className="soc-watch-list">
@@ -136,7 +138,15 @@ export function WatchlistBody({
                     {r.severity ? <i className={`sev-${r.severity}`}>{r.severity}</i> : null}
                   </>
                 ) : (
-                  <em className="soc-watch-quiet">no hits in range</em>
+                  // NOT "clean". This matches only the alerts and events the
+                  // browser is currently holding — the selected window, capped
+                  // at MAX_BUFFERED_ALERTS. An analyst who pastes an IOC list
+                  // in here and reads "no hits" as "we are not compromised" has
+                  // been misled by three words: the terms were checked against
+                  // minutes of telemetry, not against the estate's history.
+                  <em className="soc-watch-quiet" title="Matched against the alerts and events currently loaded in this browser for the selected window — not a search of stored history.">
+                    no hits in loaded window
+                  </em>
                 )}
               </span>
               <button type="button" className="soc-watch-remove" onClick={() => remove(r.kind, r.term)} aria-label={`Remove ${r.term}`}>×</button>

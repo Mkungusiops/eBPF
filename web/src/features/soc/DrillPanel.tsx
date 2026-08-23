@@ -77,7 +77,16 @@ export function DrillPanel({
   }${events.length ? ` ${events.length} kernel event${events.length === 1 ? "" : "s"} are tied to it.` : ""} ${
     isSevere ? "Contain the process while you investigate." : "Review before acting."
   }`;
-  const canTarget = Boolean(alert.pid || alert.process);
+  // exec_id counts as a target; a `process` that is merely the exec_id echoed
+  // back does not.
+  //
+  // normalizeAlert falls back `process = … || execId`, so on a backend that
+  // sends no process name — which is both of them — `alert.process` is the
+  // base64 exec_id and this guard was ALWAYS true. The ladder rendered enabled,
+  // the operator typed a reason, clicked Quarantine, and got a bare 400. The
+  // guard existed precisely to prevent that and the fallback defeated it.
+  const hasRealProcessName = Boolean(alert.process) && alert.process !== alert.execId;
+  const canTarget = Boolean(alert.execId || alert.pid || hasRealProcessName);
   const canSubmit = canTarget && reason.trim().length > 2 && !busy;
 
   async function submitChokeAction() {
@@ -209,6 +218,7 @@ export function DrillPanel({
       </div>
       <div className="soc-drill-section">
         <AssistantPanel
+          surface="alert-drill"
           execId={alert.execId}
           subjectLabel={alert.title || alert.process || alert.execId}
         />

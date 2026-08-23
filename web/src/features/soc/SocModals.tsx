@@ -15,8 +15,11 @@ import { EmptyState, InlineNotice, ModalShell } from "./components";
 import { DEFAULT_WATCHLIST, PANELS, type AckState, type KpiDrill, type OpenSurface, type StreamTelemetry } from "./dashboard";
 import { KpiDrillBody } from "./KpiDrillBody";
 import { SimulatorBody } from "./SimulatorBody";
+import { DetectionsBody } from "./DetectionsBody";
+import { SensorHealthBody } from "./SensorHealthBody";
 import { TimeMachineBody } from "./TimeMachineBody";
 import { WatchlistBody } from "./WatchlistBody";
+import { IntelligenceBody } from "./IntelligenceBody";
 import { downloadMitrePdf } from "./pdf";
 import {
   AccountBody,
@@ -94,13 +97,18 @@ export function SocModals({
   const { rangeAlerts, rangeEvents, mitreRows, activeProcesses } = model;
   return (
     <>
-      <ModalShell panel={PANELS["policy-viewer-modal"]} open={openSurface === "policies"} onClose={closeModal} wide>
-        <PoliciesBody
+      {/* Detections replaces the read-only Policy viewer. The viewer showed an
+          `alerts` count that was structurally always 0 and a mode pill that
+          fell back to the literal "loaded" — a positive claim about kernel
+          state with no evidence. This shows what the kernel reports, names the
+          expected policies NO host has loaded, and can push a change. */}
+      <ModalShell panel={PANELS["detections-modal"]} open={openSurface === "policies"} onClose={closeModal} wide>
+        <DetectionsBody
           policies={snapshot.policies}
-          alerts={rangeAlerts}
-          events={rangeEvents}
-          policyStats={snapshot.policyStats}
-          now={now}
+          open={openSurface === "policies"}
+          onRefresh={onActionComplete}
+          canPush={snapshot.whoami.canPushPolicy === true}
+          scope={snapshot.whoami.policyScope}
         />
       </ModalShell>
 
@@ -137,8 +145,19 @@ export function SocModals({
         <HoneypotsBody honeypots={snapshot.honeypots} now={now} />
       </ModalShell>
 
-      <ModalShell panel={PANELS["kprobe-performance-modal"]} open={openSurface === "kprobes"} onClose={closeModal} wide>
-        <KprobeBody policyStats={snapshot.policyStats} />
+      <ModalShell panel={PANELS["behaviour-modal"]} open={openSurface === "behaviour"} onClose={closeModal} wide>
+        {/* `open` is passed through so the body only polls while it is on
+            screen. A closed modal that keeps a 20-second timer running is four
+            needless requests a minute per open tab. */}
+        <IntelligenceBody open={openSurface === "behaviour"} />
+      </ModalShell>
+
+      <ModalShell panel={PANELS["sensor-health-modal"]} open={openSurface === "kprobes"} onClose={closeModal} wide>
+        <SensorHealthBody
+          policyStats={snapshot.policyStats}
+          open={openSurface === "kprobes"}
+          onOpenDetections={() => openSurfaceByName("policies")}
+        />
       </ModalShell>
 
       <ModalShell panel={PANELS["time-machine-modal"]} open={openSurface === "time-machine"} onClose={closeModal}>
@@ -221,7 +240,7 @@ const commandItems: Array<{ label: string; kind: string; surface: OpenSurface }>
   { label: "Open correlation graph", kind: "panel", surface: "graph" },
   { label: "Open watchlist", kind: "panel", surface: "watchlist" },
   { label: "Show honeypots", kind: "panel", surface: "honeypots" },
-  { label: "Show kprobe perf", kind: "panel", surface: "kprobes" },
+  { label: "Show sensor health", kind: "panel", surface: "kprobes" },
   { label: "Open export", kind: "action", surface: "export" },
   { label: "Show help", kind: "panel", surface: "help" }
 ];

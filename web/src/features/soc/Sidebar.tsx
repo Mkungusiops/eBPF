@@ -19,6 +19,7 @@ import {
   LayoutDashboard,
   Menu,
   Network,
+  Radar,
   Settings,
   ShieldAlert,
   Sparkles,
@@ -41,10 +42,14 @@ export function SocSidebar({
   onOpenSurface,
   onOpenAssistant,
   assistantOpen,
+  assistantAvailable,
   watchlistCount,
+  labMode,
   notificationBadge,
   userName
 }: {
+  /** Whether this deployment exposes the demo/lab surfaces. See SocVersion.labMode. */
+  labMode: boolean;
   sidebarOpen: boolean;
   openSurface: OpenSurface | null;
   onToggleSidebar: () => void;
@@ -58,6 +63,17 @@ export function SocSidebar({
    */
   onOpenAssistant: () => void;
   assistantOpen: boolean;
+  /**
+   * Whether this deployment has an assistant.
+   *
+   * Behaviour & Intel is reached FROM the assistant now, so it no longer needs
+   * a nav entry of its own — except when there is no assistant to reach it
+   * from. Enrichment is on by default and the assistant is opt-in and off by
+   * default, so that case is the common one, not the edge one: without this
+   * fallback a deployment with no model configured could not see whether its
+   * behavioural baseline was ready or its threat-intel feeds had loaded.
+   */
+  assistantAvailable: boolean;
   watchlistCount: number;
   notificationBadge: number | undefined;
   userName: string;
@@ -100,13 +116,33 @@ export function SocSidebar({
               Same Sparkles icon as the drill-panel assistant so the two read as
               one feature rather than two products. */}
           <SidebarButton icon={Sparkles} label="Assistant" onClick={onOpenAssistant} active={assistantOpen} />
+          {/* Behaviour & Intel is opened from inside the Assistant, so it earns
+              a nav entry only when there is no assistant to open it from.
+              Without this the panel would be unreachable on every deployment
+              that has not configured a model — which is the default. */}
+          {!assistantAvailable ? (
+            <SidebarButton icon={Radar} label="Behaviour & Intel" onClick={() => onOpenSurface("behaviour")} active={openSurface === "behaviour"} />
+          ) : null}
           <SidebarButton icon={Eye} label="Watchlist" onClick={() => onOpenSurface("watchlist")} badge={watchlistCount} active={openSurface === "watchlist"} />
-          <SidebarButton icon={Database} label="Honeypots" onClick={() => onOpenSurface("honeypots")} active={openSurface === "honeypots"} />
+          {labMode ? (
+            <SidebarButton icon={Database} label="Honeypots" onClick={() => onOpenSurface("honeypots")} active={openSurface === "honeypots"} />
+          ) : null}
         </SidebarSection>
         <SidebarSection title="Manage">
           <SidebarButton icon={FileText} label="Policies" onClick={() => onOpenSurface("policies")} active={openSurface === "policies"} />
-          <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => onOpenSurface("simulator")} active={openSurface === "simulator"} />
-          <SidebarButton icon={Zap} label="Attack Sim" onClick={() => onOpenSurface("attacks")} active={openSurface === "attacks"} />
+          {/* Lab surfaces. Hidden unless the server says this deployment is a
+              lab — see SocVersion.labMode. Attack Sim runs a script as root on
+              the host being defended (and, on the control plane, writes
+              fabricated alerts into the tenant's real evidence store);
+              Honeypots reports invented decoy hits there; the Rule Simulator
+              tunes a severity ladder that no endpoint can actually persist, so
+              a tuning session in it changes nothing anywhere. */}
+          {labMode ? (
+            <SidebarButton icon={Settings} label="Rule Simulator" onClick={() => onOpenSurface("simulator")} active={openSurface === "simulator"} />
+          ) : null}
+          {labMode ? (
+            <SidebarButton icon={Zap} label="Attack Sim" onClick={() => onOpenSurface("attacks")} active={openSurface === "attacks"} />
+          ) : null}
           <SidebarButton icon={Network} label="Fleet" onClick={() => onOpenSurface("fleet")} active={openSurface === "fleet"} />
           <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => onOpenSurface("kprobes")} active={openSurface === "kprobes"} />
           <SidebarButton icon={Download} label="Reports" onClick={() => onOpenSurface("export")} active={openSurface === "export"} />
@@ -126,7 +162,11 @@ export function SocSidebar({
           <SidebarButton icon={UserCircle} label={userName} onClick={() => onOpenSurface("profile")} active={openSurface === "profile"} />
           <SidebarLink icon={X} label="Sign out" href="/api/logout" />
         </SidebarSection>
-        <div className="soc-sidebar-foot">{SOC_PANEL_INVENTORY.length}/31 SOC panels</div>
+        {/* The denominator is derived, not typed. It was a literal 31, so
+            adding the Behaviour & Reputation panel made the console report
+            "32/31 SOC panels" — a small thing that says loudly the numbers on
+            this screen are not maintained. */}
+        <div className="soc-sidebar-foot">{SOC_PANEL_INVENTORY.length} SOC panels</div>
       </aside>
 
       {/* Phone-only dismiss scrim for the overlay sidebar drawer. */}

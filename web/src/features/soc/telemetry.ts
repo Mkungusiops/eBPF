@@ -107,6 +107,18 @@ export function isDevicePeer(peer: string): boolean {
   return /^10\./.test(ip) || /^192\.168\./.test(ip) || /^172\.(1[6-9]|2\d|3[01])\./.test(ip);
 }
 
+// Loopback is neither a device on our network nor an external peer — it is the
+// host talking to itself.
+//
+// Measured on the engine's ten-day store: of 559 events carrying an IPv4, 397
+// are `curl 127.0.0.1:8090` health checks. Each one was drawing a PEER node,
+// which on a security console reads as "this process reached an external
+// address" — inventing a destination that does not exist, in the panel whose
+// whole job is showing who talked to whom.
+export function isLoopbackPeer(peer: string): boolean {
+  return /^127\./.test(peer.split(":")[0]);
+}
+
 export function extractIocs(alerts: SocAlert[], events: SocEvent[]) {
   const files = new Map<string, number>();
   const peers = new Map<string, number>();

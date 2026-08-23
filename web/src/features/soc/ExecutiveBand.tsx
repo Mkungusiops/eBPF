@@ -87,12 +87,16 @@ export function ExecutiveBand({
   riskLabel,
   riskDelta,
   riskSaturated,
+  riskBaselineRate,
+  riskPerHour,
   countsUnfounded,
+  countsAreFloor,
   windowLabel,
   totalAlerts,
   openCritical,
   openHigh,
   containmentActions,
+  containmentActionsAreFloor,
   topTechnique,
   techniqueMapped,
   eps,
@@ -112,13 +116,40 @@ export function ExecutiveBand({
   riskLabel: string;
   riskDelta: number;
   riskSaturated: boolean;
+  /** The estate's own typical weighted rate, or null when unknown. */
+  riskBaselineRate: number | null;
+  /** The rate being scored right now, so the dial's input is on screen. */
+  riskPerHour: number;
   /** The alert/event feed is failing, so every count feeding this band is an artefact of the gap. */
   countsUnfounded: boolean;
+  /**
+   * The alert buffer does not reach back across the whole window, so the counts
+   * derived from it are FLOORS.
+   *
+   * This band mixes two populations and that is not going to change: the
+   * posture dial is computed from server-side counts for the full window, while
+   * "Needs containment", the alert total and the response count are computed in
+   * the browser from a buffer capped at 1000 alerts. On a busy tenant that
+   * buffer is about thirty minutes, so a 24h view puts a dial built from ~48,000
+   * alerts directly beside a critical count built from the newest 1,000 — two
+   * numbers about the same window, differing by a factor of fifty, with nothing
+   * saying so.
+   *
+   * Disclosed rather than hidden, and disclosed HERE rather than only in the
+   * notices strip, because this is the panel an executive reads.
+   */
+  countsAreFloor: boolean;
   windowLabel: string;
   totalAlerts: number;
   openCritical: number;
   openHigh: number;
   containmentActions: number;
+  /**
+   * The response count is a page of rows rather than a window total, because
+   * this deployment does not serve /api/decision-stats. Rendered with a "≥"
+   * so a fetch limit is never mistaken for a measurement.
+   */
+  containmentActionsAreFloor: boolean;
   topTechnique?: { label: string; value: number };
   /** Whether this server supplies any policy→ATT&CK mapping at all. Absent mapping is not the same as no technique observed. */
   techniqueMapped: boolean;
@@ -177,7 +208,7 @@ export function ExecutiveBand({
       label: "Why it matters",
       value: leadSignal,
       detail: topTechnique
-        ? `${topTechnique.value} technique hit${topTechnique.value === 1 ? "" : "s"} point to the current threat pattern.`
+        ? `${topTechnique.value} kernel hit${topTechnique.value === 1 ? "" : "s"} since sensor start point to the current threat pattern.`
         : techniqueMapped
           ? "No policy with an ATT&CK mapping fired in this window; use the alert queue and process view to confirm the pattern."
           : "This server publishes no policy→ATT&CK mapping, so technique attribution is unavailable here — not absent from the telemetry."
@@ -220,7 +251,12 @@ export function ExecutiveBand({
           <em>{countsUnfounded ? "unavailable" : riskLabel} · {trendText}</em>
         </button>
         <span className="soc-exec-mini-stat">
-          <strong className={openCritical ? "severity-critical" : ""}>{openCritical}</strong> open critical · {openHigh} high
+          <strong className={openCritical ? "severity-critical" : ""}>
+            {countsAreFloor && !countsUnfounded ? "≥" : ""}
+            {openCritical}
+          </strong>{" "}
+          open critical · {countsAreFloor && !countsUnfounded ? "≥" : ""}
+          {openHigh} high
         </span>
         <span className={cx("soc-exec-mini-health", healthy ? "is-ok" : "is-warn")}>
           host {hostOk ? "ok" : "degraded"} · stream {streamState}
@@ -280,25 +316,66 @@ export function ExecutiveBand({
             {riskSaturated ? (
               <span className="soc-exec-cell-sub">sustained extreme alert rate · check for a noisy source</span>
             ) : null}
+            {/* WHAT THE DIAL IS MEASURED AGAINST.
+                The score is relative to this estate's own typical rate, which
+                means a chronically bad estate reads "normal". That trade is
+                acceptable only while the absolute rate and the baseline are on
+                screen beside it — a relative number whose reference is hidden
+                is one nobody can check. When there is too little history the
+                dial falls back to a fixed scale and says so, rather than
+                implying a baseline it does not have. */}
+            {!countsUnfounded ? (
+              <span className="soc-exec-cell-sub">
+                {riskBaselineRate === null
+                  ? `${Math.round(riskPerHour)} weighted alerts/hr · fixed scale (not enough history for a baseline)`
+                  : `${Math.round(riskPerHour)} weighted alerts/hr vs ${Math.round(riskBaselineRate)}/hr typical here`}
+              </span>
+            ) : null}
           </div>
         </button>
         <div className="soc-exec-cells">
           <button type="button" className="soc-exec-cell is-action" onClick={onReviewCriticals}>
             <span className="soc-exec-cell-label">Needs containment</span>
-            <strong className={openCritical ? "severity-critical" : ""}>{openCritical}</strong>
-            <span className="soc-exec-cell-sub">{openHigh} high-sev also open · review →</span>
+            <strong className={openCritical ? "severity-critical" : ""}>
+              {countsAreFloor && !countsUnfounded ? "≥" : ""}
+              {openCritical}
+            </strong>
+            {/* The "≥" is the whole point. This cell counts the browser's alert
+                buffer; the dial to its left is computed server-side over the
+                full window. Without the marker the two read as one measurement. */}
+            <span className="soc-exec-cell-sub">
+              {countsAreFloor && !countsUnfounded
+                ? `≥${openHigh} high-sev also open · buffer covers part of this ${windowLabel} · review →`
+                : `${openHigh} high-sev also open · review →`}
+            </span>
           </button>
           <div className="soc-exec-cell">
             <span className="soc-exec-cell-label">Response actions</span>
-            <strong>{containmentActions}</strong>
-            <span className="soc-exec-cell-sub">containment decisions in this {windowLabel}</span>
+            {/* Counted server-side over the whole window when the deployment
+                serves /api/decision-stats. Where it does not, this falls back
+                to counting a 200-row browser page — which on a busy host spans
+                minutes, so the cell reported exactly 200 for every window at
+                least that long. A fetch limit is not a measurement, so the
+                fallback is marked "≥" rather than printed as a total. */}
+            <strong>{containmentActionsAreFloor ? `≥${containmentActions}` : containmentActions}</strong>
+            <span className="soc-exec-cell-sub">
+              {containmentActionsAreFloor
+                ? `containment decisions held for this ${windowLabel} · page-limited`
+                : `containment decisions in this ${windowLabel}`}
+            </span>
           </div>
           <div className="soc-exec-cell">
             <span className="soc-exec-cell-label">Top technique</span>
             <strong className="soc-exec-cell-tech">{topTechnique ? techniqueId(topTechnique.label) : techniqueMapped ? "—" : "n/a"}</strong>
             <span className="soc-exec-cell-sub">
+              {/* "hits" are Tetragon's per-policy NPOST — a counter that has
+                  been running since the sensor started, NOT alerts in the
+                  window this band otherwise describes. Sitting unqualified
+                  beside 5-minute tiles it read as "115 alerts in five
+                  minutes" against a window holding 17. The window is named so
+                  the number cannot be misread as one. */}
               {topTechnique
-                ? `${topTechnique.value} hit${topTechnique.value === 1 ? "" : "s"} · ${techniqueName(topTechnique.label)}`
+                ? `${topTechnique.value} kernel hit${topTechnique.value === 1 ? "" : "s"} since sensor start · ${techniqueName(topTechnique.label)}`
                 : techniqueMapped
                   ? "no techniques in window"
                   : "no ATT&CK mapping from this server"}

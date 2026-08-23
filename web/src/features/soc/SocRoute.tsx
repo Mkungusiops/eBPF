@@ -18,7 +18,7 @@ import { AlertTriangle, Radio, RefreshCw, Search, Server, ShieldCheck } from "lu
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type * as React from "react";
-import { fetchProcessDetail } from "./api";
+import { MAX_BUFFERED_DECISIONS, fetchProcessDetail } from "./api";
 import { useStream } from "../../lib/stream";
 import { useOSTheme } from "../../lib/theme";
 import { IconButton, PanelFrame, PopoverCard, SeverityBadge, SlideOver, Sparkline, StatusPill, cx } from "./components";
@@ -105,6 +105,18 @@ export function SocRoute() {
   const [streamPaused, setStreamPaused] = useState(false);
   const [streamHideNoise, setStreamHideNoise] = useState(true);
   const [openSurface, setOpenSurface] = useState<OpenSurface | null>(null);
+
+  // Hand the assistant a way to open Behaviour & Reputation.
+  //
+  // The chat provider is mounted at the app root, above this component, so it
+  // cannot reach this state directly — the route that OWNS the panel registers
+  // the opener, and the sidebar shows its link only while one is registered. On
+  // a route without the panel the link is never offered, rather than offered and
+  // doing nothing.
+  useEffect(() => {
+    assistantChat?.setFindingsOpener(() => setOpenSurface("behaviour"));
+    return () => assistantChat?.setFindingsOpener(null);
+  }, [assistantChat]);
   const [openPill, setOpenPill] = useState<PillSurface | null>(null);
   const [kpiDrill, setKpiDrill] = useState<KpiDrill | null>(null);
   const [drillAlert, setDrillAlert] = useState<SocAlert | null>(null);
@@ -322,6 +334,7 @@ export function SocRoute() {
   return (
     <div className={cx("soc-route", theme === "light" && "theme-light", sidebarOpen && "sidebar-open")}>
       <SocSidebar
+        labMode={snapshot.version.labMode}
         sidebarOpen={sidebarOpen}
         openSurface={openSurface}
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
@@ -329,6 +342,9 @@ export function SocRoute() {
         onOpenSurface={openSurfaceByName}
         onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: snapshot.whoami.host })}
         assistantOpen={assistantChat?.open ?? false}
+        // null (still probing) counts as AVAILABLE so the nav does not flicker
+        // an entry in and straight back out on every load.
+        assistantAvailable={assistantChat?.available !== false}
         watchlistCount={watchCount(watchlist)}
         notificationBadge={notificationsActive && notifyChannels.inApp ? notifyHistory.filter((item) => !item.read).length : undefined}
         userName={snapshot.whoami.user}
@@ -384,14 +400,23 @@ export function SocRoute() {
             onToggleBriefing={() => setBriefingOpen((value) => !value)}
             riskScore={model.riskScore}
             riskLabel={model.riskLabel}
-            riskDelta={Math.round(model.riskPerHour - model.previousRiskPerHour)}
+            riskDelta={Math.round(model.riskScore - model.previousRiskScore)}
             riskSaturated={model.riskSaturated}
+            riskBaselineRate={model.riskBaselineRate}
+            riskPerHour={model.riskPerHour}
             countsUnfounded={model.countsUnfounded}
+            // Every count in this band now comes from the same server-side
+            // window aggregation the dial and the KPI tiles use, so the cells
+            // no longer contradict each other. The floor disclosure remains for
+            // the fallback path: a server without /api/alert-stats still leaves
+            // the band counting a capped browser buffer.
+            countsAreFloor={!model.statsSupported && model.windowCoverage.alerts.short}
             windowLabel={rangeLabel(rangeMin)}
-            totalAlerts={model.rangeAlerts.length}
+            totalAlerts={model.serverStats ? model.serverStats.total : model.rangeAlerts.length}
             openCritical={model.openContainment.critical}
             openHigh={model.openContainment.high}
-            containmentActions={model.rangeDecisions.length}
+            containmentActions={model.decisionStats ? model.decisionStats.total : model.rangeDecisions.length}
+            containmentActionsAreFloor={!model.decisionStats ? model.rangeDecisions.length >= MAX_BUFFERED_DECISIONS : model.decisionStats.truncated}
             topTechnique={model.mitreRows[0]}
             techniqueMapped={model.techniqueMapped}
             eps={model.eps}

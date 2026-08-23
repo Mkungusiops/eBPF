@@ -105,6 +105,29 @@
   --ring-c: #f4556e;
 }
 
+/* An unmeasured posture: an empty track, no fill, no colour.
+ *
+ * The ring is a conic-gradient over calc(var(--pct) * 1%). Interpolating a
+ * null --pct makes that calc invalid, which drops the entire background
+ * declaration and takes the TRACK with it, not just the fill — the ring
+ * silently disappears rather than reading as unknown. So --pct is forced to 0
+ * and the fill colour is made transparent, which renders the bare track: a
+ * shape that is visibly present and visibly not filled in. Colouring it green
+ * or red would both be claims.
+ */
+.cc-posture.ring-unknown {
+  --ring-c: transparent;
+  --pct: 0;
+}
+.cc-posture.ring-unknown .cc-posture-face strong {
+  color: rgba(155, 167, 184, 0.85);
+}
+
+/* The header must not paint itself green over a number nobody computed. */
+.cc-header.tone-muted {
+  border-color: rgba(148, 163, 184, 0.18);
+}
+
 .cc-posture-face {
   position: relative;
   z-index: 1;

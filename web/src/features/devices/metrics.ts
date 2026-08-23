@@ -35,23 +35,32 @@ export function buildDeviceMetrics(
   const metrics: CommandMetrics = {
     subject: "devices",
     mode: deviceMode,
-    activeThreats: 0,
+    // Not zero — UNKNOWN. Nothing scores a device on this plane, so there is
+    // no number to report, and a zero here pinned the posture dial at 100%.
+    activeThreats: null,
     contained: containedDevices,
     tracked: state?.tracked ?? state?.devices_known ?? devices.length,
     auditOk: planeHealthy,
-    auditRows: 0,
+    // Dormant fabrication: invisible today only because integritySub below
+    // overrides the label that would render it. Left at 0 it is a trap for
+    // whoever removes that override.
+    auditRows: null,
     integrityLabel: "Data plane",
     integrityValue: planeHealthy ? "active" : "offline",
     integritySub: `${state?.links_attached ?? 0} links · ${state?.frames_seen ?? 0} frames`,
-    killSwitched: Boolean(state?.kill_switched),
+    // The control plane deliberately sends null when it cannot tell whether
+    // the switch is engaged. Boolean() collapsed that to false — the console
+    // asserted "not killed" about a state it had no reading for, which is the
+    // same bug the process-plane toggle had.
+    killSwitched: state?.kill_switched ?? null,
     headline: `${protectedCount}`,
     headlineLabel: "Protected assets",
     posture: computePosture({
       mode: deviceMode,
-      activeThreats: 0,
+      activeThreats: null,
       contained: containedDevices,
       auditOk: planeHealthy,
-      killSwitched: Boolean(state?.kill_switched)
+      killSwitched: state?.kill_switched ?? null
     })
   };
   return { metrics, countsByRung, protectedCount, planeHealthy };

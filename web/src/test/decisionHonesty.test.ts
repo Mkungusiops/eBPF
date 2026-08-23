@@ -65,3 +65,27 @@ describe("the export carries outcome, not a manufactured boolean", () => {
     expect(soc).toMatch(/"reason", "outcome", "timestamp"/);
   });
 });
+
+// The PDF is the artefact most likely to reach an auditor, and it dropped the
+// one column that says whether the action actually took effect. A decision
+// whose outcome is "skipped: system-critical chain" rendered as
+// "sever / contained" — an assertion of containment that never happened.
+//
+// This file previously asserted only on the CSV header, which is exactly how
+// the two exporters drifted apart, so the check is now on both.
+describe("the exported PDF carries the outcome, not just the intent", () => {
+  const src = readFileSync("src/features/soc/exportStudio.tsx", "utf8");
+
+  it("names Outcome in the decisions table head", () => {
+    expect(src).toMatch(/head:\s*\[\[\s*"Action",\s*"State",\s*"Target",\s*"Reason",\s*"Outcome",\s*"Time"\s*\]\]/);
+  });
+
+  it("emits the outcome field in the row body", () => {
+    expect(src).toMatch(/d\.reason,\s*d\.outcome,\s*d\.timestamp/);
+  });
+
+  it("carries no stale ok:true placeholder", () => {
+    // A fossil of a removed field; it made the empty-state row claim success.
+    expect(src).not.toMatch(/no decisions logged[^)]*ok:\s*true/);
+  });
+});

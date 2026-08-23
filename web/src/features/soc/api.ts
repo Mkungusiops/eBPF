@@ -19,8 +19,10 @@ import { ApiError, getJSON, postForm, postJSON } from "../../lib/api";
 
 type AnyRecord = Record<string, unknown>;
 
-const EMPTY_WHOAMI: SocWhoami = { user: "operator", host: "localhost" };
-const EMPTY_VERSION: SocVersion = { sha: "" };
+// policyScope defaults to the NARROWER claim: before any server has
+// answered, a change reaches one host at most.
+const EMPTY_WHOAMI: SocWhoami = { user: "operator", host: "localhost", policyScope: "host" };
+const EMPTY_VERSION: SocVersion = { sha: "", labMode: false };
 const EMPTY_HEALTH: SocSystemHealth = { status: "unknown", details: {} };
 
 export const EMPTY_SOC_SNAPSHOT: SocSnapshot = {
@@ -109,9 +111,20 @@ export async function fetchSocSnapshot(signal?: AbortSignal): Promise<SocSnapsho
   const errors: Record<string, string> = {};
   const statuses: Record<string, number | undefined> = {};
 
+  // Endpoints a production deployment deliberately does NOT serve.
+  //
+  // Attack Sim and Honeypots are lab-only and answer 404 unless the server was
+  // started with -lab-mode. That is a configuration, not a fault, and routing
+  // it into `errors` would light the notices strip and the band's
+  // "telemetry feed down" path over two panels the operator is not supposed to
+  // have — inventing an outage out of a deliberate omission. A 404 here means
+  // "not offered"; any other failure on them is still a real error.
+  const OPTIONAL_ENDPOINTS = new Set(["attacks", "honeypots"]);
+
   for (const [key, result] of entries) {
     statuses[key] = result.status;
     if (!result.ok && result.error && result.error !== "aborted") {
+      if (OPTIONAL_ENDPOINTS.has(key) && result.status === 404) continue;
       errors[key] = result.error;
     }
   }
@@ -191,6 +204,58 @@ function normalizeCounts(value: unknown): SeverityCounts {
  * computing from the buffer, which is correct for short windows and is what the
  * console did everywhere before this existed.
  */
+/**
+ * Server-computed enforcement-decision counts for a window.
+ *
+ * The console used to count rows in a buffer capped at MAX_BUFFERED_DECISIONS
+ * (200), so any window those rows did not span reported exactly 200 — a fetch
+ * limit rendered as a measurement, on the executive band. Counts belong where
+ * the rows are, for the same reason AlertStats exists.
+ */
+export interface DecisionStats {
+  from: string;
+  to: string;
+  total: number;
+  previous: number;
+  actions: Record<string, number>;
+  dryRun: number;
+  /**
+   * The window held more decisions than the server's scan bound, so total is a
+   * floor. Stated rather than hidden: moving an unmarked under-count from the
+   * browser to the server would not fix this tile, it would just relocate the
+   * lie.
+   */
+  truncated: boolean;
+}
+
+/**
+ * Returns null when the server has no /api/decision-stats — an older engine or
+ * a control plane that has not grown the endpoint yet. The caller must treat
+ * null as UNKNOWN and fall back to the buffered count WITH its floor
+ * disclosure, never as zero.
+ */
+export async function fetchDecisionStats(
+  windowMin: number,
+  signal?: AbortSignal
+): Promise<DecisionStats | null> {
+  const result = await socApiGet<unknown>(`/api/decision-stats?window_min=${windowMin}`, null, signal);
+  if (!result.ok || !result.data) return null;
+  const record = asRecord(result.data);
+  const actions: Record<string, number> = {};
+  for (const [key, value] of Object.entries(asRecord(record.actions))) {
+    actions[key] = asNumber(value, 0);
+  }
+  return {
+    from: asOptionalString(record.from) || "",
+    to: asOptionalString(record.to) || "",
+    total: asNumber(record.total, 0),
+    previous: asNumber(record.previous, 0),
+    actions,
+    dryRun: asNumber(record.dry_run, 0),
+    truncated: asOptionalBoolean(record.truncated) ?? false
+  };
+}
+
 export async function fetchAlertStats(
   windowMin: number,
   buckets: number,
@@ -279,9 +344,25 @@ export function jailSocAlert({
   descendants: boolean;
   revertAfterSeconds?: number;
 }): Promise<unknown> {
+  // exec_id FIRST. It is the only identifier an alert reliably carries, and
+  // omitting it broke containment from an alert on BOTH deployments.
+  //
+  // A live alert is {description, event_ids, exec_id, id, score, severity,
+  // timestamp, title} — no pid and no binary. So `alert.pid` was always
+  // undefined (pids: []) and `alert.process` was the BASE64 EXEC_ID, because
+  // normalizeAlert falls back `process = … || execId`. The request was
+  // therefore {pids: [], binary: "aXAtMTcyLTMx…"}: the control plane does not
+  // decode `binary` at all, and the engine matches it against p.Exe/p.Comm
+  // where a base64 string matches nothing. Both answered 400, on the primary
+  // triage-to-contain path of the product.
+  //
+  // Both backends already prefer exec_id when resolving a target, so sending it
+  // fixes both at once. pid and binary stay as corroborating hints for the
+  // engine's process-table match when the drill panel has resolved them.
   return postJSON("/api/choke/jail", {
+    exec_id: alert.execId,
     pids: alert.pid ? [alert.pid] : [],
-    binary: alert.pid ? undefined : alert.process,
+    binary: alert.pid || !alert.process || alert.process === alert.execId ? undefined : alert.process,
     descendants,
     action,
     reason,
@@ -347,6 +428,11 @@ export function normalizeEvent(value: unknown, index = 0): SocEvent {
     args: asOptionalString(pick(record, "args", "Args", "arguments", "Arguments")),
     execId,
     pid,
+    // Dropped here until 2026-08-21, which quietly cost the single-tenant
+    // correlation graph every one of its lineage edges: the engine sends
+    // parent_pid on every exec, the normaliser discarded it, and the graph was
+    // left with only the chain embedded in an alert title.
+    parentPid: asOptionalNumber(pick(record, "parent_pid", "parentPid", "ParentPID", "ppid", "PPID")),
     policyName: asOptionalString(pick(record, "policy_name", "PolicyName", "policy", "Policy")),
     severity: normalizeOptionalSeverity(pick(record, "severity", "Severity", "level", "Level")),
     path: asOptionalString(pick(record, "path", "Path", "file", "File", "filename", "Filename")),
@@ -397,19 +483,37 @@ function normalizeWhoami(value: unknown): SocWhoami {
     host:
       asOptionalString(pick(record, "host", "hostname", "Hostname", "engine_host", "EngineHost")) ||
       EMPTY_WHOAMI.host,
-    role: asOptionalString(pick(record, "role", "Role"))
+    role: asOptionalString(pick(record, "role", "Role")),
+    // Strictly === true. Absent, null, "" and 0 must all read as "this
+    // deployment cannot push", because the plane that cannot is the one that
+    // never sends the field.
+    canPushPolicy: pick(record, "can_push_policy", "canPushPolicy") === true,
+    // Taken from what the server SAYS, not inferred from the shape of another
+    // field. The previous version keyed off whether "tenants" was an array,
+    // which broke for a cross-tenant MSOC admin — they have no tenant list, so
+    // the control plane's own console would have claimed single-host scope for
+    // the one operator most likely to push to a fleet.
+    //
+    // Anything other than an explicit "fleet" is treated as "host": the
+    // narrower promise is the safe default for an older server that says
+    // nothing.
+    policyScope: pick(record, "policy_scope", "policyScope") === "fleet" ? "fleet" : "host"
   };
 }
 
-function normalizeVersion(value: unknown): SocVersion {
+export function normalizeVersion(value: unknown): SocVersion {
   const record = asRecord(value);
   return {
     sha: asOptionalString(pick(record, "sha", "SHA", "version", "Version", "build", "Build")) || "",
-    startedAt: asOptionalString(pick(record, "started_at", "startedAt", "StartTime", "start_time"))
+    startedAt: asOptionalString(pick(record, "started_at", "startedAt", "StartTime", "start_time")),
+    // Absent => false. A server that does not report the field is treated as a
+    // production deployment, so the lab surfaces stay hidden rather than being
+    // offered against endpoints that answer 404.
+    labMode: asOptionalBoolean(pick(record, "lab_mode", "labMode", "LabMode")) ?? false
   };
 }
 
-function normalizePolicy(value: unknown): SocPolicy {
+export function normalizePolicy(value: unknown): SocPolicy {
   const record = asRecord(value);
   const rawSensors = unwrapList(pick(record, "sensors", "Sensors", "kprobes", "Kprobes"), ["items"]);
   return {
@@ -417,7 +521,22 @@ function normalizePolicy(value: unknown): SocPolicy {
     description: asOptionalString(pick(record, "description", "Description")),
     mitre: asOptionalString(pick(record, "mitre", "MITRE", "mitre_id", "MitreID")),
     yaml: asOptionalString(pick(record, "yaml", "YAML", "source", "Source")),
-    sensors: rawSensors.map((item) => asOptionalString(item)).filter((item): item is string => Boolean(item))
+    // Where that body came from: "host" (read off the monitored machine, which
+    // only the single-tenant engine can do) or "shipped" (the source the
+    // control-plane build carries, for a policy running on a fleet it cannot
+    // read kernels from). The console states which, rather than presenting
+    // both as the same kind of fact.
+    yamlSource: asOptionalString(pick(record, "yaml_source", "yamlSource")),
+    sensors: rawSensors.map((item) => asOptionalString(item)).filter((item): item is string => Boolean(item)),
+    // Real kernel state, from the heartbeat via /api/policies. Undefined on a
+    // server that does not serve it; the card renders "unknown" rather than
+    // asserting the policy is loaded.
+    loadedAgents: asOptionalNumber(pick(record, "loaded_agents", "loadedAgents")),
+    kernelMode: asOptionalString(pick(record, "kernel_mode", "kernelMode")),
+    // Absent field => the server could not tell us. Present-and-zero => it
+    // asked and the answer was none. Only the second is an alarm.
+    kernelStateKnown: pick(record, "loaded_agents", "loadedAgents") !== undefined,
+    expected: asOptionalBoolean(pick(record, "expected")) ?? false
   };
 }
 

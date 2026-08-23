@@ -25,8 +25,17 @@ export interface CommandMetrics {
   /** Plural noun for the tracked population: "processes" | "devices". */
   subject: string;
   mode: "detect-only" | "enforcing";
-  /** Uncontained targets scoring at/over the first enforcement threshold. */
-  activeThreats: number;
+  /**
+   * Uncontained targets scoring at/over the first enforcement threshold, or
+   * null where this subject cannot measure it.
+   *
+   * The device plane cannot: nothing scores a device — DeviceSummary carries no
+   * score field the way ChokeSummary does — so the surface hardcoded 0. That is
+   * not a measurement, and it fed computePosture, where zero threats and N
+   * contained produces coverage = 1 and pins the dial at "fully covered" no
+   * matter what the estate is doing.
+   */
+  activeThreats: number | null;
   /** Everything on a rung above pristine (throttled..severed). */
   contained: number;
   tracked: number;
@@ -39,18 +48,20 @@ export interface CommandMetrics {
    * breach or hides one.
    */
   auditSupported?: boolean;
-  auditRows: number;
+  /** Null where this subject has no audit-row count to report. */
+  auditRows: number | null;
   /** Override the integrity tile (defaults to the audit-chain framing). Devices
    *  reuse it as "Data plane" without a second header component. */
   integrityLabel?: string;
   integrityValue?: string;
   integritySub?: string;
-  killSwitched?: boolean;
+  /** Tri-state: null where the deployment cannot read the switch. */
+  killSwitched?: boolean | null;
   /** Optional headline stat (e.g. decision rate) shown in the metric strip. */
   headline?: string;
   headlineLabel?: string;
-  /** 0..100 — see computePosture. */
-  posture: number;
+  /** 0..100, or null when a required input is unmeasurable — see computePosture. */
+  posture: number | null;
 }
 
 /**
@@ -61,12 +72,16 @@ export interface CommandMetrics {
  */
 export function computePosture(m: {
   mode: "detect-only" | "enforcing";
-  activeThreats: number;
+  activeThreats: number | null;
   contained: number;
   auditOk: boolean;
   auditSupported?: boolean;
-  killSwitched?: boolean;
-}): number {
+  killSwitched?: boolean | null;
+}): number | null {
+  // No threat count, no posture. Substituting zero here is what produced a
+  // permanent 100%: the arithmetic below reads "nothing uncontained" as
+  // "everything contained", which is only true if the zero was measured.
+  if (m.activeThreats === null) return null;
   const needing = m.activeThreats + m.contained;
   const coverage = needing === 0 ? 1 : m.contained / needing;
   let score = 55 + coverage * 45; // 55..100 from containment coverage
@@ -80,7 +95,10 @@ export function computePosture(m: {
   return Math.max(0, Math.min(100, Math.round(score)));
 }
 
-function toneForPosture(p: number): "good" | "warn" | "bad" {
+// An unmeasured posture is not a good one. "muted" keeps the header from
+// painting itself green over a number nobody computed.
+function toneForPosture(p: number | null): "good" | "warn" | "bad" | "muted" {
+  if (p === null) return "muted";
   return p >= 80 ? "good" : p >= 55 ? "warn" : "bad";
 }
 
@@ -125,24 +143,38 @@ export function ContainmentCommandHeader({
   return (
     <section className={`cc-header tone-${tone}`} data-panel="containment-command">
       <div className="cc-head-lead">
+        {/* An unknown posture renders as an empty track, not as a number.
+            The ring is `conic-gradient(... calc(var(--pct) * 1%) ...)`, so
+            interpolating `null` yields calc(null * 1%) — invalid, which drops
+            the whole background declaration and takes the ring's track with
+            it, not just the fill. Zero is not a substitute either: it would
+            read as "posture 0", the opposite of "not measured". */}
         <div
-          className={`cc-posture ring-${tone}`}
-          style={{ "--pct": `${m.posture}` } as CSSProperties}
-          title="Composite containment posture (0–100)"
+          className={`cc-posture ring-${tone}${m.posture === null ? " ring-unknown" : ""}`}
+          style={{ "--pct": `${m.posture ?? 0}` } as CSSProperties}
+          title={m.posture === null
+            ? "Posture cannot be computed for this subject — nothing scores a device, so there is no threat count to measure coverage against"
+            : "Composite containment posture (0–100)"}
         >
           <div className="cc-posture-face">
-            <strong>{m.posture}</strong>
+            <strong>{m.posture === null ? "—" : m.posture}</strong>
             <span>posture</span>
           </div>
         </div>
         <div className="cc-head-title">
           <h2>Containment Command</h2>
           <p>
-            {m.activeThreats > 0
-              ? `${m.activeThreats} active threat${m.activeThreats === 1 ? "" : "s"} ${
-                  m.activeThreats === 1 ? "needs" : "need"
-                } attention`
-              : `all ${m.subject} under control`}
+            {/* "all devices under control" was the worst line on the page: it
+                was printed whenever the threat count was zero, and on the
+                device plane that zero was hardcoded. The reassurance was
+                unconditional. */}
+            {m.activeThreats === null
+              ? `threat count not measured for ${m.subject}`
+              : m.activeThreats > 0
+                ? `${m.activeThreats} active threat${m.activeThreats === 1 ? "" : "s"} ${
+                    m.activeThreats === 1 ? "needs" : "need"
+                  } attention`
+                : `all ${m.subject} under control`}
             {m.mode === "detect-only" ? " · detect-only (no containment applied)" : null}
             {m.killSwitched ? " · kill-switch engaged" : null}
           </p>
@@ -150,7 +182,11 @@ export function ContainmentCommandHeader({
       </div>
 
       <div className="cc-head-metrics">
-        <Metric label="Active threats" value={m.activeThreats} tone={m.activeThreats > 0 ? "bad" : "good"} />
+        <Metric
+          label="Active threats"
+          value={m.activeThreats === null ? "—" : m.activeThreats}
+          tone={m.activeThreats === null ? "muted" : m.activeThreats > 0 ? "bad" : "good"}
+        />
         <Metric label="Contained" value={m.contained} tone="accent" />
         <Metric label={`Tracked ${m.subject}`} value={m.tracked.toLocaleString()} />
         <Metric
@@ -163,7 +199,7 @@ export function ContainmentCommandHeader({
             m.integritySub ??
             (m.auditSupported === false
               ? "chained on the agent, not centrally"
-              : `${m.auditRows.toLocaleString()} rows`)
+              : m.auditRows === null ? "not counted" : `${m.auditRows.toLocaleString()} rows`)
           }
           tone={m.auditSupported === false ? "muted" : m.auditOk ? "good" : "bad"}
         />

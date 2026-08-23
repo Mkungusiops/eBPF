@@ -242,7 +242,7 @@ export function DevicesRoute({
           {/* Command lens too, not only Assurance: Command is where an operator
               actually investigates a device. Mounting only into the reporting
               view put the assistant where nobody works. */}
-          <AssistantPanel subjectLabel="the device fleet" />
+          <AssistantPanel surface="devices" subjectLabel="the device fleet" />
         </>
         )}
       </div>

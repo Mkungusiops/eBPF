@@ -44,9 +44,18 @@ export function AssuranceView({
   onCopyAudit: () => void;
   onExport: (kind: "report" | "bundle") => void;
 }) {
-  const needing = metrics.activeThreats + metrics.contained;
-  const coverage = needing === 0 ? 100 : Math.round((metrics.contained / needing) * 100);
-  const postureTone = metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
+  // Coverage is contained-over-(contained+uncontained). With no threat count
+  // there is no denominator, and the old `needing === 0 ? 100` turned that
+  // absence into a perfect score — the single line that pinned device coverage
+  // at 100% no matter what the estate was doing.
+  const coverage = metrics.activeThreats === null
+    ? null
+    : (metrics.activeThreats + metrics.contained) === 0
+      ? 100
+      : Math.round((metrics.contained / (metrics.activeThreats + metrics.contained)) * 100);
+  const postureTone = metrics.posture === null
+    ? "muted"
+    : metrics.posture >= 80 ? "good" : metrics.posture >= 55 ? "warn" : "bad";
   const enforcing = metrics.mode === "enforcing";
   const hashShort = auditHash ? `${auditHash.slice(0, 24)}…` : "—";
   return (
@@ -56,12 +65,12 @@ export function AssuranceView({
           <header>
             <h3>Security posture</h3>
             <span className="choke-assur-score">
-              {metrics.posture}
-              <small>/100</small>
+              {metrics.posture === null ? "n/a" : metrics.posture}
+              {metrics.posture === null ? null : <small>/100</small>}
             </span>
           </header>
           <div className="choke-assur-drivers">
-            <DriverPill label="Containment coverage" value={`${coverage}%`} good={coverage >= 80} />
+            <DriverPill label="Containment coverage" value={coverage === null ? "n/a" : `${coverage}%`} good={coverage !== null && coverage >= 80} />
             <DriverPill label="Enforcement" value={enforcing ? "Enforcing" : "Detect-only"} good={enforcing} />
             {/* Three states, not two. The control plane does not hash-chain
                 centrally — each agent chains its own decisions — so `supported:
@@ -104,12 +113,24 @@ export function AssuranceView({
           <header>
             <h3>Audit integrity</h3>
           </header>
-          <div className={`choke-assur-audit ${metrics.auditOk ? "ok" : "bad"}`}>
-            {metrics.auditOk ? "Chain intact" : "CHAIN BROKEN"}
+          {/* Three states. This banner rendered "CHAIN BROKEN" in alarm red on
+              every multi-tenant deployment, because auditOk folds
+              `supported === false` into false. Line 73 above already got this
+              right; this one was missed. */}
+          <div
+            className={`choke-assur-audit ${
+              metrics.auditSupported === false ? "" : metrics.auditOk ? "ok" : "bad"
+            }`}
+          >
+            {metrics.auditSupported === false
+              ? "Not verified here"
+              : metrics.auditOk
+                ? "Chain intact"
+                : "CHAIN BROKEN"}
           </div>
           <div className="choke-assur-kv">
             <span>Records</span>
-            <strong>{metrics.auditRows.toLocaleString()}</strong>
+            <strong>{metrics.auditRows === null ? "not counted" : metrics.auditRows.toLocaleString()}</strong>
           </div>
           <code className="choke-assur-hash" title={auditHash || ""}>
             {hashShort}
@@ -185,7 +206,7 @@ export function AssuranceView({
           </div>
         </article>
       </div>
-      <AssistantPanel subjectLabel="the containment posture" />
+      <AssistantPanel surface="choke-assurance" subjectLabel="the containment posture" />
     </section>
   );
 }

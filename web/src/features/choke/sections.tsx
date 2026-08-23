@@ -6,6 +6,7 @@
 // keeping each one addressable means a banner can be added or removed without
 // touching the others' markup.
 import { ArrowLeft } from "lucide-react";
+import { auditVerdict, auditVerdictLabel } from "../common/enforcement";
 import type { ApprovalRequest } from "./api";
 import type { ChokeState, Decision, KernelPosture, LoadState } from "./types";
 import type { PopoverName, StreamInfo } from "./constants";
@@ -112,8 +113,14 @@ export function ChokeTopBar({
           <button className={`choke-pill host-${hostState}`} type="button" onClick={() => onPopover(popover === "host" ? null : "host")} title={`host ${hostState}`}>
             <span className="choke-dot" /> host
           </button>
-          <button className={`choke-pill ${chokeState?.audit?.ok === false ? "danger" : "ok"}`} type="button" onClick={() => onPopover(popover === "audit" ? null : "audit")} title={`audit ${chokeState?.audit?.ok === false ? "broken" : "ok"} · ${chokeState?.audit?.total || 0} rows`}>
-            <span className={`choke-dot${chokeState?.audit?.ok === false ? " down" : ""}`} /> audit
+          {/* An unverifiable chain is not a broken one — see auditVerdict. */}
+          <button
+            className={`choke-pill ${auditVerdict(chokeState?.audit) === "broken" ? "danger" : "ok"}`}
+            type="button"
+            onClick={() => onPopover(popover === "audit" ? null : "audit")}
+            title={`audit ${auditVerdictLabel(auditVerdict(chokeState?.audit))} · ${chokeState?.audit?.total || 0} rows`}
+          >
+            <span className={`choke-dot${auditVerdict(chokeState?.audit) === "broken" ? " down" : ""}`} /> audit
           </button>
           <button className={`choke-pill stream-${streamInfo.state}`} type="button" onClick={() => onPopover(popover === "live" ? null : "live")} title={`stream ${streamInfo.state}${streamInfo.lastMessageAt ? ` · ${formatRelative(streamInfo.lastMessageAt)}` : ""}`}>
             <span className="choke-dot" /> live
@@ -393,7 +400,16 @@ export function ChokeStatusBar({
   return (
     <footer className="choke-opsbar" data-panel="operations-status-bar">
       <span className={`choke-dot ${streamInfo.state}`} />
-      <span>chain <button type="button" onClick={onCopyAuditHead}>{chokeState?.audit?.ok === false ? `broken @ ${chokeState.audit.bad_at || "?"}` : (chokeState?.audit?.head_hash || `${chokeState?.audit?.total || 0} rows`).toString().slice(0, 18)}</button></span>
+      {/* This footer read "chain broken @ ?" on every multi-tenant deployment:
+          `ok === false` is also what an UNVERIFIABLE chain answers, and the
+          "@ ?" was the missing bad_at of a break that never happened. */}
+      <span>chain <button type="button" onClick={onCopyAuditHead}>{
+        auditVerdict(chokeState?.audit) === "broken"
+          ? `broken @ ${chokeState?.audit?.bad_at || "?"}`
+          : auditVerdict(chokeState?.audit) === "unverifiable"
+            ? "not verified here"
+            : (chokeState?.audit?.head_hash || `${chokeState?.audit?.total || 0} rows`).toString().slice(0, 18)
+      }</button></span>
       <span>mode <strong>{String(mode).toUpperCase()}</strong></span>
       <span>scope <strong>{trackedCount}</strong></span>
       <span>tape <strong>{decisions.length}</strong></span>

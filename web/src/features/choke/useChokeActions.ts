@@ -177,6 +177,17 @@ export function useChokeActions({
   }
 
   function openKillSwitchConfirm(): void {
+    // An unknown state has no safe toggle direction — see the note in
+    // features/devices/useDeviceActions.ts. The control plane reports null
+    // because no heartbeat field carries the agent's kill-switch, and `!null`
+    // resolving to "engage" meant the bypass could never be released here.
+    if (chokeState?.kill_switched === null || chokeState?.kill_switched === undefined) {
+      pushToast(
+        "kill-switch state is not reported by this deployment — use the agent's own console to change it",
+        "warn"
+      );
+      return;
+    }
     const target = !chokeState?.kill_switched;
     setConfirm({
       title: target ? "Engage kill-switch" : "Disengage kill-switch",

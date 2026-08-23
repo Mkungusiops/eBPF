@@ -220,7 +220,7 @@ export function ProcessDrill({
       ) : null}
       {drill.execId ? (
         <div className="choke-drill-assistant">
-          <AssistantPanel execId={drill.execId} subjectLabel={entry.binary || drill.execId} />
+          <AssistantPanel surface="choke-process" execId={drill.execId} subjectLabel={entry.binary || drill.execId} />
         </div>
       ) : null}
     </aside>

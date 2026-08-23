@@ -19,6 +19,7 @@ export type OpenSurface =
   | "mitre"
   | "fleet"
   | "watchlist"
+  | "behaviour"
   | "honeypots"
   | "kprobes"
   | "time-machine"

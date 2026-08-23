@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Clock, Minimize2, Plus, Zap } from "lucide-react";
 import { EmptyState, cx } from "./components";
 import { SIM_SEVERITY_COLOR } from "./dashboard";
-import { useLocalJsonState } from "./hooks";
+import { useEstateBaseline, useLocalJsonState } from "./hooks";
+import { estateHalfScale, riskScoreAgainst } from "./risk";
 import { MITRE_MATRIX, techniqueForAlert } from "./panels";
 import type { Severity, SocAlert, SocEvent } from "./types";
 
@@ -36,6 +37,10 @@ export function TimeMachineBody({ alerts, events, open }: { alerts: SocAlert[]; 
     () => events.map((e) => Date.parse(e.timestamp)).filter((t) => !Number.isNaN(t)).sort((x, y) => x - y),
     [events]
   );
+
+  // The estate's own typical rate, so this panel's dial and the executive
+  // band's are on one scale. Same hook, same half-scale, same curve.
+  const halfScale = estateHalfScale(useEstateBaseline());
 
   const tMin = stamped.length ? stamped[0].t : Date.now() - 3_600_000;
   const tMax = stamped.length ? stamped[stamped.length - 1].t : Date.now();
@@ -77,7 +82,23 @@ export function TimeMachineBody({ alerts, events, open }: { alerts: SocAlert[]; 
       const id = techniqueForAlert(a, EMPTY_TECH_MAP);
       if (id) techniques.set(`${id} ${mitreTechniqueLabel(id)}`, (techniques.get(`${id} ${mitreTechniqueLabel(id)}`) || 0) + 1);
     }
-    const risk = Math.min(100, counts.critical * 8 + counts.high * 3 + counts.medium);
+    // Scored the SAME way the executive band scores it — a weighted RATE
+    // through the shared soft-knee curve, not a clamped cumulative count.
+    //
+    // This used to be `min(100, critical*8 + high*3 + medium)`: the exact
+    // formula the posture dial was moved off, because it measures the window
+    // selector as much as the estate and saturates at thirteen criticals. Since
+    // this panel prints "Posture at 08:20 — 97/100" a few inches from a band
+    // printing a different number the same way, the console showed two /100
+    // posture figures that disagreed — and this was the one the product had
+    // already decided was wrong.
+    //
+    // Elapsed time runs from the start of the scrub span to the playhead, so
+    // early in a replay the rate is taken over a short window rather than being
+    // divided by the whole span and reading falsely low.
+    const elapsedHours = Math.max((at - tMin) / 3_600_000, 1 / 60);
+    const weighted = counts.critical * 8 + counts.high * 3 + counts.medium;
+    const risk = riskScoreAgainst(weighted / elapsedHours, halfScale);
     const rate = eventTimes.filter((et) => et > at - 60_000 && et <= at).length / 60;
     const topTech = [...techniques.entries()].sort((a, b) => b[1] - a[1])[0];
     return { total: upTo.length, counts, risk, rate, topTech, recent: upTo.slice(-6).reverse().map((x) => x.a) };
