@@ -16,7 +16,7 @@
 # encoding/xml, encoding/asn1). This image is what actually ships, so building
 # it with an unpatched compiler puts those CVEs in the signed artifact
 # regardless of what CI runs.
-FROM golang:1.26.6-bookworm AS build
+FROM golang:1.27.0-bookworm AS build
 WORKDIR /src
 
 # Module cache layer: copy just the manifests first so `go mod download` is
