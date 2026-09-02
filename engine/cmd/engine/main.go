@@ -34,7 +34,7 @@ func main() {
 	logging.Setup(cfg.LogFormat, cfg.LogLevel)
 
 	hostname, _ := os.Hostname()
-	stopMetrics := hoststack.InitMetrics(cfg.OTLPEndpoint, hostname, engineVersion)
+	stopMetrics := hoststack.InitMetrics(cfg.OTLPEndpoint, hostname, cfg.Version)
 	defer stopMetrics()
 
 	hoststack.ConfigureConsoleDirs(cfg.PoliciesDir, cfg.AttacksDir, cfg.HoneypotsDir)
@@ -66,6 +66,15 @@ func main() {
 		acfg := assistant.DefaultConfig()
 		acfg.BaseURL = cfg.assistantURL
 		acfg.Model = cfg.assistantModel
+		acfg.DeepModel = cfg.assistantDeepModel
+		acfg.Timeout = cfg.assistantTimeout
+		acfg.RunBudget = cfg.assistantRunBudget
+		acfg.MaxToolCalls = cfg.assistantMaxTools
+		// Said at startup because these are the numbers that decide whether a
+		// slow upstream reads as "thinking" or as "the assistant is broken",
+		// and the only other way to learn them is to read the binary.
+		log.Printf("[assistant] budget: %s per completion, %s per answer, %d tool calls max",
+			acfg.Timeout, acfg.RunBudget, acfg.MaxToolCalls)
 		httpSrv.SetAssistantConfig(acfg)
 		if acfg.APIKey() == "" {
 			// Started but unusable. Say so at startup rather than letting an
@@ -111,6 +120,11 @@ func main() {
 		Broadcast: broadcast,
 		Gateway:   stack.Gateway,
 	}
+
+	// Settings reach the running scorer, not just the database. A stored
+	// suppression that only takes effect after a restart is a setting that
+	// looks like it worked and did nothing.
+	api.SetSuppressionReloader(pipe, st)
 	enrich.Attach(pipe)
 
 	// Lab surfaces off unless asked for. /api/run-attack executes a script as

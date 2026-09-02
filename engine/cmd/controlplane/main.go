@@ -48,7 +48,15 @@ func main() {
 		// FLAG — it comes from the environment (assistant.Config.APIKeyEnv),
 		// because flags land in process listings and unit files.
 		assistantURL   = flag.String("assistant-url", "", "OpenAI-compatible base URL for the analyst assistant; empty disables it")
-		assistantModel = flag.String("assistant-model", "gpt-oss:120b", "model id for the analyst assistant")
+		assistantModel = flag.String("assistant-model", "gpt-oss:120b", "model id for the analyst assistant (drill panels, and the default everywhere)")
+		assistantDeep  = flag.String("assistant-deep-model", "", "optional second model for sustained conversations in the history sidebar; empty means one model everywhere")
+		// Time. assistantTimeout bounds ONE provider completion; assistantBudget
+		// bounds the whole tool loop, which issues up to assistantMaxTools
+		// completions plus a closing one. They used to be one number, so a
+		// six-step answer had to finish inside the time allotted to one call.
+		assistantTimeout  = flag.Duration("assistant-timeout", assistant.DefaultConfig().Timeout, "per-completion timeout for the analyst assistant (bounds ONE provider call)")
+		assistantBudget   = flag.Duration("assistant-run-budget", assistant.DefaultConfig().RunBudget, "whole-answer budget for the analyst assistant (bounds the entire tool loop)")
+		assistantMaxTools = flag.Int("assistant-max-tool-calls", assistant.DefaultConfig().MaxToolCalls, "maximum tool calls the analyst assistant may make while answering one question")
 
 		// Threat-intelligence feeds. A DIRECTORY of files, never a remote API:
 		// matching is local so an observable is never disclosed to a third
@@ -240,7 +248,7 @@ func main() {
 		AdminToken: *adminToken, BFF: bffH, Logf: log.Printf,
 		RequireApproval: *requireApproval || os.Getenv("CP_REQUIRE_APPROVAL") == "1",
 		LabMode:         *labMode || os.Getenv("CP_LAB_MODE") == "1",
-		Assistant:       assistantConfig(*assistantURL, *assistantModel),
+		Assistant:       assistantConfig(*assistantURL, *assistantModel, *assistantDeep, *assistantTimeout, *assistantBudget, *assistantMaxTools),
 		Chats:           chats,
 		// Threat-intel feeds. Matching happens on the sensors too; this copy
 		// gives the control plane a TENANT-WIDE view of what matched, which no
@@ -297,13 +305,25 @@ func openChatStore(storeKind, dsn string) chatstore.Store {
 
 // assistantConfig builds the assistant configuration, or the zero value (which
 // reads as disabled) when no URL was given.
-func assistantConfig(url, model string) assistant.Config {
+func assistantConfig(url, model, deep string, timeout, budget time.Duration, maxTools int) assistant.Config {
 	if url == "" {
 		return assistant.Config{}
 	}
 	cfg := assistant.DefaultConfig()
 	cfg.BaseURL = url
 	cfg.Model = model
+	cfg.DeepModel = deep
+	cfg.Timeout = timeout
+	cfg.RunBudget = budget
+	cfg.MaxToolCalls = maxTools
+	if cfg.DeepModel != "" && cfg.DeepModel != cfg.Model {
+		// Said at startup because it is the only place an operator can see
+		// that this deployment answers from two different models, and which
+		// surface gets which. A split nobody knows about is a support ticket
+		// that starts "the assistant sounds different in the sidebar".
+		log.Printf("[assistant] two models: %s for drill panels, %s for sidebar conversations "+
+			"(chosen once per conversation, recorded on the chat)", cfg.Model, cfg.DeepModel)
+	}
 	if cfg.APIKey() == "" {
 		// Configured but unusable. Say so at startup: the console will report
 		// "not configured", which is indistinguishable from "switched off"
@@ -313,5 +333,10 @@ func assistantConfig(url, model string) assistant.Config {
 	} else {
 		log.Printf("[assistant] enabled: %s via %s (read-only tools)", cfg.Model, cfg.BaseURL)
 	}
+	// Said at startup because these are the numbers that decide whether a slow
+	// upstream reads as "thinking" or as "the assistant is broken", and the
+	// only other way to learn them is to read the binary.
+	log.Printf("[assistant] budget: %s per completion, %s per answer, %d tool calls max",
+		cfg.Timeout, cfg.RunBudget, cfg.MaxToolCalls)
 	return cfg
 }

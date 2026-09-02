@@ -93,6 +93,21 @@ type assistantAskRequest struct {
 	// can do is mislead the model about their own earlier conversation, which
 	// misleads only themselves.
 	History []assistantMessage `json:"history"`
+	// Conversation marks a sustained exchange in the history sidebar, as
+	// opposed to a drill panel's one-shot question. It selects between the two
+	// models a deployment may have configured, and nothing else.
+	//
+	// A HINT, NOT AUTHORITY, and deliberately harmless if a client lies: the
+	// only reachable outcome is an answer from the other configured model,
+	// which is slower or faster. It cannot widen what the assistant may read —
+	// the tool set is read-only by construction and the containment denylist is
+	// enforced at registration, both independent of which model runs.
+	//
+	// The engine needs this because it has no chat store, so unlike the control
+	// plane there is no server-side conversation to bind a model to. The
+	// control plane ignores this field and reads the model off the chat, which
+	// is strictly better: it is a fact the server owns.
+	Conversation bool `json:"conversation"`
 }
 
 // assistantMessage is one prior turn on the wire.
@@ -160,15 +175,26 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RUN budget, NOT the per-completion timeout. These used to be the same
+	// number, so Runner.Run — which issues up to MaxToolCalls completions plus
+	// a closing one — had to finish seven provider calls inside the time
+	// allotted to a single call. That was invisible while upstream answered in
+	// ~1s and became every-request-fails the day upstream slowed down.
+	budget := cfg.RunBudget
+	if budget <= 0 {
+		budget = 150 * time.Second
+	}
+	// The per-call timeout stays separate: it bounds each tool read below, and
+	// the provider client bounds each completion with the same value.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 45 * time.Second
 	}
-	ctx, cancel := contextWithTimeout(r, timeout)
+	ctx, cancel := contextWithTimeout(r, budget)
 	defer cancel()
 
 	runner := &assistant.Runner{
-		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Provider: assistant.NewOpenAICompatible(cfg.WithModel(cfg.ModelFor(req.Conversation)), nil),
 		Tools:    assistant.DefaultTools(),
 		// The read-only client. Even if a tool were changed to build a POST,
 		// this transport refuses it (internal/assistant/doc.go).
@@ -182,12 +208,22 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
+		// The caller hung up — closed the panel, navigated away, pressed Cancel.
+		// Nothing is wrong here and nobody is listening for the reply, so this
+		// is Info. It was Warn, which put five "context canceled" lines in the
+		// journal that read like five upstream failures.
+		if assistant.ClientAbandoned(err) {
+			slog.Info("assistant run abandoned by caller", "agent", req.Agent, "surface", req.Surface)
+			return
+		}
 		// Logged with the agent for correlation, returned WITHOUT internals: the
 		// error can carry an upstream provider message, and this response goes
-		// to a browser.
+		// to a browser. OperatorMessage picks from a fixed set of sentences, so
+		// a rate limit reads differently from a timeout without either one
+		// echoing the provider.
 		slog.Warn("assistant run failed", "agent", req.Agent, "error", err)
 		writeJSONStatus(w, http.StatusBadGateway,
-			map[string]string{"error": "the assistant could not complete this request"})
+			map[string]string{"error": assistant.OperatorMessage(err)})
 		return
 	}
 
@@ -242,15 +278,26 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RUN budget, NOT the per-completion timeout. These used to be the same
+	// number, so Runner.Run — which issues up to MaxToolCalls completions plus
+	// a closing one — had to finish seven provider calls inside the time
+	// allotted to a single call. That was invisible while upstream answered in
+	// ~1s and became every-request-fails the day upstream slowed down.
+	budget := cfg.RunBudget
+	if budget <= 0 {
+		budget = 150 * time.Second
+	}
+	// The per-call timeout stays separate: it bounds each tool read below, and
+	// the provider client bounds each completion with the same value.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 45 * time.Second
 	}
-	ctx, cancel := contextWithTimeout(r, timeout)
+	ctx, cancel := contextWithTimeout(r, budget)
 	defer cancel()
 
 	runner := &assistant.Runner{
-		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Provider: assistant.NewOpenAICompatible(cfg.WithModel(cfg.ModelFor(req.Conversation)), nil),
 		Tools:    assistant.DefaultTools(),
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
@@ -263,10 +310,15 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
-		// Same rule as the non-streaming path: log the detail, send a generic
-		// message. The error can carry an upstream provider string.
+		if assistant.ClientAbandoned(err) {
+			slog.Info("assistant stream abandoned by caller", "agent", req.Agent, "surface", req.Surface)
+			return
+		}
+		// Same rule as the non-streaming path: log the detail, send a message
+		// chosen from a fixed set. The error can carry an upstream provider
+		// string and must never reach the browser.
 		slog.Warn("assistant stream failed", "agent", req.Agent, "error", err)
-		stream.Error("the assistant could not complete this request")
+		stream.Error(assistant.OperatorMessage(err))
 		return
 	}
 	slog.Info("assistant answered (streamed)",

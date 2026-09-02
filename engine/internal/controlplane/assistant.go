@@ -91,6 +91,19 @@ type cpAskRequest struct {
 	// leave no record. Persistence is opt-in per ask, not a mode you can forget
 	// you are in.
 	ChatID string `json:"chat_id"`
+	// Conversation marks a sustained exchange in the history sidebar, as
+	// opposed to a drill panel's one-shot question.
+	//
+	// A FALLBACK, not the authority. When the exchange has a chat, that chat's
+	// stored model wins — a fact this server owns. This only decides the case
+	// where the sidebar has no chat to point at, which is not hypothetical:
+	// when the chat store is unreachable the sidebar still works, still sends
+	// no chat id, and would otherwise be silently answered by the panel model
+	// with nothing anywhere saying why.
+	//
+	// Harmless if a client lies: the only reachable outcome is the other
+	// configured model. It cannot widen what the assistant may read.
+	Conversation bool `json:"conversation"`
 	// Surface is which console panel asked. Framing only — it changes what the
 	// model is told, never what it may read. On a multi-tenant control plane
 	// that separation is the point: tenant scope comes from the session cookie
@@ -179,15 +192,28 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RUN budget, NOT the per-completion timeout. These used to be the same
+	// number, so Runner.Run — which issues up to MaxToolCalls completions plus
+	// a closing one — had to finish seven provider calls inside the time
+	// allotted to a single call. That was invisible while upstream answered in
+	// ~1s and became every-request-fails the day upstream slowed down.
+	budget := cfg.RunBudget
+	if budget <= 0 {
+		budget = 150 * time.Second
+	}
+	// The per-call timeout stays separate: it bounds each tool read below, and
+	// the provider client bounds each completion with the same value.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 45 * time.Second
 	}
-	ctx, cancel := contextWithTimeout(r, timeout)
+	ctx, cancel := contextWithTimeout(r, budget)
 	defer cancel()
 
+	// One conversation, one model. See assistantmodel.go.
+	model := s.modelForExchange(r, req)
 	runner := &assistant.Runner{
-		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Provider: providerFor(cfg, model),
 		Tools:    assistant.DefaultTools(),
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
@@ -206,16 +232,22 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
-		// The upstream message can carry provider detail; log it, do not return
-		// it to a browser.
-		slog.Warn("assistant run failed", "agent", req.Agent, "error", err)
 		// Keep the QUESTION even though there is no answer. Otherwise a failed
 		// ask leaves a conversation that exists in the list and is empty when
 		// reopened, which reads as data loss rather than as a failed request —
-		// and the analyst loses what they typed.
+		// and the analyst loses what they typed. True whether upstream failed
+		// or the analyst walked away.
 		s.recordQuestion(r, req)
+		// The caller hung up. Nothing is wrong here and nobody is listening.
+		if assistant.ClientAbandoned(err) {
+			slog.Info("assistant run abandoned by caller", "agent", req.Agent, "surface", req.Surface)
+			return
+		}
+		// The upstream message can carry provider detail; log it, do not return
+		// it to a browser. OperatorMessage picks from a fixed set of sentences.
+		slog.Warn("assistant run failed", "agent", req.Agent, "error", err)
 		writeJSON(w, http.StatusBadGateway,
-			map[string]string{"error": "the assistant could not complete this request"})
+			map[string]string{"error": assistant.OperatorMessage(err)})
 		return
 	}
 
@@ -225,7 +257,7 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	slog.Info("assistant answered", "agent", req.Agent, "surface", req.Surface, "exec_id", req.ExecID,
 		"steps", len(ans.Steps), "grounded", ans.Grounded, "duration", ans.Duration)
 
-	s.recordExchange(r, req, ans)
+	s.recordExchange(r, req, ans, model)
 
 	writeJSON(w, http.StatusOK, ans)
 }
@@ -290,15 +322,28 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The RUN budget, NOT the per-completion timeout. These used to be the same
+	// number, so Runner.Run — which issues up to MaxToolCalls completions plus
+	// a closing one — had to finish seven provider calls inside the time
+	// allotted to a single call. That was invisible while upstream answered in
+	// ~1s and became every-request-fails the day upstream slowed down.
+	budget := cfg.RunBudget
+	if budget <= 0 {
+		budget = 150 * time.Second
+	}
+	// The per-call timeout stays separate: it bounds each tool read below, and
+	// the provider client bounds each completion with the same value.
 	timeout := cfg.Timeout
 	if timeout <= 0 {
-		timeout = 60 * time.Second
+		timeout = 45 * time.Second
 	}
-	ctx, cancel := contextWithTimeout(r, timeout)
+	ctx, cancel := contextWithTimeout(r, budget)
 	defer cancel()
 
+	// One conversation, one model. See assistantmodel.go.
+	model := s.modelForExchange(r, req)
 	runner := &assistant.Runner{
-		Provider: assistant.NewOpenAICompatible(cfg, nil),
+		Provider: providerFor(cfg, model),
 		Tools:    assistant.DefaultTools(),
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
@@ -311,16 +356,20 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 
 	ans, err := runner.Run(ctx, req.Agent, req.Question, req.ExecID)
 	if err != nil {
-		slog.Warn("assistant stream failed", "agent", req.Agent, "error", err)
 		s.recordQuestion(r, req)
-		stream.Error("the assistant could not complete this request")
+		if assistant.ClientAbandoned(err) {
+			slog.Info("assistant stream abandoned by caller", "agent", req.Agent, "surface", req.Surface)
+			return
+		}
+		slog.Warn("assistant stream failed", "agent", req.Agent, "error", err)
+		stream.Error(assistant.OperatorMessage(err))
 		return
 	}
 
 	slog.Info("assistant answered (streamed)", "agent", req.Agent, "surface", req.Surface,
 		"exec_id", req.ExecID, "steps", len(ans.Steps), "grounded", ans.Grounded, "duration", ans.Duration)
 
-	s.recordExchange(r, req, ans)
+	s.recordExchange(r, req, ans, model)
 	stream.Answer(ans)
 }
 
@@ -371,7 +420,7 @@ func (s *Server) chatScopeFor(r *http.Request, req cpAskRequest) (chatstore.Scop
 	return sc, true
 }
 
-func (s *Server) recordExchange(r *http.Request, req cpAskRequest, ans assistant.Answer) {
+func (s *Server) recordExchange(r *http.Request, req cpAskRequest, ans assistant.Answer, model string) {
 	sc, ok := s.chatScopeFor(r, req)
 	if !ok {
 		return
@@ -396,7 +445,11 @@ func (s *Server) recordExchange(r *http.Request, req cpAskRequest, ans assistant
 		return
 	}
 	if _, err := s.chats.AppendMessage(sc, req.ChatID, chatstore.Message{
-		Role: "assistant", Content: ans.Content, Model: s.cfg.Assistant.Model,
+		// The model that actually answered, not the deployment default. With
+		// two models configured the default is wrong for half the traffic, and
+		// a history that misattributes its own turns cannot answer "which
+		// model said that?" after an assisted conclusion turns out to be wrong.
+		Role: "assistant", Content: ans.Content, Model: model,
 		Steps: string(steps), Grounded: ans.Grounded,
 	}); err != nil {
 		slog.Warn("assistant history: answer not stored", "chat", req.ChatID, "error", err)

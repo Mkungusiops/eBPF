@@ -4,7 +4,11 @@ import (
 	"flag"
 	"log"
 	"os"
+	"strings"
+	"time"
 
+	"github.com/jeffmk/ebpf-poc-engine/internal/assistant"
+	"github.com/jeffmk/ebpf-poc-engine/internal/buildinfo"
 	"github.com/jeffmk/ebpf-poc-engine/internal/config"
 	"github.com/jeffmk/ebpf-poc-engine/internal/hoststack"
 )
@@ -20,10 +24,31 @@ import (
 // severity is worse than no assistant.
 const DefaultAssistantModel = "gpt-oss:120b"
 
-// engineVersion is what this build target reports to /api/system-health. The
-// agent build reports the same number with an "-agent" suffix so a fleet can
-// tell the two apart without a metric-cardinality change.
-const engineVersion = "0.2.0"
+// engineVersionFallback is what this build target calls itself when the binary
+// carries no build stamp — a plain `go build` outside a git tree, or a test.
+// The agent build reports the same number with an "-agent" suffix so a fleet
+// can tell the two apart without a metric-cardinality change.
+const engineVersionFallback = "0.2.0"
+
+// engineVersion is what /api/system-health reports.
+//
+// It used to be the constant above, unconditionally. /api/version was fixed to
+// report the real build during the 2026-08-05 outage — see internal/buildinfo,
+// whose package doc describes that exact failure — and system-health was left
+// behind. So one endpoint answered "v1.3.0-20-g0684bf2-dirty" while the other
+// answered "0.2.0" on the same process, and the console's Engine Stack panel
+// reads the second one: after thirty-three deploys its BUILD row still said
+// v0.2.0.
+//
+// A build indicator that cannot change is worse than no build indicator. It is
+// the first thing anyone checks when asking "did my fix actually ship", and it
+// answered no every time regardless of the truth.
+func engineVersion() string {
+	if v := strings.TrimSpace(buildinfo.Get().Version); v != "" {
+		return v
+	}
+	return engineVersionFallback
+}
 
 // engineConfig is the engine's full flag surface: everything it shares with
 // cmd/agent, plus the three settings that belong to the console binary alone.
@@ -55,6 +80,18 @@ type engineConfig struct {
 	// process listings, shell history and systemd unit files.
 	assistantURL   string
 	assistantModel string
+	// assistantDeepModel is an optional second model for sustained sidebar
+	// conversations. Empty means one model everywhere, which is the default.
+	assistantDeepModel string
+	// Time. assistantTimeout bounds ONE provider completion; assistantRunBudget
+	// bounds the whole tool loop, which issues up to assistantMaxToolCalls
+	// completions plus a closing one. They were a single number, so a six-step
+	// answer had to finish inside the time allotted to one call. Flags rather
+	// than constants because the right values depend on how fast the deployed
+	// model actually is, and that changed under us without a redeploy.
+	assistantTimeout   time.Duration
+	assistantRunBudget time.Duration
+	assistantMaxTools  int
 }
 
 // parseEngineFlags builds the engine's configuration from the command line and
@@ -70,7 +107,7 @@ func parseEngineFlags(args []string) *engineConfig {
 	c.bind(fs)
 	// ExitOnError: Parse never returns on a bad flag, it exits 2 with usage.
 	_ = fs.Parse(args)
-	c.Version = engineVersion
+	c.Version = engineVersion()
 	c.loadFile()
 	return c
 }
@@ -80,6 +117,14 @@ func (c *engineConfig) bind(fs *flag.FlagSet) {
 		"OpenAI-compatible base URL for the analyst assistant (e.g. https://host/v1); empty disables it")
 	fs.StringVar(&c.assistantModel, "assistant-model", DefaultAssistantModel,
 		"model id for the analyst assistant; only used when -assistant-url is set")
+	fs.StringVar(&c.assistantDeepModel, "assistant-deep-model", "",
+		"optional second model for sustained sidebar conversations; empty means one model everywhere")
+	fs.DurationVar(&c.assistantTimeout, "assistant-timeout", assistant.DefaultConfig().Timeout,
+		"per-completion timeout for the analyst assistant (bounds ONE provider call)")
+	fs.DurationVar(&c.assistantRunBudget, "assistant-run-budget", assistant.DefaultConfig().RunBudget,
+		"whole-answer budget for the analyst assistant (bounds the entire tool loop)")
+	fs.IntVar(&c.assistantMaxTools, "assistant-max-tool-calls", assistant.DefaultConfig().MaxToolCalls,
+		"maximum tool calls the analyst assistant may make while answering one question")
 	fs.StringVar(&c.TetragonAddr, "tetragon", hoststack.DefaultTetragonAddr, "Tetragon gRPC address")
 	fs.StringVar(&c.DBPath, "db", hoststack.DefaultDBPath, "SQLite database path")
 	fs.StringVar(&c.HTTPAddr, "http", hoststack.DefaultHTTPAddr, "HTTP listen address")
