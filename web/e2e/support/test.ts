@@ -37,10 +37,14 @@ export type BrowserDiagnostics = {
   httpIssues: HttpIssue[];
 };
 
-type StorageState = {
-  cookies: Array<{ name: string; value: string; domain: string; path: string }>;
-  origins: unknown[];
-};
+/**
+ * Playwright's own storage-state shape, taken from the API rather than
+ * re-declared. The hand-written version was structurally narrower (no
+ * `expires`/`httpOnly`/`secure`/`sameSite`), so every spec that fed it back
+ * into `browser.newContext({ storageState })` was a type error — invisible
+ * until the e2e directory was brought into `tsc`.
+ */
+export type StorageState = Awaited<ReturnType<APIRequestContext["storageState"]>>;
 
 export function readEbpfEnv(): EbpfEnv {
   const env = (globalThis as ProcessGlobal).process?.env ?? {};
@@ -113,14 +117,14 @@ export async function loginByApi(
 
   expect(response.status(), await response.text()).toBe(303);
 
-  const storageState = (await api.storageState()) as StorageState;
+  const storageState = await api.storageState();
   const csrfToken = cookieValue(storageState, "csrf_token");
   const session = cookieValue(storageState, "soc_session");
 
-  expect(session).toBeTruthy();
-  expect(csrfToken).toBeTruthy();
+  expect(session, "login did not set a session cookie").toBeTruthy();
+  expect(csrfToken, "login did not set a CSRF cookie").toBeTruthy();
 
-  return { csrfToken, storageState };
+  return { csrfToken: csrfToken as string, storageState };
 }
 
 export function cookieValue(storageState: StorageState, name: string): string | undefined {
@@ -131,8 +135,12 @@ export function requestOptionsForEndpoint(endpoint: UnsafeWriteEndpoint) {
   return {
     failOnStatusCode: false,
     method: endpoint.method,
+    // A form body is url-encoded, so Playwright's type only admits scalars.
+    // The contract's bodies are `Record<string, unknown>` because the JSON
+    // endpoints carry arrays and objects; narrowing here is what keeps the one
+    // shared inventory usable by both encodings.
     ...(endpoint.encoding === "form"
-      ? { form: endpoint.body }
+      ? { form: endpoint.body as Record<string, string | number | boolean> }
       : { data: endpoint.body })
   };
 }
@@ -230,4 +238,26 @@ function isExpectedOptionalDisabledApi503(issue: HttpIssue): boolean {
 
 export async function expectRouteRoot(page: Page) {
   await expect(page.locator("#root")).toBeAttached();
+}
+
+/**
+ * A SOC sidebar TOOL button, disambiguated from the collapsible section header
+ * that can carry the same name.
+ *
+ * "Settings" is both a nav item (under Manage) and a section header, so
+ * `getByRole("button", { name: "Settings" })` is a strict-mode violation.
+ * Resolving it with `.first()` would work only for as long as the two keep
+ * their current DOM order, which is not a property any test should depend on.
+ */
+export function socNavItem(page: Page, label: string) {
+  return page
+    .getByRole("button", { name: label, exact: true })
+    .and(page.locator("button.soc-sidebar-item"));
+}
+
+/** A SOC sidebar ROUTE link (Dashboard, Choke Gateway, Device Choke, Sign out). */
+export function socNavLink(page: Page, label: string) {
+  return page
+    .getByRole("link", { name: label, exact: true })
+    .and(page.locator("a.soc-sidebar-item"));
 }

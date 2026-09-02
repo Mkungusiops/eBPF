@@ -1,6 +1,8 @@
+import type { Page } from "@playwright/test";
+
 import { expect, hasBackend, hasCredentials, loginByApi, test } from "./support/test";
 
-async function suppressNativeInstallPrompt(page: Parameters<typeof test>[0]["page"]): Promise<void> {
+async function suppressNativeInstallPrompt(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const originalAddEventListener = window.addEventListener.bind(window);
     window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
@@ -10,7 +12,7 @@ async function suppressNativeInstallPrompt(page: Parameters<typeof test>[0]["pag
   });
 }
 
-async function allowOnlyMockInstallPrompt(page: Parameters<typeof test>[0]["page"]): Promise<void> {
+async function allowOnlyMockInstallPrompt(page: Page): Promise<void> {
   await page.addInitScript(() => {
     const originalAddEventListener = window.addEventListener.bind(window);
     window.addEventListener = ((type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
@@ -25,11 +27,11 @@ async function allowOnlyMockInstallPrompt(page: Parameters<typeof test>[0]["page
   });
 }
 
-async function isBuiltLoginPage(page: Parameters<typeof test>[0]["page"]): Promise<boolean> {
+async function isBuiltLoginPage(page: Page): Promise<boolean> {
   return (await page.locator('script[type="module"][src^="/assets/login-"]').count()) > 0;
 }
 
-async function waitForInstallButtonReady(page: Parameters<typeof test>[0]["page"]): Promise<void> {
+async function waitForInstallButtonReady(page: Page): Promise<void> {
   await page.waitForLoadState("networkidle").catch(() => undefined);
   if (await isBuiltLoginPage(page)) {
     await page

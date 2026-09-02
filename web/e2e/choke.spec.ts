@@ -26,7 +26,13 @@ test.describe("Choke route", () => {
     await expect(page.locator('[data-panel="threat-intelligence-ribbon"]')).toBeVisible();
     await expect(page.locator('[data-panel="engine-stack-panel"]')).toBeVisible();
     await expect(page.locator('[data-panel="thresholds-panel"]')).toBeVisible();
-    await expect(page.locator('[data-panel="policy-workbench"]')).toBeVisible();
+    // The Containment Command hero and its ladder are the dual-mode redesign's
+    // shared spine: both the Command and the Assurance lens hang off them, so
+    // they are what "the workbench rendered" now means.
+    await expect(page.locator('[data-panel="containment-ladder"]')).toBeVisible();
+    await expect(page.locator('[data-panel="state-ladder-panel"]')).toBeVisible();
+    await expect(page.locator('[data-panel="choke-map-bpf-mirror"]')).toBeVisible();
+    await expect(page.locator('[data-panel="decision-tape"]')).toBeVisible();
     await expect(page.locator('[data-panel="operations-status-bar"]')).toBeVisible();
     await expect(page.getByRole("checkbox", { name: "Select exec-fixture-1" })).toBeVisible();
 
@@ -94,21 +100,65 @@ test.describe("Choke route", () => {
     expectNoReleaseBlockingBrowserErrors(diagnostics);
   });
 
-  test("keeps the policy preview readable and clears the alerts badge", async ({ page }) => {
+  /**
+   * The Command ⇄ Assurance lens.
+   *
+   * WHAT THIS REPLACED: a "policy preview" workbench that no longer exists.
+   * The dual-mode redesign removed it and put two LENSES on one containment
+   * surface in its place — Command for the responder acting now, Assurance for
+   * the reader asking whether the control works. The old spec kept clicking a
+   * "Preview matches" button that had been deleted, so the Choke route's
+   * headline redesign shipped with no browser coverage at all.
+   *
+   * WHY IT IS HERE AND NOT IN UNIT TESTS: the two lenses are mutually
+   * exclusive renders of one route behind a tablist. jsdom can assert the
+   * component swaps; only a browser can show that the swap actually replaces
+   * what is on screen and that the shared hero survives it.
+   */
+  test("switches between the Command and Assurance lenses over one shared hero", async ({ page }) => {
     const diagnostics = attachBrowserDiagnostics(page);
     await installMockApi(page);
     await page.setViewportSize({ width: 1440, height: 900 });
 
     await page.goto("/choke");
 
-    await page.getByRole("button", { name: "Preview matches" }).click();
-    await expect(page.locator(".choke-preview-head")).toContainText("fixture-live");
-    await expect(page.locator(".choke-preview-effects")).toContainText("any non-pristine");
+    const lens = page.getByRole("tablist", { name: "View mode" });
+    const command = lens.getByRole("tab", { name: "Command" });
+    const assurance = lens.getByRole("tab", { name: "Assurance" });
 
-    const stateValue = page.locator(".choke-preview-effects strong").filter({ hasText: "any non-pristine" });
-    const stateBox = await stateValue.boundingBox();
-    expect(stateBox?.width ?? 0).toBeGreaterThan(90);
-    expect(stateBox?.height ?? 999).toBeLessThan(40);
+    // Command is the default: the responder's lens, with the live process work.
+    await expect(command).toHaveAttribute("aria-selected", "true");
+    await expect(page.locator('[data-panel="tracked-processes-list"]')).toBeVisible();
+    await expect(page.locator('[data-panel="assurance-view"]')).toHaveCount(0);
+
+    await assurance.click();
+
+    await expect(assurance).toHaveAttribute("aria-selected", "true");
+    const assuranceView = page.locator('[data-panel="assurance-view"]');
+    await expect(assuranceView).toBeVisible();
+    await expect(assuranceView.getByRole("heading", { name: "Security posture" })).toBeVisible();
+    await expect(assuranceView.getByRole("heading", { name: "Audit integrity" })).toBeVisible();
+    await expect(assuranceView.getByRole("heading", { name: "Enforcement & reversibility" })).toBeVisible();
+    // The lens SWAPS the body. If the process list survived the switch the two
+    // views would be stacked rather than alternatives, which is the layout bug
+    // the redesign exists to avoid.
+    await expect(page.locator('[data-panel="tracked-processes-list"]')).toHaveCount(0);
+
+    // The hero and its ladder belong to neither lens and must outlive both.
+    await expect(page.locator('[data-panel="containment-ladder"]')).toBeVisible();
+
+    await command.click();
+    await expect(page.locator('[data-panel="tracked-processes-list"]')).toBeVisible();
+
+    expectNoReleaseBlockingBrowserErrors(diagnostics);
+  });
+
+  test("clears the alerts badge from the notifications panel", async ({ page }) => {
+    const diagnostics = attachBrowserDiagnostics(page);
+    await installMockApi(page);
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    await page.goto("/choke");
 
     await expect(page.locator(".choke-notif-dot")).toHaveText("1");
     await page.getByRole("button", { name: "Notifications" }).click();

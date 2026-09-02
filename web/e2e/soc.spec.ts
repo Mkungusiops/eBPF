@@ -103,7 +103,11 @@ test.describe("SOC route", () => {
     await page.getByRole("button", { name: /Credential file read/i }).click();
 
     const drill = page.locator('[data-panel="drill-down-slide-over"]');
-    await expect(drill).toBeVisible();
+    // NOT toBeVisible(): SlideOver renders its <aside> unconditionally and
+    // soc.css hides the closed panel with `transform: translateX(102%)`, which
+    // Playwright does not treat as hidden. Probed: toBeVisible() on this panel
+    // passes without opening it. The open state lives in the class.
+    await expect(drill).toHaveClass(/is-open/);
     await expect(drill.locator(".soc-drill-hero")).toContainText("Credential file read");
     await expect(drill.locator(".soc-drill-grid")).toContainText("Chain depth");
     // The drill narrative is now a plain-English / technical pair rather than a

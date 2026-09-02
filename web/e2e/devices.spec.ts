@@ -1,5 +1,6 @@
 import type { Page, Route } from "@playwright/test";
 
+import { installMockApi } from "./support/mock-api";
 import {
   attachBrowserDiagnostics,
   expect,
@@ -329,6 +330,17 @@ async function installDevicesApi(
   await page.addInitScript(() => {
     document.cookie = "csrf_token=mock-csrf; path=/";
   });
+
+  // The shared mock, FIRST, as the floor. Playwright checks handlers in
+  // reverse registration order, so the device-specific handler below still
+  // wins for /api/choke/** and this only answers what it does not claim.
+  //
+  // Without it this spec only mocked /api/choke/**, and every other call the
+  // page makes — /api/assistant, /api/whoami, /api/version — escaped to the
+  // Vite proxy, which answers 500 with no engine behind it. Twelve of those
+  // then failed the release-blocking-errors assertion, which reads as a
+  // console fault and is a hole in the mock.
+  await installMockApi(page);
 
   await page.route("**/api/choke/**", async (route) => {
     const request = route.request();

@@ -402,6 +402,29 @@ it with, and the panel showed a fixed "Reading telemetry…" that was true of ev
 run and informative about none. It now names the last completed read and the
 count so far.
 
+**Two clocks, not one** (2026-08-27). `Timeout` bounds a single completion;
+`RunBudget` bounds the whole answer. They were one 60s value applied to both,
+which meant a run allowed up to `MaxToolCalls` completions plus a closing one
+had to fit all of them inside the time allotted to one. Nothing was wrong with
+that arithmetic while upstream answered in about a second — it became
+every-multi-step-answer-fails the day upstream slowed to 52-129s under a
+neighbouring tenant's burst on the shared gateway. Defaults are 45s per
+completion and 150s per answer, overridable per deployment with
+`-assistant-timeout`, `-assistant-run-budget` and `-assistant-max-tool-calls`,
+and printed at startup so an operator can read them off the journal instead of
+the binary.
+
+**What a failure says.** `assistant.OperatorMessage` maps the run error onto one
+of four fixed sentences — rate limited, busy, out of time, could-not-complete —
+because those are four different operator actions and they all read as the last
+one when they share a sentence. The sentences are chosen in Go and never
+interpolated from the upstream error: a provider message can carry the endpoint,
+the model name or the echoed key, and this text goes to a browser. That
+constraint is *why* the message was generic; distinguishing the conditions had
+to be done without relaxing it. A caller that hangs up (`ClientAbandoned`) is
+not a failure at all and logs at `Info` — as `Warn` it put identical
+`context canceled` lines in the journal that read like upstream faults.
+
 Three details that are load-bearing:
 
 - **`X-Accel-Buffering: no`.** Both deployments sit behind nginx, which

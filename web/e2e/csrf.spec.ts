@@ -24,7 +24,11 @@ test.describe("csrf", () => {
     }
   });
 
-  test("unsafe write inventory matches the 22-route certification contract", () => {
-    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(22);
+  // A count, so an endpoint cannot be dropped from the inventory without
+  // someone deciding to. It went 22 -> 21 on 2026-08-27 when
+  // /api/choke/policy/preview was found to be listed here after both servers
+  // had removed the route.
+  test("unsafe write inventory matches the 21-route certification contract", () => {
+    expect(UNSAFE_WRITE_ENDPOINTS).toHaveLength(21);
   });
 });
