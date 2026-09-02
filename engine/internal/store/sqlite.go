@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres
@@ -12,17 +13,29 @@ import (
 )
 
 type Event struct {
-	ID         int64     `json:"id"`
-	Timestamp  time.Time `json:"timestamp"`
-	EventType  string    `json:"event_type"`
-	PID        uint32    `json:"pid"`
-	ParentPID  uint32    `json:"parent_pid"`
-	ExecID     string    `json:"exec_id"`
-	Binary     string    `json:"binary"`
-	Args       string    `json:"args"`
-	UID        uint32    `json:"uid"`
-	PolicyName string    `json:"policy_name"`
-	RawJSON    string    `json:"raw_json,omitempty"`
+	ID        int64     `json:"id"`
+	Timestamp time.Time `json:"timestamp"`
+	EventType string    `json:"event_type"`
+	PID       uint32    `json:"pid"`
+	ParentPID uint32    `json:"parent_pid"`
+	ExecID    string    `json:"exec_id"`
+	Binary    string    `json:"binary"`
+	Args      string    `json:"args"`
+	// PeerIP and PeerPort are the remote endpoint this event touched, empty
+	// when it touched none.
+	//
+	// A FIELD rather than a substring of Args. The sensor already extracts it
+	// — tetrabridge renders daddr:dport with JoinHostPort — and then flattens
+	// it into the args blob, so every consumer that wanted "what did this talk
+	// to" had to regex it back out of free text. The console's Network
+	// Connections panel does exactly that, which is why it can miss traffic
+	// whose argument rendering does not match, while its title claims the
+	// peers were "seen".
+	PeerIP     string `json:"peer_ip,omitempty"`
+	PeerPort   uint32 `json:"peer_port,omitempty"`
+	UID        uint32 `json:"uid"`
+	PolicyName string `json:"policy_name"`
+	RawJSON    string `json:"raw_json,omitempty"`
 }
 
 type Alert struct {
@@ -165,6 +178,23 @@ func (s *Store) Dialect() string { return s.dialect }
 func (s *Store) DB() *sql.DB { return s.db }
 
 func (s *Store) migrate() error {
+	// Operator suppressions live in their own file; the schema is applied here
+	// so a fresh database gets it like every other table.
+	if _, err := s.db.Exec(suppressionSchema); err != nil {
+		return fmt.Errorf("suppressions schema: %w", err)
+	}
+
+	if _, err := s.db.Exec(runtimeSettingsSchema); err != nil {
+		return fmt.Errorf("runtime settings schema: %w", err)
+	}
+
+	// The agent's durable outbound queue. Without it, an agent restart loses
+	// every un-acked record — including containment decisions, and exactly
+	// when the control plane was unreachable.
+	if _, err := s.db.Exec(uplinkJournalSchema); err != nil {
+		return fmt.Errorf("uplink journal schema: %w", err)
+	}
+
 	idCol := "INTEGER PRIMARY KEY AUTOINCREMENT"
 	tsCol := "DATETIME"
 	if s.dialect == "postgres" {
@@ -181,6 +211,8 @@ func (s *Store) migrate() error {
 		exec_id TEXT,
 		"binary" TEXT,
 		args TEXT,
+		peer_ip TEXT,
+		peer_port BIGINT,
 		uid BIGINT,
 		policy_name TEXT,
 		raw_json TEXT
@@ -202,18 +234,33 @@ func (s *Store) migrate() error {
 	CREATE INDEX IF NOT EXISTS idx_alerts_timestamp ON alerts(timestamp);
 	CREATE INDEX IF NOT EXISTS idx_alerts_severity ON alerts(severity);
 	`
-	_, err := s.db.Exec(schema)
-	return err
+	if _, err := s.db.Exec(schema); err != nil {
+		return err
+	}
+
+	// events.peer was added after the table shipped, so the idempotent CREATE
+	// above will not add it to a database that already has an events table.
+	// Ordered AFTER that create, because on a fresh database the ALTER would
+	// otherwise run against a table that does not exist yet.
+	for _, c := range []struct{ name, def string }{
+		{"peer_ip", "TEXT"},
+		{"peer_port", "BIGINT"},
+	} {
+		if err := addColumnIfMissing(s.db, s.dialect, "events", c.name, c.def); err != nil {
+			return fmt.Errorf("events.%s column: %w", c.name, err)
+		}
+	}
+	return nil
 }
 
 func (s *Store) InsertEvent(e *Event) (int64, error) {
 	start := time.Now()
 	id, err := s.insertReturningID(`
 		INSERT INTO events
-		(timestamp, event_type, pid, parent_pid, exec_id, "binary", args, uid, policy_name, raw_json)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(timestamp, event_type, pid, parent_pid, exec_id, "binary", args, peer_ip, peer_port, uid, policy_name, raw_json)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.Timestamp, e.EventType, e.PID, e.ParentPID, e.ExecID,
-		e.Binary, e.Args, e.UID, e.PolicyName, e.RawJSON)
+		e.Binary, e.Args, e.PeerIP, e.PeerPort, e.UID, e.PolicyName, e.RawJSON)
 	metrics.ObserveStoreInsert(time.Since(start).Seconds(), "event")
 	return id, err
 }
@@ -231,7 +278,7 @@ func (s *Store) InsertAlert(a *Alert) (int64, error) {
 
 func (s *Store) RecentEvents(limit int) ([]Event, error) {
 	rows, err := s.db.Query(rewriteParams(s.dialect, `
-		SELECT id, timestamp, event_type, pid, parent_pid, exec_id, "binary", args, uid, policy_name
+		SELECT id, timestamp, event_type, pid, parent_pid, exec_id, "binary", args, peer_ip, peer_port, uid, policy_name
 		FROM events ORDER BY id DESC LIMIT ?`), limit)
 	if err != nil {
 		return nil, err
@@ -240,10 +287,16 @@ func (s *Store) RecentEvents(limit int) ([]Event, error) {
 	out := make([]Event, 0)
 	for rows.Next() {
 		var e Event
+		var peerIP sql.NullString
+		var peerPort sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Timestamp, &e.EventType, &e.PID, &e.ParentPID,
-			&e.ExecID, &e.Binary, &e.Args, &e.UID, &e.PolicyName); err != nil {
+			&e.ExecID, &e.Binary, &e.Args, &peerIP, &peerPort, &e.UID, &e.PolicyName); err != nil {
 			return nil, err
 		}
+		// NULL on every row written before these columns existed. Scanning
+		// straight into a string would fail the whole query on historical
+		// data, which is how a schema addition takes out the reads.
+		e.PeerIP, e.PeerPort = peerIP.String, uint32(peerPort.Int64)
 		out = append(out, e)
 	}
 	// A partial result set from an interrupted query must not read as "no more
@@ -275,7 +328,7 @@ func (s *Store) RecentAlerts(limit int) ([]Alert, error) {
 
 func (s *Store) EventsByExecID(execID string) ([]Event, error) {
 	rows, err := s.db.Query(rewriteParams(s.dialect, `
-		SELECT id, timestamp, event_type, pid, parent_pid, exec_id, "binary", args, uid, policy_name
+		SELECT id, timestamp, event_type, pid, parent_pid, exec_id, "binary", args, peer_ip, peer_port, uid, policy_name
 		FROM events WHERE exec_id = ? ORDER BY id ASC`), execID)
 	if err != nil {
 		return nil, err
@@ -284,10 +337,16 @@ func (s *Store) EventsByExecID(execID string) ([]Event, error) {
 	out := make([]Event, 0)
 	for rows.Next() {
 		var e Event
+		var peerIP sql.NullString
+		var peerPort sql.NullInt64
 		if err := rows.Scan(&e.ID, &e.Timestamp, &e.EventType, &e.PID, &e.ParentPID,
-			&e.ExecID, &e.Binary, &e.Args, &e.UID, &e.PolicyName); err != nil {
+			&e.ExecID, &e.Binary, &e.Args, &peerIP, &peerPort, &e.UID, &e.PolicyName); err != nil {
 			return nil, err
 		}
+		// NULL on every row written before these columns existed. Scanning
+		// straight into a string would fail the whole query on historical
+		// data, which is how a schema addition takes out the reads.
+		e.PeerIP, e.PeerPort = peerIP.String, uint32(peerPort.Int64)
 		out = append(out, e)
 	}
 	return out, rows.Err()

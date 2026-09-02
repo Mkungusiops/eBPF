@@ -144,6 +144,81 @@ if [[ -n "${AGENT_HOSTS:-}" ]]; then
   check "every agent runs the same build" "$uniq_count" "1"
 fi
 
+# ── loaded policies that never fire ─────────────────────────────────────────
+#
+# `tetra tracingpolicy list` reports NPOST per policy: how many events its
+# probe has posted since it was loaded. The deploy already verifies a policy is
+# LOADED, which is a different claim — outbound-connections sat "enabled" with
+# NPOST 0 while sensitive-file-access had 654, and nothing anywhere surfaced
+# that. It took a manual test connection to establish the probe worked at all.
+#
+# Reported, NOT failed, and that distinction is the whole design:
+#
+#   - Policies reload on every deploy, so a zero counter minutes later is
+#     normal and failing on it would cry wolf on every run.
+#   - A genuinely quiet host has every policy at zero, which is also fine.
+#
+# So the signal is RELATIVE: a policy at zero while its siblings are posting is
+# the one worth looking at. That comparison is the only one this can make
+# honestly from a single reading, and it is the one an operator cannot make at
+# all today.
+step_header "policy activity"
+for pair in ${AGENT_HOSTS:-}; do
+  host="${pair#*=}"
+  raw=$(remote "$host" 'sudo docker exec tetragon tetra tracingpolicy list 2>/dev/null | awk "NR>1 && \$2 != \"\" {print \$2\" \"\$(NF-2)}"' || true)
+  [[ -n "$raw" ]] || { log "  $host: policy counters unavailable (tetra not reachable)"; continue; }
+  total=0; quiet=""
+  while read -r name npost; do
+    [[ -n "$name" ]] || continue
+    npost="${npost//[^0-9]/}"; npost="${npost:-0}"
+    total=$((total + npost))
+    [[ "$npost" == "0" ]] && quiet="$quiet $name"
+  done <<< "$raw"
+  if [[ -n "$quiet" && "$total" -gt 0 ]]; then
+    log "  $host: posting $total event(s); SILENT probes:$quiet"
+    log "     a probe at zero while its siblings post is either a policy that"
+    log "     matches nothing here, or one hooked to a symbol this kernel lacks."
+  elif [[ "$total" -gt 0 ]]; then
+    ok "$host: every loaded policy is posting ($total events)"
+  else
+    ok "$host: no policy has posted yet (quiet host, or freshly reloaded)"
+  fi
+done
+
+# ── nothing overrides the unit this deploy just wrote ────────────────────────
+#
+# A systemd drop-in that sets ExecStart= WINS over the unit file, silently and
+# permanently. Two of these existed on this estate — hand-written on 2026-08-16
+# to wire the assistant, never removed once the deploy learned to write those
+# flags itself. From then on the deploy wrote a correct unit on every run and
+# systemd ran an eight-day-old command line instead.
+#
+# It is invisible from every angle an operator would normally look: the unit
+# file is right, `systemctl cat` shows the deploy's ExecStart first, the
+# service is active, and the feature is simply absent with no error anywhere.
+# The only honest source is /proc/<pid>/cmdline, which is what this reads.
+#
+# Checked here rather than fixed here: a deploy that silently deletes operator
+# configuration is its own hazard. This says exactly what to look at.
+step_header "unit overrides"
+for spec in "${CP_HOST:+$CP_HOST=ebpf-soc-controlplane}" "${ENGINE_HOST:+$ENGINE_HOST=ebpf-engine}"; do
+  [[ -n "$spec" ]] || continue
+  h="${spec%%=*}"; unit="${spec#*=}"
+  overrides=$(remote "$h" "ls /etc/systemd/system/$unit.service.d/*.conf 2>/dev/null | wc -l" || echo 0)
+  overrides="${overrides//[^0-9]/}"
+  if [[ "${overrides:-0}" -gt 0 ]]; then
+    shadowed=$(remote "$h" "grep -l '^ExecStart=' /etc/systemd/system/$unit.service.d/*.conf 2>/dev/null | tr '\n' ' '" || true)
+    if [[ -n "$shadowed" ]]; then
+      err "$h: $unit has a drop-in that overrides ExecStart ($shadowed). systemd is running THAT command line, not the one this deploy wrote. Compare: sudo tr '\\0' '\\n' < /proc/\$(systemctl show $unit -p MainPID --value)/cmdline"
+      FAIL=$((FAIL + 1))
+    else
+      ok "$h: $unit drop-ins present but none override ExecStart"
+    fi
+  else
+    ok "$h: no systemd drop-in shadowing $unit"
+  fi
+done
+
 printf '\n'
 if (( FAIL > 0 )); then
   err "$FAIL post-deploy check(s) failed"

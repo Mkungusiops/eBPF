@@ -375,19 +375,35 @@ export function buildMitreCoverageModel(
     alertsByTech.set(id, list);
     observed.set(id, (observed.get(id) || 0) + 1);
   }
+  // Probe posts mark a technique as INSTRUMENTED. They are not folded into the
+  // hit counts, and that is the fix.
+  //
+  // They used to be: a technique with no alerts inherited its kernel-probe post
+  // count instead. So some bars were alerts in the selected window and others
+  // were probe posts since sensor start, with nothing distinguishing them —
+  // the panel's own caveat admitted the mixture and left the reader to guess
+  // which bar was which. A technique showing 13,580 was not seen 13,580 times;
+  // its probe fired that often, mostly on activity that scored nothing.
+  //
+  // Now every bar means the same thing: alerts in the selected window. A
+  // technique whose probe is live but which produced no alerts is "covered",
+  // which is exactly what it is.
+  const instrumented = new Set<string>();
   for (const row of mitreRows) {
     const id = techniqueId(row.label) || techniqueId(row.id);
-    if (id && !observed.has(id)) observed.set(id, row.value);
+    if (id && row.value > 0) instrumented.add(id);
   }
 
   const total = ALL_TECHNIQUE_IDS.size;
-  const covered = [...ALL_TECHNIQUE_IDS].filter((id) => policiesByTech.has(id));
+  const covered = [...ALL_TECHNIQUE_IDS].filter((id) => policiesByTech.has(id) || instrumented.has(id));
   const observedIds = [...ALL_TECHNIQUE_IDS].filter((id) => (observed.get(id) || 0) > 0);
-  const gaps = [...ALL_TECHNIQUE_IDS].filter((id) => !policiesByTech.has(id));
+  const gaps = [...ALL_TECHNIQUE_IDS].filter((id) => !policiesByTech.has(id) && !instrumented.has(id));
   const hitTotal = observedIds.reduce((sum, id) => sum + (observed.get(id) || 0), 0);
 
   const stateOf = (id: string): "observed" | "covered" | "gap" =>
-    (observed.get(id) || 0) > 0 ? "observed" : policiesByTech.has(id) ? "covered" : "gap";
+    (observed.get(id) || 0) > 0 ? "observed"
+      : policiesByTech.has(id) || instrumented.has(id) ? "covered"
+      : "gap";
 
   return {
     policiesByTech,

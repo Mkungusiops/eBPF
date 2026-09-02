@@ -86,6 +86,48 @@ effect would be a fiction with a signature on it.
 
 ### enum `TargetMatch`
 
+### message `UpdateSuppressions`
+
+UpdateSuppressions distributes the operator's SCORING suppressions to a
+tenant's agents.
+
+A suppression says "this behaviour is expected on OUR estate": a backup agent
+that reads credential paths, a config tool that calls setuid on a schedule.
+Without a way to say so a customer either lives with the false positives or
+disarms the platform, and they disarm it.
+
+# Why this is safe to distribute over the command channel
+
+A suppression can only ever REDUCE a score. It cannot raise one, create a
+rung, or widen what the platform acts on. That asymmetry is the whole reason
+this is distributable while scoring WEIGHTS are not: the worst a malicious or
+mistaken suppression achieves is a missed detection — bounded, and visible as
+a coverage gap. A weight could push every process past the sever threshold.
+
+# Replace, not merge
+
+The full set is sent every time and the agent replaces its own. A merge
+semantics would make removal impossible to express and would let two control
+planes silently accumulate rules. The list is small (an operator writes a
+handful), so the cost is nil and the desired state is unambiguous.
+
+### message `Suppression`
+
+### message `ResendDecisions`
+
+ResendDecisions asks an agent to re-queue decisions it has already sent, so
+the control plane can close a gap in the audit chain.
+
+Central chain verification reports which agent is missing records and how
+many; the agent still holds them in its local store. Without this the
+control plane can only ever say "incomplete" — it knows what it is missing
+and has no way to ask for it.
+
+Replay is safe by construction: the control plane dedups on
+(tenant, agent, dedup_key), so a record it already holds is ignored rather
+than duplicated. That makes an over-broad request harmless and a repeated
+one idempotent.
+
 ## `common.proto`
 
 > Shared message types for the agent ↔ control-plane wire contract.

@@ -4,7 +4,7 @@
 // landed. Each one reads a snapshot the route already fetched.
 import { useEffect, useMemo, useState } from "react";
 import type { BucketEntry, CgroupMap, CircuitEntry, Thresholds } from "./types";
-import {
+import { shortAgent,
   STATE_ORDER,
   bucketFlagsLabel,
   countByState,
@@ -52,8 +52,13 @@ export function buildEngineFacts(health: Record<string, unknown>): EngineFact[] 
   const storeTarget = str(store.target);
   const metricsOn = obs.metrics_enabled === true;
 
-  const facts: EngineFact[] = [
-    {
+  // The control plane states outright that it cannot observe agent kernel
+  // sensors. Rendering a row whose only content is that disclaimer spends the
+  // most prominent line of the panel on a non-answer; Sensor Health per host
+  // is where that question is actually answered.
+  const facts: EngineFact[] = [];
+  if (sensorKnown || !sensorNote) {
+    facts.push({
       label: "Kernel sensor",
       value: !sensorKnown ? "Not reported" : connected ? "Connected" : "Disconnected",
       hint: !sensorKnown
@@ -62,7 +67,9 @@ export function buildEngineFacts(health: Record<string, unknown>): EngineFact[] 
           ? "Tetragon eBPF event feed is live"
           : "No live syscall/exec events from the kernel",
       status: !sensorKnown ? "neutral" : connected ? "ok" : "danger"
-    },
+    });
+  }
+  facts.push(
     {
       label: "Enforcement plane",
       value: isNoop ? "Detect-only" : `eBPF · ${attached}/${expected || attached} attached`,
@@ -71,25 +78,91 @@ export function buildEngineFacts(health: Record<string, unknown>): EngineFact[] 
     },
     {
       label: "Event store",
-      value: storeBackend === "postgres" ? "PostgreSQL" : storeBackend === "sqlite" ? "SQLite" : storeBackend || "—",
-      hint: storeTarget ? storeTarget.replace(/^.*\//, "…/") : "decision + audit chain persistence",
-      status: "neutral"
+      // A control plane reports store health as {ok}, not a backend name, and
+      // rendering "—" beside a store that is reporting itself healthy is the
+      // panel discarding the one fact it was given.
+      value: storeBackend === "postgres" ? "PostgreSQL"
+        : storeBackend === "sqlite" ? "SQLite"
+        : storeBackend ? storeBackend
+        : store.ok === true ? "Reachable"
+        : store.ok === false ? "Unreachable"
+        : "—",
+      hint: storeTarget ? storeTarget.replace(/^.*\//, "…/")
+        : str(store.error) || "decision + audit chain persistence",
+      status: store.ok === false ? "danger" : "neutral"
     },
     {
-      label: "Sign-in security",
-      value: "bcrypt · CSRF · sessions",
-      hint: str(auth.rate_limit) ? `rate limit ${str(auth.rate_limit)}` : "hardened auth",
-      status: "ok"
-    },
-    {
+      // Telemetry is CONFIGURATION, not health, and is marked neutral so it
+      // never contributes a colour to a panel an operator scans for trouble.
+      // It stays because "metrics are off" explains an absent dashboard
+      // elsewhere; it does not stay as a status.
       label: "Telemetry",
       value: metricsOn ? "Metrics on" : "Metrics off",
-      hint: `${str(obs.log_format) || "text"} logs · ${str(obs.log_level) || "info"} level`,
+      hint: `${str(obs.log_format) || "text"} logs · ${str(obs.log_level) || "info"} level · configuration, not health`,
       status: "neutral"
-    },
-    { label: "Uptime", value: str(health.uptime) || "—", status: "neutral" },
-    { label: "Build", value: `v${str(health.version) || "?"}`, status: "neutral" }
-  ];
+    }
+  );
+
+  // Sign-in security is deliberately NOT a row here.
+  //
+  // It rendered a hardcoded "bcrypt · CSRF · sessions" with status "ok",
+  // permanently. It could not change and could not report a problem: if
+  // authentication broke tomorrow it would still show a green dot reading
+  // "hardened auth". That is a reassurance label occupying a status position,
+  // in the one panel an operator scans to find out what is wrong — the same
+  // defect as the four unanswerable rows removed from this panel, and worse,
+  // because those at least admitted they did not know.
+  //
+  // The rate limit it used to mention is real configuration and belongs with
+  // the rest of the deployment's shape, not in a health readout.
+  if (str(auth.rate_limit)) {
+    facts.push({
+      label: "Sign-in rate limit",
+      value: str(auth.rate_limit),
+      hint: "configuration, not health",
+      status: "neutral"
+    });
+  }
+
+  // Rows this plane can actually answer, appended rather than shown as blanks.
+  //
+  // The control plane has no kernel sensor, no uptime and no engine build to
+  // report, so those rows rendered "Not reported", "—", "—" and "v?" — four of
+  // seven saying nothing. A panel that mostly answers "unknown" trains people
+  // to skip the place where "is my platform healthy" belongs, and it was
+  // occupying exactly that place. What the control plane DOES know — how many
+  // agents it has, how many are fresh, and how long since the quietest one
+  // called home — was in the payload and unrendered.
+  if (typeof health.agents === "number") {
+    const total = Number(health.agents);
+    const fresh = Number(health.agents_fresh ?? 0);
+    facts.push({
+      label: "Agents",
+      value: `${fresh}/${total} reporting`,
+      hint: total === 0 ? "no agents enrolled in this tenant"
+        : fresh < total ? "a stale agent is not being protected — check Fleet"
+        : "all enrolled agents are current",
+      status: total === 0 ? "warn" : fresh < total ? "warn" : "ok"
+    });
+    const age = Number(health.last_seen_age_seconds ?? -1);
+    if (age >= 0) {
+      facts.push({
+        label: "Last heartbeat",
+        value: age < 90 ? `${age}s ago` : `${Math.floor(age / 60)}m ago`,
+        hint: "the most recent agent check-in this server has seen",
+        status: age > 300 ? "warn" : "ok"
+      });
+    }
+  }
+
+  // Uptime and build only when this plane reports them. "—" and "v?" are not
+  // readings; they are the panel filling space with a shrug.
+  if (str(health.uptime)) {
+    facts.push({ label: "Uptime", value: str(health.uptime), status: "neutral" });
+  }
+  if (str(health.version)) {
+    facts.push({ label: "Build", value: str(health.version), status: "neutral" });
+  }
   return facts;
 }
 
@@ -279,10 +352,17 @@ export function BucketList({ buckets }: { buckets: BucketEntry[] }) {
           const tokenPct = Math.round((tokens / burst) * 100);
           const tokenLabel = tokens <= 0 ? "depleted" : tokenPct < 35 ? "low headroom" : "available";
           return (
-            <div className={`choke-bucket-row state-${state}`} key={`${bucket.pid}-${bucket.flags}`}>
+            <div
+              className={`choke-bucket-row state-${state}`}
+              // The agent is part of the identity. Without it two hosts
+              // throttling the same PID share a key and React renders one of
+              // them, dropping the other from the kernel map entirely.
+              key={`${bucket.agent || "host"}-${bucket.pid}-${bucket.flags}`}
+            >
               <div className="choke-bucket-title">
                 <strong>PID {bucket.pid}</strong>
                 <StateBadge state={state} />
+                {bucket.agent ? <code className="choke-bucket-agent">{shortAgent(bucket.agent)}</code> : null}
               </div>
               <div className="choke-bucket-meter" title={`${bucket.tokens}/${bucket.burst} tokens available`}>
                 <span style={{ width: `${tokenPct}%` }} />

@@ -18,17 +18,67 @@ spec:
         - index: 0
           type: "sock"
       selectors:
+        # The binaries whose outbound connections a SOC actually wants to see.
+        #
+        # MEASURED, 2026-08-25, on the production estate. This list held only
+        # the shells, nc, ncat and socat, and the result was a detection that
+        # had been structurally dark for weeks:
+        #
+        #   3,032 outbound-connections events in the store, ALL of them
+        #   /usr/bin/bash, and the newest one 25 hours old — while the same
+        #   agent posted 1.32M events overall in the same period.
+        #
+        # Every one of those 3,032 came from the demo attack loop's reverse
+        # shell (`127.0.0.1:4444`), which was removed when the estate moved to
+        # DATA_MODE=none. Nothing has matched since. So "this platform detects
+        # outbound connections" was true only for a shell dialling out — and C2
+        # over curl, wget or python was invisible on every host.
+        #
+        # The additions are the download and scripting binaries an operator
+        # would want to know had opened a socket. Deliberately still a closed
+        # list rather than "every binary": tcp_connect unfiltered on a server
+        # means every sshd session, every apt run and the agent's own uplink,
+        # which buries the signal this exists to surface.
         - matchBinaries:
             - operator: "In"
               values:
+                # Shells — a shell opening a socket is the classic reverse
+                # shell, and was the only thing this policy ever caught.
                 - "/usr/bin/bash"
                 - "/bin/bash"
                 - "/usr/bin/sh"
                 - "/bin/sh"
                 - "/usr/bin/zsh"
                 - "/usr/bin/dash"
+                # Purpose-built network tools.
                 - "/usr/bin/nc"
                 - "/usr/bin/ncat"
+                - "/usr/bin/nc.openbsd"
+                - "/usr/bin/nc.traditional"
                 - "/usr/bin/socat"
+                - "/usr/bin/telnet"
+                # Download tools — the overwhelmingly common C2 and
+                # stage-two-payload transport, and absent until now.
+                - "/usr/bin/curl"
+                - "/usr/bin/wget"
+                # Interpreters. A python or perl process opening a socket on a
+                # server is either an application (known, and its path is
+                # usually not these) or something that should be explained.
+                - "/usr/bin/python3"
+                - "/usr/bin/python3.10"
+                - "/usr/bin/python3.11"
+                - "/usr/bin/python3.12"
+                - "/usr/bin/python"
+                - "/usr/bin/perl"
+                - "/usr/bin/ruby"
+                - "/usr/bin/php"
+                - "/usr/bin/node"
+                # Lateral movement. Outbound ssh/scp FROM a server is how an
+                # intrusion spreads, and it is invisible without this.
+                - "/usr/bin/ssh"
+                - "/usr/bin/scp"
+                - "/usr/bin/sftp"
+                # Raw TLS client — the manual way to reach a C2 endpoint.
+                - "/usr/bin/openssl"
           matchActions:
             - action: Post

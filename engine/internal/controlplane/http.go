@@ -42,15 +42,21 @@ func (s *Server) buildHTTP() http.Handler {
 	mux.HandleFunc("/api/alert-stats", s.handleAlertStats)
 	mux.HandleFunc("/api/decision-stats", s.handleDecisionStats)
 	mux.HandleFunc("/api/sensor-health", s.handleSensorHealth)
+	// Per-tenant settings: stored under RLS, dispatched to the tenant's agents.
+	mux.HandleFunc("/api/settings/suppressions", s.handleSettingsSuppressions)
+	mux.HandleFunc("/api/settings/protected", s.handleSettingsProtected)
+	mux.HandleFunc("/api/settings/change-control", s.handleSettingsChangeControl)
+	s.registerRetentionRoutes(mux) // per-tenant retention: the column 0001 created and nothing read
 	mux.HandleFunc("/api/process/", s.handleProcess)
 	mux.HandleFunc("/api/stream", s.handleStream)
 	s.registerAssistantRoutes(mux)
 	s.registerEnrichmentRoutes(mux)
-	s.registerChatRoutes(mux)     // assistant conversation history // analyst assistant (read-only tools, tenant-scoped)
-	s.registerChokeRoutes(mux)    // rich Choke Gateway + Devices API, tenant-scoped
-	s.registerApprovalRoutes(mux) // EN-2 change-control queue for destructive actions
-	s.registerFleetRoutes(mux)    // Fleet view: tenant's agents as hosts
-	s.registerAttackRoutes(mux)   // quick-fire attacks + honeypots (demo/lab)
+	s.registerChatRoutes(mux)          // assistant conversation history // analyst assistant (read-only tools, tenant-scoped)
+	s.registerChokeRoutes(mux)         // rich Choke Gateway + Devices API, tenant-scoped
+	s.registerApprovalRoutes(mux)      // EN-2 change-control queue for destructive actions
+	s.registerFleetRoutes(mux)         // Fleet view: tenant's agents as hosts
+	s.registerAttackRoutes(mux)        // quick-fire attacks + honeypots (demo/lab)
+	s.registerOperatorAuditRoutes(mux) // who accessed what: the durable operator trail
 	mux.HandleFunc("/api/admin/enroll-token", s.handleEnrollToken)
 	mux.HandleFunc("/api/admin/command", s.handleCommand)
 	if s.cfg.BFF != nil {
@@ -571,14 +577,45 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		storeQueryFailed(w, r, tenant, "decision", limit, err)
 		return
 	}
+	// The console's Decision type, not a subset of it.
+	//
+	// This used to send seven fields while the wire record carried twenty, and
+	// the console reads by NAME: topBinaries groups on `binary`, the tape keys
+	// rows on `id`+`exec_id`, drill-down calls onDrill(exec_id), and ack tracks
+	// `id`. None of those were sent, so on the fleet console Top Offenders read
+	// "0 binaries" beside 39 real decisions, every tape row keyed to
+	// "0-undefined" — collapsing selection and ack onto one another — and
+	// clicking a row went nowhere.
+	//
+	// Nothing was missing from the data: the agent had already uplinked all of
+	// it and this struct dropped it on the floor. Same defect as the assistant
+	// advertising filter parameters no server read — a surface describing a
+	// shape it does not fill.
 	type decisionView struct {
+		ID        int64  `json:"id"`
+		ExecID    string `json:"exec_id"`
+		PID       uint32 `json:"pid"`
+		Binary    string `json:"binary"`
 		Action    string `json:"action"`
+		FromState string `json:"from_state"`
+		ToState   string `json:"to_state"`
 		State     string `json:"state"`
 		Target    string `json:"target"`
 		Reason    string `json:"reason"`
 		Score     int32  `json:"score"`
+		DryRun    bool   `json:"dry_run"`
+		Backend   string `json:"backend"`
+		Outcome   string `json:"outcome"`
 		Timestamp string `json:"timestamp"`
 		OK        bool   `json:"ok"`
+		// Actor is who took the action, empty for an automatic one.
+		//
+		// The reason answers "why" and this answers "who", and an audit that
+		// carries one without the other cannot settle the question it exists
+		// to settle. It is also chain-hashed, so it had to reach the wire
+		// regardless — omitting it from the view would mean transmitting a
+		// field for verification and then hiding it from the person verifying.
+		Actor string `json:"actor,omitempty"`
 	}
 	out := make([]decisionView, 0, len(rows))
 	for _, row := range rows {
@@ -595,9 +632,13 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 			target = d.GetExecId()
 		}
 		out = append(out, decisionView{
-			Action: d.GetAction(), State: d.GetToState(), Target: target,
+			ID: d.GetId(), ExecID: d.GetExecId(), PID: d.GetPid(), Binary: d.GetBinary(),
+			Action: d.GetAction(), FromState: d.GetFromState(), ToState: d.GetToState(),
+			State: d.GetToState(), Target: target,
 			Reason: d.GetReason(), Score: d.GetScore(),
+			DryRun: d.GetDryRun(), Backend: d.GetBackend(), Outcome: d.GetOutcome(),
 			Timestamp: at.UTC().Format(time.RFC3339Nano), OK: d.GetOutcome() == "ok",
+			Actor: d.GetActor(),
 		})
 	}
 	// Bare array (engine contract): the Choke feature iterates it directly.

@@ -75,7 +75,7 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     risk: "L",
     mode: "read-only",
     description:
-      "Technique and tactic counts derived from alerts and policy metadata. Hit counts are kernel probe posts since sensor start, not alerts in the selected window.",
+      "Which ATT&CK techniques this estate detects, and how many alerts each raised in the selected window. A technique whose probe is live but which raised nothing reads as covered, not as a gap.",
     api: ["/api/policies", "/api/alerts"]
   },
   {
@@ -91,7 +91,7 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     title: "IOCs observed",
     risk: "L",
     mode: "read-only",
-    description: "File paths, remote addresses, and peers extracted from events and alert text.",
+    description: "File paths from event arguments, and remote addresses the sensor observed on connection events.",
     api: ["/api/events", "/api/alerts"]
   },
   {
@@ -99,7 +99,7 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     title: "Network connections",
     risk: "L",
     mode: "read-only",
-    description: "Outbound TCP peers and source processes seen in the current event window.",
+    description: "Outbound destinations the sensor observed on connection events, with the processes that opened them. Addresses appearing only in command arguments are excluded — those are intent, not traffic.",
     api: ["/api/events"]
   },
   {
@@ -185,6 +185,23 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     description:
       "What this deployment has learned is normal, what departed from it, and what matched a threat-intelligence feed.",
     api: ["/api/baseline", "/api/baseline/anomalies", "/api/intel", "/api/intel/matches", "/api/intel/lookup"],
+    storage: []
+  },
+  {
+    id: "settings-modal",
+    title: "Settings",
+    risk: "H",
+    mode: "write",
+    // What an operator tunes AFTER deployment, as opposed to what the deploy
+    // decides. The dividing line is deliberate: anything the deploy rewrites
+    // wholesale (engine.yaml, agent.yaml, controlplane.env are whole-file
+    // heredocs on every run) is shown here only as an effective value, never
+    // as an editable field — a console that edited them would be lying by the
+    // next deploy. Secrets are absent entirely.
+    description:
+      "Tune the platform to this estate. Suppressions stop expected local behaviour from scoring; " +
+      "everything the deploy owns is shown read-only.",
+    api: ["/api/settings/suppressions"],
     storage: []
   },
   {

@@ -8,13 +8,13 @@
 // every time a filter is added.
 import type { ChokeAction, CircuitEntry, Thresholds } from "./types";
 import { auditVerdict } from "../common/enforcement";
-import { ACTIONS, bucketizeDecisions, countCgroupPids } from "./utils";
+import { ACTIONS, appliedTierCounts, bucketizeDecisions, countCgroupPids, enforcementGapReason } from "./utils";
 import { formatWindow, toggleSetValue } from "./constants";
 import type { ChokeData } from "./useChokeData";
 import type { useChokeFilters } from "./useChokeFilters";
 import type { useChokePosture } from "./useChokePosture";
 import { MiniPanel, Panel, RankedList, Sparkline, StateLadder } from "./components";
-import { BucketList, CgroupTiers, EngineStack, ThresholdPanel } from "./panels";
+import { BucketList, EngineStack, ThresholdPanel } from "./panels";
 import { ProcessTable } from "./ProcessTable";
 import { DecisionTape } from "./DecisionTape";
 
@@ -96,7 +96,11 @@ export function CommandView({
             <EngineStack health={systemHealth} disabled={disabled} />
           </Panel>
           <Panel dataPanel="state-ladder-panel" title="State Ladder">
-            <StateLadder counts={stateCounts} />
+            <StateLadder
+              counts={stateCounts}
+              applied={appliedTierCounts(cgroups)}
+              gapReason={enforcementGapReason(chokeState)}
+            />
           </Panel>
           <ThresholdPanel
             dataPanel="thresholds-panel"
@@ -105,9 +109,6 @@ export function CommandView({
             disabled={disabled}
             onCommit={onCommitThresholds}
           />
-          <Panel dataPanel="cgroup-tiers-panel" title="Cgroup Tiers">
-            <CgroupTiers cgroups={cgroups} />
-          </Panel>
           <Panel dataPanel="choke-map-bpf-mirror" title="Choke Map / BPF Mirror">
             <BucketList buckets={buckets} />
           </Panel>
@@ -214,6 +215,8 @@ export function CommandView({
               onSelect={(id) => filters.setSelectedDecisionIds((prev) => toggleSetValue(prev, id))}
               onDrill={onDrill}
               onFilterExec={filters.setTapeFilterExec}
+              filterExec={filters.tapeFilterExec}
+              onClearFilterExec={() => filters.setTapeFilterExec(null)}
               onAck={onAck}
               onUnack={onUnack}
               onCopy={onCopy}

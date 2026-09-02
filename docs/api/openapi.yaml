@@ -1741,6 +1741,8 @@ paths:
                 "sever_at":
                   type: integer
                   format: int32
+                "reason":
+                  type: string
       responses:
         "200":
           description: |
@@ -1755,7 +1757,9 @@ paths:
                 properties:
                   "applied": { type: string }
                   "detail": { type: string }
+                  "error": { type: string }
                   "ok": { type: string }
+                  "stored_for_tenant": { type: string }
                   "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
@@ -1789,6 +1793,8 @@ paths:
                 "sever_at":
                   type: integer
                   format: int32
+                "reason":
+                  type: string
       responses:
         "200":
           description: |
@@ -1803,7 +1809,9 @@ paths:
                 properties:
                   "applied": { type: string }
                   "detail": { type: string }
+                  "error": { type: string }
                   "ok": { type: string }
+                  "stored_for_tenant": { type: string }
                   "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
@@ -2353,6 +2361,8 @@ paths:
                 "sever_at":
                   type: integer
                   format: int32
+                "reason":
+                  type: string
       responses:
         "200":
           description: |
@@ -2367,7 +2377,9 @@ paths:
                 properties:
                   "applied": { type: string }
                   "detail": { type: string }
+                  "error": { type: string }
                   "ok": { type: string }
+                  "stored_for_tenant": { type: string }
                   "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
@@ -2401,6 +2413,8 @@ paths:
                 "sever_at":
                   type: integer
                   format: int32
+                "reason":
+                  type: string
       responses:
         "200":
           description: |
@@ -2415,7 +2429,9 @@ paths:
                 properties:
                   "applied": { type: string }
                   "detail": { type: string }
+                  "error": { type: string }
                   "ok": { type: string }
+                  "stored_for_tenant": { type: string }
                   "total": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
@@ -2848,6 +2864,156 @@ paths:
                   "tenant": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
+  "/api/settings/change-control":
+    get:
+      tags: ["Other"]
+      operationId: get_api_settings_change_control
+      summary: "handleSettingsChangeControl"
+      description: |
+        handleSettingsChangeControl — GET the posture, PUT to change it.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/settings/protected":
+    get:
+      tags: ["Other"]
+      operationId: get_api_settings_protected
+      summary: "handleSettingsProtected"
+      description: |
+        Guardrails — the tenant's protect-lists. Same store-then-dispatch contract
+        as suppressions, and the same refusal to claim convergence. The wire shape
+        is deliberately IDENTICAL to the engine's /api/settings/protected so one
+        console component drives both planes; two shapes for one concept is how a
+        console ends up working on single-tenant and quietly broken on the control
+        plane. Two things about this surface are not symmetrical, and the response
+        says so rather than letting the console infer a symmetry that does not
+        exist: 1. There is a floor. DefaultSystemCriticalBinaries is compiled into
+        every agent and re-unioned on every apply, so a tenant can widen
+        protection and cannot remove the login path — not by mistake, and not with
+        a valid signature from a compromised control plane. 2. Removing a MAC does
+        not un-protect a running agent. The agent's SetProtectedMACs is add-only
+        on purpose: dropping the uplink from the allow-list is the single edit
+        that can blackhole the path you would use to undo it. The removal lives in
+        the desired state and takes effect on that agent's next restart.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    post:
+      tags: ["Other"]
+      operationId: post_api_settings_protected
+      summary: "handleSettingsProtected"
+      description: |
+        Guardrails: the protected lists. This is threat-model EN-1 made operable.
+        Both underlying setters are deliberately asymmetric and the console has to
+        say so rather than present a symmetrical-looking form: - Binaries:
+        Gateway.SetSystemCritical REPLACES the additions but always unions
+        DefaultSystemCriticalBinaries back in, so the login path can be widened
+        and cannot be removed. - MACs: DeviceGateway.SetProtectedMACs is ADD-ONLY.
+        Removing the uplink from the allow-list would be the one edit that can
+        blackhole the path you would use to undo it, so it is a local decision
+        made with a shell. The read is the live gateway state, not an echo of the
+        last write.
+
+        Surface: engine.
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    put:
+      tags: ["Other"]
+      operationId: put_api_settings_protected
+      summary: "handleSettingsProtected"
+      description: |
+        Guardrails: the protected lists. This is threat-model EN-1 made operable.
+        Both underlying setters are deliberately asymmetric and the console has to
+        say so rather than present a symmetrical-looking form: - Binaries:
+        Gateway.SetSystemCritical REPLACES the additions but always unions
+        DefaultSystemCriticalBinaries back in, so the login path can be widened
+        and cannot be removed. - MACs: DeviceGateway.SetProtectedMACs is ADD-ONLY.
+        Removing the uplink from the allow-list would be the one edit that can
+        blackhole the path you would use to undo it, so it is a local decision
+        made with a shell. The read is the live gateway state, not an echo of the
+        last write.
+
+        Surface: engine.
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/settings/suppressions":
+    delete:
+      tags: ["Other"]
+      operationId: delete_api_settings_suppressions
+      summary: "handleSettingsSuppressions"
+      description: |
+        No handler documentation in source.
+
+        Surface: engine.
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "error": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    get:
+      tags: ["Other"]
+      operationId: get_api_settings_suppressions
+      summary: "handleSettingsSuppressions"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane, engine.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+    post:
+      tags: ["Other"]
+      operationId: post_api_settings_suppressions
+      summary: "handleSettingsSuppressions"
+      description: |
+        No handler documentation in source.
+
+        Surface: engine.
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "error": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
   "/api/stream":
     get:
       tags: ["Other"]
@@ -2932,15 +3098,7 @@ paths:
       operationId: get_api_verify_chain
       summary: "handleVerifyChain"
       description: |
-        handleVerifyChain — decision hash-chain audit. The central store does NOT
-        hash-chain decisions per tenant yet, so there is nothing here to verify.
-        This used to answer {"ok":true,"total":0}, and the console renders
-        anything that is not ok=false as "audit chain verified" — so pressing
-        Verify on the fleet console told the operator their tamper-evidence was
-        intact after checking exactly zero records. A security product may report
-        that a control is unavailable; it may not report an unrun check as passed.
-        supported=false is what the console keys on to say "not available here"
-        rather than either "verified" or the equally wrong "chain broken".
+        No handler documentation in source.
 
         Surface: control-plane, engine.
         Requires the tenant query parameter.
@@ -2958,10 +3116,66 @@ paths:
               schema:
                 type: object
                 properties:
+                  "agents": { type: string }
+                  "broken": { type: string }
                   "detail": { type: string }
-                  "ok": { type: boolean }
+                  "incomplete": { type: string }
+                  "ok": { type: string }
+                  "scanned": { type: integer }
                   "supported": { type: boolean }
-                  "total": { type: integer }
+                  "total": { type: string }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+  "/api/verify-chain/repair":
+    post:
+      tags: ["Other"]
+      operationId: post_api_verify_chain_repair
+      summary: "handleChainRepair"
+      description: |
+        handleChainRepair asks an agent to re-send decisions so a gap can close.
+        Deliberately operator-initiated rather than automatic. A replay costs the
+        agent's outbound buffer and the control plane's ingest, and a gap is
+        usually explained — decisions were not uplinked before 2026-08-24, and an
+        agent that was offline past its cap legitimately lost records. Repairing
+        on a schedule would have every agent replaying its history forever chasing
+        gaps that nothing can close.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                "agent":
+                  type: string
+                "from_id":
+                  type: integer
+                  format: int64
+                "limit":
+                  type: integer
+                  format: int32
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED in this handler's
+            JSON responses, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "agent": { type: string }
+                  "detail": { type: string }
+                  "error": { type: string }
+                  "note": { type: string }
+                  "ok": { type: string }
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
   "/api/version":

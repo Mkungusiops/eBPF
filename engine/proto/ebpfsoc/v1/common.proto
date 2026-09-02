@@ -193,6 +193,16 @@ message Decision {
   string device_mac = 30;
   string device_id = 31;
 
+  // The operator who took the action, empty for an automatic one.
+  //
+  // CHAIN-HASHED, and that is why it is not optional decoration. The local
+  // store appends an actor tail to the canonical string it hashes, so a
+  // decision that travels without its actor arrives where the receiver
+  // recomputes a DIFFERENT canonical string and gets a different hash — and
+  // reports the chain broken. Omitting this field does not lose a nice-to-have
+  // attribution; it manufactures a tamper alarm on every operator action.
+  string actor = 32;
+
   // Chain link, hex-encoded exactly as stored, carried verbatim.
   string prev_hash = 40;
   string hash = 41;

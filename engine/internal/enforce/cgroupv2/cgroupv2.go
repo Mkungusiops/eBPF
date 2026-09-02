@@ -81,7 +81,21 @@ func DefaultLimits() map[circuit.Action]Limits {
 			// limits below take effect only briefly between move and
 			// freeze, but we set them anyway so a freeze failure still
 			// produces a heavily-restricted process.
-			CPUMax:     "100 100000", // 0.1% of one core
+			// 1ms per 1s = 0.1% of one core.
+			//
+			// Expressed as a long PERIOD rather than a small quota because the
+			// kernel enforces a minimum quota of 1ms (min_cfs_quota_period,
+			// kernel/sched/core.c). The previous value asked for 100us per
+			// 100ms — the same 0.1%, but below that floor — so EVERY kernel
+			// rejected it and this tier has never had a CPU cap on any host
+			// since it was written. Measured on the estate: "100 100000" is
+			// refused, "1000 1000000" is accepted at 0.10%.
+			//
+			// It matters because of the comment above: the cap is the fallback
+			// for a freeze that fails or lands slowly, and that fallback was
+			// silently absent. Failure was recorded once at startup, in a log
+			// line nothing surfaced.
+			CPUMax:     "1000 1000000",
 			PidsMax:    "10",
 			IOWeight:   "1",
 			MemoryHigh: "67108864", // 64 MiB soft cap

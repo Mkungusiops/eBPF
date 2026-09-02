@@ -68,6 +68,11 @@ type Stack struct {
 	// the same slice to the command processor so a remote command can never
 	// strip sshd/sudo protection that local scoring respects.
 	SystemCriticalBinaries []string
+	// Store is this host's local database. Exposed because the agent's uplink
+	// keeps its durable outbound queue in the same file as the records it is
+	// sending — one database, one fsync policy, so a crash cannot leave the
+	// record and the note that it still needs sending disagreeing.
+	Store *store.Store
 
 	bpfBackend    bpfmap.Backend
 	devBackend    devbpf.Backend
@@ -197,31 +202,64 @@ func New(s Settings, st *store.Store, pt *tree.Tree, srv *api.Server) *Stack {
 	log.Printf("[gateway] system-critical exemption: %d binaries (auto-enforce bypassed; manual override allowed)", len(critBins))
 	stack.SystemCriticalBinaries = critBins
 
+	// A ladder an operator changed at runtime must survive a restart — and a
+	// ladder the DEPLOY has since changed must not be pinned by a stale
+	// override. store.EffectiveRuntimeSetting decides which of the two was the
+	// later deliberate act and says so; see its doc for why "stored always
+	// wins" is the wrong rule.
+	deployed := circuit.Config{
+		ThrottleAt: s.ThrottleAt, TarpitAt: s.TarpitAt,
+		QuarantineAt: s.QuarantineAt, SeverAt: s.SeverAt,
+	}
+	effective := deployed
+	if st != nil {
+		value, note := st.EffectiveRuntimeSetting(choke.ThresholdsKey, choke.FormatThresholds(deployed))
+		if note != "" {
+			log.Printf("[gateway] thresholds: %s", note)
+		}
+		if parsed, ok := choke.ParseThresholds(value); ok {
+			effective = parsed
+		}
+	}
+
 	gw := choke.NewGateway(choke.Config{
-		Store:          st,
-		Enforcer:       enforcer,
-		RealEnforcer:   realEnforcer,
-		LoggerEnforcer: loggerEnforcer,
-		Broadcast:      srv,
-		Tokens:         tokens.NewManager(),
-		Policies:       policySet,
-		Tree:           pt,
-		BPFMap:         bpfBackend,
-		Thresholds: circuit.Config{
-			ThrottleAt:   s.ThrottleAt,
-			TarpitAt:     s.TarpitAt,
-			QuarantineAt: s.QuarantineAt,
-			SeverAt:      s.SeverAt,
-		},
+		Store:                  st,
+		Enforcer:               enforcer,
+		RealEnforcer:           realEnforcer,
+		LoggerEnforcer:         loggerEnforcer,
+		Broadcast:              srv,
+		Tokens:                 tokens.NewManager(),
+		Policies:               policySet,
+		Tree:                   pt,
+		BPFMap:                 bpfBackend,
+		Thresholds:             effective,
 		DryRun:                 s.DryRun,
 		Enforcing:              s.Enforce,
 		SystemCriticalBinaries: critBins,
 	})
+	stack.Store = st
 	stack.Gateway = gw
 	srv.SetGateway(gw)
 	if s.PIDLiveFn != nil {
 		gw.SetPIDLiveFn(s.PIDLiveFn)
+	} else {
+		// The agent has always supplied this; the engine never did, so the
+		// engine had no way to tell a dead PID from a live one — which is
+		// also why its reaper would otherwise decline to reap anything on the
+		// one host where the leaked rows were found.
+		gw.SetPIDLiveFn(sysproc.PIDLive)
 	}
+	// Backstop for choke-map rows whose exit event never arrived: a dropped
+	// stream, a Tetragon restart, or rows written before this engine started
+	// and still in the kernel map. Without it a recycled PID inherits an
+	// exhausted throttle bucket it never earned — measured on the live estate,
+	// two rows still rate-limiting processes that no longer existed.
+	//
+	// Cheap: one map snapshot and a /proc stat per row, once a minute. It
+	// reaps nothing at all when no liveness probe is wired, because deleting a
+	// row it cannot prove is dead would silently stop enforcing a live
+	// decision.
+	stack.startReaper(gw)
 
 	// ---- Network Choke Gateway (per-device / MAC) -------------------------
 	// A parallel data plane: tc clsact programs keyed by MAC on the LAN /
@@ -623,4 +661,32 @@ func (s *Stack) MarkTetragonConnected(connected bool) {
 func (s *Stack) Close() {
 	_ = s.devBackend.Close()
 	_ = s.bpfBackend.Close()
+}
+
+// reapInterval is how often the choke map is reconciled against live
+// processes. A minute is far shorter than the window in which Linux recycles
+// PIDs on a busy host, and the sweep is one map snapshot plus a stat per row.
+const reapInterval = time.Minute
+
+// startReaper runs the choke-map reconciliation in the background.
+//
+// Deliberately a goroutine with no stop channel: it lives exactly as long as
+// the engine process, holds no resources between ticks, and a stack shutdown
+// takes the process with it. Adding a lifecycle here would be ceremony around
+// something that cannot outlive its owner.
+func (s *Stack) startReaper(gw *choke.Gateway) {
+	if gw == nil {
+		return
+	}
+	go func() {
+		for range time.Tick(reapInterval) {
+			if n := gw.ReapDeadPIDs(nil); n > 0 {
+				// Logged because it is evidence, not noise: a steady trickle
+				// means exits are arriving and this is mopping up stragglers,
+				// while a large number means the event path is not delivering
+				// them at all and the console's counts were wrong until now.
+				log.Printf("[gateway] reaped %d choke-map row(s) for processes that no longer exist", n)
+			}
+		}
+	}()
 }

@@ -276,48 +276,74 @@ describe("every emitted finding tells the operator what to do", () => {
 
 // Four rounds of added prose produced four rounds of "I don't see a change".
 // The finding that fires on this estate had a remedy and nothing to press.
-describe("findings the platform can fix carry a control that fixes them", () => {
-  const detectOnly = {
+describe("the panel can change the mode it reports, in both directions", () => {
+  // First built as an action on the detect-only FINDING. Arming resolved the
+  // finding, so the control deleted itself and the only way back was another
+  // page. Demoting it to a link over-corrected: it left the panel that tells
+  // you the ladder is off unable to turn it on.
+  //
+  // The fault was hanging a two-way control on a one-way signal. Findings only
+  // exist while something is wrong; the containment block renders always, so
+  // both directions fit.
+  const withAuto = (auto: string) => ({
     ...ENGINE_PAYLOAD,
     agents: [{
       ...ENGINE_PAYLOAD.agents[0],
-      notes: [{ code: "containment-manual-only", detail: "automatic containment is off (detect-only)" }]
+      containment: {
+        verdict: "partial", summary: "Kill, freeze and resource caps are live.",
+        kill: "yes", freeze: "yes", resource_caps: "yes",
+        net_process: "no", net_device: "no", auto, manual_lands: true
+      }
     }]
-  };
+  });
 
-  it("offers to arm the ladder from the finding that reports it is off", async () => {
-    mockFetch(detectOnly);
+  it("offers to arm when the ladder is off", async () => {
+    mockFetch(withAuto("detect-only"));
     render(<SensorHealthBody policyStats={[]} open />);
-    await waitFor(() => expect(screen.getByText(/automatic containment is off/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Containment: partial/)).toBeTruthy());
     expect(screen.getByRole("button", { name: /arm automatic containment/i })).toBeTruthy();
   });
 
-  it("will not arm without a confirmation and a reason", async () => {
-    // Arming turns on automatic killing. It must cost a deliberate second
-    // click and record why, exactly as containment does elsewhere.
-    const user = userEvent.setup();
-    mockFetch(detectOnly);
+  it("offers to DISARM when it is on — the control does not vanish", async () => {
+    // The regression this replaces: arming removed its own control and the way
+    // back lived on a page that never mentioned it.
+    mockFetch(withAuto("enforcing"));
     render(<SensorHealthBody policyStats={[]} open />);
-    await waitFor(() => expect(screen.getByText(/automatic containment is off/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/Containment: partial/)).toBeTruthy());
+    expect(screen.getByRole("button", { name: /return to detect-only/i })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /arm automatic containment/i })).toBeNull();
+  });
 
+  it("arms with {enforcing:true} — the key the server actually decodes", async () => {
+    const user = userEvent.setup();
+    const calls: Array<{ url: string; body: unknown }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
+      if (init?.method === "POST") {
+        calls.push({ url: String(url), body: JSON.parse(String(init.body)) });
+        return new Response("{}", { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify(withAuto("detect-only")), {
+        status: 200, headers: { "Content-Type": "application/json" } });
+    }));
+
+    render(<SensorHealthBody policyStats={[]} open />);
+    await waitFor(() => expect(screen.getByText(/Containment: partial/)).toBeTruthy());
     await user.click(screen.getByRole("button", { name: /arm automatic containment/i }));
-    expect(screen.getByText(/the platform will contain processes on its own/i)).toBeTruthy();
+    await user.type(screen.getByPlaceholderText(/CAB-1234/), "maintenance window");
 
-    // Scoped to the confirm panel rather than picked by DOM order — the
-    // confirmation renders ABOVE the findings, so "the last match" is the
-    // finding's own trigger, not the confirm control.
-    const panel = screen.getByText(/the platform will contain processes on its own/i).closest("div")!;
+    const panel = screen.getByText(/contain processes on its own/i).closest("div")!;
     const confirm = Array.from(panel.querySelectorAll("button"))
       .find((b) => /arm automatic containment/i.test(b.textContent || ""))!;
-    expect(confirm.disabled, "arming must be gated on a typed reason").toBe(true);
+    await user.click(confirm);
 
-    // ...and enabled once a reason is given.
-    await user.type(screen.getByPlaceholderText(/CAB-1234/), "CAB-77: maintenance window");
-    expect(confirm.disabled).toBe(false);
+    await waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].url).toContain("/api/choke/mode");
+    expect(calls[0].body).toMatchObject({ enforcing: true });
+    // {mode:"enforcing"} was silently ignored by the server and set the opposite.
+    expect(calls[0].body).not.toHaveProperty("mode");
   });
 
   it("offers no control for a fault the console cannot fix", async () => {
-    // enforcement-degraded is a code-level defect, not an operator setting.
     mockFetch({
       ...ENGINE_PAYLOAD,
       agents: [{ ...ENGINE_PAYLOAD.agents[0], status: "degraded",
@@ -326,19 +352,11 @@ describe("findings the platform can fix carry a control that fixes them", () => 
     render(<SensorHealthBody policyStats={[]} open />);
     await waitFor(() => expect(screen.getByText(/kernel refused/)).toBeTruthy());
     expect(screen.getByText(/Raise it with engineering/i)).toBeTruthy();
-    expect(screen.queryByRole("button", { name: /arm|release/i })).toBeNull();
   });
 });
 
-// The button posted {mode:"enforcing"} at a handler that decodes
-// `enforcing bool`. encoding/json ignores unknown fields, so the flag
-// defaulted to false and the control set DETECT-ONLY while reporting success —
-// a button that claimed to arm containment and quietly disarmed it.
-//
-// Pinned against the SERVER's struct, quoted here, because the failure mode is
-// silent on both sides: no error, no 400, just the opposite of what was asked.
-describe("the operations post the body the server actually decodes", () => {
-  it("arms with {enforcing:true}, matching `Enforcing bool `json:\"enforcing\"``", async () => {
+describe("the remaining action posts the body the server actually decodes", () => {
+  it("releases the kill-switch with {on:false}, matching `On bool `json:\"on\"``", async () => {
     const user = userEvent.setup();
     const calls: Array<{ url: string; body: unknown }> = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string, init?: RequestInit) => {
@@ -348,25 +366,23 @@ describe("the operations post the body the server actually decodes", () => {
       }
       return new Response(JSON.stringify({
         ...ENGINE_PAYLOAD,
-        agents: [{ ...ENGINE_PAYLOAD.agents[0],
-          notes: [{ code: "containment-manual-only", detail: "automatic containment is off (detect-only)" }] }]
+        agents: [{ ...ENGINE_PAYLOAD.agents[0], status: "degraded",
+          issues: [{ code: "kill-switched", detail: "the enforcement kill-switch is engaged" }] }]
       }), { status: 200, headers: { "Content-Type": "application/json" } });
     }));
 
     render(<SensorHealthBody policyStats={[]} open />);
-    await waitFor(() => expect(screen.getByText(/automatic containment is off/)).toBeTruthy());
-    await user.click(screen.getByRole("button", { name: /arm automatic containment/i }));
-    await user.type(screen.getByPlaceholderText(/CAB-1234/), "test reason");
+    await waitFor(() => expect(screen.getByText(/kill-switch is engaged/)).toBeTruthy());
+    await user.click(screen.getByRole("button", { name: /release the kill-switch/i }));
+    await user.type(screen.getByPlaceholderText(/CAB-1234/), "incident closed");
 
-    const panel = screen.getByText(/the platform will contain processes on its own/i).closest("div")!;
+    const panel = screen.getByText(/re-enables all containment/i).closest("div")!;
     const confirm = Array.from(panel.querySelectorAll("button"))
-      .find((b) => /arm automatic containment/i.test(b.textContent || ""))!;
+      .find((b) => /release the kill-switch/i.test(b.textContent || ""))!;
     await user.click(confirm);
 
     await waitFor(() => expect(calls.length).toBe(1));
-    expect(calls[0].url).toContain("/api/choke/mode");
-    expect(calls[0].body).toMatchObject({ enforcing: true });
-    // The key that silently did nothing.
-    expect(calls[0].body).not.toHaveProperty("mode");
+    expect(calls[0].url).toContain("/api/choke/kill-switch");
+    expect(calls[0].body).toMatchObject({ on: false });
   });
 });

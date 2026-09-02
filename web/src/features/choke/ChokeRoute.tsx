@@ -191,6 +191,7 @@ export function ChokeRoute(): React.ReactElement {
         kernel={posture.kernel}
         mode={posture.mode}
         divergedAgents={posture.divergedAgents}
+        ladderCorrections={posture.ladderCorrections}
         kernelFired={posture.kernelFired}
       />
 

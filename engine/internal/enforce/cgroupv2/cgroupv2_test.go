@@ -1,6 +1,7 @@
 package cgroupv2
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -351,5 +352,34 @@ func TestMoveToQuarantineSurfacesAFailedFreeze(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "freeze") {
 		t.Errorf("error should name the failed freeze, got: %v", err)
+	}
+}
+
+// The quarantine tier asked for 100us per 100ms — 0.1% of a core, and below
+// the kernel's 1ms minimum quota. Every kernel refused it, so the tier has
+// never had a CPU cap on any host, and the failure surfaced only as one
+// startup log line. The cap is the fallback for a freeze that fails or lands
+// slowly, so its absence was exactly the case it exists to cover.
+//
+// Verified against a live 6.x kernel: "100 100000" refused, "1000 1000000"
+// accepted at 0.10%.
+func TestEveryCPUQuotaClearsTheKernelMinimum(t *testing.T) {
+	const kernelMinQuotaUS = 1000 // min_cfs_quota_period, kernel/sched/core.c
+
+	for action, lim := range DefaultLimits() {
+		if lim.CPUMax == "" || lim.CPUMax == "max" {
+			continue
+		}
+		var quota, period int
+		if _, err := fmt.Sscanf(lim.CPUMax, "%d %d", &quota, &period); err != nil {
+			t.Fatalf("%v: cpu.max %q is not \"<quota> <period>\": %v", action, lim.CPUMax, err)
+		}
+		if quota < kernelMinQuotaUS {
+			t.Errorf("%v: cpu.max quota %dus is below the kernel minimum of %dus — the kernel will refuse it and the tier will have NO cpu cap",
+				action, quota, kernelMinQuotaUS)
+		}
+		if period > 1000000 {
+			t.Errorf("%v: cpu.max period %dus exceeds the kernel maximum of 1s", action, period)
+		}
 	}
 }

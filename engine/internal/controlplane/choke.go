@@ -3,6 +3,7 @@ package controlplane
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
 	"net/http"
 	"sort"
 	"strconv"
@@ -44,6 +45,7 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/choke/process/", s.handleProcess) // reuse the event-based drill
 	mux.HandleFunc("/api/choke/proc/", s.handleChokeProcDetail)
 	mux.HandleFunc("/api/verify-chain", s.handleVerifyChain)
+	mux.HandleFunc("/api/verify-chain/repair", s.handleChainRepair)
 	// Network Choke (Devices) — reads.
 	mux.HandleFunc("/api/choke/device-state", s.handleDeviceState)
 	mux.HandleFunc("/api/choke/devices", s.handleDeviceList)
@@ -75,8 +77,26 @@ func (s *Server) registerChokeRoutes(mux *http.ServeMux) {
 // authorizeRespond resolves the operator + requires the RBAC ActionRespond grant
 // on the tenant (default from the session). A denial is a 404 (side-channel).
 func (s *Server) authorizeRespond(w http.ResponseWriter, r *http.Request) (string, bool) {
-	if r.Method != http.MethodPost && r.Method != http.MethodPut {
-		http.Error(w, "POST/PUT only", http.StatusMethodNotAllowed)
+	return s.authorizeRespondMethods(w, r, http.MethodPost, http.MethodPut)
+}
+
+// authorizeRespondMethods is authorizeRespond with the permitted verbs named.
+//
+// Every write on this plane was POST or PUT, so the method guard was inlined.
+// Settings needs DELETE — removing a suppression is a removal, and expressing
+// it as a POST would be a worse lie than the extra parameter. Parameterised
+// rather than widened: relaxing the shared guard would have quietly permitted
+// DELETE on every containment endpoint too.
+func (s *Server) authorizeRespondMethods(w http.ResponseWriter, r *http.Request, allowed ...string) (string, bool) {
+	ok := false
+	for _, m := range allowed {
+		if r.Method == m {
+			ok = true
+			break
+		}
+	}
+	if !ok {
+		http.Error(w, strings.Join(allowed, "/")+" only", http.StatusMethodNotAllowed)
 		return "", false
 	}
 	p, ok := s.principal(r)
@@ -411,8 +431,8 @@ func thresholdsDiverge(recs []heartbeat.Record) bool {
 //  2. Only an agent that CLAIMS the target may make the request succeed. Agents
 //     answer with a target_match grade, and a no-op ack (STATUS_NOT_TARGET)
 //     never counts as containment.
-func (s *Server) dispatchChoke(w http.ResponseWriter, r *http.Request, tenant, execID string, pid uint32, action, reason, agentID string) {
-	code, body := s.chokeRequest(s.subject(r), tenant, execID, pid, action, reason, agentID)
+func (s *Server) dispatchChoke(w http.ResponseWriter, r *http.Request, tenant, execID string, pid uint32, action, reason, agentID string, revertAfter uint32) {
+	code, body := s.chokeRequest(s.subject(r), tenant, execID, pid, action, reason, agentID, revertAfter)
 	writeJSON(w, code, body)
 }
 
@@ -430,17 +450,20 @@ func (s *Server) subject(r *http.Request) string {
 // APPROVED path (approvals.go) executes byte-for-byte the same containment the
 // requester asked for — an approval that re-derives the action from separate
 // code is an approval of something the approver did not read.
-func (s *Server) chokeRequest(requester, tenant, execID string, pid uint32, action, reason, agentID string) (int, map[string]any) {
+func (s *Server) chokeRequest(requester, tenant, execID string, pid uint32, action, reason, agentID string, revertAfter uint32) (int, map[string]any) {
 	if err := requireReasonForDestructive(action, reason); err != nil {
 		return http.StatusBadRequest, map[string]any{"ok": false, "error": err.Error(), "detail": err.Error()}
 	}
 	// EN-2 change-control. A destructive action is HELD here, before anything is
 	// signed or dispatched, until a second operator approves it. Held, not
 	// refused: the request becomes a queued approval the console surfaces.
-	if s.cfg.RequireApproval && s.approvals != nil && approval.RequiresApproval(action) {
+	if s.approvalRequired(tenant) && s.approvals != nil && approval.RequiresApproval(action) {
 		req := s.approvals.Create(approval.Request{
 			Tenant: tenant, Action: action, ExecID: execID, PID: pid,
 			AgentID: agentID, Scope: "target", Reason: reason, Requester: requester,
+			// Carried into the queue so the approver judges the actual ask, and
+			// so an approved temporary containment does not come back permanent.
+			RevertAfterSeconds: revertAfter,
 		})
 		s.cfg.Logf("[approval] %s requested %s on %s (tenant=%s) -> %s (awaiting a second operator)",
 			requester, action, targetLabel(execID, pid), tenant, req.ID)
@@ -452,16 +475,17 @@ func (s *Server) chokeRequest(requester, tenant, execID string, pid uint32, acti
 					"It has NOT been applied.", action, req.ID),
 		}
 	}
-	return s.performChoke(tenant, execID, pid, action, reason, agentID)
+	return s.performChoke(tenant, execID, pid, action, reason, agentID, revertAfter)
 }
 
 // performChoke routes and executes the containment. Reached directly for the
 // non-destructive rungs, and via an approval for the destructive ones.
-func (s *Server) performChoke(tenant, execID string, pid uint32, action, reason, agentID string) (int, map[string]any) {
+func (s *Server) performChoke(tenant, execID string, pid uint32, action, reason, agentID string, revertAfter uint32) (int, map[string]any) {
 	var cmd *ebpfsocv1.Command
 	switch action {
 	case "throttle", "tarpit", "quarantine", "sever":
-		cmd = &ebpfsocv1.Command{Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{ExecId: execID, Pid: pid, Tier: action}}}
+		cmd = &ebpfsocv1.Command{Action: &ebpfsocv1.Command_Jail{Jail: &ebpfsocv1.Jail{
+			ExecId: execID, Pid: pid, Tier: action, RevertAfterSeconds: revertAfter}}}
 	case "thaw":
 		cmd = &ebpfsocv1.Command{Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: execID, Pid: pid}}}
 	default:
@@ -558,12 +582,16 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 		// disambiguate a target the fleet cannot route on its own — and the
 		// console has it, because every choke row carries its source agent.
 		AgentID string `json:"agent_id"`
+		// RevertAfterSeconds arms an auto-revert, as the engine-local API has
+		// always allowed. Its absence here meant a fleet operator could only
+		// contain permanently, which pushes people toward not containing at all.
+		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
-	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, b.Action, b.Reason, b.AgentID)
+	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, b.Action, b.Reason, b.AgentID, b.RevertAfterSeconds)
 }
 
 // handleChokeThaw — release a process {exec_id,pid} (or {reason} only = no-op ack).
@@ -579,7 +607,8 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 		AgentID string `json:"agent_id"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, "thaw", b.Reason, b.AgentID)
+	// A thaw has nothing to revert to: it IS the release.
+	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, "thaw", b.Reason, b.AgentID, 0)
 }
 
 // handleChokeJailFromSoc — SOC dashboard alert "jail" {pids,binary,action,reason}.
@@ -594,6 +623,8 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 		Reason  string   `json:"reason"`
 		ExecID  string   `json:"exec_id"`
 		AgentID string   `json:"agent_id"`
+		// Optional auto-revert, in seconds. See handleChokeManual.
+		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -610,7 +641,7 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 	default:
 		action = "quarantine"
 	}
-	s.dispatchChoke(w, r, tenant, b.ExecID, pid, action, b.Reason, b.AgentID)
+	s.dispatchChoke(w, r, tenant, b.ExecID, pid, action, b.Reason, b.AgentID, b.RevertAfterSeconds)
 }
 
 // dispatchAll sends cmd to every agent in the tenant and waits for each ack —
@@ -772,7 +803,17 @@ func reduceAcks(acks map[string]*ebpfsocv1.CommandAck, agents []string) targeted
 // agent would cost N * ackTimeout, so one offline agent in a ten-agent tenant
 // would hang the operator's request for over a minute on what looks like a
 // single toggle.
-func (s *Server) dispatchAll(tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
+func (s *Server) dispatchAll(r *http.Request, tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
+	// Stamp the operator HERE, not at the nine call sites. The agent writes
+	// this name into a tamper-evident audit row, and a call site that forgot
+	// would produce a row saying the platform acted on its own — the one
+	// reading an incident review must be able to trust.
+	//
+	// Before the signature is computed: Canonical covers the actor, so
+	// stamping after Enqueue would sign bytes that do not match what is sent.
+	if a := s.subject(r); a != "" {
+		cmd.Actor = a
+	}
 	ids := map[string]string{} // command id -> agent
 	for _, rec := range s.registry.ListTenant(tenant) {
 		total++
@@ -841,7 +882,7 @@ func (s *Server) dispatchSetMode(w http.ResponseWriter, r *http.Request, plane e
 	if s.requireFleetApproval(w, r, tenant, "mode", b.Enforcing, plane, b.Reason) {
 		return
 	}
-	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode, Plane: plane}}})
 	writeJSON(w, 200, map[string]any{
 		"ok": applied > 0, "mode": modeStr, "previous": "", "applied": applied, "total": total, "detail": detail})
@@ -867,7 +908,7 @@ func (s *Server) dispatchKillSwitch(w http.ResponseWriter, r *http.Request, plan
 		Reason string `json:"reason"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&b)
-	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{
 			HaltAllEnforcement: b.On, Reason: b.Reason, Plane: plane,
 		}}})
@@ -882,16 +923,67 @@ func (s *Server) handleChokeThresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var b struct {
-		ThrottleAt   int32 `json:"throttle_at"`
-		TarpitAt     int32 `json:"tarpit_at"`
-		QuarantineAt int32 `json:"quarantine_at"`
-		SeverAt      int32 `json:"sever_at"`
+		ThrottleAt   int32  `json:"throttle_at"`
+		TarpitAt     int32  `json:"tarpit_at"`
+		QuarantineAt int32  `json:"quarantine_at"`
+		SeverAt      int32  `json:"sever_at"`
+		Reason       string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
-	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request"})
+		return
+	}
+	// VALIDATE BEFORE DISPATCH.
+	//
+	// This handler discarded its decode error and sent whatever arrived down
+	// the signed command channel, where no hop downstream checked either. A
+	// body of {"throttle_at":10} therefore left sever_at = 0 on every agent in
+	// the tenant — and the ladder tests sever FIRST, so every tracked process
+	// evaluated to Severed. On an armed host that is a fleet-wide SIGKILL from
+	// one malformed request by an authenticated operator.
+	//
+	// circuit.Config.Validate is the same rule the engine's own handler and
+	// the agent's applier now use. Three hops, one rule.
+	if err := (circuit.Config{
+		ThrottleAt: int(b.ThrottleAt), TarpitAt: int(b.TarpitAt),
+		QuarantineAt: int(b.QuarantineAt), SeverAt: int(b.SeverAt),
+	}).Validate(); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	// Stored as a TENANT policy before dispatch, so an agent that enrols
+	// tomorrow inherits this ladder instead of the deploy default. Dispatch
+	// alone only reaches the agents that happen to exist right now — which is
+	// how a tenant ends up with one host quietly running different thresholds
+	// from the rest of its fleet.
+	//
+	// Best-effort: the operator's change is already valid and about to reach
+	// every live agent, and failing the request because the note could not be
+	// written would be the wrong trade. Logged, because the consequence is
+	// quiet — it works today and the next agent does not inherit it.
+	cfg := circuit.Config{
+		ThrottleAt: int(b.ThrottleAt), TarpitAt: int(b.TarpitAt),
+		QuarantineAt: int(b.QuarantineAt), SeverAt: int(b.SeverAt),
+	}
+	stored := false
+	if pg, ok := s.pgStore(); ok {
+		if err := pg.SetThresholds(tenant, cfg, b.Reason, s.subject(r)); err != nil {
+			s.cfg.Logf("[thresholds] applied to the fleet but NOT stored for tenant=%s (%v) — "+
+				"a newly enrolled agent will start on the deployed ladder", tenant, err)
+		} else {
+			stored = true
+		}
+	}
+	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_SetThresholds{SetThresholds: &ebpfsocv1.SetThresholds{
 			ThrottleAt: b.ThrottleAt, TarpitAt: b.TarpitAt, QuarantineAt: b.QuarantineAt, SeverAt: b.SeverAt}}})
-	writeJSON(w, 200, map[string]any{"ok": applied > 0, "applied": applied, "total": total, "detail": detail})
+	writeJSON(w, 200, map[string]any{
+		"ok": applied > 0, "applied": applied, "total": total, "detail": detail,
+		// Stated rather than assumed: "applied to 3 agents" and "this is now
+		// the tenant's ladder" are different claims and only one of them
+		// survives a new enrolment.
+		"stored_for_tenant": stored,
+	})
 }
 
 // handleChokePreset — fleet-wide ApplyPreset.
@@ -911,7 +1003,7 @@ func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
 	if s.requireFleetApproval(w, r, tenant, "preset", strings.EqualFold(b.Name, "containment"), ebpfsocv1.Plane_PLANE_PROCESS, b.Name) {
 		return
 	}
-	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: b.Name}}})
 	writeJSON(w, 200, map[string]any{"ok": applied > 0, "preset": b.Name, "applied": applied, "total": total, "detail": detail})
 }
@@ -930,6 +1022,9 @@ func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
 		} `json:"targets"`
 		Action string `json:"action"`
 		Reason string `json:"reason"`
+		// One revert window for the whole batch: a bulk jail is one operator
+		// decision, and per-target windows would be a different feature.
+		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
 		http.Error(w, "bad request", http.StatusBadRequest)
@@ -961,7 +1056,7 @@ func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
 		// its refusal to broadcast an irreversible action, rather than restating
 		// both here where they drifted.
 		out := res{ExecID: t.ExecID}
-		_, body := s.chokeRequest(requester, tenant, t.ExecID, t.Pid, b.Action, b.Reason, t.AgentID)
+		_, body := s.chokeRequest(requester, tenant, t.ExecID, t.Pid, b.Action, b.Reason, t.AgentID, b.RevertAfterSeconds)
 		out.OK, _ = body["ok"].(bool)
 		out.Agent, _ = body["agent"].(string)
 		out.Detail, _ = body["detail"].(string)
@@ -1082,7 +1177,7 @@ func (s *Server) handleDeviceJail(w http.ResponseWriter, r *http.Request) {
 		// EN-2 applies to the device plane too: quarantining or severing a set of
 		// MACs from one console session is the same blast radius as doing it to a
 		// set of processes, and this handler takes a LIST. Held before dispatch.
-		if s.cfg.RequireApproval && s.approvals != nil && approval.RequiresApproval(b.Action) {
+		if s.approvalRequired(tenant) && s.approvals != nil && approval.RequiresApproval(b.Action) {
 			req := s.approvals.Create(approval.Request{
 				Tenant: tenant, Action: b.Action, MAC: mac, Scope: "device",
 				Reason: b.Reason, Requester: requester,
@@ -1240,6 +1335,11 @@ func (s *Server) handleChokeStateGW(w http.ResponseWriter, r *http.Request) {
 		// "unknown" rather than the engine's defaults dressed up as fact.
 		"thresholds":         chokeThresholds(recs),
 		"thresholds_diverge": thresholdsDiverge(recs),
+		// Every host whose ladder the reconciler put back to tenant policy.
+		// Without this an operator who set a ladder on one host watches it
+		// revert two minutes later with no explanation reachable from the
+		// console — the change applied, then undid itself.
+		"ladder_corrections": s.ladderCorrections.forTenant(tenant, 20),
 		// The PROCESS data plane the agents report, aggregated exactly the way
 		// the device plane already is on /api/choke/device-state. Both wire
 		// fields existed from the start and neither was populated, so the
@@ -1322,14 +1422,32 @@ func (s *Server) handleChokeCircuits(w http.ResponseWriter, r *http.Request) {
 		// has to be able to hand the agent back on a jail/sever so containment
 		// is routed instead of guessed.
 		Agent string `json:"agent"`
+		// RevertPending: this containment thaws on its own. The agent-local
+		// console has shown it since the revert timer existed and the fleet
+		// console rendered a self-releasing quarantine identically to a
+		// permanent one — so an operator either manually thawed something
+		// already about to release, or walked away from one that never would.
+		RevertPending bool `json:"revert_pending,omitempty"`
+		// LastSeen: when the agent last observed the process. A contained
+		// exec_id whose process has exited stays in the snapshot, and without
+		// this the row reads as a live containment.
+		LastSeen string `json:"last_seen,omitempty"`
 	}
 	out := []circuit{}
 	for _, rec := range s.registry.ListTenant(tenant) {
 		for _, c := range rec.Chokes {
-			out = append(out, circuit{
+			e := circuit{
 				ExecID: c.GetExecId(), PID: c.GetPid(), Binary: c.GetBinary(),
 				State: c.GetState(), Score: c.GetScore(), Agent: rec.AgentID,
-			})
+				RevertPending: c.GetRevertPending(),
+			}
+			// Omitted rather than zero-stamped: an agent that predates the
+			// field sends nothing, and 1970 on a containment row would read as
+			// a process last seen fifty years ago.
+			if ts := c.GetLastSeen(); ts != nil && ts.IsValid() && !ts.AsTime().IsZero() {
+				e.LastSeen = ts.AsTime().UTC().Format(time.RFC3339)
+			}
+			out = append(out, e)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Score > out[j].Score })
@@ -1502,18 +1620,6 @@ func (s *Server) handleChokeProcDetail(w http.ResponseWriter, r *http.Request) {
 //
 // supported=false is what the console keys on to say "not available here"
 // rather than either "verified" or the equally wrong "chain broken".
-func (s *Server) handleVerifyChain(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
-		return
-	}
-	writeJSON(w, 200, map[string]any{
-		"ok":        false,
-		"supported": false,
-		"total":     0,
-		"detail": "the control plane does not hash-chain decisions centrally yet — " +
-			"verify the chain on the agent, which does",
-	})
-}
 
 // aggregateDevicePlane reduces the agents' self-reported device data planes to
 // one fleet answer plus the total attached links.

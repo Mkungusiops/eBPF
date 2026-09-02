@@ -54,19 +54,25 @@ func (s *Server) handleApprovals(w http.ResponseWriter, r *http.Request) {
 // handleApprovalPolicy tells the console which actions are gated, so it can warn
 // before an operator commits rather than after. Read-only.
 func (s *Server) handleApprovalPolicy(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.authorizeRead(w, r); !ok {
+	tenant, ok := s.authorizeRead(w, r)
+	if !ok {
 		return
 	}
+	// Per tenant, not per deployment. This endpoint tells the console what to
+	// warn about BEFORE an operator commits; reading the deploy flag here
+	// while the gate reads the tenant setting would warn the wrong operators
+	// in both directions.
+	enabled := s.approvalRequired(tenant)
 	gated := []string{}
-	if s.cfg.RequireApproval {
+	if enabled {
 		gated = []string{"quarantine", "sever"}
 	}
 	writeJSON(w, 200, map[string]any{
 		// Empty when change-control is off for this deployment, so the console
 		// states the posture rather than implying a control that is not running.
-		"enabled":           s.cfg.RequireApproval,
+		"enabled":           enabled,
 		"requires_approval": gated,
-		"fleet_arming":      s.cfg.RequireApproval,
+		"fleet_arming":      enabled,
 		// Stated explicitly because it is a safety property, not an omission:
 		// nothing that STOPS enforcement may ever wait on a quorum.
 		"never_gated": []string{"thaw", "throttle", "tarpit", "kill-switch", "detect-only"},
@@ -148,7 +154,7 @@ func (s *Server) handleApprovalDecide(w http.ResponseWriter, r *http.Request) {
 	s.cfg.Logf("[approval] %s APPROVED %s (%s on %s, requested by %s) — executing",
 		req.Approver, req.ID, req.Action, targetLabel(req.ExecID, req.PID), req.Requester)
 
-	code, body := s.executeApproved(tenant, req)
+	code, body := s.executeApproved(r, tenant, req)
 	outcome, _ := body["status"].(string)
 	if applied, _ := body["ok"].(bool); applied {
 		outcome = "APPLIED:" + outcome
@@ -165,17 +171,17 @@ func (s *Server) handleApprovalDecide(w http.ResponseWriter, r *http.Request) {
 // requests re-enter the fleet path; target-scope ones re-enter performChoke —
 // deliberately the SAME code the un-gated rungs use, so approval changes who may
 // act, never what the action does.
-func (s *Server) executeApproved(tenant string, req approval.Request) (int, map[string]any) {
+func (s *Server) executeApproved(r *http.Request, tenant string, req approval.Request) (int, map[string]any) {
 	if req.Scope == "fleet" {
 		switch req.Action {
 		case "mode":
-			applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+			applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 				Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{
 					Mode: ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_ENFORCING, Plane: planeFor(req.MAC)}}})
 			return 200, map[string]any{"ok": applied > 0, "status": "STATUS_APPLIED", "mode": "enforcing",
 				"applied": applied, "total": total, "detail": detail}
 		case "preset":
-			applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+			applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 				Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: req.Reason}}})
 			return 200, map[string]any{"ok": applied > 0, "status": "STATUS_APPLIED",
 				"applied": applied, "total": total, "detail": detail}
@@ -192,7 +198,7 @@ func (s *Server) executeApproved(tenant string, req approval.Request) (int, map[
 			"agent": out.owner, "action": req.Action, "reason": req.Reason, "mac": req.MAC,
 		}
 	}
-	return s.performChoke(tenant, req.ExecID, req.PID, req.Action, req.Reason, req.AgentID)
+	return s.performChoke(tenant, req.ExecID, req.PID, req.Action, req.Reason, req.AgentID, req.RevertAfterSeconds)
 }
 
 // planeFor picks the plane a stored fleet request targets. The device plane is
@@ -211,7 +217,7 @@ func planeFor(mac string) ebpfsocv1.Plane {
 // Disarming and the kill-switch never reach here: see the approval package doc
 // for why the exit from a bad state must never need a quorum.
 func (s *Server) requireFleetApproval(w http.ResponseWriter, r *http.Request, tenant, change string, arming bool, plane ebpfsocv1.Plane, detail string) bool {
-	if !s.cfg.RequireApproval || s.approvals == nil || !approval.FleetChangeRequiresApproval(change, arming) {
+	if !s.approvalRequired(tenant) || s.approvals == nil || !approval.FleetChangeRequiresApproval(change, arming) {
 		return false
 	}
 	mac := ""

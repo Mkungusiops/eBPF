@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // postgres driver ("pgx")
@@ -42,6 +43,9 @@ CREATE TABLE IF NOT EXISTS telemetry (
   -- (GROUP BY severity) instead of by shipping rows into Go under a scan limit.
   -- Nullable: NULL means "not yet backfilled", distinct from an empty severity.
   severity  text,
+  -- Telemetry produced by cmd/simagent rather than a real host. Stamped at
+  -- ingest so a fabricated containment decision can never be read as evidence.
+  synthetic boolean NOT NULL DEFAULT FALSE,
   PRIMARY KEY (tenant_id, agent_id, dedup_key)
 );
 -- Every operator read is "newest N rows for this tenant, optionally of one
@@ -167,6 +171,46 @@ var readPathIndexes = []struct{ name, create string }{
 	{"telemetry_tenant_at", `CREATE INDEX CONCURRENTLY IF NOT EXISTS telemetry_tenant_at ON telemetry (tenant_id, at DESC)`},
 }
 
+// ensureColumns adds columns that were introduced after a deployment was
+// provisioned.
+//
+// Same reason ensureIndexes exists: schemaReady deliberately short-circuits the
+// DDL so a restart never locks a live telemetry table, which means an
+// already-provisioned database NEVER re-runs pgSchema and never sees a column
+// added to it. A column that only reaches fresh databases is one that works in
+// every test and on nobody's estate — the exact shape of the chatstore column
+// that broke conversation history this morning, where the schema string was
+// updated and the readiness probe was not.
+//
+// ADD COLUMN with a constant DEFAULT is metadata-only on Postgres 11+, so this
+// does not rewrite the table; it takes a brief ACCESS EXCLUSIVE lock, bounded
+// by the same lock_timeout the provisioning path uses.
+var lateColumns = []struct{ table, column, def string }{
+	{"telemetry", "synthetic", "boolean NOT NULL DEFAULT FALSE"},
+}
+
+// Run SYNCHRONOUSLY, unlike ensureIndexes. The read path references the column
+// in a WHERE clause, so a query that beat the goroutine adding it would fail
+// outright. ADD COLUMN with a constant default is metadata-only, so this costs
+// a lock acquisition and nothing else.
+func ensureColumns(db *sql.DB) {
+	if _, err := db.Exec("SET lock_timeout = '" + startupLockTimeout + "'"); err != nil {
+		slog.Warn("could not bound the column-migration lock wait", "error", err)
+	}
+	for _, c := range lateColumns {
+		_, err := db.Exec(fmt.Sprintf(
+			`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, c.table, c.column, c.def))
+		if err != nil {
+			// Logged, never fatal: the store is usable without it, and a
+			// restart that refuses to start because a column is missing turns
+			// a degraded read into an outage.
+			slog.Error("could not add column", "table", c.table, "column", c.column, "error", err)
+			continue
+		}
+		slog.Info("column present", "table", c.table, "column", c.column)
+	}
+}
+
 // ensureIndexes builds any missing read-path index, CONCURRENTLY, in the
 // background.
 //
@@ -271,6 +315,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 		return nil, fmt.Errorf("centralstore: schema probe: %w", err)
 	}
 	if provisioned {
+		ensureColumns(db)
 		go ensureIndexes(db)
 		go ensureSeverityColumn(db, "postgres")
 		go RunRetention(db, "postgres")
@@ -299,6 +344,7 @@ func OpenPostgres(dsn string) (*PGStore, error) {
 	}
 	// pgSchema just built these on an empty table, so this is a cheap no-op
 	// here; it runs anyway so there is exactly one path that guarantees them.
+	ensureColumns(db)
 	go ensureIndexes(db)
 	go ensureSeverityColumn(db, "postgres")
 	go RunRetention(db, "postgres")
@@ -339,11 +385,11 @@ func (s *PGStore) Put(r ingest.StampedRecord) error {
 	}
 	return s.withTenant(r.TenantID, func(tx *sql.Tx) error {
 		_, err := tx.Exec(
-			`INSERT INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload,severity)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)
+			`INSERT INTO telemetry(tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload,severity,synthetic)
+			 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
 			 ON CONFLICT (tenant_id,agent_id,dedup_key) DO NOTHING`,
 			r.TenantID, r.AgentID, r.Record.GetDedupKey(), kind, execID, binary, time.Now().UnixNano(), payload,
-			severityOf(r.Record))
+			severityOf(r.Record), r.Synthetic)
 		return err
 	})
 }
@@ -401,9 +447,19 @@ func (s *PGStore) Query(scope Scope, limit int) ([]Row, error) {
 		// optional kind narrows to alerts/events/decisions.
 		q := `SELECT tenant_id,agent_id,dedup_key,kind,exec_id,"binary",at,payload FROM telemetry`
 		args := []any{}
+		where := []string{}
 		if scope.Kind != "" {
 			args = append(args, scope.Kind)
-			q += ` WHERE kind = $1`
+			where = append(where, `kind = $`+strconv.Itoa(len(args)))
+		}
+		// Fabrications are excluded unless asked for. A simulator's containment
+		// decision reads exactly like a real one, and on this estate 431 of
+		// them sat in the tenant ledger indistinguishable from evidence.
+		if !scope.IncludeSynthetic {
+			where = append(where, `synthetic = FALSE`)
+		}
+		if len(where) > 0 {
+			q += ` WHERE ` + strings.Join(where, " AND ")
 		}
 		args = append(args, limit)
 		q += ` ORDER BY at DESC LIMIT $` + strconv.Itoa(len(args))

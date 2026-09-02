@@ -74,10 +74,53 @@ export function SegmentedControl({
   );
 }
 
-export function StateLadder({ counts }: { counts: Partial<Record<string, number>> }) {
+/**
+ * The ladder, showing DECIDED against APPLIED.
+ *
+ * These were two panels — a State Ladder of what the engine decided, and a
+ * Cgroup Tiers panel of what is in the kernel — sitting apart with no
+ * relationship drawn between them. Read separately they look like duplicates
+ * with one of them broken: the ladder said seven throttled while the tiers said
+ * zero and "empty", which reads as a bug rather than as detect-only working
+ * exactly as designed.
+ *
+ * Read together they are the assurance answer this console exists to give: what
+ * did the platform decide, what did the kernel actually receive, and when those
+ * differ, WHY. A gap with no reason offered is the one thing this must never
+ * show, because the honest reasons (detect-only, dry-run, kill-switch) and the
+ * alarming one (enforcement silently failing) look identical without it.
+ *
+ * `applied` is omitted where the concept does not exist rather than shown as
+ * zero: nothing is pristine "in a cgroup", and a sever is a SIGKILL with no
+ * cgroup to land in. A zero there would be a claim, and a false one.
+ */
+export function StateLadder({
+  counts,
+  applied,
+  gapReason
+}: {
+  counts: Partial<Record<string, number>>;
+  /** PIDs actually in each enforcement cgroup. Absent when unknown. */
+  applied?: Partial<Record<string, number>>;
+  /** Why decided and applied differ, when they do. */
+  gapReason?: string;
+}) {
   const max = Math.max(1, ...STATE_ORDER.map((state) => counts[state] || 0));
+  // Only the three tiers that HAVE a cgroup can be compared.
+  const comparable = new Set(["throttled", "tarpit", "quarantined"]);
+  const showApplied = !!applied;
+  const gap =
+    showApplied &&
+    STATE_ORDER.some((s) => comparable.has(s) && (counts[s] || 0) > (applied?.[s] || 0));
   return (
     <div className="choke-ladder">
+      {showApplied ? (
+        <div className="choke-ladder-head">
+          <span />
+          <span>decided</span>
+          <span>in cgroup</span>
+        </div>
+      ) : null}
       {STATE_ORDER.map((state) => {
         const count = counts[state] || 0;
         return (
@@ -85,9 +128,20 @@ export function StateLadder({ counts }: { counts: Partial<Record<string, number>
             <StateBadge state={state} />
             <span className="choke-ladder-track"><span style={{ width: `${(count / max) * 100}%` }} /></span>
             <strong>{count}</strong>
+            {showApplied ? (
+              <em className="choke-ladder-applied">
+                {comparable.has(state) ? (applied?.[state] ?? 0) : "—"}
+              </em>
+            ) : null}
           </div>
         );
       })}
+      {gap ? (
+        <p className="choke-ladder-note">
+          {gapReason ||
+            "Decided but not in a cgroup, and this deployment does not report why — treat enforcement as unconfirmed."}
+        </p>
+      ) : null}
     </div>
   );
 }

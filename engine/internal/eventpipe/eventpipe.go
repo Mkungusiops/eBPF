@@ -78,6 +78,11 @@ type Pipeline struct {
 	// Findings is the bounded ring of recent enrichment results the console
 	// and the assistant read. nil discards them; scoring is unaffected.
 	Findings *findings.Ring
+
+	// suppress holds the operator's own scoring suppressions. Nil is a valid
+	// state — a pipeline built without one simply applies no operator rules,
+	// which is the same fail-open posture the loader takes.
+	suppress *suppressor
 }
 
 // chainAnomalyBudget caps how much BEHAVIOURAL score one process chain may
@@ -121,7 +126,37 @@ func (p *Pipeline) Handle(resp *tetragon.GetEventsResponse) {
 		p.HandleKprobe(ev.ProcessKprobe)
 	case *tetragon.GetEventsResponse_ProcessExit:
 		tetrabridge.HandleExit(ev.ProcessExit, p.Broadcast)
+		p.HandleExit(ev.ProcessExit)
 	}
+}
+
+// HandleExit releases the per-process enforcement state of a process that has
+// died.
+//
+// # Why this is a correctness fix and not housekeeping
+//
+// Gateway.Forget has always deleted the process's row from the kernel choke
+// map, and its own doc said "wire to process_exit events in the engine". It
+// was never wired: the only caller was the operator's manual Forget button.
+// So every choked process left its bucket in the map for the life of the
+// engine — measured on the live estate as rows still rate-limiting two PIDs
+// that no longer existed.
+//
+// Linux recycles PIDs. An unrelated process that lands on a recycled PID
+// inherits a bucket it never earned, complete with exhausted tokens, and is
+// throttled by a decision taken about something else entirely. Nothing in the
+// console attributes that to a cause, because as far as the audit chain is
+// concerned no decision was ever taken about the new process. That is the
+// worst shape of enforcement bug this product can have: real, silent, and
+// unattributable.
+//
+// It also makes the console honest. The state ladder counted dead processes as
+// throttled, so "7 throttled" could mean seven processes that no longer exist.
+func (p *Pipeline) HandleExit(ev *tetragon.ProcessExit) {
+	if p.Gateway == nil || ev == nil || ev.Process == nil {
+		return
+	}
+	p.Gateway.Forget(ev.Process.ExecId, ev.Process.Pid.GetValue())
 }
 
 // HandleExec records a process exec: it joins the chain in the process tree,
@@ -152,6 +187,16 @@ func (p *Pipeline) HandleExec(ev *tetragon.ProcessExec) {
 	p.Tree.Add(node)
 
 	delta, reason, finding := score.Score("process_exec", binary, pr.Arguments, "", pr.Uid.GetValue())
+
+	// Operator suppressions apply to exec scoring as well: "our deploy tool
+	// runs as root and that is expected here" is the same class of statement.
+	if delta > 0 && p.suppress != nil {
+		if rule, ok := p.suppress.Suppressed(binary, "", p.parentBinary(pr.ExecId, ev.Parent)); ok {
+			delta, finding = 0, ""
+			reason = suppressionReason(rule)
+			metrics.IncEvent("operator_suppressed")
+		}
+	}
 	if delta > 0 {
 		p.Tree.AddScore(pr.ExecId, delta, "process_exec")
 	}
@@ -207,6 +252,9 @@ func (p *Pipeline) HandleKprobe(ev *tetragon.ProcessKprobe) {
 	policyName := ev.PolicyName
 
 	argStr := tetrabridge.ExtractKprobeArgs(ev.Args)
+	// The peer as its own value, not a substring of argStr. Args keeps it too,
+	// so nothing that reads the flattened form regresses.
+	peerAddr, peerPort := tetrabridge.ExtractKprobePeer(ev.Args)
 	binary := effectiveBinary(pr.Binary, pr.Pid.GetValue())
 
 	// A kprobe can be the FIRST event this pipeline ever sees for an exec_id,
@@ -255,10 +303,31 @@ func (p *Pipeline) HandleKprobe(ev *tetragon.ProcessKprobe) {
 	// ev.Parent, but the tree is the authority on the chain everywhere else in
 	// this file, and a kprobe whose exec we missed still has an ancestor there.
 	// See score.IsAuthStackCredentialRead for the measurement behind this.
-	if delta > 0 && (score.IsAuthStackCredentialRead(binary, p.parentBinary(pr.ExecId, ev.Parent), policyName) ||
+	parent := p.parentBinary(pr.ExecId, ev.Parent)
+	if delta > 0 && (score.IsAuthStackCredentialRead(binary, parent, policyName) ||
 		score.IsRoutinePrivilegeTransition(binary, policyName)) {
 		delta, reason, finding = 0, "", ""
 		metrics.IncEvent("auth_stack_suppressed")
+	}
+
+	// The OPERATOR'S own suppressions, applied after the built-in ones.
+	//
+	// The two above are universal — every Linux host's login stack reads
+	// /etc/shadow. These are the patterns true of ONE estate: a backup agent
+	// that reads credential paths, a config tool that calls setuid on a
+	// schedule. Without a way to say so a customer either lives with the noise
+	// or disarms the platform, and they disarm it.
+	//
+	// Only the SCORE is withheld. The event is still recorded, the chain is
+	// still in the tree, and the binary can still be contained by hand — the
+	// score is what drives AUTOMATIC action, and that is the only thing being
+	// asked to stop.
+	if delta > 0 && p.suppress != nil {
+		if rule, ok := p.suppress.Suppressed(binary, policyName, parent); ok {
+			delta, finding = 0, ""
+			reason = suppressionReason(rule)
+			metrics.IncEvent("operator_suppressed")
+		}
 	}
 
 	if delta > 0 {
@@ -284,6 +353,8 @@ func (p *Pipeline) HandleKprobe(ev *tetragon.ProcessKprobe) {
 		ExecID:     pr.ExecId,
 		Binary:     binary,
 		Args:       argStr,
+		PeerIP:     peerAddr,
+		PeerPort:   peerPort,
 		UID:        pr.Uid.GetValue(),
 		PolicyName: policyName,
 	}
@@ -454,4 +525,24 @@ func (p *Pipeline) dispatchGateway(execID string, chainScore int, reason string)
 		Score:  chainScore,
 		Reason: reason,
 	})
+}
+
+// SetSuppressions installs the operator's suppression set, replacing any
+// previous one. Called at startup and whenever the settings surface changes a
+// rule, so a new suppression takes effect without a restart — the whole point
+// of it being a setting rather than a config file.
+func (p *Pipeline) SetSuppressions(rules []store.Suppression) {
+	if p.suppress == nil {
+		p.suppress = newSuppressor()
+	}
+	p.suppress.Reload(rules)
+}
+
+// SuppressionHits reports how often each rule has fired since start, so the
+// settings page can show which rules are doing work and which are dead.
+func (p *Pipeline) SuppressionHits() map[int64]int64 {
+	if p.suppress == nil {
+		return nil
+	}
+	return p.suppress.Hits()
 }

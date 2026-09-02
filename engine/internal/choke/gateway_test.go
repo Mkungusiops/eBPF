@@ -3,6 +3,7 @@ package choke
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -156,7 +157,10 @@ func TestGatewayPreviewPolicyMatches(t *testing.T) {
 
 func TestGatewaySetThresholdsLogs(t *testing.T) {
 	g, _, _, _, _ := newTestGateway(t, false)
-	prev := g.SetThresholds(circuit.Config{ThrottleAt: 1, TarpitAt: 2, QuarantineAt: 3, SeverAt: 4})
+	prev, err := g.SetThresholds(circuit.Config{ThrottleAt: 1, TarpitAt: 2, QuarantineAt: 3, SeverAt: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if prev.ThrottleAt == 0 {
 		t.Errorf("expected non-zero prev")
 	}
@@ -370,5 +374,74 @@ func TestSystemCriticalBypassesScoreDrivenEnforcementOnly(t *testing.T) {
 	}
 	if !inMap() {
 		t.Error("manual override on a system-critical binary was bypassed — an operator must always be able to contain")
+	}
+}
+
+// Config mutations were unaudited: jailing ONE process wrote a hash-chained
+// row, while arming automatic containment across a host, releasing the
+// kill-switch, moving the thresholds and applying a preset wrote a single
+// log.Printf. The widest-blast-radius actions had no audit trail, and
+// /api/verify-chain covered none of them.
+func TestArmingEnforcementIsAudited(t *testing.T) {
+	g, st, _, _, _ := newTestGateway(t, false)
+
+	// Drive a REAL transition regardless of how the harness starts: settle to
+	// detect-only first, then arm. The audit only fires on a change, which is
+	// the point of the sibling test below.
+	g.SetEnforcing(false, "setup", "baseline")
+	g.SetEnforcing(true, "alice", "CAB-99: arming for the maintenance window")
+
+	rows, err := st.RecentDecisions(20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *store.Decision
+	for i := range rows {
+		if rows[i].Action == "set-mode" {
+			found = &rows[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("arming enforcement wrote no audit row")
+	}
+	if found.Actor != "alice" {
+		t.Errorf("actor = %q, want alice — an anonymous row defeats the purpose", found.Actor)
+	}
+	if !strings.Contains(found.Reason, "CAB-99") {
+		t.Errorf("reason not carried into the chain: %q", found.Reason)
+	}
+	if found.Hash == "" {
+		t.Error("row is not hash-chained, so it is not tamper-evident")
+	}
+}
+
+func TestANoOpModeChangeWritesNoRow(t *testing.T) {
+	// Setting the mode to what it already is is not an event. Recording it
+	// would pad the chain and the forensic snapshot's fixed budget with noise.
+	g, st, _, _, _ := newTestGateway(t, false)
+	// Settle into a known mode, THEN repeat it — the repeat is the no-op.
+	g.SetEnforcing(false, "setup", "baseline")
+	before, _ := st.RecentDecisions(50)
+	g.SetEnforcing(false, "alice", "already detect-only")
+	after, _ := st.RecentDecisions(50)
+	if len(after) != len(before) {
+		t.Fatalf("a no-op mode change wrote %d row(s)", len(after)-len(before))
+	}
+}
+
+// The gateway must refuse a lethal ladder even though the request is
+// well-formed at the transport layer. This is the hop the fleet path reaches
+// after a signed command, and it is the last one before processes start dying.
+func TestGatewayRefusesAPartialThresholdSet(t *testing.T) {
+	g, _, _, _, _ := newTestGateway(t, false)
+	before := g.Thresholds()
+
+	_, err := g.SetThresholds(circuit.Config{ThrottleAt: 10}) // sever_at = 0
+	if err == nil {
+		t.Fatal("a partial set must be refused: sever_at = 0 severs every tracked process")
+	}
+	if g.Thresholds() != before {
+		t.Fatalf("a refused set mutated the live ladder: %+v", g.Thresholds())
 	}
 }

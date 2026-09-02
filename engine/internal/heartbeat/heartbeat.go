@@ -9,6 +9,7 @@ package heartbeat
 import (
 	"context"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -121,6 +122,9 @@ type Registry struct {
 
 	mu     sync.Mutex
 	agents map[string]Record // key: tenant \x00 agent
+	// roster persists agent identity beyond this process. nil keeps the
+	// memory-only behaviour. See SetRosterSink.
+	roster RosterSink
 }
 
 func NewRegistry() *Registry {
@@ -131,6 +135,49 @@ func key(tenant, agent string) string { return tenant + "\x00" + agent }
 
 // Record updates the registry from a heartbeat request. tenant/agent come from
 // the verified cert (the caller), not the request body.
+// Simulated reports whether this record came from cmd/simagent rather than a
+// real host.
+//
+// The simulator has always identified itself — AgentVersion "sim-0.1", Kernel
+// "6.8.0-sim" — and nothing ever read it. So its telemetry landed in the same
+// tenant ledger as real containment, indistinguishable: on the live estate,
+// 431 fabricated decisions sat beside real ones with nothing to tell them
+// apart. An audit trail that cannot separate demo data from evidence is not an
+// audit trail.
+//
+// Matched on the version PREFIX and the kernel SUFFIX rather than an exact
+// string, so a simulator that bumps its own version does not silently start
+// passing as real.
+func (rec Record) Simulated() bool {
+	return strings.HasPrefix(rec.Version, "sim-") || strings.HasSuffix(rec.Kernel, "-sim")
+}
+
+// IsSimulated answers for one agent, for the ingest path to stamp its records.
+//
+// An agent the registry has not heard from yet answers false. That is the
+// right way round: a real agent must never be mislabelled as synthetic, and a
+// simulator is mislabelled only in the seconds between control-plane start and
+// its first heartbeat.
+func (r *Registry) IsSimulated(tenant, agent string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	rec, ok := r.agents[key(tenant, agent)]
+	return ok && rec.Simulated()
+}
+
+// RosterSink persists an agent's identity so it survives a restart.
+//
+// Injected rather than imported, so this package keeps no dependency on the
+// central store and a deployment without one behaves exactly as before.
+type RosterSink func(tenant, agent, hostname, version, arch, mode string, bufferDepth int64)
+
+// SetRosterSink wires durable roster persistence.
+func (r *Registry) SetRosterSink(fn RosterSink) {
+	r.mu.Lock()
+	r.roster = fn
+	r.mu.Unlock()
+}
+
 func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest) {
 	rec := Record{
 		TenantID:             tenant,
@@ -164,7 +211,16 @@ func (r *Registry) Record(tenant, agent string, req *ebpfsocv1.HeartbeatRequest)
 	rec.DroppedBroadcast = req.GetDroppedBroadcast()
 	r.mu.Lock()
 	r.agents[key(tenant, agent)] = rec
+	roster := r.roster
 	r.mu.Unlock()
+	// Outside the lock: the sink writes to a database, and holding the
+	// registry mutex across that would serialise every agent's heartbeat
+	// behind one slow query.
+	if roster != nil {
+		info := req.GetAgentInfo()
+		roster(tenant, agent, info.GetHostname(), rec.Version, info.GetArch(),
+			rec.Mode.String(), int64(rec.BufferDepth))
+	}
 }
 
 // Get returns the record for (tenant, agent).
@@ -178,6 +234,26 @@ func (r *Registry) Get(tenant, agent string) (Record, bool) {
 // ListTenant returns every agent record for a tenant, newest-seen first. The
 // tenant scoping is the caller's authz boundary; this only filters by the
 // tenant already stamped on each record at heartbeat time.
+// Tenants lists the tenants that currently have a reporting agent.
+//
+// Derived from live records rather than a configured list: a control plane's
+// idea of "which tenants exist" should come from who is actually reporting,
+// not from a roster that can drift.
+func (r *Registry) Tenants() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	seen := map[string]bool{}
+	out := []string{}
+	for _, rec := range r.agents {
+		if !seen[rec.TenantID] {
+			seen[rec.TenantID] = true
+			out = append(out, rec.TenantID)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func (r *Registry) ListTenant(tenant string) []Record {
 	r.mu.Lock()
 	defer r.mu.Unlock()

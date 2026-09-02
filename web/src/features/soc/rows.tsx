@@ -186,9 +186,42 @@ export function MiniBarList({
   );
 }
 
-export function IocList({ files, peers }: { files: Array<[string, number]>; peers: Array<[string, number]> }) {
+/**
+ * What an empty panel should say.
+ *
+ * "Nothing here" and "nothing here IN THIS WINDOW, while N sit just outside
+ * it" are different statements, and only the second is actionable. At a
+ * five-minute window on a live estate the first is actively misleading — this
+ * rig showed 2 alerts in 5m against 1,841 in 24h, so every context panel
+ * rendered an empty state with the data one click away.
+ */
+export function emptyBecause(kind: string, beyond: number, unit: string): string {
+  if (beyond > 0) {
+    return `Nothing in the selected window — ${beyond.toLocaleString()} ${unit} sit outside it. Widen the range.`;
+  }
+  return `No ${kind} recorded yet on this estate.`;
+}
+
+export function IocList({
+  files,
+  peers,
+  beyond = 0
+}: {
+  files: Array<[string, number]>;
+  peers: Array<[string, number]>;
+  beyond?: number;
+}) {
   if (!files.length && !peers.length) {
-    return <EmptyState title="No IOCs yet" detail="File and network indicators appear here after matching alerts or events." />;
+    // "Nothing happened" and "I cannot see this here" look identical, and
+    // only one of them is fine. Say which — the window is the usual answer on
+    // a quiet estate, and an analyst who reads "no IOCs" as "no IOCs ever"
+    // draws the wrong conclusion from a five-minute view.
+    return (
+      <EmptyState
+        title="No indicators in this window"
+        detail={`${emptyBecause("indicators", beyond, "events")} File paths come from event arguments; addresses come from the destination the sensor reported.`}
+      />
+    );
   }
   return (
     <div className="soc-ioc-list">
@@ -210,8 +243,21 @@ export function IocList({ files, peers }: { files: Array<[string, number]>; peer
   );
 }
 
-export function NetworkList({ rows }: { rows: Array<{ peer: string; count: number; procs: string[] }> }) {
-  if (!rows.length) return <EmptyState title="No outbound peers" detail="Network activity from shell events and LOLBins will aggregate here." />;
+export function NetworkList({
+  rows,
+  beyond = 0
+}: {
+  rows: Array<{ peer: string; count: number; procs: string[] }>;
+  beyond?: number;
+}) {
+  if (!rows.length) {
+    return (
+      <EmptyState
+        title="No outbound connections in this window"
+        detail={`${emptyBecause("outbound connections", beyond, "events")} Destinations come from the peer the sensor reports on a connection event. An address that only appears in a command line is not counted — it is an intent, not an observation.`}
+      />
+    );
+  }
   return (
     <div className="soc-network-list">
       {rows.slice(0, 8).map((row) => (

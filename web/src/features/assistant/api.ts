@@ -163,6 +163,17 @@ export interface AssistantAskRequest {
   chatId?: string;
   /** Which panel asked. See AssistantSurface. */
   surface?: AssistantSurface;
+  /**
+   * True for a sustained conversation in the history sidebar, false or absent
+   * for a drill panel's one-shot question.
+   *
+   * It selects between the two models a deployment may have configured, and
+   * nothing else — it cannot widen what the assistant may read. The control
+   * plane IGNORES it and reads the model off the stored chat instead, which is
+   * a fact the server owns; the single-tenant engine has no chat store, so
+   * there it is the only signal available.
+   */
+  conversation?: boolean;
   signal?: AbortSignal;
 }
 
@@ -234,11 +245,11 @@ export function createAssistantApi(request: Requester = defaultRequest): Assista
       return (await res.json()) as AssistantCapability;
     },
 
-    async ask({ agent, question, execId, chatId, surface, history, signal }) {
+    async ask({ agent, question, execId, chatId, surface, history, conversation, signal }) {
       const res = await request("/api/assistant/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent, question, exec_id: execId, chat_id: chatId, surface, history }),
+        body: JSON.stringify({ agent, question, exec_id: execId, chat_id: chatId, surface, history, conversation }),
         signal
       });
       if (!res.ok) {
@@ -254,11 +265,11 @@ export function createAssistantApi(request: Requester = defaultRequest): Assista
       return (await res.json()) as AssistantAnswer;
     },
 
-    async askStream({ agent, question, execId, chatId, surface, history, onStep, signal }) {
+    async askStream({ agent, question, execId, chatId, surface, history, conversation, onStep, signal }) {
       const res = await request("/api/assistant/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agent, question, exec_id: execId, chat_id: chatId, surface, history }),
+        body: JSON.stringify({ agent, question, exec_id: execId, chat_id: chatId, surface, history, conversation }),
         signal
       });
       if (!res.ok || !res.body) {

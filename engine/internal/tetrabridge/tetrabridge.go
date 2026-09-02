@@ -63,7 +63,54 @@ func JoinHostPort(addr string, port uint32) string {
 	if port == 0 {
 		return addr
 	}
+	// IPv6 must be bracketed, exactly as net.JoinHostPort does — this function
+	// borrowed that name while omitting the one rule that makes the output
+	// parseable.
+	//
+	// Without it a loopback health check renders as "::1:8090", which nothing
+	// downstream can split: an address and a port are separated by a colon,
+	// and so are the eight groups of an IPv6 address. The console's peer
+	// parser took everything before the first colon, got the empty string,
+	// and so classified localhost as neither loopback nor a LAN device —
+	// leaving "external peer", which is how a health check to your own machine
+	// gets drawn on the correlation graph as an outbound connection.
+	//
+	// Latent until now: nothing that made IPv6 connections was in the
+	// outbound-connections binary list. Adding curl to that list made it
+	// reachable on every host, several times a minute.
+	if strings.Contains(addr, ":") {
+		return fmt.Sprintf("[%s]:%d", addr, port)
+	}
 	return fmt.Sprintf("%s:%d", addr, port)
+}
+
+// ExtractKprobePeer returns the remote endpoint a kprobe touched, or an empty
+// address when it touched none.
+//
+// The sensor has this STRUCTURED — a sock or sockaddr argument with a distinct
+// address and port — and ExtractKprobeArgs then flattens it into the args
+// blob. Everything downstream that wanted "what did this talk to" had to
+// recover it by pattern-matching free text, so the console's Network
+// Connections panel silently missed anything whose rendering did not match,
+// while its title claimed the peers were observed.
+//
+// Same traversal order as ExtractKprobeArgs so the two cannot disagree about
+// which argument is the peer.
+// Returned as address and port rather than a joined string: the wire
+// ProcessEvent already models them separately (dest_ip, dest_port) and has
+// since it shipped — those fields were simply never populated. Joining here
+// only to split again at the uplink would be a round trip through a format
+// nobody needs.
+func ExtractKprobePeer(args []*tetragon.KprobeArgument) (addr string, port uint32) {
+	for _, a := range args {
+		if s := a.GetSockArg(); s != nil && s.GetDaddr() != "" {
+			return s.GetDaddr(), s.GetDport()
+		}
+		if sa := a.GetSockaddrArg(); sa != nil && sa.GetAddr() != "" {
+			return sa.GetAddr(), sa.GetPort()
+		}
+	}
+	return "", 0
 }
 
 // ExtractKprobeArgs flattens a kprobe's typed arguments into the space-joined

@@ -27,7 +27,7 @@ import {
   UserCircle,
   X,
   Zap
-} from "lucide-react";
+, SlidersHorizontal } from "lucide-react";
 import type * as React from "react";
 import { cx } from "./components";
 import { useLocalJsonState } from "./hooks";
@@ -145,6 +145,8 @@ export function SocSidebar({
           ) : null}
           <SidebarButton icon={Network} label="Fleet" onClick={() => onOpenSurface("fleet")} active={openSurface === "fleet"} />
           <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => onOpenSurface("kprobes")} active={openSurface === "kprobes"} />
+          {/* Tuning lives next to the surface that shows what needs tuning. */}
+          <SidebarButton icon={SlidersHorizontal} label="Settings" onClick={() => onOpenSurface("settings")} active={openSurface === "settings"} />
           <SidebarButton icon={Download} label="Reports" onClick={() => onOpenSurface("export")} active={openSurface === "export"} />
         </SidebarSection>
         <SidebarSection title="Settings">

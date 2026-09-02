@@ -79,7 +79,95 @@ func RunRetention(db *sql.DB, dialect string) {
 
 	for {
 		pruneOnce(db, dialect, events, alerts)
+		pruneTenantOverrides(db, dialect, events, alerts)
 		time.Sleep(retentionInterval)
+	}
+}
+
+// pruneTenantOverrides applies each tenant's own retention on top of the
+// deployment default.
+//
+// tenants.retention_days has existed since migration 0001 and nothing read it,
+// so a data-residency agreement requiring a shorter horizon for one customer
+// could be written into the schema and have no effect whatsoever.
+//
+// Only SHORTER horizons are honoured. A tenant asking to keep data longer than
+// the deployment does would need rows the global pass has already deleted, so
+// accepting it would be a promise this cannot keep — and a retention policy
+// that silently fails is worse than one that is refused.
+func pruneTenantOverrides(db *sql.DB, dialect string, events, alerts time.Duration) {
+	rows, err := db.Query(`SELECT tenant_id, retention_days FROM tenants WHERE retention_days > 0`)
+	if err != nil {
+		return // no tenants table on this dialect, or unreadable: the global pass stands
+	}
+	defer rows.Close()
+	type override struct {
+		tenant  string
+		horizon time.Duration
+	}
+	var overrides []override
+	for rows.Next() {
+		var t string
+		var days int
+		if err := rows.Scan(&t, &days); err != nil {
+			return
+		}
+		h := hoursToDuration(days)
+		// The same floor the environment override is held to: a horizon
+		// shorter than twice the largest console window corrupts every
+		// window-over-window delta the console renders.
+		if c := clampToFloor(h); c != h {
+			slog.Warn("tenant retention is below the floor and would corrupt window deltas; clamping",
+				"tenant", t, "requested", h, "floor", c)
+			h = c
+		}
+		if h >= events && h >= alerts {
+			continue // not shorter than the deployment default: nothing to do
+		}
+		overrides = append(overrides, override{tenant: t, horizon: h})
+	}
+	if err := rows.Err(); err != nil {
+		return
+	}
+	// Collected before deleting: holding the rows cursor open across the
+	// DELETEs would keep a read transaction alive for the whole prune.
+	for _, o := range overrides {
+		for _, kind := range []string{"event", "alert"} {
+			n, err := pruneKindForTenant(db, dialect, o.tenant, kind, time.Now().Add(-o.horizon))
+			if err != nil {
+				slog.Error("tenant retention prune failed", "tenant", o.tenant, "kind", kind, "error", err)
+				continue
+			}
+			if n > 0 {
+				slog.Info("tenant retention pruned", "tenant", o.tenant, "kind", kind,
+					"rows", n, "horizon", o.horizon)
+			}
+		}
+	}
+}
+
+// pruneKindForTenant is pruneKind narrowed to one tenant.
+func pruneKindForTenant(db *sql.DB, dialect, tenant, kind string, cutoff time.Time) (int64, error) {
+	stmt := `DELETE FROM telemetry WHERE rowid IN (
+	             SELECT rowid FROM telemetry WHERE tenant_id = ? AND kind = ? AND at < ? LIMIT ?)`
+	if dialect == "postgres" {
+		stmt = `DELETE FROM telemetry WHERE ctid IN (
+		            SELECT ctid FROM telemetry WHERE tenant_id = $1 AND kind = $2 AND at < $3 LIMIT $4)`
+	}
+	var total int64
+	for {
+		res, err := db.Exec(stmt, tenant, kind, cutoff.UnixNano(), retentionBatch)
+		if err != nil {
+			return total, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return total, err
+		}
+		total += n
+		if n < retentionBatch {
+			return total, nil
+		}
 	}
 }
 
@@ -149,4 +237,72 @@ func pruneKind(db *sql.DB, dialect, kind string, cutoff time.Time) (int64, error
 			return total, nil
 		}
 	}
+}
+
+// hoursToDuration converts a retention in days.
+func hoursToDuration(days int) time.Duration { return time.Duration(days) * 24 * time.Hour }
+
+// clampToFloor raises a horizon to the shortest honest retention.
+func clampToFloor(d time.Duration) time.Duration {
+	if floor := retentionFloor(); d < floor {
+		return floor
+	}
+	return d
+}
+
+// RetentionPolicy describes what a tenant's data actually gets, so a console
+// can render the effective horizon rather than the requested one.
+type RetentionPolicy struct {
+	// DeploymentEventDays / DeploymentAlertDays are what the platform keeps
+	// when a tenant sets nothing.
+	DeploymentEventDays int `json:"deployment_event_days"`
+	DeploymentAlertDays int `json:"deployment_alert_days"`
+	// TenantDays is the tenant's own request, 0 when it has set none.
+	TenantDays int `json:"tenant_days"`
+	// EffectiveEventDays / EffectiveAlertDays are what will really happen —
+	// which is where a requested horizon that was clamped or ignored becomes
+	// visible. A control that shows only the request is how a data-residency
+	// commitment gets signed against a setting that never took effect.
+	EffectiveEventDays int  `json:"effective_event_days"`
+	EffectiveAlertDays int  `json:"effective_alert_days"`
+	FloorDays          int  `json:"floor_days"`
+	Clamped            bool `json:"clamped"`
+	// Ignored is true when the tenant asked to keep data LONGER than the
+	// deployment does. The rows would already be gone.
+	Ignored bool `json:"ignored"`
+}
+
+// EffectiveRetention resolves a tenant's request against the deployment.
+func EffectiveRetention(tenantDays int) RetentionPolicy {
+	events := horizonFromEnv("EBPF_SOC_RETAIN_EVENT_DAYS", defaultRetainEvents)
+	alerts := horizonFromEnv("EBPF_SOC_RETAIN_ALERT_DAYS", defaultRetainAlerts)
+	days := func(d time.Duration) int { return int(d.Hours() / 24) }
+
+	p := RetentionPolicy{
+		DeploymentEventDays: days(events),
+		DeploymentAlertDays: days(alerts),
+		TenantDays:          tenantDays,
+		EffectiveEventDays:  days(events),
+		EffectiveAlertDays:  days(alerts),
+		FloorDays:           days(retentionFloor()),
+	}
+	if tenantDays <= 0 {
+		return p
+	}
+	h := hoursToDuration(tenantDays)
+	if c := clampToFloor(h); c != h {
+		p.Clamped = true
+		h = c
+	}
+	if h >= events && h >= alerts {
+		p.Ignored = true
+		return p
+	}
+	if h < events {
+		p.EffectiveEventDays = days(h)
+	}
+	if h < alerts {
+		p.EffectiveAlertDays = days(h)
+	}
+	return p
 }

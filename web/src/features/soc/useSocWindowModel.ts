@@ -322,7 +322,25 @@ export function useSocWindowModel({
     .filter(([, status]) => status === 503)
     .map(([key]) => key);
 
+  // How much of the loaded buffer falls OUTSIDE the selected window.
+  //
+  // An empty panel is read as "nothing happened", and at a five-minute window
+  // on a live estate that is wrong: this rig had 2 alerts in 5m and 1,841 in
+  // 24h, so every context panel rendered an empty state while the data sat one
+  // click away. Telling the operator to "widen the range" is advice; telling
+  // them there are 1,839 alerts they are not looking at is a fact, and it is
+  // the difference between a panel they learn to ignore and one that points
+  // somewhere.
+  const beyondWindow = useMemo(
+    () => ({
+      alerts: Math.max(0, snapshot.alerts.length - rangeAlerts.length),
+      events: Math.max(0, snapshot.events.length - rangeEvents.length)
+    }),
+    [snapshot.alerts.length, snapshot.events.length, rangeAlerts.length, rangeEvents.length]
+  );
+
   return {
+    beyondWindow,
     rangeAlerts,
     rangeEvents,
     rangeDecisions,

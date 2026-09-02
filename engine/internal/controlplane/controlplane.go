@@ -132,14 +132,25 @@ type Server struct {
 	fleet      *fleet.Service
 	registry   *heartbeat.Registry
 	dispatcher *command.Dispatcher
-	auditor    *authz.MemAuditor
+	// auditor records authorization outcomes. The interface, not the in-memory
+	// implementation: on a Postgres deployment this is the durable
+	// operator_audit writer, and the memory ring is only the fallback.
+	auditor authz.Auditor
 	// owners remembers which agent proved it was running a given target, so a
 	// follow-up command on the same process routes straight to it instead of
 	// being re-guessed from a PID. See ownerCache in choke.go.
 	owners *ownerCache
+	// ladderCorrections records every time the reconciler overrode one host's
+	// containment ladder with its tenant's policy, so the operator whose
+	// per-host change was reverted can see that it was, and why. See
+	// ladderreconcile.go.
+	ladderCorrections ladderCorrectionLog
 	// approvals holds destructive actions awaiting a second operator
 	// (threat-model EN-2). See internal/approval.
 	approvals *approval.Store
+	// changeControl caches each tenant's EN-2 posture, because the gate that
+	// consults it sits on the containment path. See changecontrol.go.
+	changeControl *changeControlCache
 	// stats caches computed alert-window aggregates briefly, so N open console
 	// tabs do not each trigger the same scan. See alertstats.go.
 	stats *statsCache
@@ -184,17 +195,18 @@ func New(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		cfg:        cfg,
-		ca:         cfg.CA,
-		tokens:     enrollment.NewTokenStore(),
-		fleet:      fleet.NewService(cfg.FleetSigner, cfg.FleetKeyID),
-		registry:   heartbeat.NewRegistry(),
-		stats:      &statsCache{},
-		dispatcher: command.NewDispatcher(cfg.FleetSigner, time.Minute),
-		auditor:    authz.NewMemAuditor(),
-		owners:     newOwnerCache(),
-		approvals:  approval.NewStore(approval.DefaultTTL),
-		chats:      cfg.Chats,
+		cfg:           cfg,
+		ca:            cfg.CA,
+		tokens:        enrollment.NewTokenStore(),
+		fleet:         fleet.NewService(cfg.FleetSigner, cfg.FleetKeyID),
+		registry:      heartbeat.NewRegistry(),
+		stats:         &statsCache{},
+		dispatcher:    command.NewDispatcher(cfg.FleetSigner, time.Minute),
+		auditor:       authz.NewMemAuditor(),
+		owners:        newOwnerCache(),
+		approvals:     approval.NewStore(approval.DefaultTTL),
+		changeControl: newChangeControlCache(),
+		chats:         cfg.Chats,
 	}
 
 	// Per-tenant enrichment. Built before the gRPC server so the ingest sink
@@ -238,12 +250,42 @@ func New(cfg Config) (*Server, error) {
 	// Enrichment sits in FRONT of the store, not behind it: it needs the
 	// tenant-stamped record, and it must never be able to stop the store write.
 	// See Sink.Put.
-	ebpfsocv1.RegisterTelemetryServiceServer(gs, ingest.NewServer(WrapSink(telemetrySink, s.enrich)))
+	// The ingest path asks the heartbeat registry whether an agent is a
+	// simulator, so its records are marked as they land. Without this the
+	// tenant ledger cannot distinguish demo data from evidence — which on this
+	// estate meant 431 fabricated containment decisions sitting beside real
+	// ones with nothing to tell them apart.
+	telemetrySrv := ingest.NewServer(WrapSink(telemetrySink, s.enrich))
+	// Durable roster first, live registry second. After a restart the registry
+	// is empty until each agent heartbeats again, and telemetry arriving in
+	// that window would otherwise be stamped real — the exact confusion the
+	// marking exists to prevent.
+	telemetrySrv.SetSyntheticFn(s.isSimulatedAgent)
+	ebpfsocv1.RegisterTelemetryServiceServer(gs, telemetrySrv)
 	ebpfsocv1.RegisterCommandServiceServer(gs, s.dispatcher)
 	ebpfsocv1.RegisterHeartbeatServiceServer(gs, heartbeat.NewServer(s.registry, 30*time.Second))
 	ebpfsocv1.RegisterPolicyServiceServer(gs, fleet.NewPolicyServer(s.fleet))
+	// Prefer the durable auditor. "Which operator read which tenant's data" is
+	// a question an MSSP has to answer months later, and the memory ring
+	// cannot: it is erased by a restart and readable only from tests.
+	if pg, ok := s.pgStore(); ok {
+		s.auditor = pg
+		// Durable agent roster. Without it the platform can only answer "which
+		// agents are reporting right now", and the synthetic-telemetry marking
+		// loses its memory on every restart.
+		s.registry.SetRosterSink(func(tenant, agent, hostname, version, arch, mode string, depth int64) {
+			pg.UpsertAgent(centralstore.AgentRecord{
+				TenantID: tenant, AgentID: agent, Hostname: hostname,
+				Version: version, Arch: arch, LastMode: mode, BufferDepth: depth,
+			})
+		})
+	}
+
 	s.gs = gs
 	s.httpH = s.buildHTTP()
+	// Keeps every agent on its tenant's containment ladder, including ones
+	// enrolled after the operator set it. See ladderreconcile.go.
+	s.startLadderReconciler()
 	return s, nil
 }
 
@@ -305,4 +347,18 @@ func (s *Server) Serve(ctx context.Context, grpcAddr, httpAddr string) error {
 		_ = httpSrv.Close()
 		return err
 	}
+}
+
+// isSimulatedAgent answers whether an agent is a simulator, preferring the
+// durable roster over live memory.
+//
+// Either source saying yes is enough: the roster remembers across a restart,
+// and the registry knows about an agent that has heartbeated but whose roster
+// write has not landed yet. Neither can produce a false positive — both read
+// the version the agent reported about itself.
+func (s *Server) isSimulatedAgent(tenant, agent string) bool {
+	if pg, ok := s.pgStore(); ok && pg.AgentIsSimulated(tenant, agent) {
+		return true
+	}
+	return s.registry != nil && s.registry.IsSimulated(tenant, agent)
 }

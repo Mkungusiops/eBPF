@@ -77,11 +77,20 @@ type Request struct {
 	MAC     string `json:"mac,omitempty"`
 	// Scope distinguishes a single target from a fleet-wide change, because the
 	// blast radius is what the approver is being asked to judge.
-	Scope     string    `json:"scope"` // "target" | "fleet"
-	Reason    string    `json:"reason"`
-	Requester string    `json:"requester"`
-	CreatedAt time.Time `json:"created_at"`
-	ExpiresAt time.Time `json:"expires_at"`
+	Scope string `json:"scope"` // "target" | "fleet"
+	// RevertAfterSeconds carries a requested auto-revert THROUGH the approval
+	// queue. Without it a temporary containment that needed a second operator
+	// would come back permanent — the approver would be shown "quarantine,
+	// reverts in 30 minutes", approve that, and the agent would receive a
+	// quarantine that never lifts.
+	//
+	// It is also part of what the approver is judging: a thirty-minute hold and
+	// an indefinite one are different asks.
+	RevertAfterSeconds uint32    `json:"revert_after_seconds,omitempty"`
+	Reason             string    `json:"reason"`
+	Requester          string    `json:"requester"`
+	CreatedAt          time.Time `json:"created_at"`
+	ExpiresAt          time.Time `json:"expires_at"`
 
 	Status     Status    `json:"status"`
 	Approver   string    `json:"approver,omitempty"`
@@ -223,10 +232,28 @@ func (s *Store) Decide(tenant, id, approver, note string, approve bool) (Request
 		r.Status = StatusExpired
 		return *r, ErrExpired
 	}
-	// Dual control. Compared case-insensitively because the same human can
-	// arrive as "Op@example.com" and "op@example.com" from different sessions,
-	// and a control defeated by capitalisation is not a control.
-	if strings.EqualFold(strings.TrimSpace(approver), strings.TrimSpace(r.Requester)) {
+	// Dual control, on the APPROVING direction only.
+	//
+	// Compared case-insensitively because the same human can arrive as
+	// "Op@example.com" and "op@example.com" from different sessions, and a
+	// control defeated by capitalisation is not a control.
+	//
+	// Denial is deliberately NOT gated, and this was found by using the
+	// feature: the check used to sit above this branch, so an operator who
+	// mistyped a sever could not take it back. They had to find a second
+	// person to clear their own mistake, or wait out the TTL with a
+	// destructive action sitting in the queue.
+	//
+	// That is the same rule the package already states for thaw, throttle,
+	// tarpit, the kill-switch and detect-only: the way OUT of a bad state must
+	// never wait for a quorum. Withdrawing a request you just made is that
+	// shape exactly, and it removes a destructive action rather than causing
+	// one, so no second pair of eyes is protecting anything by blocking it.
+	//
+	// The audit stays unambiguous without a new status: a record whose
+	// approver equals its requester and whose status is denied is a
+	// withdrawal on its face, and no approval can ever look like that.
+	if approve && strings.EqualFold(strings.TrimSpace(approver), strings.TrimSpace(r.Requester)) {
 		return *r, ErrSelfApproval
 	}
 	if approve {

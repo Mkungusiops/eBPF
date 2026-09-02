@@ -20,10 +20,28 @@ CREATE TABLE IF NOT EXISTS assistant_chat (
   title             TEXT NOT NULL DEFAULT 'New chat',
   mode              TEXT NOT NULL DEFAULT 'chat',
   compacted_summary TEXT NOT NULL DEFAULT '',
+  -- model is chosen ONCE, when the conversation is created, and never
+  -- reconsidered while it lives. A deployment may run a fast model for drill
+  -- panels and a stronger one for sustained investigation; picking per request
+  -- would put two models in one thread, which is the incoherence
+  -- AssistantChatProvider exists to prevent. Empty on chats created before the
+  -- split existed, which callers read as "the deployment default".
+  model             TEXT NOT NULL DEFAULT '',
   pinned_at         TIMESTAMPTZ,
   created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- An idempotent table creation above will not add a column to a table that
+-- already exists, and every deployment already has this one. This ALTER is
+-- idempotent too, and safe to run on every open, which is how the rest of this
+-- schema behaves.
+--
+-- Worded without the literal creation keywords on purpose: the grant
+-- completeness test scans this string for table declarations, and a comment
+-- containing them invents a table called "cannot" that it then demands a grant
+-- for. It found exactly that, which is the argument for having it.
+ALTER TABLE assistant_chat ADD COLUMN IF NOT EXISTS model TEXT NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS assistant_message (
   id         TEXT PRIMARY KEY,
@@ -217,7 +235,26 @@ SELECT
   AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = $1)
   AND (SELECT count(DISTINCT table_name) FROM information_schema.role_table_grants
         WHERE grantee = $1 AND table_name IN ('assistant_chat','assistant_message')
-          AND privilege_type = 'INSERT') = 2`, role).Scan(&ready)
+          AND privilege_type = 'INSERT') = 2
+  -- Every COLUMN the queries in this package select, not just the tables.
+  --
+  -- This probe used to check tables, policies, the role and its grants, and
+  -- nothing else — so it reported "ready" for a schema that was structurally
+  -- older than the code. provision() then returned without running the DDL at
+  -- all, and an ALTER added to the schema string was skipped on every existing
+  -- deployment while passing on every fresh one.
+  --
+  -- The failure is not subtle once it happens and is invisible until then: the
+  -- chat SELECT names a column that does not exist, every history read errors,
+  -- the sidebar reports "past conversations could not be loaded", and no chat
+  -- is created. Anything keyed off a conversation then silently takes its
+  -- absent-chat path.
+  --
+  -- Listing the columns here means an additive change is self-applying: the
+  -- probe fails, provision runs, the idempotent ALTER fills the gap.
+  AND (SELECT count(*) FROM information_schema.columns
+        WHERE table_name = 'assistant_chat' AND column_name IN ('model','compacted_summary','pinned_at')) = 3`,
+		role).Scan(&ready)
 	return ready, err
 }
 
@@ -266,18 +303,19 @@ func quoteIdent(s string) string {
 	return `"` + strings.ReplaceAll(s, `"`, `""`) + `"`
 }
 
-func (p *PGStore) CreateChat(s Scope, title, mode string) (Chat, error) {
+func (p *PGStore) CreateChat(s Scope, title, mode, model string) (Chat, error) {
 	if strings.TrimSpace(title) == "" {
 		title = "New chat"
 	}
 	if mode == "" {
 		mode = "chat"
 	}
-	c := Chat{ID: newID(), TenantID: s.TenantID, UserID: s.UserID, Title: title, Mode: mode}
+	model = strings.TrimSpace(model)
+	c := Chat{ID: newID(), TenantID: s.TenantID, UserID: s.UserID, Title: title, Mode: mode, Model: model}
 	err := p.withScope(s, func(tx *sql.Tx) error {
-		return tx.QueryRow(`INSERT INTO assistant_chat (id, tenant_id, user_id, title, mode)
-			VALUES ($1,$2,$3,$4,$5) RETURNING created_at, updated_at`,
-			c.ID, s.TenantID, s.UserID, title, mode).Scan(&c.CreatedAt, &c.UpdatedAt)
+		return tx.QueryRow(`INSERT INTO assistant_chat (id, tenant_id, user_id, title, mode, model)
+			VALUES ($1,$2,$3,$4,$5,$6) RETURNING created_at, updated_at`,
+			c.ID, s.TenantID, s.UserID, title, mode, model).Scan(&c.CreatedAt, &c.UpdatedAt)
 	})
 	return c, err
 }
@@ -288,7 +326,7 @@ func (p *PGStore) ListChats(s Scope, limit int) ([]Chat, error) {
 	}
 	var out []Chat
 	err := p.withScope(s, func(tx *sql.Tx) error {
-		rows, err := tx.Query(`SELECT id, tenant_id, user_id, title, mode, compacted_summary,
+		rows, err := tx.Query(`SELECT id, tenant_id, user_id, title, mode, model, compacted_summary,
 			pinned_at, created_at, updated_at FROM assistant_chat
 			WHERE user_id = $1
 			ORDER BY pinned_at DESC NULLS LAST, updated_at DESC LIMIT $2`, s.UserID, limit)
@@ -305,7 +343,7 @@ func (p *PGStore) ListChats(s Scope, limit int) ([]Chat, error) {
 func (p *PGStore) GetChat(s Scope, id string) (Chat, error) {
 	var c Chat
 	err := p.withScope(s, func(tx *sql.Tx) error {
-		row := tx.QueryRow(`SELECT id, tenant_id, user_id, title, mode, compacted_summary,
+		row := tx.QueryRow(`SELECT id, tenant_id, user_id, title, mode, model, compacted_summary,
 			pinned_at, created_at, updated_at FROM assistant_chat
 			WHERE id = $1 AND user_id = $2`, id, s.UserID)
 		return scanChat(row, &c)
@@ -447,7 +485,7 @@ func scanChats(rows *sql.Rows) ([]Chat, error) {
 	var out []Chat
 	for rows.Next() {
 		var c Chat
-		if err := rows.Scan(&c.ID, &c.TenantID, &c.UserID, &c.Title, &c.Mode,
+		if err := rows.Scan(&c.ID, &c.TenantID, &c.UserID, &c.Title, &c.Mode, &c.Model,
 			&c.CompactedSummary, &c.PinnedAt, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -457,7 +495,7 @@ func scanChats(rows *sql.Rows) ([]Chat, error) {
 }
 
 func scanChat(row *sql.Row, c *Chat) error {
-	err := row.Scan(&c.ID, &c.TenantID, &c.UserID, &c.Title, &c.Mode,
+	err := row.Scan(&c.ID, &c.TenantID, &c.UserID, &c.Title, &c.Mode, &c.Model,
 		&c.CompactedSummary, &c.PinnedAt, &c.CreatedAt, &c.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return ErrNotFound

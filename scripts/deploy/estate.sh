@@ -71,6 +71,10 @@ VICTIM_SSH="victim_device"
 # product: no outbound dependency on an inference endpoint unless asked for.
 export ASSISTANT_URL="${ASSISTANT_URL:-}"
 export ASSISTANT_MODEL="${ASSISTANT_MODEL:-gpt-oss:120b}"
+# Optional second model for sustained conversations in the history sidebar.
+# Empty means one model everywhere, which is the default and what every
+# deployment had before the split existed.
+export ASSISTANT_DEEP_MODEL="${ASSISTANT_DEEP_MODEL:-}"
 export OPEN_WEIGHT_API_KEY="${OPEN_WEIGHT_API_KEY:-}"
 
 # "tenant=ssh-alias" — acme-corp intentionally appears twice.
@@ -134,6 +138,7 @@ doing agents && for a in "${AGENTS[@]}"; do dim "agent           ${a#*=}  tenant
 dim "victim_device   SKIPPED — containment target, must stay agent-less"
 if [[ -n "$ASSISTANT_URL" ]]; then
   dim "assistant       $ASSISTANT_MODEL via $ASSISTANT_URL$([[ -z "$OPEN_WEIGHT_API_KEY" ]] && echo '  (NO KEY — will report unavailable)')"
+  [[ -n "$ASSISTANT_DEEP_MODEL" ]] && dim "                $ASSISTANT_DEEP_MODEL for sidebar conversations (panels stay on $ASSISTANT_MODEL)"
 else
   dim "assistant       off (set ASSISTANT_URL to enable)"
 fi
@@ -159,7 +164,13 @@ fi
 # ── Single-tenant engine ───────────────────────────────────────────────────
 if doing engine; then
   step_header "Engine — $ENGINE_DOMAIN"
-  run env TLS=1 TARGET_HOST="$ENGINE_DOMAIN" SSH_HOST="$ENGINE_SSH" \
+  # DEVCHOKE=1 so the single-tenant engine gets a real tc data plane, like the
+  # agents do. Without it provision_engine takes the noop branch: the console
+  # reports "Plane Noop / Links 0 / data plane OFFLINE" and every device
+  # containment is recorded and drops nothing. That was honest but it was also
+  # a capability the box could have had — the compile happens on the target and
+  # the agents have run it since they were built.
+  run env TLS=1 DEVCHOKE=1 TARGET_HOST="$ENGINE_DOMAIN" SSH_HOST="$ENGINE_SSH" \
     ./scripts/deploy/single-tenant-ubuntu.sh
 fi
 

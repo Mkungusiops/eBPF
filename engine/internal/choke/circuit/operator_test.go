@@ -1,10 +1,16 @@
 package circuit
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSetThresholdsAtomic(t *testing.T) {
 	c := New(DefaultConfig())
-	prev := c.SetThresholds(Config{ThrottleAt: 100, TarpitAt: 200, QuarantineAt: 300, SeverAt: 400})
+	prev, err := c.SetThresholds(Config{ThrottleAt: 100, TarpitAt: 200, QuarantineAt: 300, SeverAt: 400})
+	if err != nil {
+		t.Fatalf("a complete ascending set must be accepted: %v", err)
+	}
 	if prev != DefaultConfig() {
 		t.Errorf("returned prev does not match default: %+v", prev)
 	}
@@ -16,7 +22,12 @@ func TestSetThresholdsAtomic(t *testing.T) {
 
 func TestSetThresholdsZeroIsNoop(t *testing.T) {
 	c := New(DefaultConfig())
-	prev := c.SetThresholds(Config{}) // all zero — must not zero out the live config
+	// All-zero is now REFUSED rather than silently ignored. The old behaviour
+	// (apply-if-any-field-positive) is what let a partial body zero sever_at.
+	prev, err := c.SetThresholds(Config{})
+	if err == nil {
+		t.Error("an all-zero config must be refused, not quietly dropped")
+	}
 	if prev != DefaultConfig() {
 		t.Errorf("prev wrong: %+v", prev)
 	}
@@ -33,7 +44,9 @@ func TestSetThresholdsPreservesMonotonicity(t *testing.T) {
 		t.Fatalf("setup: expected Quarantined, got %+v", d)
 	}
 	// Move thresholds higher; the existing process must not regress.
-	c.SetThresholds(Config{ThrottleAt: 100, TarpitAt: 200, QuarantineAt: 300, SeverAt: 400})
+	if _, err := c.SetThresholds(Config{ThrottleAt: 100, TarpitAt: 200, QuarantineAt: 300, SeverAt: 400}); err != nil {
+		t.Fatal(err)
+	}
 	if c.State("A") != Quarantined {
 		t.Errorf("retuning thresholds must not regress an already-progressed process; got %s", c.State("A"))
 	}
@@ -73,5 +86,61 @@ func TestSnapshotReturnsCopies(t *testing.T) {
 	snap[0].State = Severed
 	if c.State("A") == Severed && c.State("B") == Severed {
 		t.Errorf("snapshot mutation leaked into circuit")
+	}
+}
+
+// A partial threshold body was a fleet-wide SIGKILL.
+//
+// SetThresholds applied when ANY field was positive, so {throttle_at: 10} with
+// the other three absent installed {10, 0, 0, 0}. stateFor tests sever FIRST,
+// so every tracked process with score >= 0 evaluated to Severed. The control
+// plane discarded its decode error, the signed command carried the values
+// verbatim, and neither the command processor nor the agent's applier checked
+// — only the engine's own local handler did, which the fleet path bypasses.
+func TestAPartialThresholdSetIsRefused(t *testing.T) {
+	c := New(Config{ThrottleAt: 20, TarpitAt: 50, QuarantineAt: 120, SeverAt: 200})
+
+	prev, err := c.SetThresholds(Config{ThrottleAt: 10}) // the malformed body
+	if err == nil {
+		t.Fatal("a partial threshold set must be refused — it zeroes sever_at and severs everything")
+	}
+	if prev.SeverAt != 200 {
+		t.Fatalf("prev should report the config still in force, got sever=%d", prev.SeverAt)
+	}
+	// And the live config must be untouched.
+	if got := c.Thresholds(); got.SeverAt != 200 || got.ThrottleAt != 20 {
+		t.Fatalf("a refused set mutated the live ladder: %+v", got)
+	}
+}
+
+func TestAZeroSeverThresholdIsRefused(t *testing.T) {
+	// The specific lethal shape, asserted on its own so the reason survives.
+	err := Config{ThrottleAt: 1, TarpitAt: 2, QuarantineAt: 3, SeverAt: 0}.Validate()
+	if err == nil {
+		t.Fatal("sever_at = 0 means every score >= 0 is Severed")
+	}
+	if !strings.Contains(err.Error(), "severs every tracked process") {
+		t.Fatalf("the error should say what happens, got: %v", err)
+	}
+}
+
+func TestThresholdsMustAscend(t *testing.T) {
+	// A non-ascending ladder makes the lower rungs unreachable.
+	if err := (Config{ThrottleAt: 200, TarpitAt: 50, QuarantineAt: 120, SeverAt: 20}).Validate(); err == nil {
+		t.Fatal("a descending ladder must be refused")
+	}
+}
+
+func TestACompleteAscendingSetIsAccepted(t *testing.T) {
+	c := New(Config{ThrottleAt: 20, TarpitAt: 50, QuarantineAt: 120, SeverAt: 200})
+	prev, err := c.SetThresholds(Config{ThrottleAt: 5, TarpitAt: 10, QuarantineAt: 15, SeverAt: 20})
+	if err != nil {
+		t.Fatalf("a complete ascending set must be accepted: %v", err)
+	}
+	if prev.ThrottleAt != 20 {
+		t.Fatalf("prev = %+v", prev)
+	}
+	if got := c.Thresholds(); got.SeverAt != 20 {
+		t.Fatalf("the new ladder did not take: %+v", got)
 	}
 }

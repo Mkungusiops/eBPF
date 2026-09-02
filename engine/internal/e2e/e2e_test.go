@@ -244,12 +244,12 @@ func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode, _ ebpfsocv1.Plane) er
 	f.mode = m
 	return nil
 }
-func (f *fakeApplier) Jail(string, uint32, string) error              { return nil }
-func (f *fakeApplier) Thaw(string, uint32) error                      { return nil }
-func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error           { return nil }
-func (f *fakeApplier) ApplyPreset(string) error                       { return nil }
-func (f *fakeApplier) KillSwitch(bool, string, ebpfsocv1.Plane) error { return nil }
-func (f *fakeApplier) SetProtectedList([]string, []string) error      { return nil }
+func (f *fakeApplier) Jail(string, uint32, string, time.Duration) error { return nil }
+func (f *fakeApplier) Thaw(string, uint32) error                        { return nil }
+func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error             { return nil }
+func (f *fakeApplier) ApplyPreset(string) error                         { return nil }
+func (f *fakeApplier) KillSwitch(bool, string, ebpfsocv1.Plane) error   { return nil }
+func (f *fakeApplier) SetProtectedList([]string, []string) error        { return nil }
 
 func TestCommandRoundTrip(t *testing.T) {
 	h := newHarness(t, ingest.NewMemSink())
@@ -481,9 +481,28 @@ func TestReadPathIsolationLayers34(t *testing.T) {
 	if rows, ok := authorizedRead(admin, "tenant-b"); !ok || len(rows) != 1 {
 		t.Fatalf("msoc-admin cross-tenant read: ok=%v rows=%d, want ok=true rows=1", ok, len(rows))
 	}
+	// Two records now, not one: the allowed cross-tenant read AND the denied
+	// attempt above it. Denials used to be returned silently, which meant an
+	// operator repeatedly probing a tenant they have no grant for left no
+	// trace — the signal an incident review actually looks for.
 	recs := aud.Records()
-	if len(recs) != 1 || recs[0].Subject != "msoc@soc" || recs[0].Tenant != "tenant-b" {
+	var crossed, denied *authz.AuditRecord
+	for i := range recs {
+		switch {
+		case recs[i].Subject == "msoc@soc" && recs[i].Allowed && recs[i].CrossTenant:
+			crossed = &recs[i]
+		case recs[i].Subject == "analyst@a" && !recs[i].Allowed:
+			denied = &recs[i]
+		}
+	}
+	if crossed == nil || crossed.Tenant != "tenant-b" {
 		t.Fatalf("cross-tenant read not audited: %+v", recs)
+	}
+	if denied == nil || denied.Tenant != "tenant-b" {
+		t.Fatalf("the refused read was not audited: %+v", recs)
+	}
+	if denied.Detail == "" {
+		t.Fatalf("a denial was recorded without saying why: %+v", denied)
 	}
 }
 

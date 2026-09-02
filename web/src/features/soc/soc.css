@@ -5291,3 +5291,42 @@ button.soc-metric:hover {
   font-size: 11.5px;
   opacity: 0.6;
 }
+
+/* Access trail — who opened this tenant's estate, and who was refused.
+   A denied row is the one an incident review looks for, so it is marked
+   rather than sitting visually identical to the allowed ones. */
+.soc-accesstrail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.soc-accessrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--soc-border, #2a3140);
+  background: var(--soc-panel-alt, rgba(255, 255, 255, 0.02));
+  font-size: 12px;
+}
+.soc-accessrow.is-denied {
+  border-left-color: var(--soc-bad, #e0533d);
+}
+.soc-accessrow-when {
+  color: var(--soc-dim, #8b93a3);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.soc-accessrow-who {
+  font-weight: 600;
+}
+.soc-accessrow-what {
+  color: var(--soc-text, #d5dae4);
+}
+.soc-accessrow-why {
+  color: var(--soc-dim, #8b93a3);
+  flex-basis: 100%;
+}

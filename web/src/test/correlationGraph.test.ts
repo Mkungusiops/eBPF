@@ -112,9 +112,30 @@ describe("buildCorrelationGraph device nodes", () => {
   it("keeps a public destination as an external peer, not a device", () => {
     const g = buildCorrelationGraph(
       [],
-      [event({ execId: "P1", pid: 4, process: "/usr/bin/nc", args: "185.220.101.1:4444" })]
+      // policyName matters now, exactly as it does in the device case above:
+      // the address has to come from an event that describes a connection.
+      // This fixture omitted it and passed only because the old fallback
+      // scraped an IP out of ANY event's arguments.
+      [event({
+        execId: "P1", pid: 4, process: "/usr/bin/nc",
+        eventType: "process_kprobe", policyName: "outbound-connections",
+        args: "185.220.101.1:4444"
+      })]
     );
     expect(g.nodes.some((n) => n.group === "peer")).toBe(true);
+    expect(g.nodes.some((n) => n.group === "device")).toBe(false);
+  });
+
+  it("draws no node for an address that only appears in a command line", () => {
+    // The behaviour this replaced. On the live estate the old fallback found
+    // 1,614 such addresses against 55 real ones — twenty-nine invented for
+    // every one recovered — and drew a Tor exit onto the graph because the
+    // attack simulator had once run `nc -w1 185.220.101.1 4444`.
+    const g = buildCorrelationGraph(
+      [],
+      [event({ execId: "P2", pid: 5, process: "/usr/bin/nc", args: "-w1 185.220.101.1 4444" })]
+    );
+    expect(g.nodes.some((n) => n.group === "peer"), "an intent is not an observation").toBe(false);
     expect(g.nodes.some((n) => n.group === "device")).toBe(false);
   });
 })

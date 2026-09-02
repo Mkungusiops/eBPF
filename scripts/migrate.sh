@@ -43,7 +43,10 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-MIG_DIR="$SCRIPTS_DIR/migrations/$ENGINE"
+# MIG_DIR is overridable so the runner can be shipped somewhere other than the
+# repo — the deploy copies it and the .sql files onto the control plane, where
+# there is no checkout to derive a path from.
+MIG_DIR="${MIG_DIR:-$SCRIPTS_DIR/migrations/$ENGINE}"
 [[ -d "$MIG_DIR" ]] || die "no migrations for engine '$ENGINE' ($MIG_DIR)"
 
 # ── Transport ──────────────────────────────────────────────────────────────

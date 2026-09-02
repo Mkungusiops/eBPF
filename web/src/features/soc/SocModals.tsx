@@ -17,6 +17,7 @@ import { KpiDrillBody } from "./KpiDrillBody";
 import { SimulatorBody } from "./SimulatorBody";
 import { DetectionsBody } from "./DetectionsBody";
 import { SensorHealthBody } from "./SensorHealthBody";
+import { SettingsBody } from "./SettingsBody";
 import { TimeMachineBody } from "./TimeMachineBody";
 import { WatchlistBody } from "./WatchlistBody";
 import { IntelligenceBody } from "./IntelligenceBody";
@@ -150,6 +151,12 @@ export function SocModals({
             screen. A closed modal that keeps a 20-second timer running is four
             needless requests a minute per open tab. */}
         <IntelligenceBody open={openSurface === "behaviour"} />
+      </ModalShell>
+
+      {/* Settings sits beside Sensor Health deliberately: one says what the
+          platform can see and do, the other lets you tune it. */}
+      <ModalShell panel={PANELS["settings-modal"]} open={openSurface === "settings"} onClose={closeModal} wide>
+        <SettingsBody open={openSurface === "settings"} />
       </ModalShell>
 
       <ModalShell panel={PANELS["sensor-health-modal"]} open={openSurface === "kprobes"} onClose={closeModal} wide>

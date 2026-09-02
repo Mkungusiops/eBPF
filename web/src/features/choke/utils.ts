@@ -4,6 +4,7 @@ import type {
   CgroupMap,
   CgroupValue,
   ChokeAction,
+  ChokeState,
   ChokeStateName,
   CircuitEntry,
   Decision,
@@ -406,4 +407,68 @@ export function sortBuckets(rows: BucketEntry[]): BucketEntry[] {
     if (flagDiff !== 0) return flagDiff;
     return a.pid - b.pid;
   });
+}
+
+/**
+ * PIDs actually sitting in each enforcement cgroup, keyed by ladder state.
+ *
+ * This is the APPLIED half of the ladder — what the kernel received, as
+ * distinct from what the engine decided. Only three rungs have a cgroup:
+ * pristine is the absence of enforcement and a sever is a SIGKILL, so neither
+ * has one to be in.
+ */
+export function appliedTierCounts(cgroups: CgroupMap): Partial<Record<string, number>> {
+  return {
+    throttled: getCgroupPids(cgroups?.["choke-throttled"]).length,
+    tarpit: getCgroupPids(cgroups?.["choke-tarpit"]).length,
+    quarantined: getCgroupPids(cgroups?.["choke-quarantined"]).length
+  };
+}
+
+/**
+ * Why decided and applied differ — in the operator's words, not the codebase's.
+ *
+ * A gap with no reason is the dangerous rendering: "7 decided, 0 applied" looks
+ * identical whether enforcement is deliberately off or silently broken. Each
+ * branch here names a specific, checkable posture; the fallback deliberately
+ * refuses to reassure, because an unexplained gap IS the alarming case.
+ */
+export function enforcementGapReason(state: ChokeState | null | undefined): string {
+  if (state?.kill_switched === true) {
+    return "The kill-switch is engaged, so nothing reaches the kernel. Decisions are still recorded.";
+  }
+  if (state?.dry_run) {
+    return "Dry-run: the ladder is evaluated and the kernel is deliberately left alone.";
+  }
+  if (state?.mode === "detect-only") {
+    return "Detect-only: decisions are recorded, not applied to the kernel. Arm the plane to make them land.";
+  }
+  return "";
+}
+
+/**
+ * How a decision row names who ordered it.
+ *
+ * "automatic" rather than an empty cell, because a blank is indistinguishable
+ * from an unattributed action: a review cannot tell "the platform did this on
+ * a score" from "we lost the record of who did this". One helper so the two
+ * planes cannot word it differently — the engine has always sent `actor` and
+ * the control plane only started receiving it with the decision uplink.
+ */
+export function actorLabel(actor: string | undefined): string {
+  const a = (actor || "").trim();
+  return a ? `by ${a}` : "automatic";
+}
+
+/**
+ * A readable form of an agent id for a dense row.
+ *
+ * Agent ids are 32 hex characters prefixed "agent-", which is unreadable in a
+ * kernel-map row and pushes the numbers that matter off the line. The tail is
+ * kept rather than the head: the prefix is identical on every agent, so the
+ * end is the part that distinguishes them.
+ */
+export function shortAgent(agentID?: string): string {
+  const id = (agentID || "").replace(/^agent-/, "");
+  return id.length > 8 ? `…${id.slice(-8)}` : id;
 }

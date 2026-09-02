@@ -115,7 +115,12 @@ func (s *Server) handleChats(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		var body struct{ Title, Mode string }
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&body)
-		c, err := s.chats.CreateChat(sc, body.Title, body.Mode)
+		// Every chat is a SIDEBAR conversation: the drill panels ask
+		// incognito and never create one. So this is the point at which a
+		// deployment running two models commits this thread to the deeper of
+		// them, once, for the conversation's whole life. With one model
+		// configured, ModelFor returns it and nothing changes.
+		c, err := s.chats.CreateChat(sc, body.Title, body.Mode, s.cfg.Assistant.ModelFor(true))
 		if err != nil {
 			chatError(w, err)
 			return

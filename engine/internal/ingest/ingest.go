@@ -25,7 +25,21 @@ type StampedRecord struct {
 	TenantID string
 	AgentID  string
 	Record   *ebpfsocv1.TelemetryRecord
+	// Synthetic marks telemetry produced by cmd/simagent rather than a real
+	// host, so a fabricated containment decision can never be read as evidence.
+	//
+	// Stamped at INGEST rather than derived at read time: the agent that
+	// produced a record may be long gone by the time anyone reads it — the 431
+	// synthetic decisions on the live estate came from two simulators that
+	// stopped reporting on 2026-08-15 and never returned, leaving nothing to
+	// join against.
+	Synthetic bool
 }
+
+// SyntheticFn reports whether an agent is a simulator. Injected so the ingest
+// path does not depend on the heartbeat package, and so a deployment with no
+// registry simply marks nothing.
+type SyntheticFn func(tenant, agent string) bool
 
 // Sink receives stamped records. In Phase 1 this is the message bus; the
 // in-memory MemSink here is used by tests and the Phase 0 control-plane stub.
@@ -40,6 +54,10 @@ type Server struct {
 	ebpfsocv1.UnimplementedTelemetryServiceServer
 
 	sink Sink
+	// synthetic reports whether an agent is a simulator. nil means "assume
+	// real", which is the safe direction: a real agent must never be
+	// mislabelled as demo data.
+	synthetic SyntheticFn
 
 	mu sync.Mutex
 	// Two-generation dedup set, keyed tenant \x00 agent \x00 dedup_key.
@@ -92,7 +110,10 @@ func (s *Server) StreamTelemetry(stream ebpfsocv1.TelemetryService_StreamTelemet
 			if s.duplicate(tenant, agent, rec.GetDedupKey()) {
 				continue // already ingested — idempotent replay
 			}
-			if err := s.sink.Put(StampedRecord{TenantID: tenant, AgentID: agent, Record: rec}); err != nil {
+			if err := s.sink.Put(StampedRecord{
+				TenantID: tenant, AgentID: agent, Record: rec,
+				Synthetic: s.synthetic != nil && s.synthetic(tenant, agent),
+			}); err != nil {
 				return status.Errorf(codes.Internal, "sink: %v", err)
 			}
 		}
@@ -121,3 +142,7 @@ func (s *Server) duplicate(tenant, agent, key string) bool {
 	s.cur[k] = struct{}{}
 	return false
 }
+
+// SetSyntheticFn wires the simulator predicate after construction, the way the
+// control plane wires its other late dependencies.
+func (s *Server) SetSyntheticFn(fn SyntheticFn) { s.synthetic = fn }

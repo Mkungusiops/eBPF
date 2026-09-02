@@ -144,6 +144,10 @@ func (s *Server) Start(addr string) error {
 	// rules (reason required, enforce refused).
 	mux.HandleFunc("/api/policies/push", s.handlePolicyPush)
 	mux.HandleFunc("/api/sensor-health", s.handleSensorHealth)
+	// Settings: what an operator tunes after deployment. GET/POST/DELETE.
+	mux.HandleFunc("/api/settings/suppressions", s.handleSettingsSuppressions)
+	// Guardrails: the protect-lists containment must always refuse. GET/PUT.
+	mux.HandleFunc("/api/settings/protected", s.handleSettingsProtected)
 	mux.HandleFunc("/api/whoami", s.auth.HandleWhoami)
 	mux.HandleFunc("/api/logout", s.auth.HandleLogout)
 	mux.HandleFunc("/api/policies", s.handlePolicies)

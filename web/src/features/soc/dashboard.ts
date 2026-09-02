@@ -22,6 +22,7 @@ export type OpenSurface =
   | "behaviour"
   | "honeypots"
   | "kprobes"
+  | "settings"
   | "time-machine"
   | "command"
   | "notifications"

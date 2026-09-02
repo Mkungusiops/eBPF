@@ -33,12 +33,60 @@ import (
 // sever is a SIGKILL rather than a reversible drop rule.
 type Applier interface {
 	SetMode(mode ebpfsocv1.EnforcementMode, plane ebpfsocv1.Plane) error
-	Jail(execID string, pid uint32, tier string) error
+	// Jail contains a target. revertAfter of 0 means the containment stands
+	// until an operator thaws it.
+	Jail(execID string, pid uint32, tier string, revertAfter time.Duration) error
 	Thaw(execID string, pid uint32) error
 	SetThresholds(throttleAt, tarpitAt, quarantineAt, severAt int32) error
 	ApplyPreset(name string) error
 	KillSwitch(halt bool, reason string, plane ebpfsocv1.Plane) error
 	SetProtectedList(binaries, macs []string) error
+}
+
+// DecisionResender is implemented by an agent that can re-queue decisions it
+// has already sent, so the control plane can close a gap in the audit chain.
+//
+// Optional: an agent with no local decision store cannot replay, and must
+// answer "I cannot" rather than acking a command it silently ignored — the
+// distinction an operator watching a fleet needs.
+type DecisionResender interface {
+	// ResendDecisions re-queues up to limit decisions with id >= fromID and
+	// reports how many were queued.
+	ResendDecisions(fromID int64, limit int) (int, error)
+}
+
+// ConfigAuditor is implemented by an agent that can record a signed
+// configuration change in its tamper-evident decision ledger.
+//
+// # Why this exists as its own interface
+//
+// Containment commands (Jail, Thaw) already produce an audit row, because they
+// go through the gateway's decision path. Configuration commands did not
+// produce one at all — not on any of the six that change how enforcement
+// BEHAVES fleet-wide: mode, kill-switch, thresholds, preset, protect-list,
+// suppressions. An operator could arm every host in a tenant, drop the
+// thresholds so ordinary activity reaches a sever, or switch detection off,
+// and the ledger those hosts keep would show nothing.
+//
+// That was invisible because the single-tenant engine DOES audit all six from
+// its HTTP handlers. The same action was recorded on one plane and silent on
+// the other, and the silent one is the multi-tenant plane.
+//
+// Optional, like TargetOwner: an applier that cannot audit is not refused, it
+// simply records nothing — which is what the simulator and the tests want.
+type ConfigAuditor interface {
+	// AuditConfigCommand records one applied configuration change. detail is
+	// the human-readable new value; actor is the operator named in the signed
+	// command, empty when the platform acted on its own.
+	AuditConfigCommand(action, detail, actor string)
+}
+
+// SuppressionApplier is implemented by an agent that can withhold scores for
+// operator-defined patterns. Separate from Applier for the same reason
+// PolicyApplier is: an agent that cannot do it must say so rather than ack a
+// command it silently ignored.
+type SuppressionApplier interface {
+	SetSuppressions([]*ebpfsocv1.Suppression) error
 }
 
 // PolicyApplier is the OPTIONAL half of Applier that changes detection policy.
@@ -132,6 +180,13 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 			p.halted = ks.KillSwitch.GetHaltAllEnforcement()
 			p.mu.Unlock()
 		}
+		// Audited on this path too. The kill-switch returns early — it must
+		// work while halted, since it is also the unhalt path — so the audit
+		// at the end of Handle never sees it. Missing that would have left the
+		// single most consequential control in the product as the one
+		// configuration change with no record: stopping all enforcement across
+		// a tenant, and nothing anywhere saying who did it or when.
+		p.auditConfig(c)
 		return ack(id, ebpfsocv1.CommandAck_STATUS_APPLIED, "")
 	}
 
@@ -158,7 +213,8 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 		if match = p.ownership(a.Jail.GetExecId(), a.Jail.GetPid()); match == ebpfsocv1.CommandAck_TARGET_MATCH_NONE {
 			return ackMatch(id, ebpfsocv1.CommandAck_STATUS_NOT_TARGET, notTargetDetail, match)
 		}
-		err = p.applier.Jail(a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier())
+		err = p.applier.Jail(a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier(),
+			time.Duration(a.Jail.GetRevertAfterSeconds())*time.Second)
 	case *ebpfsocv1.Command_Thaw:
 		if match = p.ownership(a.Thaw.GetExecId(), a.Thaw.GetPid()); match == ebpfsocv1.CommandAck_TARGET_MATCH_NONE {
 			return ackMatch(id, ebpfsocv1.CommandAck_STATUS_NOT_TARGET, notTargetDetail, match)
@@ -206,13 +262,85 @@ func (p *Processor) Handle(c *ebpfsocv1.Command) *ebpfsocv1.CommandAck {
 					"partially applied — "+strings.Join(failed, "; "))
 			}
 		}
+	case *ebpfsocv1.Command_ResendDecisions:
+		rs, ok := p.applier.(DecisionResender)
+		if !ok {
+			return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED,
+				"this agent cannot replay decisions (no local decision store)")
+		}
+		rd := a.ResendDecisions
+		var n int
+		n, err = rs.ResendDecisions(rd.GetFromId(), int(rd.GetLimit()))
+		if err == nil {
+			// The COUNT is the answer. "Applied" alone would leave the control
+			// plane unable to tell a gap that was filled from one the agent no
+			// longer has the records for.
+			return ack(id, ebpfsocv1.CommandAck_STATUS_APPLIED,
+				fmt.Sprintf("re-queued %d decision(s)", n))
+		}
+	case *ebpfsocv1.Command_UpdateSuppressions:
+		// Suppressions can only REDUCE what is scored, so unlike a policy push
+		// there is no capability to refuse on and no partial-application
+		// hazard: the agent replaces its whole set or fails.
+		sa, ok := p.applier.(SuppressionApplier)
+		if !ok {
+			return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED,
+				"this agent cannot apply scoring suppressions")
+		}
+		err = sa.SetSuppressions(a.UpdateSuppressions.GetSuppressions())
+
 	default:
 		return ack(id, ebpfsocv1.CommandAck_STATUS_REJECTED, "unknown or empty command action")
 	}
 	if err != nil {
 		return ackMatch(id, ebpfsocv1.CommandAck_STATUS_REJECTED, err.Error(), match)
 	}
+	// Audited AFTER the apply succeeded, in one place rather than in each of
+	// the six appliers. A row written before the apply would claim a change
+	// that a validating applier then refused — and SetThresholds refuses a
+	// ladder that would sever everything, so that is a live case, not a
+	// hypothetical.
+	p.auditConfig(c)
 	return ackMatch(id, ebpfsocv1.CommandAck_STATUS_APPLIED, "", match)
+}
+
+// auditConfig records a configuration change in the agent's decision ledger.
+//
+// Only the actions that change how enforcement BEHAVES. Jail and Thaw are
+// deliberately absent: they already produce a decision row through the
+// gateway, and recording them twice would double-count containment in the
+// audit an incident review reads.
+func (p *Processor) auditConfig(c *ebpfsocv1.Command) {
+	auditor, ok := p.applier.(ConfigAuditor)
+	if !ok {
+		return
+	}
+	var action, detail string
+	switch a := c.GetAction().(type) {
+	case *ebpfsocv1.Command_SetMode:
+		action, detail = "set-mode", fmt.Sprintf("%s plane=%s", a.SetMode.GetMode(), a.SetMode.GetPlane())
+	case *ebpfsocv1.Command_KillSwitch:
+		action = "kill-switch"
+		detail = fmt.Sprintf("halt=%v plane=%s %s",
+			a.KillSwitch.GetHaltAllEnforcement(), a.KillSwitch.GetPlane(), a.KillSwitch.GetReason())
+	case *ebpfsocv1.Command_SetThresholds:
+		t := a.SetThresholds
+		action = "set-thresholds"
+		detail = fmt.Sprintf("%d/%d/%d/%d", t.GetThrottleAt(), t.GetTarpitAt(), t.GetQuarantineAt(), t.GetSeverAt())
+	case *ebpfsocv1.Command_ApplyPreset:
+		action, detail = "apply-preset", a.ApplyPreset.GetPreset()
+	case *ebpfsocv1.Command_UpdateProtectedList:
+		u := a.UpdateProtectedList
+		action = "protect-list"
+		detail = fmt.Sprintf("%d binaries, %d addresses",
+			len(u.GetProtectedBinaries()), len(u.GetProtectedMacs()))
+	case *ebpfsocv1.Command_UpdateSuppressions:
+		action = "set-suppressions"
+		detail = fmt.Sprintf("%d rules", len(a.UpdateSuppressions.GetSuppressions()))
+	default:
+		return // containment and policy audit themselves elsewhere
+	}
+	auditor.AuditConfigCommand(action, detail, c.GetActor())
 }
 
 // notTargetDetail is what the operator ends up reading when a command reached
@@ -246,6 +374,21 @@ func (p *Processor) Halted() bool {
 func Canonical(c *ebpfsocv1.Command) []byte {
 	var b strings.Builder
 	fmt.Fprintf(&b, "id=%s;exp=%d;", c.GetCommandId(), c.GetExpiresAt().GetSeconds())
+	// Actor is bound, because it ends up in a tamper-evident audit row as
+	// verified fact. Left unbound, anyone on the path could rename the operator
+	// on a validly-signed command and the chain would attest to it — an
+	// attributable action whose attribution can be rewritten is worse than an
+	// anonymous one, because it accuses a specific person.
+	//
+	// Included ONLY when non-empty, so a command carrying no actor produces
+	// byte-for-byte what it produced before this field existed. That keeps an
+	// agent from before this change verifying commands from a control plane
+	// from before it. The remaining window is a NEW control plane sending an
+	// actor to an OLD agent mid-deploy: those are rejected on signature, which
+	// is visible and retryable rather than silent.
+	if actor := c.GetActor(); actor != "" {
+		fmt.Fprintf(&b, "actor=%s;", actor)
+	}
 	switch a := c.GetAction().(type) {
 	case *ebpfsocv1.Command_SetMode:
 		// Plane is IN the signature. It was not, and the agent acts on it
@@ -254,7 +397,19 @@ func Canonical(c *ebpfsocv1.Command) []byte {
 		// enforcement plane and the signature would still verify.
 		fmt.Fprintf(&b, "set_mode=%d,plane=%d", a.SetMode.GetMode(), a.SetMode.GetPlane())
 	case *ebpfsocv1.Command_Jail:
+		// revert_after_seconds is bound here because it changes what the
+		// command DOES: the same jail with and without it is a temporary
+		// containment versus a permanent one. Leaving it out of the canonical
+		// form would let anything between the control plane and the agent strip
+		// the auto-revert from a validly signed command and turn a
+		// thirty-minute hold into an indefinite one, with the signature still
+		// verifying.
 		fmt.Fprintf(&b, "jail=%s,%d,%s", a.Jail.GetExecId(), a.Jail.GetPid(), a.Jail.GetTier())
+		if secs := a.Jail.GetRevertAfterSeconds(); secs > 0 {
+			// Appended only when set, so every command signed before this field
+			// existed still canonicalises to the same bytes it was signed with.
+			fmt.Fprintf(&b, ",revert=%d", secs)
+		}
 	case *ebpfsocv1.Command_Thaw:
 		fmt.Fprintf(&b, "thaw=%s,%d", a.Thaw.GetExecId(), a.Thaw.GetPid())
 	case *ebpfsocv1.Command_SetThresholds:
@@ -272,6 +427,12 @@ func Canonical(c *ebpfsocv1.Command) []byte {
 	case *ebpfsocv1.Command_UpdateProtectedList:
 		u := a.UpdateProtectedList
 		fmt.Fprintf(&b, "protected=%s|%s", strings.Join(u.GetProtectedBinaries(), ","), strings.Join(u.GetProtectedMacs(), ","))
+	case *ebpfsocv1.Command_ResendDecisions:
+		// Bounds are IN the signature: they decide how much an agent replays,
+		// and an unbound rewrite of the limit could be used to flood a fleet's
+		// outbound buffers and evict live telemetry behind the replay.
+		rd := a.ResendDecisions
+		fmt.Fprintf(&b, "resend=%d,%d", rd.GetFromId(), rd.GetLimit())
 	case *ebpfsocv1.Command_ApplyPolicy:
 		// The policy BODIES are hashed, not inlined: a 10 KB YAML in the signed
 		// string would make every signature verification allocate the whole
@@ -286,6 +447,18 @@ func Canonical(c *ebpfsocv1.Command) []byte {
 			fmt.Fprintf(&b, "%s:%s:%x,", d.GetName(), d.GetMode(), sum[:8])
 		}
 		fmt.Fprintf(&b, "|remove=%s|reason=%s", strings.Join(ap.GetRemove(), ","), ap.GetReason())
+	case *ebpfsocv1.Command_UpdateSuppressions:
+		// Every field is inlined: they are all short, and each one changes WHAT
+		// IS SILENCED. A signature that did not bind the policy or parent
+		// narrowing would let an attacker widen a legitimate suppression from
+		// "this binary under this detection" to "this binary always" without
+		// breaking the signature.
+		us := a.UpdateSuppressions
+		fmt.Fprintf(&b, "suppressions=")
+		for _, r := range us.GetSuppressions() {
+			fmt.Fprintf(&b, "%s:%s:%s,", r.GetBinary(), r.GetPolicy(), r.GetParent())
+		}
+		fmt.Fprintf(&b, "|reason=%s", us.GetReason())
 	default:
 		// An action this build does not know how to canonicalise must NOT be
 		// signable. Falling through left the signature covering only

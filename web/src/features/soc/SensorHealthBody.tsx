@@ -185,20 +185,6 @@ const REMEDY: Record<string, { fix: string; inDetections?: boolean }> = {
  * elsewhere in this console.
  */
 const ACTION: Record<string, { label: string; confirm: string; path: string; body: Record<string, unknown> }> = {
-  "containment-manual-only": {
-    label: "Arm automatic containment",
-    confirm:
-      "This turns the score ladder on: the platform will contain processes on its own, without a human pressing anything. " +
-      "It reverts to detect-only when the engine restarts unless the config says otherwise.",
-    path: "/api/choke/mode",
-    // {enforcing: true} — NOT {mode: "enforcing"}. Verified against
-    // internal/api/choke.go and internal/controlplane/choke.go, which both
-    // decode `enforcing bool`. The wrong key was silently ignored by
-    // encoding/json, so the field defaulted to false and the button set
-    // DETECT-ONLY while reporting success. A live test caught it; no unit test
-    // could have, because nothing here asserted against the server's struct.
-    body: { enforcing: true }
-  },
   "kill-switched": {
     label: "Release the kill-switch",
     confirm:
@@ -208,6 +194,54 @@ const ACTION: Record<string, { label: string; confirm: string; path: string; bod
     body: { on: false }
   }
 };
+
+/**
+ * Findings whose fix lives on another surface.
+ *
+ * Arming the ladder used to be an ACTION here, and the symptom that it was in
+ * the wrong place was this: arming resolved the finding, so the button removed
+ * itself, and the only way back was a page that never mentioned it. An
+ * operation you can start in one place and can only undo in another is a
+ * one-way door.
+ *
+ * Mode belongs to the Choke Gateway the way a policy belongs to Detections.
+ * The finding routes there instead — the operator still discovers the problem
+ * here, and arm and disarm live together where they can be reasoned about.
+ */
+const ROUTE: Record<string, { label: string; href: string }> = {};
+
+/**
+ * The enforcement-mode control, and why it lives on the containment block
+ * rather than on a finding.
+ *
+ * It was first built as an action on the `containment-manual-only` finding.
+ * Arming resolved that finding, so the control deleted itself and the only way
+ * back was another page — a one-way door. The instinct was to demote it to a
+ * link, but that was an over-correction: it left the panel that tells you the
+ * ladder is off unable to turn it on, which is a reasonable thing to ask of a
+ * surface whose whole job is "what can this host do".
+ *
+ * The real fault was hanging a two-way control on a one-way signal. Findings
+ * only exist while something is WRONG, so an armed host had nowhere to put
+ * disarm. The containment block renders in every state, so both directions fit
+ * — and the panel stays honest about which state it is in.
+ */
+const MODE_ACTION = {
+  arm: {
+    label: "Arm automatic containment",
+    confirm:
+      "This turns the score ladder on: the platform will contain processes on its own, without a human pressing anything. " +
+      "It reverts to detect-only when the engine restarts unless the config says otherwise.",
+    body: { enforcing: true }
+  },
+  disarm: {
+    label: "Return to detect-only",
+    confirm:
+      "The score ladder will stop acting on its own. Containment an operator presses will still reach the kernel — " +
+      "that path bypasses detect-only by design.",
+    body: { enforcing: false }
+  }
+} as const;
 
 /**
  * Render a count that a deployment may be unable to measure.
@@ -259,6 +293,7 @@ function Finding({
 }) {
   const remedy = REMEDY[item.code];
   const action = ACTION[item.code];
+  const route = ROUTE[item.code];
   return (
     <li>
       <strong>{item.detail}</strong>
@@ -279,6 +314,9 @@ function Finding({
             {busy === item.code ? "Working…" : action.label}
           </button>
         ) : null}
+        {route ? (
+          <a className="soc-ghost-button" href={route.href}>{route.label}</a>
+        ) : null}
       </div>
     </li>
   );
@@ -294,7 +332,11 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
   // success — arming the ladder can be refused, and a console that says
   // "armed" over a refusal is the failure this whole panel exists to prevent.
   async function run(code: string) {
-    const action = ACTION[code];
+    // Mode lives on the containment block; everything else is a finding.
+    const action =
+      code === "arm" || code === "disarm"
+        ? { label: MODE_ACTION[code].label, path: "/api/choke/mode", body: MODE_ACTION[code].body as Record<string, unknown> }
+        : ACTION[code];
     if (!action) return;
     setBusy(code);
     setResult(null);
@@ -330,6 +372,22 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
         <div className={`soc-sensor-containment verdict-${agent.containment.verdict}`}>
           <strong>{CONTAINMENT_LABEL[agent.containment.verdict] ?? "Containment"}</strong>
           <span>{agent.containment.summary}</span>
+          {/* Both directions, always present. The mode is part of what this
+              host can DO, which is what this block states — so the control
+              belongs here rather than on a finding that disappears the moment
+              it is acted on. */}
+          {agent.containment.auto === "enforcing" || agent.containment.auto === "detect-only" ? (
+            <div className="soc-sensor-findingactions">
+              <button
+                type="button"
+                className="soc-ghost-button"
+                disabled={busy !== ""}
+                onClick={() => setConfirming(agent.containment!.auto === "enforcing" ? "disarm" : "arm")}
+              >
+                {agent.containment.auto === "enforcing" ? MODE_ACTION.disarm.label : MODE_ACTION.arm.label}
+              </button>
+            </div>
+          ) : null}
         </div>
       ) : null}
 
@@ -354,8 +412,8 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
       </div>
       {confirming ? (
         <div className="soc-sensor-confirm">
-          <strong>{ACTION[confirming].label}?</strong>
-          <span>{ACTION[confirming].confirm}</span>
+          <strong>{confirmLabel(confirming)}?</strong>
+          <span>{confirmText(confirming)}</span>
           <label>
             <span>Reason — recorded with the action</span>
             <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="CAB-1234: arming for the maintenance window" autoFocus />
@@ -367,7 +425,7 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
               disabled={busy !== "" || reason.trim().length < 3}
               onClick={() => void run(confirming)}
             >
-              {busy ? "Working…" : ACTION[confirming].label}
+              {busy ? "Working…" : confirmLabel(confirming)}
             </button>
             <button type="button" className="soc-ghost-button" onClick={() => { setConfirming(""); setReason(""); }}>
               Cancel
@@ -558,4 +616,14 @@ export function SensorHealthBody({
       </div>
     </div>
   );
+}
+
+function confirmLabel(code: string): string {
+  if (code === "arm" || code === "disarm") return MODE_ACTION[code].label;
+  return ACTION[code]?.label ?? "Confirm";
+}
+
+function confirmText(code: string): string {
+  if (code === "arm" || code === "disarm") return MODE_ACTION[code].confirm;
+  return ACTION[code]?.confirm ?? "";
 }

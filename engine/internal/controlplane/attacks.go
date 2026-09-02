@@ -110,7 +110,6 @@ func (s *Server) handleRunAttack(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true, "id": atk.ID, "fired": atk.Name})
 }
 
-
 // labOnly answers 404 when this deployment is not a lab. 404 rather than 403:
 // a 403 confirms the endpoint exists, and one of the endpoints behind this gate
 // writes to the evidence store.

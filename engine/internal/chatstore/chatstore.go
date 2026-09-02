@@ -77,6 +77,16 @@ type Chat struct {
 	// Mode distinguishes an incident conversation from an ad-hoc one; reserved
 	// for the per-incident grouping in platform-assistant.md §3.
 	Mode string `json:"mode"`
+	// Model is the model this conversation was created with, and keeps for its
+	// whole life.
+	//
+	// A deployment may run a fast model for drill panels and a stronger one for
+	// sustained investigation in the sidebar. Recording the choice on the CHAT
+	// rather than resolving it per request is what stops one thread containing
+	// two models — same history, different voice, different failure modes,
+	// mid-investigation. Empty on conversations created before the split, and
+	// read as "the deployment default".
+	Model string `json:"model,omitempty"`
 	// CompactedSummary holds an earlier span of the conversation, summarised.
 	//
 	// Present from the first migration on purpose. A long incident conversation
@@ -127,7 +137,7 @@ var (
 // caller that wants wider reach must present a Scope that grants it, which
 // means the widening is visible at the call site and in review.
 type Store interface {
-	CreateChat(s Scope, title, mode string) (Chat, error)
+	CreateChat(s Scope, title, mode, model string) (Chat, error)
 	ListChats(s Scope, limit int) ([]Chat, error)
 	GetChat(s Scope, id string) (Chat, error)
 	RenameChat(s Scope, id, title string) error

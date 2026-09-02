@@ -17,9 +17,12 @@ package uplink
 
 import (
 	"fmt"
+	"log"
 	"sync"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
+
+	"google.golang.org/protobuf/proto"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/store"
@@ -49,6 +52,15 @@ func EventRecord(e *store.Event) *ebpfsocv1.TelemetryRecord {
 			Args:       e.Args,
 			Uid:        e.UID,
 			PolicyName: e.PolicyName,
+			// dest_ip/dest_port have been on the wire since ProcessEvent
+			// shipped and were never populated, so the control plane received
+			// every network event with no destination. Its Network
+			// Connections panel therefore had nothing to read and fell back to
+			// pattern-matching the args blob — the reason a panel titled
+			// "peers seen in the current event window" could be empty on an
+			// estate that was making connections.
+			DestIp:   e.PeerIP,
+			DestPort: e.PeerPort,
 		}},
 	}
 }
@@ -98,8 +110,14 @@ func DecisionRecord(d *store.Decision) *ebpfsocv1.TelemetryRecord {
 			OriginFingerprint: d.OriginFingerprint,
 			DeviceMac:         d.DeviceMAC,
 			DeviceId:          d.DeviceID,
-			PrevHash:          d.PrevHash,
-			Hash:              d.Hash,
+			// Chain-hashed, so this is load-bearing rather than attribution:
+			// the local store appends an actor tail to the canonical string it
+			// hashes. A decision that travelled without it would be
+			// re-canonicalised differently at the far end and report the chain
+			// BROKEN on every operator action.
+			Actor:    d.Actor,
+			PrevHash: d.PrevHash,
+			Hash:     d.Hash,
 		}},
 	}
 }
@@ -133,6 +151,9 @@ type Buffer struct {
 	// dropped counts records evicted by the cap since the process started. It
 	// is never reset: a fleet that lost telemetry must keep saying so.
 	dropped uint64
+	// journal persists the un-acked backlog across a restart. nil keeps the
+	// pre-existing in-memory-only behaviour. See journal.go.
+	journal Journal
 }
 
 // DefaultMaxRecords caps the un-acked backlog an agent will hold.
@@ -194,6 +215,7 @@ func (b *Buffer) Enqueue(rec *ebpfsocv1.TelemetryRecord) (seq uint64, ok bool) {
 	b.nextSeq++
 	b.items = append(b.items, item{seq: seq, rec: rec})
 	b.pending[rec.GetDedupKey()] = struct{}{}
+	b.persistLocked(seq, rec)
 	b.evictLocked()
 	return seq, true
 }
@@ -214,8 +236,40 @@ func (b *Buffer) evictLocked() {
 	for _, it := range b.items[:excess] {
 		delete(b.pending, it.rec.GetDedupKey())
 	}
+	// Recorded BEFORE the slice is trimmed, so the journal drops exactly what
+	// memory dropped. Eviction takes the oldest, so this is the same
+	// delete-through-seq the ack path uses.
+	evictedThrough := b.items[excess-1].seq
 	b.items = append(b.items[:0], b.items[excess:]...)
 	b.dropped += uint64(excess)
+	b.forgetLocked(evictedThrough)
+}
+
+// persistLocked writes one record to the journal. Caller holds b.mu.
+func (b *Buffer) persistLocked(seq uint64, rec *ebpfsocv1.TelemetryRecord) {
+	if b.journal == nil {
+		return
+	}
+	payload, err := proto.Marshal(rec)
+	if err != nil {
+		log.Printf("[uplink] record not journalled (seq=%d): %v — it will be lost on restart", seq, err)
+		return
+	}
+	if err := b.journal.Append(seq, rec.GetDedupKey(), payload); err != nil {
+		log.Printf("[uplink] record not journalled (seq=%d): %v — it will be lost on restart", seq, err)
+	}
+}
+
+// forgetLocked drops journalled records at or below seq. Caller holds b.mu.
+func (b *Buffer) forgetLocked(seq uint64) {
+	if b.journal == nil {
+		return
+	}
+	if err := b.journal.DeleteThrough(seq); err != nil {
+		// Not fatal: the records are already gone from memory, and a journal
+		// that keeps them merely replays a few the control plane will dedup.
+		log.Printf("[uplink] journal not trimmed through seq=%d: %v", seq, err)
+	}
 }
 
 // NextBatch returns up to maxRecords oldest un-acked records as a batch whose
@@ -257,7 +311,9 @@ func (b *Buffer) Ack(throughSeq uint64) int {
 		return 0
 	}
 	// Retain only the un-acked tail.
+	acked := b.items[cut-1].seq
 	b.items = append(b.items[:0], b.items[cut:]...)
+	b.forgetLocked(acked)
 	return cut
 }
 

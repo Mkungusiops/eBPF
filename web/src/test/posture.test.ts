@@ -174,16 +174,28 @@ describe("posture label vs the severity tiles", () => {
 describe("posture is null when it cannot be computed", () => {
   const base = { mode: "detect-only" as const, activeThreats: 0, contained: 100, auditOk: true };
 
-  it("returns null rather than a number when the threat count is unknown", () => {
-    expect(computePosture({ ...base, activeThreats: null })).toBeNull();
+  it("still scores the measurable terms when the threat count is unknown", () => {
+    // Returning null threw away what the subject DOES know — armed or not,
+    // plane attached or not, kill-switch engaged or not — and rendered a blank
+    // dial that reads as broken. The coverage term drops out; the rest stays.
+    const p = computePosture({ ...base, activeThreats: null });
+    expect(typeof p).toBe("number");
+    expect(p).toBeGreaterThan(0);
   });
 
-  it("does not quietly treat unknown as zero", () => {
-    // The bug in one line: unknown and zero produced the same, maximal answer.
-    const unknown = computePosture({ ...base, activeThreats: null });
-    const measuredZero = computePosture({ ...base, activeThreats: 0 });
-    expect(unknown).toBeNull();
-    expect(typeof measuredZero).toBe("number");
+  it("does not let an unknown threat count inflate the score above a measured zero", () => {
+    // The original bug in one line: unknown must not be BETTER than measured.
+    const unknown = computePosture({ ...base, activeThreats: null })!;
+    const measuredZero = computePosture({ ...base, activeThreats: 0 })!;
+    expect(unknown).toBeLessThanOrEqual(measuredZero);
+  });
+
+  it("is labelled as excluding coverage rather than presented as complete", () => {
+    // The honesty now lives in the LABEL (posture*) and the tooltip, not in a
+    // null. A number with a stated omission beats both a fabricated 100 and an
+    // empty ring — this asserts the number exists so the label has something
+    // to qualify.
+    expect(computePosture({ ...base, activeThreats: null })).not.toBeNull();
   });
 
   it("a measured zero still scores, because it was measured", () => {

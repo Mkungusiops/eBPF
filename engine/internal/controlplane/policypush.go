@@ -115,7 +115,7 @@ func (s *Server) handlePolicyPush(w http.ResponseWriter, r *http.Request) {
 		docs = append(docs, &ebpfsocv1.PolicyDoc{Name: name, Yaml: p.YAML, Mode: mode})
 	}
 
-	applied, total, detail := s.dispatchAll(tenant, &ebpfsocv1.Command{
+	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_ApplyPolicy{ApplyPolicy: &ebpfsocv1.ApplyPolicy{
 			Policies: docs, Remove: b.Remove, Reason: b.Reason}}})
 

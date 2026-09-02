@@ -259,15 +259,24 @@ func (ds *decisionStore) migrate() error {
 }
 
 // addColumnIfMissing performs a dialect-correct ALTER TABLE ADD COLUMN
-// that is a no-op when the column already exists. Postgres handles this
-// natively; SQLite needs a PRAGMA table_info pre-check.
+// that is a no-op when the column already exists.
 func (ds *decisionStore) addColumnIfMissing(table, col, def string) error {
-	if ds.dialect == "postgres" {
-		_, err := ds.db.Exec(fmt.Sprintf(
+	return addColumnIfMissing(ds.db, ds.dialect, table, col, def)
+}
+
+// addColumnIfMissing adds a column when it is absent, on either dialect.
+// Postgres handles this natively; SQLite needs a PRAGMA table_info pre-check.
+//
+// Package-level rather than a decisionStore method because the events table
+// needs the same evolution, and a second copy of "how do we add a column" is a
+// second place for the two dialects to diverge.
+func addColumnIfMissing(db *sql.DB, dialect, table, col, def string) error {
+	if dialect == "postgres" {
+		_, err := db.Exec(fmt.Sprintf(
 			`ALTER TABLE %s ADD COLUMN IF NOT EXISTS %s %s`, table, col, def))
 		return err
 	}
-	rows, err := ds.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
 		return err
 	}
@@ -293,7 +302,7 @@ func (ds *decisionStore) addColumnIfMissing(table, col, def string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = ds.db.Exec(fmt.Sprintf(
+	_, err = db.Exec(fmt.Sprintf(
 		`ALTER TABLE %s ADD COLUMN %s %s`, table, col, def))
 	return err
 }
@@ -365,6 +374,37 @@ func (ds *decisionStore) InsertDecision(d *Decision) (int64, error) {
 	return id, nil
 }
 
+// DecisionsFrom returns decisions with id >= fromID, OLDEST first.
+//
+// Oldest-first, unlike RecentDecisions: this feeds an audit-chain replay, and
+// the chain is verified in id order. Handing the control plane a newest-first
+// batch would make it look like a chain whose links run backwards.
+func (ds *decisionStore) DecisionsFrom(fromID int64, limit int) ([]Decision, error) {
+	if limit <= 0 || limit > 5000 {
+		limit = 500
+	}
+	rows, err := ds.db.Query(rewriteParams(ds.dialect, `
+		SELECT id, timestamp, exec_id, pid, "binary", action, from_state, to_state,
+		       score, reason, dry_run, backend, outcome,
+		       origin_kind, origin_ip, origin_port, origin_user, origin_fp,
+		       device_mac, device_id, actor,
+		       prev_hash, hash
+		FROM decisions WHERE id >= ? ORDER BY id ASC LIMIT ?`), fromID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []Decision
+	for rows.Next() {
+		d, err := scanDecisionRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
 // RecentDecisions returns the most recent decisions, newest first.
 func (ds *decisionStore) RecentDecisions(limit int) ([]Decision, error) {
 	rows, err := ds.db.Query(rewriteParams(ds.dialect, `
@@ -432,6 +472,33 @@ func scanDecisionRow(rows *sql.Rows) (Decision, error) {
 		d.DeviceID = devID.String
 	}
 	return d, nil
+}
+
+// VerifyRow reports whether a decision's stored hash matches its own content.
+//
+// Exported so the CONTROL PLANE can verify rows it received over the wire
+// without reimplementing canonicalisation. Two implementations of "what does
+// this row hash to" would drift, and the drift would surface as a tamper alarm
+// on decisions nobody touched — which is worse than not verifying at all,
+// because it accuses.
+//
+// Checks the row against every historical canonical era for the same reason
+// VerifyDecisionChain does: a change to the canonical form must not
+// retroactively invalidate an audit log written under the previous one.
+//
+// This is the CONTENT check only. Linkage — whether prev_hash matches the row
+// before it — is the caller's, because on the control plane a mismatch there
+// usually means a missing record rather than a modified one.
+func VerifyRow(d *Decision) bool {
+	if d == nil {
+		return false
+	}
+	for _, c := range d.canonicalCandidates() {
+		if computeHash(d.PrevHash, c) == d.Hash {
+			return true
+		}
+	}
+	return false
 }
 
 // VerifyChainResult reports the outcome of walking the decision audit chain.

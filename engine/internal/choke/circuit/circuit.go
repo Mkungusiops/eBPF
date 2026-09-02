@@ -12,6 +12,7 @@
 package circuit
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -223,14 +224,51 @@ func (c *Circuit) Thresholds() Config {
 // new sever threshold is higher.
 //
 // Returns the previous config so callers can audit what changed.
-func (c *Circuit) SetThresholds(cfg Config) Config {
+// Validate rejects a threshold set that would make the ladder nonsensical or
+// lethal.
+//
+// It lives on the type rather than in one HTTP handler because the type is
+// what every path shares. Previously only the ENGINE's own handler validated
+// (internal/api/choke.go), and the fleet path did not: the control plane
+// discarded its decode error, the signed command carried the values verbatim,
+// the command processor applied them unchecked, and SetThresholds below
+// OR-applied whatever arrived.
+//
+// The consequence was not cosmetic. A body of {"throttle_at":10} with the
+// other three absent left sever_at = 0, and stateFor tests sever FIRST — so
+// every tracked process with score >= 0 evaluated to Severed. On an armed host
+// that is a fleet-wide SIGKILL from one malformed request.
+func (c Config) Validate() error {
+	if c.ThrottleAt <= 0 || c.TarpitAt <= 0 || c.QuarantineAt <= 0 || c.SeverAt <= 0 {
+		return fmt.Errorf("all four thresholds must be > 0 (got throttle=%d tarpit=%d quarantine=%d sever=%d); "+
+			"a zero sever threshold severs every tracked process",
+			c.ThrottleAt, c.TarpitAt, c.QuarantineAt, c.SeverAt)
+	}
+	if !(c.ThrottleAt < c.TarpitAt && c.TarpitAt < c.QuarantineAt && c.QuarantineAt < c.SeverAt) {
+		return fmt.Errorf("thresholds must be strictly ascending: throttle < tarpit < quarantine < sever (got %d/%d/%d/%d)",
+			c.ThrottleAt, c.TarpitAt, c.QuarantineAt, c.SeverAt)
+	}
+	return nil
+}
+
+// SetThresholds replaces the ladder, or refuses.
+//
+// It used to apply when ANY field was positive, which silently zeroed the
+// fields the caller omitted. A partial config is now rejected outright: a
+// caller that means to change one rung must send all four, because the four
+// only have meaning relative to each other.
+func (c *Circuit) SetThresholds(cfg Config) (Config, error) {
+	if err := cfg.Validate(); err != nil {
+		c.mu.Lock()
+		old := c.cfg
+		c.mu.Unlock()
+		return old, err
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	old := c.cfg
-	if cfg.ThrottleAt > 0 || cfg.TarpitAt > 0 || cfg.QuarantineAt > 0 || cfg.SeverAt > 0 {
-		c.cfg = cfg
-	}
-	return old
+	c.cfg = cfg
+	return old, nil
 }
 
 // TrackedState is one row of a circuit snapshot.

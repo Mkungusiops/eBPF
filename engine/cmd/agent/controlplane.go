@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"log"
 	"net"
 	"os"
@@ -107,7 +108,7 @@ func (r *sensorRegistry) kernelPolicies(ctx context.Context) []*ebpfsocv1.Kernel
 // commands arrive — the kernel keeps enforcing the last-applied policy. That is
 // the autonomy moat, and it is why this returns a buffer instead of becoming a
 // step the event path waits on.
-func startControlPlane(ctx context.Context, cfg *agentConfig, stack *hoststack.Stack, hostname string, sensors *sensorRegistry) *uplink.Buffer {
+func startControlPlane(ctx context.Context, cfg *agentConfig, stack *hoststack.Stack, hostname string, sensors *sensorRegistry, pipes *pipeRegistry) *uplink.Buffer {
 	if cfg.controlPlane == "" {
 		return nil
 	}
@@ -145,7 +146,34 @@ func startControlPlane(ctx context.Context, cfg *agentConfig, stack *hoststack.S
 		if err != nil {
 			log.Fatalf("controlplane: -fleet-pubkey: %v", err)
 		}
-		proc = command.NewProcessor(verifier, gatewayApplier{gw: stack.Gateway, devGW: stack.DeviceGateway, sensors: sensors}, critBins)
+		// The replay closure needs both halves: the local decision store to
+		// read from, and the uplink buffer to re-queue into. Both exist by
+		// this point, so it is injected rather than registered late.
+		resend := func(fromID int64, limit int) (int, error) {
+			if stack.Store == nil {
+				return 0, errors.New("no local decision store on this agent")
+			}
+			ds, err := stack.Store.DecisionsFrom(fromID, limit)
+			if err != nil {
+				return 0, err
+			}
+			queued := 0
+			for i := range ds {
+				// Enqueue reports false for a record already pending, so a
+				// repeated request does not double-queue what is still in
+				// flight. Counted as queued only when it actually was.
+				if _, ok := upBuf.Enqueue(uplink.DecisionRecord(&ds[i])); ok {
+					queued++
+				}
+			}
+			log.Printf("[controlplane] re-queued %d of %d decision(s) from id %d for audit-chain repair",
+				queued, len(ds), fromID)
+			return queued, nil
+		}
+		proc = command.NewProcessor(verifier, gatewayApplier{
+			gw: stack.Gateway, devGW: stack.DeviceGateway,
+			sensors: sensors, pipes: pipes, resend: resend,
+		}, critBins)
 		log.Printf("[controlplane] command channel enabled (%d protected binaries guardrail)", len(critBins))
 	} else {
 		log.Printf("[controlplane] command channel DISABLED (no -fleet-pubkey); telemetry + heartbeat only")

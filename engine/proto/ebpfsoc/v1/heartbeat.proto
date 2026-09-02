@@ -113,6 +113,16 @@ message ChokeSummary {
   string binary = 3;
   string state = 4; // watch | throttle | tarpit | quarantine | sever
   int32 score = 5;
+  // True when this containment has an auto-revert armed and will thaw on its
+  // own. Carried because without it a fleet operator cannot distinguish a
+  // process that unfreezes in thirty minutes from one contained permanently —
+  // the agent-local console has shown this since the revert timer existed, and
+  // the multi-tenant console rendered the two identically.
+  bool revert_pending = 6;
+  // Last time the agent observed this process. A contained exec_id whose
+  // process has since exited stays in the snapshot, and without this the row
+  // reads as a live containment.
+  google.protobuf.Timestamp last_seen = 7;
 }
 
 // DeviceSummary is one device under the MAC gateway (empty when the device

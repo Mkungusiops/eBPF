@@ -78,12 +78,21 @@ export function computePosture(m: {
   auditSupported?: boolean;
   killSwitched?: boolean | null;
 }): number | null {
-  // No threat count, no posture. Substituting zero here is what produced a
-  // permanent 100%: the arithmetic below reads "nothing uncontained" as
-  // "everything contained", which is only true if the zero was measured.
-  if (m.activeThreats === null) return null;
-  const needing = m.activeThreats + m.contained;
-  const coverage = needing === 0 ? 1 : m.contained / needing;
+  // An unmeasurable threat count removes the COVERAGE term, not the whole
+  // posture.
+  //
+  // Substituting zero produced a permanent 100%: the arithmetic reads "nothing
+  // uncontained" as "everything contained", which is only true if the zero was
+  // measured. But returning null threw away everything else the subject does
+  // know — whether it is armed, whether the plane is attached, whether the
+  // kill-switch is engaged — and rendered a blank dial that reads as broken.
+  //
+  // So: score the measurable terms, and let the caller say which one is
+  // missing. A number with a stated omission beats both a fabricated 100 and
+  // an empty ring.
+  const coverageKnown = m.activeThreats !== null;
+  const needing = coverageKnown ? m.activeThreats! + m.contained : 0;
+  const coverage = !coverageKnown ? 1 : needing === 0 ? 1 : m.contained / needing;
   let score = 55 + coverage * 45; // 55..100 from containment coverage
   if (m.mode === "detect-only") score -= 22; // watching, not stopping
   // Only a BROKEN chain is a posture penalty. Docking 30 points because this
@@ -152,13 +161,13 @@ export function ContainmentCommandHeader({
         <div
           className={`cc-posture ring-${tone}${m.posture === null ? " ring-unknown" : ""}`}
           style={{ "--pct": `${m.posture ?? 0}` } as CSSProperties}
-          title={m.posture === null
-            ? "Posture cannot be computed for this subject — nothing scores a device, so there is no threat count to measure coverage against"
+          title={m.activeThreats === null
+            ? "Composite posture EXCLUDING containment coverage: nothing scores a device, so there is no threat count to measure coverage against. Enforcement mode, data-plane health and the kill-switch are included."
             : "Composite containment posture (0–100)"}
         >
           <div className="cc-posture-face">
             <strong>{m.posture === null ? "—" : m.posture}</strong>
-            <span>posture</span>
+            <span>{m.activeThreats === null ? "posture*" : "posture"}</span>
           </div>
         </div>
         <div className="cc-head-title">
@@ -169,7 +178,7 @@ export function ContainmentCommandHeader({
                 device plane that zero was hardcoded. The reassurance was
                 unconditional. */}
             {m.activeThreats === null
-              ? `threat count not measured for ${m.subject}`
+              ? `posture excludes containment coverage — nothing scores a ${m.subject.replace(/s$/, "")}, so there is no threat count`
               : m.activeThreats > 0
                 ? `${m.activeThreats} active threat${m.activeThreats === 1 ? "" : "s"} ${
                     m.activeThreats === 1 ? "needs" : "need"

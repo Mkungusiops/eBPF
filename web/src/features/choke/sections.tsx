@@ -8,7 +8,7 @@
 import { ArrowLeft } from "lucide-react";
 import { auditVerdict, auditVerdictLabel } from "../common/enforcement";
 import type { ApprovalRequest } from "./api";
-import type { ChokeState, Decision, KernelPosture, LoadState } from "./types";
+import type { ChokeState, Decision, KernelPosture, LadderCorrection, LoadState } from "./types";
 import type { PopoverName, StreamInfo } from "./constants";
 import { PRESET_DESCRIPTIONS, formatWindow } from "./constants";
 import { formatRelative, formatUptime, shortExec } from "./utils";
@@ -189,6 +189,7 @@ export function ChokeBanners({
   mode,
   divergedAgents,
   kernelFired,
+  ladderCorrections = [],
 }: {
   loadState: LoadState;
   staleSeconds: number;
@@ -197,6 +198,7 @@ export function ChokeBanners({
   mode: string;
   divergedAgents: string[];
   kernelFired: number;
+  ladderCorrections?: LadderCorrection[];
 }) {
   return (
     <>
@@ -242,6 +244,37 @@ export function ChokeBanners({
               <strong>{kernelFired} enforcement {kernelFired === 1 ? "action has" : "actions have"} already
               fired</strong> — there is no audit record of what was killed.
             </>
+          )}
+        </Banner>
+      )}
+
+      {/* A ladder set on one host is put back to tenant policy within two
+          minutes. That is correct — a change made on one host must not rewrite
+          the containment ladder for the whole fleet — but it used to happen
+          silently, so the operator saw their change apply and then undo itself
+          with no explanation reachable from this console. */}
+      {ladderCorrections.length > 0 && (
+        <Banner
+          dataPanel="ladder-correction-banner"
+          tone="warn"
+          title={
+            ladderCorrections.length === 1
+              ? "A host's ladder was put back to tenant policy"
+              : `${ladderCorrections.length} hosts had their ladder put back to tenant policy`
+          }
+        >
+          The containment ladder is a tenant-wide setting, so a ladder set on a single host is corrected
+          on the next reconciliation pass. To change it for everyone, set it here.
+          <ul className="choke-correction-list">
+            {ladderCorrections.slice(0, 5).map((c, i) => (
+              <li key={`${c.agent}-${c.at}-${i}`}>
+                <code>{c.agent}</code> ran <code>{c.from}</code>, restored to <code>{c.to}</code>
+                {c.at ? <> at {new Date(c.at).toLocaleString()}</> : null}
+              </li>
+            ))}
+          </ul>
+          {ladderCorrections.length > 5 && (
+            <>and {ladderCorrections.length - 5} more.</>
           )}
         </Banner>
       )}
@@ -292,9 +325,24 @@ export function ApprovalsQueue({
             </div>
             <div className="choke-approval-actions">
               {req.mine ? (
-                <span className="choke-approval-blocked" title="Dual control: you requested this action">
-                  you requested this — another operator must approve
-                </span>
+                <>
+                  <span className="choke-approval-blocked" title="Dual control: you requested this action">
+                    you requested this — another operator must approve
+                  </span>
+                  {/* You may always take back your own request. Dual control
+                      stops one operator CAUSING a destructive action; it has
+                      nothing to protect by trapping a mistyped sever in the
+                      queue until someone else clears it, or until the TTL
+                      expires. Same rule as thaw and the kill-switch: the way
+                      out of a bad state never waits for a quorum. */}
+                  <button
+                    type="button"
+                    className="choke-action-button"
+                    onClick={() => onDecide(req, false)}
+                  >
+                    Withdraw
+                  </button>
+                </>
               ) : (
                 <>
                   <button

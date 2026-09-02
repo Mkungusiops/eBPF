@@ -58,6 +58,13 @@ export function useChokePosture({
   const isFleetConsole = Boolean(kernel);
   const engineOnlyHint = "Engine-local action — open the single-tenant engine for this host. The fleet console has no host to evaluate it against.";
   const divergedAgents = kernel?.diverged_agents || [];
+  // Normalised to an array here rather than at each use: an older control plane
+  // omits the key entirely, and a panel that maps over undefined throws instead
+  // of rendering — the Sensor Health crash, on a field the server simply did
+  // not send.
+  const ladderCorrections = Array.isArray(chokeState?.ladder_corrections)
+    ? chokeState.ladder_corrections
+    : [];
   const pendingApprovals = approvals.filter((req) => req.status === "pending");
   const kernelFired = kernel?.enforce_actions || 0;
   // Only meaningful once at least one agent has answered; before that the
@@ -120,6 +127,7 @@ export function useChokePosture({
     isFleetConsole,
     engineOnlyHint,
     divergedAgents,
+    ladderCorrections,
     pendingApprovals,
     kernelFired,
     agentsTotal,

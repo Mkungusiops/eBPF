@@ -334,3 +334,10 @@ docs/credentials/
 !/chokectl.hosts.example
 engine/internal/policyassets/embedded/*
 !engine/internal/policyassets/embedded/.keep
+
+# Playwright probe session state (real credentials for a live deployment)
+web/.auth/
+
+# Playwright probe artifacts (kept out of the e2e outputDir, which is cleared per run)
+/web/test-results-probe*/
+/web/playwright-report-probe*/

@@ -67,7 +67,7 @@ func TestJailRoutesDeviceTargetToDeviceGateway(t *testing.T) {
 	a, gw, devGW := newTestApplier(t)
 	const mac = "aa:bb:cc:dd:ee:01"
 
-	if err := a.Jail(devicePrefix+mac, 0, "quarantine"); err != nil {
+	if err := a.Jail(devicePrefix+mac, 0, "quarantine", 0); err != nil {
 		t.Fatalf("Jail device: %v", err)
 	}
 	if got := deviceState(t, devGW, mac); got != circuit.Quarantined.String() {
@@ -84,7 +84,7 @@ func TestThawRoutesDeviceTargetToDeviceGateway(t *testing.T) {
 	a, gw, devGW := newTestApplier(t)
 	const mac = "aa:bb:cc:dd:ee:02"
 
-	if err := a.Jail(devicePrefix+mac, 0, "sever"); err != nil {
+	if err := a.Jail(devicePrefix+mac, 0, "sever", 0); err != nil {
 		t.Fatalf("Jail device: %v", err)
 	}
 	if got := deviceState(t, devGW, mac); got != circuit.Severed.String() {
@@ -109,7 +109,7 @@ func TestJailStillRoutesProcessTargetToProcessGateway(t *testing.T) {
 	a, gw, devGW := newTestApplier(t)
 	const execID = "exec-abc"
 
-	if err := a.Jail(execID, 4242, "throttle"); err != nil {
+	if err := a.Jail(execID, 4242, "throttle", 0); err != nil {
 		t.Fatalf("Jail process: %v", err)
 	}
 	var found bool
@@ -134,7 +134,7 @@ func TestJailStillRoutesProcessTargetToProcessGateway(t *testing.T) {
 func TestJailDeviceTargetWithoutDeviceGatewayErrors(t *testing.T) {
 	a, _, _ := newTestApplier(t)
 	a.devGW = nil
-	if err := a.Jail(devicePrefix+"aa:bb:cc:dd:ee:03", 0, "throttle"); err == nil {
+	if err := a.Jail(devicePrefix+"aa:bb:cc:dd:ee:03", 0, "throttle", 0); err == nil {
 		t.Error("Jail with no device gateway returned nil, want an error")
 	}
 	if err := a.Thaw(devicePrefix+"aa:bb:cc:dd:ee:03", 0); err == nil {

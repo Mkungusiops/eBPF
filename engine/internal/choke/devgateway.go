@@ -32,6 +32,10 @@ type DeviceGateway struct {
 	table   *device.Table
 	store   *store.Store
 	bcast   Broadcaster
+	// decisionSink tees recorded decisions to the control-plane uplink. See
+	// Config.DecisionSink on the process gateway; the device plane needs its
+	// own because it is a separate type with its own store handle.
+	decisionSink func(*store.Decision)
 
 	dryRun     bool
 	enforcing  atomic.Bool // runtime mode: true=enforcing, false=detect-only
@@ -54,7 +58,10 @@ type DeviceConfig struct {
 	Table     *device.Table
 	Store     *store.Store
 	Broadcast Broadcaster
-	DryRun    bool
+	// DecisionSink tees every device-plane decision to the uplink. nil on a
+	// standalone host.
+	DecisionSink func(*store.Decision)
+	DryRun       bool
 	// Enforcing is the initial runtime mode. When false the gateway starts
 	// in DETECT-ONLY: device-jail decisions are audited but the kernel data
 	// plane is not written (a shadow mode for staging policy / watching flows
@@ -74,14 +81,15 @@ func NewDeviceGateway(cfg DeviceConfig) *DeviceGateway {
 		tbl = device.NewTable(time.Hour)
 	}
 	g := &DeviceGateway{
-		circuit: circuit.New(circuit.DefaultConfig()),
-		thr:     cfg.Throttler,
-		backend: cfg.Backend,
-		table:   tbl,
-		store:   cfg.Store,
-		bcast:   cfg.Broadcast,
-		dryRun:  cfg.DryRun,
-		reverts: make(map[string]devPendingRevert),
+		circuit:      circuit.New(circuit.DefaultConfig()),
+		thr:          cfg.Throttler,
+		backend:      cfg.Backend,
+		table:        tbl,
+		store:        cfg.Store,
+		bcast:        cfg.Broadcast,
+		decisionSink: cfg.DecisionSink,
+		dryRun:       cfg.DryRun,
+		reverts:      make(map[string]devPendingRevert),
 	}
 	// Dry-run forces detect-only regardless of the Enforcing flag.
 	g.enforcing.Store(cfg.Enforcing && !cfg.DryRun)
@@ -188,11 +196,11 @@ func (g *DeviceGateway) ManualDevice(ctx context.Context, macStr string, action 
 		DeviceMAC: canon,
 		DeviceID:  mac.DeviceID(),
 	}
-	if _, err := g.store.InsertDecision(rec); err != nil {
-		log.Printf("[devgateway] insert decision: %v", err)
-	} else if g.bcast != nil {
-		g.bcast.Broadcast("decision", rec)
-	}
+	// Through the process gateway's recorder so the device plane reaches the
+	// control-plane audit by the same path as the process plane. A second
+	// insert-and-broadcast here is how one of the two planes ends up missing
+	// from the uplink.
+	g.recordDecision(rec, "insert decision")
 
 	// The data plane refused, so the device is NOT in the state we optimistically
 	// forced above. Roll the circuit back and surface the error. Without this the
@@ -366,6 +374,35 @@ func (g *DeviceGateway) Snapshot() []DeviceEntry {
 }
 
 // StateCounts returns how many devices sit on each rung of the ladder.
+// recordDecision persists one device-plane decision, then fans it out to the
+// console and the control-plane uplink.
+//
+// Deliberately the same shape as the process gateway's: the two planes are
+// separate types with separate stores, and a device sever that never reached
+// the tenant's audit while a process sever did would be the worst kind of
+// half-working — the console would look complete and be missing exactly the
+// plane an operator reaches for when a host is unreachable.
+//
+// Insert first: InsertDecision stamps the id and the chain hashes, and a
+// record sunk before that carries neither.
+func (g *DeviceGateway) recordDecision(rec *store.Decision, what string) bool {
+	if _, err := g.store.InsertDecision(rec); err != nil {
+		log.Printf("[devgateway] %s: %v", what, err)
+		return false
+	}
+	if g.decisionSink != nil {
+		g.decisionSink(rec)
+	}
+	if g.bcast != nil {
+		g.bcast.Broadcast("decision", rec)
+	}
+	return true
+}
+
+// SetDecisionSink wires the control-plane uplink after construction. See the
+// process gateway's equivalent for why this is late-wired.
+func (g *DeviceGateway) SetDecisionSink(fn func(*store.Decision)) { g.decisionSink = fn }
+
 // SetProtectedMACs adds MACs to the device-plane lockout allow-list.
 //
 // ADD-ONLY, deliberately. The list is what stops the engine quarantining or
@@ -636,4 +673,16 @@ func nonColon(mac string) string {
 		}
 	}
 	return string(out)
+}
+
+// ProtectedMACs returns the device-plane lockout allow-list, sorted.
+//
+// Read-back for SetProtectedMACs, which is add-only. An operator arming the
+// device plane needs to confirm the uplink and the control plane are on this
+// list BEFORE arming, not discover afterwards that a typo left them exposed.
+func (g *DeviceGateway) ProtectedMACs() []string {
+	if g == nil || g.thr == nil {
+		return nil
+	}
+	return g.thr.ProtectedList()
 }

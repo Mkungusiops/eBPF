@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
+	"github.com/jeffmk/ebpf-poc-engine/internal/eventpipe"
 	"github.com/jeffmk/ebpf-poc-engine/internal/policyapply"
+	"github.com/jeffmk/ebpf-poc-engine/internal/store"
 )
 
 // gatewayApplier adapts control-plane commands onto the local choke gateway.
@@ -31,6 +34,54 @@ type gatewayApplier struct {
 	// Tetragon connection, which makes ApplyPolicies report the action
 	// unsupported rather than panic.
 	sensors *sensorRegistry
+	// pipes holds the scorer. A registry rather than a direct pointer because
+	// startControlPlane builds this applier BEFORE main constructs the
+	// pipeline — the same ordering problem sensorRegistry above solves, and
+	// solved the same way rather than by reordering startup.
+	pipes *pipeRegistry
+	// resend re-queues already-sent decisions so the control plane can close a
+	// gap in the audit chain. nil on an agent with no local decision store or
+	// no uplink, which makes the command report itself unsupported rather than
+	// acking a replay that never happened.
+	resend func(fromID int64, limit int) (int, error)
+}
+
+// ResendDecisions implements command.DecisionResender.
+//
+// Central chain verification can now tell an operator which agent is missing
+// records and how many; the records are still here. This is the other half —
+// without it the control plane could only ever report "incomplete", knowing
+// exactly what it lacked and having no way to ask for it.
+//
+// Replay is safe because the control plane dedups on (tenant, agent,
+// dedup_key): a record it already holds is ignored rather than duplicated, so
+// an over-broad request costs bandwidth and nothing else.
+func (a gatewayApplier) ResendDecisions(fromID int64, limit int) (int, error) {
+	if a.resend == nil {
+		return 0, errors.New("this agent has no decision store or no uplink to replay through")
+	}
+	return a.resend(fromID, limit)
+}
+
+// pipeRegistry carries the event pipeline to whoever needs it after startup.
+type pipeRegistry struct {
+	mu sync.RWMutex
+	p  *eventpipe.Pipeline
+}
+
+func (r *pipeRegistry) set(p *eventpipe.Pipeline) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.p = p
+}
+
+func (r *pipeRegistry) get() *eventpipe.Pipeline {
+	if r == nil {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.p
 }
 
 // SetMode arms or disarms one plane. PLANE_DEVICE targets the network gateway;
@@ -62,13 +113,40 @@ func (a gatewayApplier) KillSwitch(halt bool, _ string, plane ebpfsocv1.Plane) e
 }
 
 func (a gatewayApplier) SetThresholds(throttleAt, tarpitAt, quarantineAt, severAt int32) error {
-	a.gw.SetThresholds(circuit.Config{
+	// The LAST hop validates too. A signature proves the control plane sent
+	// this; it does not prove the values are safe, and this agent is the thing
+	// that would do the killing. Returning the error acks REJECTED rather than
+	// installing a ladder that severs everything it tracks.
+	_, err := a.gw.SetThresholds(circuit.Config{
 		ThrottleAt:   int(throttleAt),
 		TarpitAt:     int(tarpitAt),
 		QuarantineAt: int(quarantineAt),
 		SeverAt:      int(severAt),
 	})
-	return nil
+	return err
+}
+
+// AuditConfigCommand implements command.ConfigAuditor: it records a signed
+// configuration change in this host's tamper-evident decision ledger.
+//
+// Until this existed the agent applied every fleet configuration change and
+// wrote nothing down. An operator could arm every host in a tenant, drop the
+// ladder so ordinary activity reaches a sever, or switch detection off, and the
+// hosts' own ledgers would show no trace — while the single-tenant engine
+// audited the identical actions from its HTTP handlers.
+//
+// actor comes from the signed command and is covered by the signature, so the
+// name in this row is one the fleet key vouched for rather than one anyone on
+// the path could write. Empty means the platform acted on its own.
+//
+// Reason is the detail: a signed command carries no separate justification
+// field, and inventing a plausible one here would put words in an operator's
+// mouth in an audit chain.
+func (a gatewayApplier) AuditConfigCommand(action, detail, actor string) {
+	if a.gw == nil {
+		return
+	}
+	a.gw.AuditConfigChange(action, "", detail, actor, "applied from the control plane")
 }
 
 // OwnsTarget implements command.TargetOwner: it answers whether a Jail/Thaw
@@ -133,24 +211,45 @@ func tierToAction(tier string) (circuit.Action, error) {
 // this branch the MAC would be treated as an exec_id and choked on the PROCESS
 // gateway, which silently does nothing to the device and leaves a phantom pid=0
 // circuit behind.
-func (a gatewayApplier) Jail(execID string, pid uint32, tier string) error {
+func (a gatewayApplier) Jail(execID string, pid uint32, tier string, revertAfter time.Duration) error {
 	action, err := tierToAction(tier)
 	if err != nil {
 		return err
+	}
+	reason := "remote jail (" + tier + ")"
+	if revertAfter > 0 {
+		// Recorded in the decision reason, not only in a timer. An analyst
+		// reading the audit months later has to be able to tell a containment
+		// that was meant to expire from one that was meant to stand.
+		reason += fmt.Sprintf(", auto-revert after %s", revertAfter)
 	}
 	if mac, isDevice := strings.CutPrefix(execID, devicePrefix); isDevice {
 		if a.devGW == nil {
 			return fmt.Errorf("jail: device target %q but no device gateway on this agent", mac)
 		}
-		_, err := a.devGW.ManualDevice(context.Background(), mac, action,
-			"remote jail ("+tier+")", "control-plane")
+		d, err := a.devGW.ManualDevice(context.Background(), mac, action, reason, "control-plane")
+		if err != nil {
+			return err
+		}
+		if revertAfter > 0 && d != nil {
+			a.devGW.ScheduleRevert(mac, d.From, revertAfter, "control-plane")
+		}
+		return nil
+	}
+	d, err := a.gw.Manual(context.Background(), choke.ManualRequest{
+		ExecID: execID, PID: pid, Action: action,
+		Reason: reason, Actor: "control-plane",
+	})
+	if err != nil {
 		return err
 	}
-	_, err = a.gw.Manual(context.Background(), choke.ManualRequest{
-		ExecID: execID, PID: pid, Action: action,
-		Reason: "remote jail (" + tier + ")", Actor: "control-plane",
-	})
-	return err
+	// Scheduled AFTER the containment succeeded, and from the decision's own
+	// From state: arming a revert to a tier the target was never on would
+	// "restore" it to a state it had not been in.
+	if revertAfter > 0 && d != nil {
+		a.gw.ScheduleRevert(d.ExecID, d.From, revertAfter, "control-plane")
+	}
+	return nil
 }
 
 // Thaw releases one target back to pristine — ActNone through the same Manual
@@ -273,3 +372,33 @@ func (a gatewayApplier) ApplyPolicies(docs []*ebpfsocv1.PolicyDoc, remove []stri
 // deploy bind-mounts it from the host so the agent can write here directly.
 // A variable rather than the package constant so tests can redirect it.
 var DurablePolicyDir = policyapply.DefaultDurableDir
+
+// SetSuppressions installs the tenant's scoring suppressions.
+//
+// Replace, not merge: the control plane sends the full desired set every time.
+// Merging would make removal inexpressible and would let rules accumulate
+// silently across pushes.
+//
+// The pipeline is the thing that scores, so it is the thing that has to know.
+// Storing these without reaching the running scorer would be a setting that
+// looks applied and does nothing — the defect this whole surface exists to
+// avoid.
+func (a gatewayApplier) SetSuppressions(rules []*ebpfsocv1.Suppression) error {
+	pipe := a.pipes.get()
+	if pipe == nil {
+		return errors.New("no event pipeline on this agent")
+	}
+	out := make([]store.Suppression, 0, len(rules))
+	for _, r := range rules {
+		if r.GetBinary() == "" {
+			continue // a rule with no binary matches nothing; drop it rather than store a no-op
+		}
+		out = append(out, store.Suppression{
+			Binary: r.GetBinary(), Policy: r.GetPolicy(),
+			Parent: r.GetParent(), Reason: r.GetReason(),
+		})
+	}
+	pipe.SetSuppressions(out)
+	log.Printf("[agent] scoring suppressions updated: %d rule(s) from the control plane", len(out))
+	return nil
+}

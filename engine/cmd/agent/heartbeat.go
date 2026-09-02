@@ -11,6 +11,7 @@ import (
 
 	ebpfsocv1 "github.com/jeffmk/ebpf-poc-engine/gen/ebpfsoc/v1"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // policyVersion fingerprints the policy set this host is ACTUALLY running, so
@@ -114,9 +115,18 @@ func chokeSummaries(g *choke.Gateway) []*ebpfsocv1.ChokeSummary {
 	}
 	out := make([]*ebpfsocv1.ChokeSummary, 0, len(snap))
 	for _, e := range snap {
-		out = append(out, &ebpfsocv1.ChokeSummary{
+		cs := &ebpfsocv1.ChokeSummary{
 			ExecId: e.ExecID, Pid: e.PID, Binary: e.Binary, State: e.State, Score: int32(e.Score),
-		})
+			// Carried so the fleet console can tell a containment that thaws
+			// on its own from one that does not. Rendering them identically
+			// invites an operator to manually thaw something that was already
+			// going to release, or to walk away from one that never will.
+			RevertPending: e.RevertPending,
+		}
+		if !e.LastSeen.IsZero() {
+			cs.LastSeen = timestamppb.New(e.LastSeen)
+		}
+		out = append(out, cs)
 	}
 	return out
 }

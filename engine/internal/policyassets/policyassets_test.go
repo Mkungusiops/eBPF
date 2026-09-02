@@ -30,18 +30,18 @@ func TestMetadataNameIgnoresOtherNameKeys(t *testing.T) {
 	cases := []struct{ label, body, want string }{
 		{
 			label: "options block also has a name key",
-			body: "apiVersion: cilium.io/v1alpha1\nkind: TracingPolicy\nmetadata:\n  name: \"real-name\"\nspec:\n  options:\n    - name: \"policy-mode\"\n      value: \"monitor\"\n",
-			want: "real-name",
+			body:  "apiVersion: cilium.io/v1alpha1\nkind: TracingPolicy\nmetadata:\n  name: \"real-name\"\nspec:\n  options:\n    - name: \"policy-mode\"\n      value: \"monitor\"\n",
+			want:  "real-name",
 		},
 		{
 			label: "spec comes first",
-			body: "spec:\n  options:\n    - name: \"policy-mode\"\nmetadata:\n  name: real-name\n",
-			want: "real-name",
+			body:  "spec:\n  options:\n    - name: \"policy-mode\"\nmetadata:\n  name: real-name\n",
+			want:  "real-name",
 		},
 		{
 			label: "unquoted with a trailing comment line above",
-			body: "metadata:\n  # CHANGE ME\n  name: real-name\n",
-			want: "real-name",
+			body:  "metadata:\n  # CHANGE ME\n  name: real-name\n",
+			want:  "real-name",
 		},
 		{
 			label: "no metadata block at all",

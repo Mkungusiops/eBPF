@@ -106,7 +106,11 @@ func main() {
 	// ---- Control-plane uplink (Phase 1, opt-in) ---------------------------
 	// Enforcement above is already fully wired and running before this line.
 	sensors := &sensorRegistry{}
-	upBuf := startControlPlane(ctx, cfg, stack, hostname, sensors)
+	// The pipeline does not exist yet — startControlPlane builds the command
+	// applier, and the applier needs the scorer. The registry is filled in
+	// once the pipeline is constructed, below.
+	pipes := &pipeRegistry{}
+	upBuf := startControlPlane(ctx, cfg, stack, hostname, sensors, pipes)
 
 	// Behavioural baseline + threat-intel enrichment. Built from the same
 	// shared helper the engine uses: enrichment changes the SCORE, so an agent
@@ -122,12 +126,54 @@ func main() {
 		Broadcast: broadcast,
 		Gateway:   stack.Gateway,
 	}
+
+	// Settings reach the running scorer, not just the database. A stored
+	// suppression that only takes effect after a restart is a setting that
+	// looks like it worked and did nothing.
+	api.SetSuppressionReloader(pipe, st)
+	// …and to the signed command channel, so a tenant-wide suppression from the
+	// control plane reaches this host's scorer too.
+	pipes.set(pipe)
 	enrich.Attach(pipe)
 	if upBuf != nil {
+		// Durable backlog. Attached BEFORE any sink is wired, so nothing can be
+		// enqueued into an unjournalled buffer, and restored immediately so a
+		// restart resumes the queue rather than starting empty.
+		//
+		// Un-acked telemetry lived in memory only. On a healthy link that is
+		// seconds of data; during a control-plane outage — the case the buffer
+		// exists for — a restart lost everything the agent was holding, and
+		// every deploy restarts every agent. Containment decisions are in that
+		// backlog.
+		upBuf.SetJournal(storeJournal{st: stack.Store})
+		if n, err := upBuf.Restore(); err != nil {
+			log.Printf("[uplink] could not restore the durable backlog: %v — this run starts empty", err)
+		} else if n > 0 {
+			log.Printf("[uplink] resumed %d un-acked record(s) from the previous run", n)
+		}
 		// Tee telemetry to the control plane. Left nil when standalone, so an
 		// agent with no uplink behaves exactly as it did before Phase 1.
 		pipe.EventSink = func(e *store.Event) { upBuf.Enqueue(uplink.EventRecord(e)) }
 		pipe.AlertSink = func(a *store.Alert) { upBuf.Enqueue(uplink.AlertRecord(a)) }
+		// Decisions, which had no sink at all until now.
+		//
+		// Events and alerts have been teed since Phase 1; containment
+		// decisions never were, so the multi-tenant console — the one a
+		// customer actually looks at — had no containment audit whatsoever.
+		// On the live estate it showed 431 rows frozen on the day the demo
+		// data stopped, beside 3.6M events and 405k alerts still arriving.
+		//
+		// Both planes, deliberately: a device sever that never reached the
+		// tenant's audit while a process sever did would leave the console
+		// looking complete and missing exactly the plane an operator reaches
+		// for when a host is unreachable.
+		sink := func(d *store.Decision) { upBuf.Enqueue(uplink.DecisionRecord(d)) }
+		if stack.Gateway != nil {
+			stack.Gateway.SetDecisionSink(sink)
+		}
+		if stack.DeviceGateway != nil {
+			stack.DeviceGateway.SetDecisionSink(sink)
+		}
 	}
 
 	// Tetragon subscription — the agent's sole event source. Unlike cmd/engine

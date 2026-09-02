@@ -2,7 +2,6 @@ package api
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -113,10 +112,11 @@ func (s *Server) handleChokeThresholds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		ThrottleAt   int `json:"throttle_at"`
-		TarpitAt     int `json:"tarpit_at"`
-		QuarantineAt int `json:"quarantine_at"`
-		SeverAt      int `json:"sever_at"`
+		ThrottleAt   int    `json:"throttle_at"`
+		TarpitAt     int    `json:"tarpit_at"`
+		QuarantineAt int    `json:"quarantine_at"`
+		SeverAt      int    `json:"sever_at"`
+		Reason       string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -128,26 +128,32 @@ func (s *Server) handleChokeThresholds(w http.ResponseWriter, r *http.Request) {
 		QuarantineAt: body.QuarantineAt,
 		SeverAt:      body.SeverAt,
 	}
-	if err := validateThresholds(cfg); err != nil {
+	// circuit.Config.Validate, not a local copy: the fleet path needs the same
+	// rule, and two implementations would drift.
+	if err := cfg.Validate(); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	prev := g.SetThresholds(cfg)
+	prev, err := g.SetThresholdsBy(cfg, s.auth.Username())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Moving the thresholds changes when the platform acts on every process on
+	// this host. It wrote a log line and no audit row.
+	g.AuditConfigChange("set-thresholds",
+		fmt.Sprintf("%d/%d/%d/%d", prev.ThrottleAt, prev.TarpitAt, prev.QuarantineAt, prev.SeverAt),
+		fmt.Sprintf("%d/%d/%d/%d", cfg.ThrottleAt, cfg.TarpitAt, cfg.QuarantineAt, cfg.SeverAt),
+		s.auth.Username(), strings.TrimSpace(body.Reason))
 	writeJSON(w, map[string]interface{}{
 		"updated":  cfg,
 		"previous": prev,
 	})
 }
 
-func validateThresholds(c circuit.Config) error {
-	if c.ThrottleAt <= 0 || c.TarpitAt <= 0 || c.QuarantineAt <= 0 || c.SeverAt <= 0 {
-		return errors.New("all four thresholds must be > 0")
-	}
-	if !(c.ThrottleAt < c.TarpitAt && c.TarpitAt < c.QuarantineAt && c.QuarantineAt < c.SeverAt) {
-		return errors.New("thresholds must be strictly ascending: throttle < tarpit < quarantine < sever")
-	}
-	return nil
-}
+// validateThresholds moved to circuit.Config.Validate, next to the type it
+// guards, so the control plane and the signed-command path share one rule
+// rather than the engine being the only hop that checked.
 
 // POST /api/choke/manual — operator-driven override.
 //
@@ -581,12 +587,12 @@ func (s *Server) handleChokeJail(w http.ResponseWriter, r *http.Request) {
 		// alert-to-contain path sends it; without this field the engine
 		// silently ignored it and answered 400 "no pids matched", because an
 		// alert has no pid and no binary to fall back on.
-		ExecID             string   `json:"exec_id"`
-		Binary             string   `json:"binary"`
-		Descendants        bool     `json:"descendants"`
-		Action             string   `json:"action"`
-		Reason             string   `json:"reason"`
-		RevertAfterSeconds int      `json:"revert_after_seconds"`
+		ExecID             string `json:"exec_id"`
+		Binary             string `json:"binary"`
+		Descendants        bool   `json:"descendants"`
+		Action             string `json:"action"`
+		Reason             string `json:"reason"`
+		RevertAfterSeconds int    `json:"revert_after_seconds"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
@@ -765,13 +771,21 @@ func (s *Server) handleChokeKillSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		On bool `json:"on"`
+		On     bool   `json:"on"`
+		Reason string `json:"reason"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
 		return
 	}
 	prev := g.SetKillSwitch(body.On)
+	// The kill-switch bypasses ALL containment, including an action an
+	// operator presses themselves. It is the single widest-blast-radius toggle
+	// on the platform and it wrote no audit row.
+	if prev != body.On {
+		g.AuditConfigChange("kill-switch", stateWord(prev), stateWord(body.On),
+			s.auth.Username(), strings.TrimSpace(body.Reason))
+	}
 	writeJSON(w, map[string]interface{}{"engaged": body.On, "previous": prev})
 }
 
@@ -839,4 +853,12 @@ func (s *Server) handleChokePolicyPreview(w http.ResponseWriter, r *http.Request
 		// and explain an empty match set instead of looking broken.
 		"scanned": len(g.Snapshot()),
 	})
+}
+
+// stateWord renders the kill-switch as the word the audit row carries.
+func stateWord(on bool) string {
+	if on {
+		return "engaged"
+	}
+	return "released"
 }

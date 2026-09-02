@@ -54,6 +54,12 @@ type Gateway struct {
 	policies *policy.Set
 	tree     *tree.Tree
 	bpfmap   bpfmap.Backend
+	// decisionSink tees recorded decisions to the uplink. See Config.
+	decisionSink func(*store.Decision)
+	// configuredThresholds is the ladder this host was DEPLOYED with, kept so a
+	// runtime override can record what it was overriding. See
+	// store.EffectiveRuntimeSetting for why that comparison matters.
+	configuredThresholds circuit.Config
 
 	// enfMu guards enforcer + mode together. Both are swapped atomically by
 	// SetEnforcing so /api/choke/mode flips don't race the act() path.
@@ -194,15 +200,34 @@ type knownProc struct {
 // rest fall back to safe defaults (logger enforcer, default thresholds,
 // empty policy set).
 type Config struct {
-	Store      *store.Store
-	Enforcer   enforce.Enforcer
-	Broadcast  Broadcaster
-	Tokens     *tokens.Manager
-	Policies   *policy.Set
-	Tree       *tree.Tree
-	BPFMap     bpfmap.Backend
-	Thresholds circuit.Config
-	DryRun     bool
+	Store     *store.Store
+	Enforcer  enforce.Enforcer
+	Broadcast Broadcaster
+	Tokens    *tokens.Manager
+	Policies  *policy.Set
+	Tree      *tree.Tree
+	BPFMap    bpfmap.Backend
+	// DeployedThresholds is the ladder from CONFIG, before any stored runtime
+	// override is applied on top.
+	//
+	// Distinct from Thresholds, which is what the gateway actually starts
+	// with. Conflating them breaks the precedence rule: an override would
+	// record the PREVIOUS override as the value it was overriding, so the
+	// deploy would look unchanged forever and could never take precedence
+	// back. Zero means "same as Thresholds", which is right for every caller
+	// that has no stored overrides.
+	DeployedThresholds circuit.Config
+	// DecisionSink tees every recorded decision to the control-plane uplink.
+	//
+	// nil on a standalone host, and that is the autonomy contract: the uplink
+	// is additive and the enforcement path never waits on it. It exists
+	// because until it did, the control plane had NO containment audit at all
+	// — events and alerts had sinks, decisions never had one, so the plane a
+	// multi-tenant customer actually looks at showed nothing since the day the
+	// demo data stopped.
+	DecisionSink func(*store.Decision)
+	Thresholds   circuit.Config
+	DryRun       bool
 	// Enforcing is true when the real enforcer chain is wired at boot. When
 	// false, the engine starts in detect-only mode (the enforcer is a
 	// Logger). The gateway uses this for the initial Mode() value and for
@@ -275,6 +300,13 @@ func NewGateway(cfg Config) *Gateway {
 		policies:       cfg.Policies,
 		tree:           cfg.Tree,
 		bpfmap:         cfg.BPFMap,
+		decisionSink:   cfg.DecisionSink,
+		configuredThresholds: func() circuit.Config {
+			if cfg.DeployedThresholds != (circuit.Config{}) {
+				return cfg.DeployedThresholds
+			}
+			return cfg.Thresholds
+		}(),
 		dryRun:         cfg.DryRun,
 		mode:           mode,
 		known:          make(map[string]knownProc),
@@ -467,6 +499,14 @@ func (m TargetMatch) String() string {
 // the gateway stays testable and platform-agnostic; main.go wires the real one.
 type PIDLiveFn func(pid uint32) bool
 
+// SetDecisionSink wires the control-plane uplink after construction.
+//
+// Late-wired, like SetPIDLiveFn, because the uplink buffer does not exist
+// until the agent has enrolled and the gateways are built before that. Set
+// once at startup, before the event stream opens, so no lock is warranted for
+// the same reason pidLiveFn needs none.
+func (g *Gateway) SetDecisionSink(fn func(*store.Decision)) { g.decisionSink = fn }
+
 // SetPIDLiveFn wires the liveness probe used by Owns.
 func (g *Gateway) SetPIDLiveFn(fn PIDLiveFn) { g.pidLiveFn = fn }
 
@@ -600,13 +640,46 @@ func (g *Gateway) act(ctx context.Context, d *circuit.Decision, manual bool) {
 			rec.OriginFingerprint = o.Fingerprint
 		}
 	}
-	if _, err := g.store.InsertDecision(rec); err != nil {
-		log.Printf("[gateway] insert decision: %v", err)
+	if !g.recordDecision(rec, "insert decision") {
 		return
+	}
+}
+
+// recordDecision persists one decision, then fans it out to the console and
+// the control-plane uplink.
+//
+// # Why every decision goes through here
+//
+// There were four places that inserted a decision and then broadcast it, each
+// with its own error handling, and adding an uplink meant remembering all
+// four. Three of them would have been updated and the fourth found later, in
+// production, as a category of containment that never reached the audit — the
+// same shape as the fleet-wide threshold handlers that were missed because the
+// rule lived at the call sites instead of at the choke point.
+//
+// # Order is load-bearing
+//
+// InsertDecision stamps the record's ID and computes prev_hash/hash. Sinking
+// BEFORE the insert would ship a record with no id (so every decision would
+// share a dedup key and the uplink would keep exactly one of them) and empty
+// chain hashes (so the far end could verify nothing). Insert first, always.
+//
+// The sink runs on the caller's goroutine deliberately: the uplink Buffer's
+// Enqueue is an in-memory append, and handing enforcement a background
+// goroutine per decision to drop work into is how the audit quietly loses
+// rows under load.
+func (g *Gateway) recordDecision(rec *store.Decision, what string) bool {
+	if _, err := g.store.InsertDecision(rec); err != nil {
+		log.Printf("[gateway] %s: %v", what, err)
+		return false
+	}
+	if g.decisionSink != nil {
+		g.decisionSink(rec)
 	}
 	if g.bcast != nil {
 		g.bcast.Broadcast("decision", rec)
 	}
+	return true
 }
 
 // mirrorBPFMap reflects the gateway's view of a transition into the
@@ -658,9 +731,86 @@ func (g *Gateway) installTokenBuckets(binary string, pid uint32) {
 	}
 }
 
-// Forget releases per-process state when a process exits. Wire to
-// process_exit events in the engine to keep memory bounded.
+// ReapDeadPIDs removes kernel choke-map rows for processes that no longer
+// exist, and reports how many it removed.
+//
+// # Why the exit event is not enough on its own
+//
+// HandleExit now releases state when Tetragon reports a process_exit, which is
+// the common path. This is the backstop for the two cases that path cannot
+// cover, both of which were observed on the live estate:
+//
+//   - A missed exit. The event stream can drop, the daemon can restart, and
+//     the engine can start after processes were already choked. Any of those
+//     leaves a row nobody will ever send an exit for.
+//   - State that outlives the engine. The map is kernel-side; rows written
+//     before a restart are still there afterwards, and the engine has no
+//     memory of having written them.
+//
+// The consequence of a leaked row is not a leak — it is enforcement. Linux
+// recycles PIDs, so an unrelated process landing on a recycled PID inherits a
+// bucket with exhausted tokens and is throttled for a decision taken about
+// something else. Bounded memory is the incidental benefit; not throttling the
+// wrong process is the point.
+//
+// alive is injected rather than reading /proc here so the sweep is testable
+// without spawning processes, and so a platform with a different liveness
+// check can supply one.
+func (g *Gateway) ReapDeadPIDs(alive func(pid uint32) bool) int {
+	if g == nil || g.bpfmap == nil {
+		return 0
+	}
+	if alive == nil {
+		alive = g.pidLiveFn
+	}
+	// FAIL CLOSED. With no way to prove a PID is dead, reaping would delete
+	// the bucket of a process that is very much alive and silently stop
+	// enforcing a decision the audit chain says is in force. Leaking a row is
+	// the lesser fault by a wide margin, so a deployment with no liveness
+	// probe keeps its rows.
+	if alive == nil {
+		return 0
+	}
+	snap, err := g.bpfmap.Snapshot()
+	if err != nil {
+		return 0
+	}
+	reaped := 0
+	for pid := range snap {
+		// PID 0 is not a process and can never be alive; a row keyed on it is
+		// a bug elsewhere, and deleting it is right either way.
+		if pid != 0 && alive(pid) {
+			continue
+		}
+		if err := g.bpfmap.Delete(pid); err == nil {
+			reaped++
+			if g.tokens != nil {
+				g.tokens.ForgetPID(pid)
+			}
+		}
+	}
+	return reaped
+}
+
+// Forget releases per-process state when a process exits. Wired to
+// process_exit in eventpipe.Pipeline.HandleExit; ReapDeadPIDs is the backstop
+// for exits that never arrive.
 func (g *Gateway) Forget(execID string, pid uint32) {
+	// Resolve the PID when the caller does not know it.
+	//
+	// The kernel choke map is keyed by PID and everything else here by exec
+	// id, so a caller holding only an exec id used to pass 0 — and
+	// bpfmap.Delete(0) is a no-op that silently leaves the real row in place.
+	// The operator's Forget button did exactly that: it cleared the console's
+	// view and left the kernel throttling the process. Resolved HERE rather
+	// than at the call site, for the reason SetSystemCritical unions its floor
+	// here: a guarantee enforced at one call site is one a second call site
+	// will forget.
+	if pid == 0 && g.tree != nil {
+		if n, ok := g.tree.Get(execID); ok && n != nil {
+			pid = n.PID
+		}
+	}
 	g.circuit.Forget(execID)
 	if g.tokens != nil {
 		g.tokens.ForgetPID(pid)
@@ -726,6 +876,11 @@ func (g *Gateway) SetEnforcing(on bool, actor, reason string) Mode {
 	newMode := g.mode
 	g.enfMu.Unlock()
 	log.Printf("[gateway] mode %s → %s (actor=%s reason=%q)", prev, newMode, actor, reason)
+	// Arming automatic containment is at least as audit-worthy as loading a
+	// detection, and until now it wrote no row at all.
+	if prev != newMode {
+		g.auditConfigChange("set-mode", string(prev), string(newMode), actor, reason)
+	}
 	return prev
 }
 
@@ -751,16 +906,83 @@ func (g *Gateway) SetKillSwitch(on bool) bool {
 // Thresholds returns the active circuit thresholds.
 func (g *Gateway) Thresholds() circuit.Config { return g.circuit.Thresholds() }
 
-// SetThresholds atomically updates the circuit thresholds. Returns the
-// prior config for the audit log.
-func (g *Gateway) SetThresholds(cfg circuit.Config) circuit.Config {
-	prev := g.circuit.SetThresholds(cfg)
+// SetThresholds atomically updates the circuit thresholds. Returns the prior
+// config for the audit log, and an error if the new one was REFUSED.
+//
+// The error is not decoration. Every caller on the fleet path — the control
+// plane's handler, the signed command processor, the agent's applier — used to
+// apply whatever arrived, and a partial config zeroed sever_at, which severs
+// every tracked process. A caller that ignores this error reintroduces that.
+func (g *Gateway) SetThresholds(cfg circuit.Config) (circuit.Config, error) {
+	return g.SetThresholdsBy(cfg, "")
+}
+
+// SetThresholdsBy is SetThresholds with the operator who ordered it, so the
+// stored override can name them. Without it the startup line reads "set by the
+// platform" for a ladder a person deliberately chose — the same absence-reads-
+// as-automatic problem the decision rows had.
+func (g *Gateway) SetThresholdsBy(cfg circuit.Config, actor string) (circuit.Config, error) {
+	prev, err := g.circuit.SetThresholds(cfg)
+	if err != nil {
+		log.Printf("[gateway] thresholds REFUSED: %v (still throttle=%d tarpit=%d quarantine=%d sever=%d)",
+			err, prev.ThrottleAt, prev.TarpitAt, prev.QuarantineAt, prev.SeverAt)
+		return prev, err
+	}
 	log.Printf("[gateway] thresholds updated: throttle=%d→%d tarpit=%d→%d quarantine=%d→%d sever=%d→%d",
 		prev.ThrottleAt, cfg.ThrottleAt,
 		prev.TarpitAt, cfg.TarpitAt,
 		prev.QuarantineAt, cfg.QuarantineAt,
 		prev.SeverAt, cfg.SeverAt)
-	return prev
+	g.persistThresholds(cfg, actor)
+	return prev, nil
+}
+
+// ThresholdsKey names the ladder in the runtime-settings store.
+const ThresholdsKey = "choke.thresholds"
+
+// FormatThresholds renders a ladder for storage and for a log line. One
+// function, so the value written and the value compared against on startup
+// cannot drift into two spellings of the same ladder.
+func FormatThresholds(c circuit.Config) string {
+	return fmt.Sprintf("%d/%d/%d/%d", c.ThrottleAt, c.TarpitAt, c.QuarantineAt, c.SeverAt)
+}
+
+// ParseThresholds reads back what FormatThresholds wrote.
+func ParseThresholds(s string) (circuit.Config, bool) {
+	var c circuit.Config
+	if n, err := fmt.Sscanf(strings.TrimSpace(s), "%d/%d/%d/%d",
+		&c.ThrottleAt, &c.TarpitAt, &c.QuarantineAt, &c.SeverAt); err != nil || n != 4 {
+		return circuit.Config{}, false
+	}
+	// Validated on the way back IN as well as on the way out. A stored ladder
+	// is read at startup with no operator watching, and a corrupt row that
+	// zeroed sever_at would sever everything this host tracks the moment
+	// enforcement armed.
+	if err := c.Validate(); err != nil {
+		return circuit.Config{}, false
+	}
+	return c, true
+}
+
+// persistThresholds records a runtime ladder change so a restart does not undo
+// it.
+//
+// Best-effort by design: the ladder is already in force in memory, and failing
+// the operator's change because the note about it could not be written would
+// be the wrong trade. Logged loudly, because the consequence is quiet — the
+// setting works now and reverts at the next restart.
+func (g *Gateway) persistThresholds(cfg circuit.Config, actor string) {
+	if g.store == nil {
+		return
+	}
+	if err := g.store.PutRuntimeSetting(store.RuntimeSetting{
+		Key:         ThresholdsKey,
+		Value:       FormatThresholds(cfg),
+		ConfigAtSet: FormatThresholds(g.configuredThresholds),
+		Actor:       actor,
+	}); err != nil {
+		log.Printf("[gateway] thresholds applied but NOT persisted (%v) — they will revert on restart", err)
+	}
 }
 
 // Entry is one row of the gateway snapshot — joined view of circuit state
@@ -995,12 +1217,14 @@ func (g *Gateway) ApplyPreset(p Preset, actor, reason string) (PresetSnapshot, e
 	}
 	switch p {
 	case PresetDefault:
-		g.SetThresholds(circuit.Config{ThrottleAt: 10, TarpitAt: 30, QuarantineAt: 60, SeverAt: 100})
+		// Preset tuples are compile-time constants and always complete.
+		_, _ = g.SetThresholds(circuit.Config{ThrottleAt: 10, TarpitAt: 30, QuarantineAt: 60, SeverAt: 100})
 		g.SetKillSwitch(false)
 	case PresetContainment:
 		// Aggressive — every suspicious chain hits choke immediately.
 		// Sever stays high so we throttle/tarpit rather than mass-kill.
-		g.SetThresholds(circuit.Config{ThrottleAt: 1, TarpitAt: 3, QuarantineAt: 8, SeverAt: 60})
+		// Preset tuples are compile-time constants and always complete.
+		_, _ = g.SetThresholds(circuit.Config{ThrottleAt: 1, TarpitAt: 3, QuarantineAt: 8, SeverAt: 60})
 		g.SetKillSwitch(false)
 	case PresetForensic:
 		// Record everything; enforce nothing. Useful when the operator
@@ -1009,12 +1233,16 @@ func (g *Gateway) ApplyPreset(p Preset, actor, reason string) (PresetSnapshot, e
 	case PresetMaintenance:
 		// Stop choking entirely — but leave the engine running so the
 		// audit trail captures the maintenance window's events.
-		g.SetThresholds(circuit.Config{ThrottleAt: 1000, TarpitAt: 2000, QuarantineAt: 3000, SeverAt: 4000})
+		// Preset tuples are compile-time constants and always complete.
+		_, _ = g.SetThresholds(circuit.Config{ThrottleAt: 1000, TarpitAt: 2000, QuarantineAt: 3000, SeverAt: 4000})
 		g.SetKillSwitch(true)
 	default:
 		return prev, fmt.Errorf("unknown preset %q", p)
 	}
 	log.Printf("[gateway] preset=%s applied by=%s reason=%q (prev: %+v)", p, actor, reason, prev)
+	// One row for the preset, not four unattributed fragments for the setters
+	// it drives.
+	g.auditConfigChange("apply-preset", "", string(p), actor, reason)
 	return prev, nil
 }
 
@@ -1310,13 +1538,53 @@ func (g *Gateway) ThawQuarantine(actor, reason string) error {
 		Backend:   "cgroupv2",
 		Outcome:   "ok",
 	}
-	if _, err := g.store.InsertDecision(rec); err != nil {
-		log.Printf("[gateway] thaw audit insert: %v", err)
-	}
-	if g.bcast != nil {
-		g.bcast.Broadcast("decision", rec)
-	}
+	g.recordDecision(rec, "thaw audit insert")
 	return nil
+}
+
+// auditConfigChange records a change to how enforcement BEHAVES, as a
+// hash-chained decision row.
+//
+// # Why these needed it
+//
+// Jailing one process wrote a tamper-evident row. Arming automatic
+// containment, releasing the kill-switch, moving the thresholds and applying a
+// preset wrote a single log.Printf and nothing else — so the actions with the
+// widest blast radius were the ones with no audit trail, and /api/verify-chain
+// covered none of them. An operator could turn automatic killing on across a
+// host and leave no trace an incident review could find.
+//
+// ExecID is "config:<action>" rather than a process id: this is a change to the
+// gateway, not to a process, and "*" is already taken by the per-tier thaw.
+// Reason and Actor are both hashed into the chain (store.Decision canonical
+// form), so the justification is evidence rather than decoration.
+// AuditConfigChange is the exported form, for handlers.
+//
+// Audited at the HANDLER rather than inside each setter, because actor and
+// reason only exist there — and because ApplyPreset drives several setters at
+// once and must record one preset application, not four unattributed
+// fragments.
+func (g *Gateway) AuditConfigChange(action, from, to, actor, reason string) {
+	g.auditConfigChange(action, from, to, actor, reason)
+}
+
+func (g *Gateway) auditConfigChange(action, from, to, actor, reason string) {
+	if g.store == nil {
+		return
+	}
+	rec := &store.Decision{
+		Timestamp: time.Now().UTC(),
+		ExecID:    "config:" + action,
+		Action:    action,
+		FromState: from,
+		ToState:   to,
+		Reason:    reason,
+		DryRun:    g.dryRun,
+		Backend:   "gateway",
+		Outcome:   "ok",
+		Actor:     actor,
+	}
+	g.recordDecision(rec, action+" audit insert")
 }
 
 // BucketsSnapshot returns the kernel-side per-PID throttle map contents.

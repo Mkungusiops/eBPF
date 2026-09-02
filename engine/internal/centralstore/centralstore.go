@@ -54,6 +54,13 @@ var _ TenantStore = (*Store)(nil)
 type Scope struct {
 	TenantID string
 	Kind     string
+	// IncludeSynthetic keeps simulator-generated rows in the result.
+	//
+	// Default false, so every existing caller silently stops reading demo data
+	// as evidence. That is the right default for a ledger an incident review
+	// consults: the burden belongs on whoever wants the fabrications, not on
+	// every reader to remember to exclude them.
+	IncludeSynthetic bool
 }
 
 // Row is a stored, tenant-stamped telemetry record.

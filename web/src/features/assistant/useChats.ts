@@ -318,6 +318,12 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
           // this with its own stored thread; the single-tenant engine, which
           // has no chat store, depends on it.
           history: priorTurns,
+          // This hook IS the history sidebar: a sustained investigation, not a
+          // drill panel's one-shot question. On a deployment running two
+          // models it is what asks for the deeper one. The control plane
+          // ignores it and reads the model off the stored chat — a fact it
+          // owns — so this only decides the engine, which has no chat store.
+          conversation: true,
           signal: ctl.signal
         };
         // Stream when the client can; fall back to the complete response

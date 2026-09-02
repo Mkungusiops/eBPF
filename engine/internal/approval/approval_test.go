@@ -2,6 +2,7 @@ package approval
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 )
@@ -189,5 +190,51 @@ func TestPendingSurvivesRetentionPressure(t *testing.T) {
 	}
 	if _, ok := s.Get("acme", pending.ID); !ok {
 		t.Fatal("a pending destructive request was evicted by retention pressure")
+	}
+}
+
+// TestARequesterCanWithdrawTheirOwnRequest is the other half of dual control,
+// and it was missing: the four-eyes check used to sit above the approve/deny
+// branch, so an operator who mistyped a sever could not take it back. They had
+// to find a second person to clear their own mistake, or wait out the TTL with
+// a destructive action parked in the queue.
+//
+// This package already states the rule for thaw, throttle, tarpit, the
+// kill-switch and detect-only: the way OUT of a bad state must never wait for
+// a quorum. Withdrawing a request removes a destructive action rather than
+// causing one, so blocking it protected nothing.
+func TestARequesterCanWithdrawTheirOwnRequest(t *testing.T) {
+	s := NewStore(time.Hour)
+	r := s.Create(Request{Tenant: "acme", Action: "sever", Requester: "op@example.com"})
+
+	got, err := s.Decide("acme", r.ID, "op@example.com", "wrong pid, my mistake", false)
+	if err != nil {
+		t.Fatalf("a requester could not withdraw their own request: %v", err)
+	}
+	if got.Status != StatusDenied {
+		t.Fatalf("status = %q, want %q", got.Status, StatusDenied)
+	}
+	if s.PendingCount("acme") != 0 {
+		t.Fatal("the withdrawal left the request in the queue")
+	}
+	// The audit stays unambiguous with no new status: approver == requester
+	// on a DENIED record is a withdrawal on its face, and no approval can ever
+	// look like that, because approving still requires a second person.
+	if !strings.EqualFold(got.Approver, got.Requester) {
+		t.Fatalf("the record does not show who withdrew it: approver=%q requester=%q", got.Approver, got.Requester)
+	}
+}
+
+// TestWithdrawingDoesNotWeakenTheApprovalRule guards the obvious way to get
+// the fix wrong: relaxing the check for both directions instead of one.
+func TestWithdrawingDoesNotWeakenTheApprovalRule(t *testing.T) {
+	s := NewStore(time.Hour)
+	r := s.Create(Request{Tenant: "acme", Action: "sever", Requester: "op@example.com"})
+
+	if _, err := s.Decide("acme", r.ID, "OP@EXAMPLE.COM", "", true); !errors.Is(err, ErrSelfApproval) {
+		t.Fatalf("err = %v, want ErrSelfApproval — self-approval must still be refused", err)
+	}
+	if got, _ := s.Get("acme", r.ID); got.Status != StatusPending {
+		t.Fatalf("status = %q, want still pending after a refused self-approval", got.Status)
 	}
 }

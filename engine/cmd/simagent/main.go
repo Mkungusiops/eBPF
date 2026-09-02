@@ -254,7 +254,7 @@ func (a *simApplier) OwnsTarget(execID string, pid uint32) ebpfsocv1.CommandAck_
 	return ebpfsocv1.CommandAck_TARGET_MATCH_NONE
 }
 
-func (a *simApplier) Jail(execID string, pid uint32, tier string) error {
+func (a *simApplier) Jail(execID string, pid uint32, tier string, revertAfter time.Duration) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if mac, ok := strings.CutPrefix(execID, "device:"); ok {
@@ -263,6 +263,10 @@ func (a *simApplier) Jail(execID string, pid uint32, tier string) error {
 	}
 	a.chokes[a.key(execID, pid)] = &ebpfsocv1.ChokeSummary{
 		ExecId: execID, Pid: pid, Binary: "console-jailed", State: tierState(tier), Score: 95,
+		// Reported so the fleet console's revert indicator can be exercised
+		// against a simulated agent. A sim that never sets this would make the
+		// indicator look permanently dead in a demo.
+		RevertPending: revertAfter > 0,
 	}
 	return nil
 }

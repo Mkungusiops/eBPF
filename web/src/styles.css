@@ -325,6 +325,112 @@ textarea {
 .soc-sensor-result { margin: 8px 0; padding: 8px 12px; border-radius: 8px; font-size: 12px; }
 .soc-sensor-result.ok { border: 1px solid rgba(47,158,94,0.4); }
 .soc-sensor-result.bad { border: 1px solid rgba(244,85,110,0.4); }
+
+/* Settings leads with a question the operator can answer, not a blank field. */
+.soc-settings { display: flex; flex-direction: column; gap: 10px; }
+/* ── Settings ────────────────────────────────────────────────────────────
+ * Two panes, because settings is a place you navigate rather than a page you
+ * scroll: the sections have different owners, and a platform engineer looking
+ * for retention should not read past an analyst's suppression list first.
+ */
+.soc-settings { display: grid; grid-template-columns: 190px 1fr; gap: 18px; align-items: start; }
+@media (max-width: 720px) { .soc-settings { grid-template-columns: 1fr; } }
+
+.soc-settings-nav { display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; }
+.soc-settings-navitem {
+  display: flex; flex-direction: column; gap: 1px; align-items: flex-start; text-align: left;
+  padding: 8px 10px; border: 0; border-left: 2px solid transparent; border-radius: 0 6px 6px 0;
+  background: transparent; color: rgb(var(--text)); cursor: pointer; font-size: 12px;
+}
+.soc-settings-navitem span { font-size: 10px; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.04em; }
+.soc-settings-navitem:hover { background: rgba(148,163,184,0.06); }
+.soc-settings-navitem.is-on { border-left-color: rgb(var(--accent)); background: rgba(110,139,255,0.08); }
+.soc-settings-navitem.is-on strong { color: rgb(var(--accent)); }
+
+.soc-settings-pane { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+.soc-settings-head h3 { margin: 0; font-size: 15px; }
+.soc-settings-head p { margin: 3px 0 0; font-size: 12px; opacity: 0.7; line-height: 1.5; }
+
+/* One row per knob. The badges are the point: an operator must be able to see
+   at a glance whether a value is live, needs a restart, or is deploy-owned. */
+.soc-settings-row { border-top: 1px solid rgba(148,163,184,0.12); padding-top: 12px;
+  display: flex; flex-direction: column; gap: 6px; }
+.soc-settings-rowhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.soc-settings-rowhead strong { font-size: 13px; }
+.soc-settings-help { margin: 0; font-size: 12px; opacity: 0.78; line-height: 1.5; }
+.soc-settings-caveat { margin: 0; font-size: 11px; opacity: 0.62; line-height: 1.5;
+  border-left: 2px solid rgba(194,130,10,0.5); padding-left: 8px; }
+
+.soc-settings-badge { font-size: 10px; padding: 2px 7px; border-radius: 999px;
+  border: 1px solid rgba(148,163,184,0.3); text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.85; }
+.soc-settings-badge.is-live { border-color: rgba(47,158,94,0.5); color: #4ade80; }
+.soc-settings-badge.is-live-not-persisted { border-color: rgba(194,130,10,0.55); color: #f5b13d; }
+.soc-settings-badge.is-restart-required { border-color: rgba(194,130,10,0.45); }
+.soc-settings-badge.is-deploy-managed { opacity: 0.55; }
+.soc-settings-badge.is-not-wired { border-color: rgba(244,85,110,0.45); color: #f4556e; }
+.soc-settings-badge.is-scope { opacity: 0.5; }
+
+/* Effective values for a read-only row: shown as values, never as a disabled
+   input, which would invite someone to keep clicking it. */
+.soc-settings-values { display: flex; gap: 18px; flex-wrap: wrap; padding: 8px 10px;
+  border: 1px solid rgba(148,163,184,0.12); border-radius: 8px; }
+.soc-settings-values div { display: flex; flex-direction: column; gap: 1px; }
+.soc-settings-values span { font-size: 10px; opacity: 0.55; text-transform: uppercase; letter-spacing: 0.04em; }
+.soc-settings-values strong { font-size: 14px; font-family: var(--mono, monospace); }
+.soc-settings-values strong.is-hot { color: #f4556e; }
+
+.soc-settings-cards { display: flex; flex-direction: column; gap: 6px; }
+.soc-settings-card { display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 1px solid rgba(148,163,184,0.12); border-radius: 8px; font-size: 12px; }
+.soc-settings-card > div:first-child { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.soc-settings-card strong { font-family: var(--mono, monospace); font-size: 12px; overflow-wrap: anywhere; }
+.soc-settings-card em { font-style: normal; font-size: 11px; opacity: 0.65; }
+.soc-settings-count { font-size: 11px; opacity: 0.6; white-space: nowrap; }
+
+.soc-settings-form { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border: 1px solid rgba(148,163,184,0.12); border-radius: 8px;
+  --border: rgba(148,163,184,0.12); --field-bg: rgba(10,13,20,0.3); }
+.theme-light .soc-settings-form { --border: rgba(26,34,48,0.12); --field-bg: #f7f9fc; }
+.soc-settings-form label { display: flex; flex-direction: column; gap: 3px; font-size: 12px; }
+.soc-settings-form label > span { opacity: 0.7; font-size: 11px; }
+.soc-settings-form input { width: 100%; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--field-bg); color: rgb(var(--text)); padding: 7px 10px; font-size: 12px; }
+.soc-settings-ladder { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.soc-settings-ladder input { text-align: center; font-family: var(--mono, monospace); }
+.soc-settings-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.soc-settings-lead { font-size: 12px; margin: 6px 0 0; opacity: 0.85; line-height: 1.5; }
+
+/* Guardrails. Three blocks in one control, because the fixed floor, the extra
+   binaries and the protected addresses are one statement about the estate —
+   presenting them as three unrelated widgets is how an operator protects the
+   jump hosts and forgets the uplink. The fixed chips are visually distinct and
+   carry no remove affordance: a control that restores its own value on save
+   reads as broken. */
+.soc-guardrails { display: flex; flex-direction: column; gap: 14px; }
+.soc-guardrail-block { display: flex; flex-direction: column; gap: 7px;
+  padding: 10px 12px; border: 1px solid rgba(148,163,184,0.12); border-radius: 8px; }
+.theme-light .soc-guardrail-block { border-color: rgba(26,34,48,0.12); }
+.soc-guardrail-blockhead { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.soc-guardrail-blockhead strong { font-size: 12px; }
+.soc-guardrail-blockhead svg { opacity: 0.6; }
+
+.soc-chiprow { display: flex; flex-wrap: wrap; gap: 6px; }
+.soc-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 100%;
+  font-family: var(--mono, monospace); font-size: 11px; padding: 3px 8px; border-radius: 6px;
+  border: 1px solid rgba(148,163,184,0.22); background: rgba(148,163,184,0.06);
+  overflow-wrap: anywhere; }
+.theme-light .soc-chip { border-color: rgba(26,34,48,0.14); background: rgba(26,34,48,0.04); }
+.soc-chip.is-fixed { border-style: dashed; opacity: 0.75; }
+.soc-chip.is-empty { font-family: inherit; opacity: 0.5; border-style: dashed; }
+.soc-chip button { background: none; border: 0; padding: 0; cursor: pointer; display: inline-flex;
+  color: inherit; opacity: 0.5; }
+.soc-chip button:hover { opacity: 1; color: #f4556e; }
+
+.soc-guardrail-add { display: flex; gap: 8px; align-items: center; }
+.soc-guardrail-add input { flex: 1; min-width: 0; border: 1px solid rgba(148,163,184,0.18);
+  border-radius: 6px; background: rgba(10,13,20,0.3); color: rgb(var(--text));
+  padding: 6px 10px; font-size: 12px; font-family: var(--mono, monospace); }
+.theme-light .soc-guardrail-add input { border-color: rgba(26,34,48,0.12); background: #f7f9fc; }
 .theme-light .soc-detections-warn { color: #e11d48; }
 .soc-detections-note { font-size: 11px; opacity: 0.7; margin: 0; }
 .soc-detections-result { margin-top: 10px; border-radius: 8px; padding: 10px 12px; font-size: 12px; display: flex; flex-direction: column; gap: 4px; }

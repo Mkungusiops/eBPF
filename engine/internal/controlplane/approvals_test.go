@@ -47,7 +47,7 @@ func approvalServer(t *testing.T) *Server {
 func TestDestructiveActionIsHeldAndNotDispatched(t *testing.T) {
 	s := approvalServer(t)
 
-	code, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "")
+	code, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "", 0)
 
 	if code != 202 {
 		t.Fatalf("code = %d, want 202 (held for approval)", code)
@@ -71,14 +71,14 @@ func TestDestructiveActionIsHeldAndNotDispatched(t *testing.T) {
 // actually run — otherwise operators learn to bypass the console.
 func TestApprovalByASecondOperatorDispatches(t *testing.T) {
 	s := approvalServer(t)
-	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "")
+	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "", 0)
 	req := body["approval"].(approval.Request)
 
 	if _, err := s.approvals.Decide("acme", req.ID, "bob", "verified", true); err != nil {
 		t.Fatal(err)
 	}
 	// executeApproved runs the SAME containment path the requester asked for.
-	go s.executeApproved("acme", req)
+	go s.executeApproved(httptest.NewRequest(http.MethodPost, "/api/approvals/decide", nil), "acme", req)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -95,7 +95,7 @@ func TestApprovalByASecondOperatorDispatches(t *testing.T) {
 // theatre.
 func TestSelfApprovalDoesNotDispatch(t *testing.T) {
 	s := approvalServer(t)
-	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "")
+	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "", 0)
 	req := body["approval"].(approval.Request)
 
 	if _, err := s.approvals.Decide("acme", req.ID, "alice", "", true); err == nil {
@@ -116,7 +116,7 @@ func TestReversibleRungsAreNotHeld(t *testing.T) {
 			// Dispatch in the background: with no agent connected to ack, the call
 			// blocks for the full ackTimeout, and what is being tested is whether
 			// the action was HELD — which is decided before any dispatch.
-			go s.chokeRequest("alice", "acme", "exec-on-a", 4021, action, "routine", "")
+			go s.chokeRequest("alice", "acme", "exec-on-a", 4021, action, "routine", "", 0)
 
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
@@ -141,7 +141,7 @@ func TestReversibleRungsAreNotHeld(t *testing.T) {
 // see what they are authorizing is a rubber stamp.
 func TestHeldActionSurvivesAsAnAuditRecord(t *testing.T) {
 	s := approvalServer(t)
-	_, body := s.chokeRequest("alice@corp", "acme", "exec-on-a", 4021, "quarantine", "IR-4821 lateral movement", "agent-a")
+	_, body := s.chokeRequest("alice@corp", "acme", "exec-on-a", 4021, "quarantine", "IR-4821 lateral movement", "agent-a", 0)
 	req := body["approval"].(approval.Request)
 
 	got, ok := s.approvals.Get("acme", req.ID)
@@ -162,7 +162,7 @@ func TestHeldActionSurvivesAsAnAuditRecord(t *testing.T) {
 // layer an operator actually reaches.
 func TestApprovalsAreTenantScopedAtTheServer(t *testing.T) {
 	s := approvalServer(t)
-	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "")
+	_, body := s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "", 0)
 	req := body["approval"].(approval.Request)
 
 	if _, ok := s.approvals.Get("other-corp", req.ID); ok {
@@ -195,7 +195,7 @@ func TestChangeControlIsOffByDefault(t *testing.T) {
 	s := approvalServer(t)
 	s.cfg.RequireApproval = false // the default
 
-	go s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "")
+	go s.chokeRequest("alice", "acme", "exec-on-a", 4021, "sever", "confirmed C2", "", 0)
 
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
@@ -322,7 +322,7 @@ func TestApprovedDeviceJailDispatches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go s.executeApproved("acme", req)
+	go s.executeApproved(httptest.NewRequest(http.MethodPost, "/api/approvals/decide", nil), "acme", req)
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

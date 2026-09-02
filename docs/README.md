@@ -151,6 +151,18 @@ way there is no Node runtime in production.
 - [78-panel-redesign-target-vm-e2e-certification-plan.md](frontend-dev/78-panel-redesign-target-vm-e2e-certification-plan.md)
   — the release certification plan.
 
+## [Browser tests](browser-test/)
+
+Two Playwright suites over the console, split by what kind of claim they make.
+
+- [README.md](browser-test/README.md) — **start here**: the e2e (mocked) vs
+  probe (live deployment) split, how to run each, the mocked-backend API, and
+  the conventions. Also records the defects this suite found and how known,
+  unfixed ones are kept visible instead of deleted.
+- [playwright-browser-testing-guide.md](browser-test/playwright-browser-testing-guide.md)
+  — the portable method the suites were built from (Browser → Context → Page,
+  the four-layer split, the three multi-page patterns).
+
 ## [Technical reference](technical-document/)
 
 A single long-form document covering the whole platform, for readers who want it

@@ -14,8 +14,8 @@ import (
 
 func TestEngineDefaults(t *testing.T) {
 	c := parseEngineFlags(nil)
-	if c.Version != engineVersion {
-		t.Errorf("Version = %q, want %q", c.Version, engineVersion)
+	if c.Version != engineVersion() {
+		t.Errorf("Version = %q, want %q", c.Version, engineVersion())
 	}
 	if c.TetragonAddr != hoststack.DefaultTetragonAddr {
 		t.Errorf("TetragonAddr = %q", c.TetragonAddr)

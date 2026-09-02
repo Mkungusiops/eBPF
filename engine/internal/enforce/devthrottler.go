@@ -2,6 +2,7 @@ package enforce
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
@@ -101,4 +102,20 @@ func (t *DeviceThrottler) Forget(mac devbpf.MAC) error {
 		return nil
 	}
 	return t.Backend.Delete(mac)
+}
+
+// ProtectedList returns the MACs currently on the lockout allow-list, sorted.
+//
+// The setter is add-only by design, so this is the only way an operator can
+// see what protection is actually in force — and a protect-list you cannot
+// read is a protect-list you cannot trust before you arm the plane.
+func (t *DeviceThrottler) ProtectedList() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	out := make([]string, 0, len(t.Protected))
+	for m := range t.Protected {
+		out = append(out, m.String())
+	}
+	sort.Strings(out)
+	return out
 }

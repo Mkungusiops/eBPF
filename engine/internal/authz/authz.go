@@ -69,6 +69,11 @@ type AuditRecord struct {
 	Tenant  string
 	Action  string
 	At      time.Time
+	// Allowed and CrossTenant describe the outcome. A denied attempt is the
+	// more interesting record of the two.
+	Allowed     bool
+	CrossTenant bool
+	Detail      string
 }
 
 // Auditor records cross-tenant accesses. Passing one to Authorize makes the
@@ -77,30 +82,63 @@ type Auditor interface {
 	RecordCrossTenant(subject, tenant, action string)
 }
 
+// AccessAuditor records every authorization outcome, not just allowed
+// cross-tenant ones.
+//
+// A DENIED attempt is the more interesting record of the two: an operator
+// repeatedly failing to reach a tenant they have no grant for is the signal an
+// incident review looks for, and Authorize used to return those silently.
+//
+// A separate interface so an existing Auditor keeps working unchanged;
+// Authorize prefers this one when the implementation offers it.
+type AccessAuditor interface {
+	RecordAccess(subject, tenant, action string, allowed, crossTenant bool, detail string)
+}
+
+// audit reports one decision to whichever interface the auditor implements.
+func audit(aud Auditor, p Principal, tenant string, action Action, d Decision) {
+	if aud == nil {
+		return
+	}
+	if a, ok := aud.(AccessAuditor); ok {
+		a.RecordAccess(p.Subject, tenant, string(action), d.Allowed, d.CrossTenant, d.Reason)
+		return
+	}
+	// Older auditors only understand the allowed cross-tenant case.
+	if d.Allowed && d.CrossTenant {
+		aud.RecordCrossTenant(p.Subject, tenant, string(action))
+	}
+}
+
 // Authorize decides whether p may perform action on tenant. Own-tenant access
 // (a tenant-bound grant naming this tenant) is allowed silently; cross-tenant
 // access (via a cross-tenant role) is allowed but recorded through aud. An empty
 // tenant, or no matching grant, is denied (fail closed).
 func Authorize(p Principal, tenant string, action Action, aud Auditor) Decision {
 	if tenant == "" {
-		return Decision{Reason: "no tenant in request (fail-closed)"}
+		d := Decision{Reason: "no tenant in request (fail-closed)"}
+		audit(aud, p, tenant, action, d)
+		return d
 	}
 	// 1. Own-tenant grants first — the common path, no audit.
 	for _, g := range p.Grants {
 		if !isCrossTenant(g.Role) && g.TenantID == tenant && roleCan(g.Role, action) {
-			return Decision{Allowed: true}
+			d := Decision{Allowed: true}
+			audit(aud, p, tenant, action, d)
+			return d
 		}
 	}
 	// 2. Cross-tenant roles — explicit, audited widening.
 	for _, g := range p.Grants {
 		if isCrossTenant(g.Role) && roleCan(g.Role, action) {
-			if aud != nil {
-				aud.RecordCrossTenant(p.Subject, tenant, string(action))
-			}
-			return Decision{Allowed: true, CrossTenant: true}
+			d := Decision{Allowed: true, CrossTenant: true}
+			audit(aud, p, tenant, action, d)
+			return d
 		}
 	}
-	return Decision{Reason: "no grant authorizes " + string(action) + " on this tenant"}
+	d := Decision{Reason: "no grant authorizes " + string(action) + " on this tenant"}
+	audit(aud, p, tenant, action, d)
+	return d
 }
 
 // TenantScope is the set of tenants a principal may reach WITHOUT invoking a
@@ -168,17 +206,56 @@ func roleCan(r Role, a Action) bool {
 
 // MemAuditor is an in-memory Auditor for tests and the Phase 1 stub. The real
 // control plane writes cross-tenant accesses to the durable audit log.
+// memAuditorCap bounds the in-memory ring.
+//
+// The slice was appended to without limit and read only by tests, so a control
+// plane leaked one record per cross-tenant access for the life of the process.
+// Same failure class this codebase has already bounded twice — the uplink
+// backlog and the connection pool — one layer up.
+//
+// This is a debugging aid, not the audit trail: the durable record belongs in
+// operator_audit. Keeping the newest is the right end to keep for that purpose,
+// and dropped is counted so the count never silently lies.
+const memAuditorCap = 1000
+
 type MemAuditor struct {
 	mu      sync.Mutex
 	records []AuditRecord
+	dropped uint64
 }
 
 func NewMemAuditor() *MemAuditor { return &MemAuditor{} }
 
 func (m *MemAuditor) RecordCrossTenant(subject, tenant, action string) {
+	m.RecordAccess(subject, tenant, action, true, true, "")
+}
+
+// RecordAccess implements AccessAuditor.
+func (m *MemAuditor) RecordAccess(subject, tenant, action string, allowed, crossTenant bool, detail string) {
 	m.mu.Lock()
-	m.records = append(m.records, AuditRecord{Subject: subject, Tenant: tenant, Action: action, At: time.Now()})
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+	// Only cross-tenant and denied outcomes are worth holding in memory. Every
+	// own-tenant read would otherwise fill the ring with the ordinary case and
+	// evict the interesting ones.
+	if allowed && !crossTenant {
+		return
+	}
+	m.records = append(m.records, AuditRecord{
+		Subject: subject, Tenant: tenant, Action: action, At: time.Now(),
+		Allowed: allowed, CrossTenant: crossTenant, Detail: detail,
+	})
+	if excess := len(m.records) - memAuditorCap; excess > 0 {
+		m.records = append(m.records[:0], m.records[excess:]...)
+		m.dropped += uint64(excess)
+	}
+}
+
+// Dropped counts records evicted by the cap. Never reset: a count that has
+// lost entries must keep saying so.
+func (m *MemAuditor) Dropped() uint64 {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.dropped
 }
 
 // Records returns a copy of the recorded cross-tenant accesses.

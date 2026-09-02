@@ -64,6 +64,25 @@ export interface ChokeState {
   thresholds?: Thresholds;
   audit?: AuditChainStatus;
   kernel?: KernelPosture;
+  /**
+   * Hosts whose containment ladder the control plane put back to tenant policy.
+   *
+   * Setting a ladder on ONE host is supported — the agent serves its own
+   * console. The tenant policy is authoritative, so the reconciler corrects
+   * that host within two minutes, correctly and, until now, silently: the
+   * operator watched their change apply and then vanish, with the only
+   * explanation in a control-plane log they cannot reach.
+   */
+  ladder_corrections?: LadderCorrection[];
+}
+
+export interface LadderCorrection {
+  agent: string;
+  /** The ladder the host was running, as "throttle/tarpit/quarantine/sever". */
+  from: string;
+  /** The tenant policy it was replaced with, same shape. */
+  to: string;
+  at: string;
 }
 
 export interface Annotation {
@@ -110,6 +129,18 @@ export interface BucketEntry {
   burst: number;
   tokens: number;
   flags: number;
+  /**
+   * The host this bucket lives on. Present on the fleet console, absent on the
+   * single-host engine where there is only one answer.
+   *
+   * The control plane has always sent it and this type never declared it, so
+   * it was dropped — leaving the fleet's kernel map as a flat list of PIDs
+   * from different hosts. PIDs are per-host and collide, so "PID 1156421" was
+   * not just unattributed, it was ambiguous: the row key did not include the
+   * agent either, so two hosts throttling the same PID number rendered as one
+   * row and the other silently disappeared.
+   */
+  agent?: string;
 }
 
 export interface Decision {
@@ -131,6 +162,16 @@ export interface Decision {
   origin_port?: number;
   origin_user?: string;
   origin_fingerprint?: string;
+  /**
+   * Who ordered this, empty for a score-driven one.
+   *
+   * The engine has always sent it and this type never declared it, so the
+   * console dropped it on the floor. The control plane never received it at
+   * all until the decision uplink carried it. It is chain-hashed either way,
+   * which is the tell that it is part of the record rather than decoration:
+   * the reason says why, and without this nothing says who.
+   */
+  actor?: string;
   prev_hash?: string;
   hash?: string;
 }

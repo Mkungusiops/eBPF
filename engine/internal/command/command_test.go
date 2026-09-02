@@ -19,6 +19,10 @@ type fakeApplier struct {
 	killPlane     ebpfsocv1.Plane
 	setModeCalls  int
 	jailCalls     int
+	// lastRevert records the auto-revert window the applier was handed, so a
+	// test can prove the window survived the wire rather than only that a jail
+	// happened.
+	lastRevert time.Duration
 }
 
 func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode, p ebpfsocv1.Plane) error {
@@ -26,7 +30,11 @@ func (f *fakeApplier) SetMode(m ebpfsocv1.EnforcementMode, p ebpfsocv1.Plane) er
 	f.setModeCalls++
 	return nil
 }
-func (f *fakeApplier) Jail(string, uint32, string) error    { f.jailCalls++; return nil }
+func (f *fakeApplier) Jail(_ string, _ uint32, _ string, revertAfter time.Duration) error {
+	f.jailCalls++
+	f.lastRevert = revertAfter
+	return nil
+}
 func (f *fakeApplier) Thaw(string, uint32) error            { return nil }
 func (f *fakeApplier) SetThresholds(_, _, _, _ int32) error { return nil }
 func (f *fakeApplier) ApplyPreset(string) error             { return nil }
@@ -359,7 +367,7 @@ type recordingApplier struct {
 }
 
 func (r *recordingApplier) SetMode(ebpfsocv1.EnforcementMode, ebpfsocv1.Plane) error { return nil }
-func (r *recordingApplier) Jail(string, uint32, string) error                        { return nil }
+func (r *recordingApplier) Jail(string, uint32, string, time.Duration) error         { return nil }
 func (r *recordingApplier) Thaw(string, uint32) error                                { return nil }
 func (r *recordingApplier) SetThresholds(_, _, _, _ int32) error                     { return nil }
 func (r *recordingApplier) KillSwitch(bool, string, ebpfsocv1.Plane) error           { return nil }
@@ -541,5 +549,85 @@ func TestApplyPolicyOnAnApplierThatCannotAcksRejected(t *testing.T) {
 	}
 	if !strings.Contains(a.GetDetail(), "cannot apply detection policy") {
 		t.Fatalf("detail %q should distinguish inability from failure", a.GetDetail())
+	}
+}
+
+// ── UpdateSuppressions ───────────────────────────────────────────────────────
+//
+// A suppression narrows what a fleet detects. The signature has to bind every
+// field that decides WHAT IS SILENCED, or an attacker could widen a legitimate
+// rule from "this binary under this detection" to "this binary always" without
+// breaking it.
+
+type suppressionApplier struct {
+	fakeApplier
+	got []*ebpfsocv1.Suppression
+	err error
+}
+
+func (s *suppressionApplier) SetSuppressions(r []*ebpfsocv1.Suppression) error {
+	s.got = r
+	return s.err
+}
+
+func suppressionCmd(t *testing.T, s signing.Signer, rules []*ebpfsocv1.Suppression) *ebpfsocv1.Command {
+	t.Helper()
+	return sign(s, &ebpfsocv1.Command{
+		CommandId: "s1",
+		ExpiresAt: timestamppb.New(time.Now().Add(time.Minute)),
+		Action: &ebpfsocv1.Command_UpdateSuppressions{UpdateSuppressions: &ebpfsocv1.UpdateSuppressions{
+			Suppressions: rules, Reason: "expected on this estate"}},
+	})
+}
+
+func TestSuppressionsReachTheApplier(t *testing.T) {
+	sa := &suppressionApplier{}
+	s, v, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NewProcessor(v, sa, []string{"sudo"})
+
+	a := p.Handle(suppressionCmd(t, s, []*ebpfsocv1.Suppression{
+		{Binary: "/opt/backup/agent", Reason: "reads credential paths nightly"},
+	}))
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_APPLIED {
+		t.Fatalf("acked %v (%q)", a.GetStatus(), a.GetDetail())
+	}
+	if len(sa.got) != 1 || sa.got[0].GetBinary() != "/opt/backup/agent" {
+		t.Fatalf("the rule did not reach the applier: %+v", sa.got)
+	}
+}
+
+func TestTheSignatureBindsWhatIsSilenced(t *testing.T) {
+	// Widening the scope of a signed suppression must invalidate it. Without
+	// the policy field in the canonical form, "silence this binary under
+	// privilege-escalation" could be edited in flight into "silence it always".
+	s, _, err := signing.GenerateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow := suppressionCmd(t, s, []*ebpfsocv1.Suppression{
+		{Binary: "/usr/bin/cfgmgr", Policy: "privilege-escalation", Reason: "scheduled"},
+	})
+	// Same command, scope widened by dropping the policy narrowing.
+	widened := &ebpfsocv1.Command{
+		CommandId: narrow.CommandId, ExpiresAt: narrow.ExpiresAt, Signature: narrow.Signature,
+		Action: &ebpfsocv1.Command_UpdateSuppressions{UpdateSuppressions: &ebpfsocv1.UpdateSuppressions{
+			Suppressions: []*ebpfsocv1.Suppression{{Binary: "/usr/bin/cfgmgr", Reason: "scheduled"}},
+			Reason:       "expected on this estate"}},
+	}
+	if string(Canonical(narrow)) == string(Canonical(widened)) {
+		t.Fatal("widening a suppression did not change the signed bytes — the scope is not bound")
+	}
+}
+
+func TestAnAgentThatCannotSuppressSaysSo(t *testing.T) {
+	// "I cannot" is a different answer from "I did", and an operator watching
+	// a fleet needs to tell them apart.
+	p, s, _ := newProc(t) // plain fakeApplier, no SetSuppressions
+	a := p.Handle(suppressionCmd(t, s, []*ebpfsocv1.Suppression{{Binary: "/x", Reason: "y"}}))
+	if a.GetStatus() != ebpfsocv1.CommandAck_STATUS_REJECTED {
+		t.Fatalf("acked %v, want REJECTED", a.GetStatus())
 	}
 }

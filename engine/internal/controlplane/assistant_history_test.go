@@ -16,6 +16,11 @@ type fakeChats struct {
 	appended []chatstore.Message
 	scopes   []chatstore.Scope
 	err      error
+	// chat is what GetChat returns, so a test can pin the model a stored
+	// conversation was created with.
+	chat chatstore.Chat
+	// created records the model CreateChat was asked for.
+	created string
 }
 
 func (f *fakeChats) AppendMessage(s chatstore.Scope, chatID string, m chatstore.Message) (chatstore.Message, error) {
@@ -28,12 +33,13 @@ func (f *fakeChats) AppendMessage(s chatstore.Scope, chatID string, m chatstore.
 	return m, nil
 }
 
-func (f *fakeChats) CreateChat(chatstore.Scope, string, string) (chatstore.Chat, error) {
-	return chatstore.Chat{}, nil
+func (f *fakeChats) CreateChat(_ chatstore.Scope, _, _, model string) (chatstore.Chat, error) {
+	f.created = model
+	return chatstore.Chat{Model: model}, nil
 }
 func (f *fakeChats) ListChats(chatstore.Scope, int) ([]chatstore.Chat, error) { return nil, nil }
 func (f *fakeChats) GetChat(chatstore.Scope, string) (chatstore.Chat, error) {
-	return chatstore.Chat{}, nil
+	return f.chat, f.err
 }
 func (f *fakeChats) RenameChat(chatstore.Scope, string, string) error { return nil }
 func (f *fakeChats) PinChat(chatstore.Scope, string, bool) error      { return nil }
@@ -62,7 +68,7 @@ func TestIncognitoAskPersistsNothing(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer test-token")
 
 	s.recordExchange(r, cpAskRequest{Agent: "triage", Question: "is this a breach?"},
-		assistant.Answer{Content: "no"})
+		assistant.Answer{Content: "no"}, "test-model")
 
 	if len(f.appended) != 0 {
 		t.Errorf("an ask with no chat_id persisted %d messages; incognito must leave no record",
@@ -82,7 +88,7 @@ func TestAskWithChatIDStoresBothTurnsWithProvenance(t *testing.T) {
 			Content:  "curl read /etc/shadow",
 			Steps:    []assistant.Step{{Tool: "soc_alerts"}},
 			Grounded: true,
-		})
+		}, "test-model")
 
 	if len(f.appended) != 2 {
 		t.Fatalf("stored %d messages, want the question and the answer", len(f.appended))
@@ -117,7 +123,7 @@ func TestUngroundedAnswersAreStoredAsUngrounded(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer test-token")
 
 	s.recordExchange(r, cpAskRequest{Agent: "triage", Question: "q", ChatID: "c1"},
-		assistant.Answer{Content: "could not ground an answer", Grounded: false})
+		assistant.Answer{Content: "could not ground an answer", Grounded: false}, "test-model")
 
 	if len(f.appended) != 2 {
 		t.Fatalf("stored %d messages, want 2", len(f.appended))
@@ -141,7 +147,7 @@ func TestHistoryFailuresNeverPropagate(t *testing.T) {
 			// No panic, no return value to check: the contract is that this is
 			// side-effect only and cannot affect the response.
 			s.recordExchange(r, cpAskRequest{Question: "q", ChatID: "c1"},
-				assistant.Answer{Content: "a"})
+				assistant.Answer{Content: "a"}, "test-model")
 		})
 	}
 }
@@ -154,7 +160,7 @@ func TestUnauthenticatedAskIsNeverPersisted(t *testing.T) {
 	s := serverWithChats(f)
 	r := httptest.NewRequest("POST", "/api/assistant/ask", nil) // no Authorization
 
-	s.recordExchange(r, cpAskRequest{Question: "q", ChatID: "c1"}, assistant.Answer{Content: "a"})
+	s.recordExchange(r, cpAskRequest{Question: "q", ChatID: "c1"}, assistant.Answer{Content: "a"}, "test-model")
 
 	if len(f.appended) != 0 {
 		t.Errorf("stored %d messages for an unauthenticated caller; every row must have "+
@@ -171,7 +177,7 @@ func TestStoredScopeComesFromTheSessionNotTheRequest(t *testing.T) {
 	r.Header.Set("Authorization", "Bearer test-token")
 
 	s.recordExchange(r, cpAskRequest{Question: "q", ChatID: "someone-elses-chat"},
-		assistant.Answer{Content: "a"})
+		assistant.Answer{Content: "a"}, "test-model")
 
 	if len(f.scopes) == 0 {
 		t.Fatal("nothing was stored")

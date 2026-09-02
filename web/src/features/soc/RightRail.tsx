@@ -6,7 +6,7 @@
 // banner for all four.
 import { PanelFrame } from "./components";
 import { PANELS } from "./dashboard";
-import { CoveragePill, IocList, MiniBarList, NetworkList } from "./rows";
+import { CoveragePill, IocList, MiniBarList, NetworkList, emptyBecause } from "./rows";
 import type { SocWindowModel } from "./useSocWindowModel";
 
 export function RightRail({
@@ -16,7 +16,7 @@ export function RightRail({
   model: SocWindowModel;
   onOpenProcess: (execId: string) => void;
 }) {
-  const { mitreRows, techniqueMapped, topProcesses, iocs, networkRows, windowCoverage } = model;
+  const { mitreRows, techniqueMapped, topProcesses, iocs, networkRows, windowCoverage, beyondWindow } = model;
   return (
     <div className="soc-right-rail">
       <PanelFrame panel={PANELS["mitre-coverage"]}>
@@ -24,7 +24,7 @@ export function RightRail({
           rows={mitreRows}
           empty={
             techniqueMapped
-              ? "No MITRE techniques observed in this range."
+              ? emptyBecause("MITRE techniques", beyondWindow.alerts, "alerts")
               : "This server publishes no policy→ATT&CK mapping, so coverage cannot be computed here."
           }
         />
@@ -37,15 +37,15 @@ export function RightRail({
             meta: `${row.pid ? `pid ${row.pid} · ` : ""}${row.count} alert${row.count === 1 ? "" : "s"}`,
             id: row.execId
           }))}
-          empty="No scored processes yet."
+          empty={emptyBecause("scored processes", beyondWindow.alerts, "alerts")}
           onClick={onOpenProcess}
         />
       </PanelFrame>
       <PanelFrame panel={PANELS["iocs-observed"]} status={<CoveragePill feed={windowCoverage.events} />}>
-        <IocList files={iocs.files} peers={iocs.peers} />
+        <IocList files={iocs.files} peers={iocs.peers} beyond={beyondWindow.events} />
       </PanelFrame>
       <PanelFrame panel={PANELS["network-connections"]} status={<CoveragePill feed={windowCoverage.events} />}>
-        <NetworkList rows={networkRows} />
+        <NetworkList rows={networkRows} beyond={beyondWindow.events} />
       </PanelFrame>
     </div>
   );

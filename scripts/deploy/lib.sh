@@ -201,6 +201,11 @@ _assistant_flags() {
   fi
   printf ' -assistant-url %s -assistant-model %s' \
     "$ASSISTANT_URL" "${ASSISTANT_MODEL:-gpt-oss:120b}"
+  # Optional second model for sustained sidebar conversations. Emitted only
+  # when set, so a deployment that does not want the split gets exactly the
+  # command line it got before this existed.
+  [[ -n "${ASSISTANT_DEEP_MODEL:-}" ]] && printf ' -assistant-deep-model %s' "$ASSISTANT_DEEP_MODEL"
+  return 0
 }
 
 # ── Threat-intelligence feeds ──────────────────────────────────────────────
@@ -1062,6 +1067,33 @@ EOF"
     /opt/keycloak/bin/kcadm.sh config credentials --server http://localhost:$KC_PORT --realm master --user '$PERM_ADMIN_USER' --password '$PERM_ADMIN_PW' >/dev/null 2>&1 || { echo 'permanent admin auth failed — keeping temp admin'; exit 0; }
     AID=\$(K get users -r master -q username=admin -q exact=true --fields id --format csv --noquotes 2>/dev/null | tail -1)
     [ -n \"\$AID\" ] && K delete users/\$AID -r master >/dev/null 2>&1 && echo 'temp admin removed' || echo 'no temp admin present'"
+
+  # Schema migrations, BEFORE the new binary starts.
+  #
+  # The deploy never ran these. The Go stores self-bootstrap their base tables
+  # on Open(), which is enough to start and cannot evolve — so every migration
+  # since 0003 was applied BY HAND, and the schema_migrations ledger on this
+  # database was empty while five migrations were in force. A rebuild from
+  # scratch would have replayed none of them.
+  #
+  # Ordered before the binary swap on purpose: a control plane that starts
+  # against a schema older than its code is the failure this just produced,
+  # where a SELECT named a column no ALTER had added and every chat read
+  # errored.
+  #
+  # Idempotent by construction (the runner's own contract), so re-running is a
+  # no-op that also backfills the ledger for anything applied by hand.
+  log "applying schema migrations"
+  RUN "install -d -m 0755 /opt/ebpf-soc/migrations"
+  for f in "$REPO_ROOT"/scripts/migrations/postgres/*.sql; do
+    [[ -e "$f" ]] || continue
+    PUT "$f" "/opt/ebpf-soc/migrations/$(basename "$f")"
+  done
+  PUT "$REPO_ROOT/scripts/migrate.sh"        /opt/ebpf-soc/migrate.sh
+  PUT "$REPO_ROOT/scripts/lib/common.sh"     /opt/ebpf-soc/lib-common.sh
+  RUN "install -d -m 0755 /opt/ebpf-soc/lib && mv -f /opt/ebpf-soc/lib-common.sh /opt/ebpf-soc/lib/common.sh
+    cd /opt/ebpf-soc && MIG_DIR=/opt/ebpf-soc/migrations ./migrate.sh up --engine postgres \
+      --dsn 'postgres://postgres:$PG_PASS@127.0.0.1:5432/ebpf_soc?sslmode=disable'"
 
   # Control plane
   log "installing control plane"
