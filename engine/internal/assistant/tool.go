@@ -106,6 +106,25 @@ var containmentPaths = []string{
 	// change, and it was reachable: the ratchet's "dangerous" regex matched
 	// none of these words, so the completeness test passed over it in silence.
 	"/api/policies/push",
+	// Settings: a suppression narrows what an entire tenant detects. An
+	// LLM-driven tool pointed at this could silence a detection and the
+	// operator would see only that alerts stopped.
+	"/api/settings/suppressions",
+	// Guardrails. This is the inverse of a containment route and belongs here
+	// for the stronger reason: an LLM that could NARROW the protect-list could
+	// remove the estate's jump hosts or its uplink from the one list that
+	// stops containment reaching them. The compiled-in floor still holds, but
+	// everything above the floor is exactly what an operator added because the
+	// floor was not enough.
+	"/api/settings/protected",
+	// Change control. The assistant's own doc names EN-2 dual control as the
+	// thing that stops ONE ACTOR acting alone — a tool that could switch it
+	// off would be that actor removing the check before acting.
+	"/api/settings/change-control",
+	// Chain repair dispatches a signed command to an agent. An assistant that
+	// could trigger a fleet-wide replay could flood every outbound buffer and
+	// evict live telemetry behind it.
+	"/api/verify-chain/repair",
 }
 
 // Errors from Register. Distinct so the ratchet test can assert WHICH rule

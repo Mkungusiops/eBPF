@@ -429,6 +429,20 @@ type Runner struct {
 //
 // An answer that fails any of these is refused exactly as before.
 func assertsNothing(content string) bool {
+	// An EMPTY reply asserts nothing in the literal sense and is not what this
+	// predicate means. It means "a real reply that happens to make no claim
+	// about the estate" — a greeting, a question back to the analyst.
+	//
+	// Conflating the two was the blank-answer bug. A model returning empty
+	// content with no tool calls satisfied every clause below (no words, no
+	// digits), so it was classified as a greeting: no retry, no warning
+	// banner, NoClaim set, and an empty bubble rendered on the console as
+	// though the assistant had chosen to say nothing. Measured against
+	// kimi-k3, which returns empty content more often than the model the
+	// grounding rules were written against.
+	if strings.TrimSpace(content) == "" {
+		return false
+	}
 	const maxWords = 60
 	if len(strings.Fields(content)) > maxWords {
 		return false
@@ -504,6 +518,11 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 
 	out := Answer{Agent: ag.ID, Model: r.Provider.Name()}
 	retried := false
+	// Tracked separately from `retried`: an empty reply and an ungrounded one
+	// are different failures and each gets its own single retry. Sharing the
+	// flag would let a model that first answered ungrounded, then blank, fall
+	// straight through to the empty bubble.
+	blankRetried := false
 	max := r.MaxCalls
 	if max <= 0 {
 		max = 6
@@ -531,7 +550,42 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 			// Checked BEFORE the retry rather than after it, because after is
 			// too late: by then the model has already been told to go and read
 			// telemetry, and the greeting is gone.
-			noClaim := ag.Conversational && assertsNothing(strings.TrimSpace(msg.Content))
+			content := strings.TrimSpace(msg.Content)
+
+			// A blank reply is a provider failure, not an answer.
+			//
+			// The model returned no content AND asked for no tool. There is
+			// nothing to render, nothing to ground, and nothing to warn about
+			// — so every downstream branch treated it as the benign case and
+			// the console drew an empty message bubble. An analyst reads that
+			// as the assistant having nothing to say about their incident,
+			// which is a far stronger claim than "the provider returned
+			// nothing".
+			//
+			// One retry, then the truth. Retrying more would hold an incident
+			// console open on a provider that is not answering.
+			if content == "" {
+				if !blankRetried {
+					blankRetried = true
+					msgs = append(msgs, Message{
+						Role: "user",
+						Content: "Your last reply was empty. Answer the question in text. " +
+							"If you need data, call a tool first.",
+					})
+					continue
+				}
+				out.Content = "The assistant received an empty reply from the model provider, twice. " +
+					"Nothing is reported because there is nothing to report — this is a provider " +
+					"failure, not a finding about your estate."
+				out.Grounded = len(out.Steps) > 0
+				out.Duration = time.Since(started).Round(time.Millisecond).String()
+				// Deliberately NOT NoClaim: that flag suppresses the console's
+				// ungrounded warning for replies that make no claim, and this
+				// is a failure the analyst has to see rather than a greeting.
+				return out, nil
+			}
+
+			noClaim := ag.Conversational && assertsNothing(content)
 
 			// An answer with no tool calls behind it cannot be grounded in this
 			// engine's data, whatever it says. Give the model exactly one chance
@@ -549,7 +603,7 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 				})
 				continue
 			}
-			out.Content = strings.TrimSpace(msg.Content)
+			out.Content = content
 			out.Grounded = len(out.Steps) > 0
 			out.Duration = time.Since(started).Round(time.Millisecond).String()
 			// A tool-free answer is acceptable in exactly two cases, both
@@ -624,6 +678,13 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 		return out, err
 	}
 	out.Content = strings.TrimSpace(final.Content)
+	if out.Content == "" {
+		// Same hole as the main loop, on the path taken when the tool budget
+		// runs out. Here there ARE findings — the steps ran — so saying
+		// nothing discards a completed investigation.
+		out.Content = "The assistant reached its tool limit and the model then returned an empty " +
+			"reply. The investigation steps below did run; the summary of them did not arrive."
+	}
 	out.Grounded = len(out.Steps) > 0
 	out.Duration = time.Since(started).Round(time.Millisecond).String()
 	return out, nil

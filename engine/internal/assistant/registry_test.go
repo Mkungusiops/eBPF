@@ -104,7 +104,7 @@ func TestDenylistCoversEveryContainmentRoute(t *testing.T) {
 	// A completeness test that silently checks an empty set is worse than no
 	// test, so TestRatchetItselfIsLoadBearing below asserts it matches.
 	pathLine := regexp.MustCompile(`(?m)^\s{2}"?(/[^"\s:]+)"?:`)
-	dangerous := regexp.MustCompile(`sever|quarantine|kill-switch|jail|bulk|thaw|preset|threshold|forget|annotate|policy/preview|policies/push|/mode$|device-mode`)
+	dangerous := regexp.MustCompile(`sever|quarantine|kill-switch|jail|bulk|thaw|preset|threshold|forget|annotate|policy/preview|policies/push|settings/|/mode$|device-mode`)
 
 	known := map[string]bool{}
 	for _, p := range containmentPaths {
