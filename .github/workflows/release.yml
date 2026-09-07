@@ -106,7 +106,7 @@ jobs:
           fi
           gh release view "$VERSION" --json assets -q '.assets[].name' | sed 's/^/  published: /'
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-${{ github.event.inputs.version || github.ref_name }}
           path: dist/${{ github.event.inputs.version || github.ref_name }}/*
