@@ -1,9 +1,11 @@
 package controlplane
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/jeffmk/ebpf-poc-engine/internal/choke/circuit"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -104,11 +106,44 @@ func (s *Server) authorizeRespondMethods(w http.ResponseWriter, r *http.Request,
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return "", false
 	}
+	return s.authorizeRespondAs(w, r, p)
+}
+
+// authorizeRespondAs is authorizeRespondMethods once the method is accepted and
+// the operator is known: resolve the tenant, then check the RBAC grant.
+//
+// Split out for the same reason authorizeReadAs is: the identity path that
+// actually runs on the estate is an OIDC session, which no test can construct,
+// and the only principal a test could otherwise reach this code with is the
+// break-glass bearer token — which carries no tenant and so never exercises the
+// resolution below. That is exactly why the regression this comment describes
+// shipped with a full green suite.
+//
+// THE RESOLUTION. A tenant-less request was resolved through authz.TenantScope,
+// which answers a DIFFERENT question: "which tenants may this principal reach
+// without naming one". For a cross-tenant role the honest answer to that is
+// none — a cross-tenant operator reaches a tenant by naming it, one audited
+// access at a time — so scope is empty and every write by an MSOC admin or
+// cross-tenant responder fell through to the 400 below. The console names a
+// tenant on no request it makes, so that was the entire write plane: every
+// containment, revert, mode change, policy push, attack and settings write.
+//
+// authz.DefaultTenant answers the question actually being asked — "which tenant
+// is this tenant-less request about" — with the tenant stamped on the account,
+// which is the same value whoami publishes as viewing_tenant and the same
+// default authorizeRead uses. One fact, one source, so the read and write planes
+// cannot disagree about which customer is on screen.
+//
+// It confers nothing. The resolved tenant still goes through Authorize below,
+// and for a cross-tenant principal that respond is recorded as a cross-tenant
+// access exactly as a named one is — operator_audit's contract is written from
+// Authorize's outcome, so a write resolved this way is audited wherever a read
+// would be. A principal carrying no tenant at all (the break-glass bearer token)
+// still gets the 400: there is nothing to resolve and nothing may be invented.
+func (s *Server) authorizeRespondAs(w http.ResponseWriter, r *http.Request, p authz.Principal) (string, bool) {
 	tenant := r.URL.Query().Get("tenant")
 	if tenant == "" {
-		if scope := authz.TenantScope(p); len(scope) > 0 {
-			tenant = scope[0]
-		}
+		tenant = authz.DefaultTenant(p)
 	}
 	if tenant == "" {
 		http.Error(w, "tenant required", http.StatusBadRequest)
@@ -567,6 +602,90 @@ func targetLabel(execID string, pid uint32) string {
 	}
 }
 
+// maxWriteBodyBytes caps what one control-plane choke write may send.
+// decodeWriteBody reads the body twice — once as an object, once into the
+// handler's struct — so it buffers it, and an unbounded buffer on an
+// authenticated write is a cost nobody asked for. Orders of magnitude above the
+// largest real body here (a bulk jail naming thousands of targets).
+const maxWriteBodyBytes = 4 << 20
+
+// decodeWriteBody decodes a write's body into dst, refusing every body that
+// states no intent: absent, empty, whitespace-only, a literal `null`, or any
+// JSON that is not an object.
+//
+// This is the layer under the engine's own decodeWrite (internal/api/choke.go),
+// and it exists because THIS file was worse. Several handlers wrote
+// `_ = json.NewDecoder(r.Body).Decode(&b)`, discarding the error outright, so a
+// malformed body, an absent body and a valid one were indistinguishable — and
+// every field then held its zero value, which on this surface is the disarming
+// direction: HaltAllEnforcement true from `on`, detect-only from `enforcing`,
+// "release everything this tenant is holding" from an empty thaw. A body that
+// names no intent is not an instruction, least of all a fleet-wide one.
+//
+// WHY the map hop rather than decoding straight into dst: encoding/json decodes
+// `null` into a struct with a NIL ERROR and all zero values, so the struct
+// cannot tell "the operator said false" from "the body said nothing". A
+// map[string]json.RawMessage separates not-an-object, key-omitted and
+// key-stated. writeChangeControl in changecontrol.go carries the same rule with
+// a *bool; a pointer covers the one field somebody remembered to make a
+// pointer, and this rule has to hold for every write on the surface.
+func decodeWriteBody(r *http.Request, dst any) (map[string]json.RawMessage, error) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("unreadable request body: %w", err)
+	}
+	if len(raw) > maxWriteBodyBytes {
+		return nil, fmt.Errorf("request body is larger than the %d byte limit for a choke write", maxWriteBodyBytes)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("empty request body: this write must be a JSON object saying what to do")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, fmt.Errorf("malformed request: %w", err)
+	}
+	if fields == nil {
+		// The literal `null`: valid JSON that unmarshals into a NIL map with a
+		// nil error, so every key reads as absent and every struct field as its
+		// zero value. This is the shape that turned an empty request into a
+		// fleet-wide "halt enforcement".
+		return nil, fmt.Errorf(`this write must be a JSON object; a literal "null" states no intent`)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return nil, fmt.Errorf("malformed request: %w", err)
+	}
+	return fields, nil
+}
+
+// bodyStates reports whether the body actually named this field. A key whose
+// value is `null` is NOT stated: `{"on":null}` carries no more intent than
+// omitting it, and decodes to the same false.
+func bodyStates(fields map[string]json.RawMessage, key string) bool {
+	raw, ok := fields[key]
+	return ok && string(bytes.TrimSpace(raw)) != "null"
+}
+
+// requireBodyStates guards a field whose ZERO VALUE IS AN ACT across a whole
+// fleet — `on` false releases the kill-switch, `enforcing` false disarms every
+// targeted host, an absent `action` used to default to quarantine. Explicit
+// false keeps working; silence does not become a decision.
+func requireBodyStates(w http.ResponseWriter, fields map[string]json.RawMessage, key, meaning string) bool {
+	if bodyStates(fields, key) {
+		return true
+	}
+	refuseWriteBody(w, fmt.Errorf(
+		"%q is required: %s. State it explicitly — an absent field is not an instruction", key, meaning))
+	return false
+}
+
+// refuseWriteBody answers a body that could not be read as an instruction, in
+// the same {ok,error,detail} shape as writeFleetTargetError so the console
+// renders a refused body exactly like a refused target set.
+func refuseWriteBody(w http.ResponseWriter, err error) {
+	writeJSON(w, http.StatusBadRequest, map[string]any{
+		"ok": false, "error": err.Error(), "detail": err.Error()})
+}
+
 // handleChokeManual — Choke Gateway per-row action {exec_id,pid,binary,action,reason}.
 func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.authorizeRespond(w, r)
@@ -587,28 +706,366 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 		// contain permanently, which pushes people toward not containing at all.
 		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
 		return
 	}
 	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, b.Action, b.Reason, b.AgentID, b.RevertAfterSeconds)
 }
 
-// handleChokeThaw — release a process {exec_id,pid} (or {reason} only = no-op ack).
+// handleChokeThaw — release containment. Two shapes, both real:
+//
+//   - {exec_id|pid}: release THAT process. A host list narrows where it is
+//     released instead of letting the router guess which agents may own it.
+//   - {reason} only: release EVERY contained process on the targeted hosts —
+//     the console's "Thaw quarantine" button, which sends {reason, targets}
+//     and nothing else. targets and agent_id both narrow WHERE; agent_id means
+//     the same single host it means on the branch above, never "and also
+//     everybody else".
+//
+// The second shape used to 400 with "exec_id or pid required", so the fleet
+// Thaw control was dead on the control plane while the identical button worked
+// on the single-host engine (whose reason-only thaw releases the quarantine
+// tier). The protobuf Thaw message carries an exec_id, so there is no
+// fleet-wide release COMMAND — but the control plane already knows what each
+// agent has contained, because every agent reports its choke snapshot on each
+// heartbeat and this file renders it. So a fleet thaw is N per-process Thaws
+// against the targeted agents, and needs no protocol change.
 func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 	tenant, ok := s.authorizeRespond(w, r)
 	if !ok {
 		return
 	}
 	var b struct {
-		ExecID  string `json:"exec_id"`
-		Pid     uint32 `json:"pid"`
-		Reason  string `json:"reason"`
-		AgentID string `json:"agent_id"`
+		ExecID  string    `json:"exec_id"`
+		Pid     uint32    `json:"pid"`
+		Reason  string    `json:"reason"`
+		AgentID string    `json:"agent_id"`
+		Targets *[]string `json:"targets"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	// The decode error was discarded here, which mattered more than anywhere
+	// else in the file: with no exec_id and no pid this handler releases
+	// EVERY contained process on every targeted host, so a body of `null`
+	// swept the whole tenant's containment off with an empty reason. No
+	// field is required — the reason-only shape is the console's "Thaw
+	// quarantine" button and releasing must never be blocked — but the body
+	// has to be an object that asks for something.
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
+	agents, unknown, err := s.resolveFleetTargets(tenant, b.Targets)
+	if err != nil {
+		writeFleetTargetError(w, unknown, err)
+		return
+	}
+	// No process named: release everything the targeted hosts are holding.
+	// Resolved the same way the other fleet writes resolve theirs, so absent
+	// targets means the whole tenant and a named list means exactly those hosts.
+	if b.ExecID == "" && b.Pid == 0 {
+		// A REASON IS REQUIRED ON THIS BRANCH, and only on this branch.
+		//
+		// `decodeWriteBody` refuses a body that is not an object, but `{}` IS an
+		// object: it passed that gate and then swept every contained process off
+		// every agent in the tenant, with an empty reason in the audit row. That
+		// is a wider blast radius than a quarantine, which this file has always
+		// required a reason for — and unlike a quarantine it is the action that
+		// puts containment BACK OFF, so the row explaining why is the only
+		// record of an intruder having been deliberately released.
+		//
+		// Before the fleet-release branch existed this shape was a 400, so
+		// nothing that works today is broken by refusing it: the console's
+		// "Thaw quarantine" button sends {reason}, and the per-process path
+		// below is unaffected. An operator releasing one process still needs no
+		// reason — releasing an estate does.
+		if strings.TrimSpace(b.Reason) == "" {
+			http.Error(w, "a reason is required to release containment across hosts "+
+				"(this releases every contained process on the targeted hosts)", http.StatusBadRequest)
+			return
+		}
+		// agent_id means "this host" on the exec_id branch below, and it has to
+		// mean the same thing here. It was decoded and then dropped, so a
+		// release naming one host swept the WHOLE tenant — and the asymmetry
+		// was the tell: an UNKNOWN host name was a 400 from resolveFleetTargets
+		// while a KNOWN one was silently widened to everybody. That is the same
+		// class of defect this endpoint's routing exists to prevent, running in
+		// the release direction: thawing hosts the operator never named puts
+		// containment back off an intruder they meant to leave held.
+		//
+		// Narrowing, never widening: the host must survive the target list the
+		// operator already gave, so agent_id can only ever select from what
+		// resolveFleetTargets authorized, and a name outside it is refused with
+		// the same message an unknown target gets rather than quietly ignored.
+		if b.AgentID != "" {
+			named := false
+			for _, a := range agents {
+				if a == b.AgentID {
+					named = true
+					break
+				}
+			}
+			if !named {
+				writeFleetTargetError(w, []string{b.AgentID},
+					fmt.Errorf("no agent in this release's target set is named %s", b.AgentID))
+				return
+			}
+			agents = []string{b.AgentID}
+		}
+		s.writeFleetRelease(w, r, tenant, agents, b.Targets != nil || b.AgentID != "", b.Reason)
+		return
+	}
+	if b.Targets != nil {
+		out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
+			Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: b.ExecID, Pid: b.Pid}}})
+		writeJSON(w, 200, map[string]any{
+			"ok": out.applied > 0, "status": fleetStatus(out.hosts), "detail": out.detail,
+			"agent": firstApplied(out.hosts), "action": "thaw", "reason": b.Reason,
+			"routed_to": agents, "routing": "hosts named by the operator",
+			"applied": out.applied, "total": out.total, "hosts": out.hosts})
+		return
+	}
 	// A thaw has nothing to revert to: it IS the release.
 	s.dispatchChoke(w, r, tenant, b.ExecID, b.Pid, "thaw", b.Reason, b.AgentID, 0)
+}
+
+// containedProcess is one process an agent reports as currently held, and so
+// one Thaw a fleet release has to send. Both identifiers travel: exec_id is
+// what an agent matches on, and pid is the fallback for a snapshot row that
+// predates it.
+type containedProcess struct {
+	execID string
+	pid    uint32
+}
+
+// releasableState reports whether a choke state is one a thaw can undo.
+//
+// pristine and watch are not containment. severed is: the process took a
+// SIGKILL and is gone, so "released" would be a false claim about a dead
+// process — a fleet release reports those separately instead of thawing them.
+// Anything else counts, INCLUDING a state this build does not recognise: the
+// codebase's standing rule is that the way out of a bad state is never blocked,
+// and an unknown rung is far more likely to be a new containment tier than a
+// new form of idleness.
+func releasableState(state string) bool {
+	switch strings.ToLower(strings.TrimSpace(state)) {
+	case "", "pristine", "watch", "watched", "none", "sever", "severed":
+		return false
+	default:
+		return true
+	}
+}
+
+// containedProcesses lists what each of the named agents currently holds,
+// read from the choke snapshot on its latest heartbeat — the same source the
+// Choke Gateway's circuits view renders, so an operator releases exactly what
+// that screen showed them.
+//
+// Two properties of that source, both of which bound this and are why the
+// response says where the list came from: the snapshot is a heartbeat old, so a
+// process contained since then is not in this sweep; and the agent caps it at
+// its 100 highest-scoring entries, so a host holding more than that needs a
+// second pass. Both are visible-and-stated limits rather than silent ones — an
+// operator who is told "released 100 of 100" can look again.
+func (s *Server) containedProcesses(tenant string, agents []string) map[string][]containedProcess {
+	want := make(map[string]bool, len(agents))
+	for _, a := range agents {
+		want[a] = true
+	}
+	out := make(map[string][]containedProcess, len(agents))
+	for _, rec := range s.registry.ListTenant(tenant) {
+		if !want[rec.AgentID] {
+			continue
+		}
+		for _, c := range rec.Chokes {
+			if !releasableState(c.GetState()) {
+				continue
+			}
+			if c.GetExecId() == "" && c.GetPid() == 0 {
+				continue // nothing a Thaw could name
+			}
+			out[rec.AgentID] = append(out[rec.AgentID], containedProcess{execID: c.GetExecId(), pid: c.GetPid()})
+		}
+	}
+	return out
+}
+
+// fleetRelease is what a fleet-wide thaw achieved, per host and in total.
+type fleetRelease struct {
+	fleetDispatch
+	contained int // processes the fleet reported as held
+	released  int // agents confirmed these released
+	gone      int // the agent disowned the target: the process had already exited
+}
+
+// sentRelease is one Thaw the fleet release put on an agent's queue. id is
+// empty when the control plane refused to sign it, which is a control-plane
+// failure and not the host's.
+type sentRelease struct {
+	agent string
+	id    string
+}
+
+// releaseFleet sends one Thaw per contained process on the named agents and
+// folds the acks into a per-host report.
+//
+// Enqueue everything first, then wait once — the same rule dispatchFleet
+// follows. Waiting per command would cost N * ackTimeout, and a release is the
+// action an operator is most likely to be running under time pressure.
+func (s *Server) releaseFleet(r *http.Request, tenant string, agents []string) fleetRelease {
+	held := s.containedProcesses(tenant, agents)
+	actor := s.subject(r)
+
+	cmds := []sentRelease{}
+	for _, agent := range agents {
+		for _, p := range held[agent] {
+			cmd := &ebpfsocv1.Command{Action: &ebpfsocv1.Command_Thaw{
+				Thaw: &ebpfsocv1.Thaw{ExecId: p.execID, Pid: p.pid}}}
+			// Stamped before Enqueue signs it, as dispatchFleet does: the agent
+			// writes this name into its audit row, and an unattributed release
+			// is a hole in the same timeline the containment is recorded in.
+			cmd.Actor = actor
+			cmds = append(cmds, sentRelease{agent: agent, id: s.dispatcher.Enqueue(agent, cmd)})
+		}
+	}
+
+	acks := make(map[int]*ebpfsocv1.CommandAck, len(cmds))
+	deadline := time.Now().Add(ackTimeout)
+	for len(acks) < len(cmds) {
+		pending := false
+		for i, c := range cmds {
+			if _, have := acks[i]; have || c.id == "" {
+				continue
+			}
+			if ack, ok := s.dispatcher.Ack(c.id); ok {
+				acks[i] = ack
+				continue
+			}
+			pending = true
+		}
+		if !pending || !time.Now().Before(deadline) {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return releaseOutcome(agents, held, cmds, acks)
+}
+
+// releaseOutcome folds a fleet release's acks into the report the operator
+// reads. Split from the dispatch, as fleetOutcome is, so the rules that decide
+// what counts as released can be tested without a live agent acking.
+func releaseOutcome(agents []string, held map[string][]containedProcess, cmds []sentRelease, acks map[int]*ebpfsocv1.CommandAck) fleetRelease {
+	out := fleetRelease{fleetDispatch: fleetDispatch{
+		hosts: make([]fleetHostResult, 0, len(agents)), total: len(agents)}}
+	for _, agent := range agents {
+		n := len(held[agent])
+		out.contained += n
+		host := fleetHostResult{Name: agent}
+		if n == 0 {
+			// Nothing held, so this host is already in the state the operator
+			// asked for. Counting it as a failure would turn "one host was
+			// contained and is now released" into a red 1/5 report.
+			host.OK, host.Status = true, "STATUS_NOTHING_TO_RELEASE"
+			out.applied++
+			out.hosts = append(out.hosts, host)
+			continue
+		}
+		released, gone, unsigned, timedOut, refused, firstErr := 0, 0, 0, 0, 0, ""
+		for i, c := range cmds {
+			if c.agent != agent {
+				continue
+			}
+			switch ack, acked := acks[i]; {
+			case c.id == "":
+				unsigned++
+			case !acked:
+				timedOut++
+			case ack.GetStatus() == ebpfsocv1.CommandAck_STATUS_APPLIED:
+				released++
+			case ack.GetStatus() == ebpfsocv1.CommandAck_STATUS_NOT_TARGET:
+				// The agent no longer has this process: it exited between the
+				// heartbeat and now. Nothing is still contained, which is what
+				// the operator wanted, so it is not a failure — but it is not a
+				// release either, and the two are counted apart.
+				gone++
+			default:
+				refused++
+				if firstErr == "" {
+					firstErr = ack.GetDetail()
+				}
+			}
+		}
+		out.released += released
+		out.gone += gone
+		host.OK = released+gone == n
+		switch {
+		case host.OK:
+			host.Status = "STATUS_APPLIED"
+			out.applied++
+		case timedOut > 0 && refused == 0 && unsigned == 0:
+			// Silence is not a refusal — the release may well have landed on a
+			// host whose ack was still in flight — but it is not confirmation
+			// either, and a process still frozen is what the operator is
+			// hunting. Unconfirmed, which is what we actually know.
+			host.Status = "timeout"
+			host.Error = fmt.Sprintf("released %d of %d; %d had no acknowledgement before the deadline",
+				released, n, timedOut)
+		case unsigned > 0:
+			host.Status = "not_dispatched"
+			host.Error = fmt.Sprintf("released %d of %d; the control plane could not sign %d release(s)",
+				released, n, unsigned)
+		default:
+			host.Status = "STATUS_REJECTED"
+			host.Error = fmt.Sprintf("released %d of %d; %d refused (%s)", released, n, refused, firstErr)
+		}
+		out.hosts = append(out.hosts, host)
+	}
+	return out
+}
+
+// writeFleetRelease runs a fleet-wide thaw and answers in the fan-out envelope
+// the console summarises — hosts/applied/total, not a bare ok. Without those
+// keys summarizeFanout renders even a complete release as "coverage unknown".
+func (s *Server) writeFleetRelease(w http.ResponseWriter, r *http.Request, tenant string, agents []string, targeted bool, reason string) {
+	if len(agents) == 0 {
+		msg := "no agent in this tenant is reporting, so there was nothing to release"
+		writeJSON(w, 200, map[string]any{
+			"ok": false, "status": "NO_AGENT", "detail": msg, "error": msg,
+			"action": "thaw", "scope": "fleet", "reason": reason,
+			"applied": 0, "total": 0, "hosts": []fleetHostResult{}, "released": 0})
+		return
+	}
+	out := s.releaseFleet(r, tenant, agents)
+	routing := "every agent in the tenant"
+	if targeted {
+		routing = "hosts named by the operator"
+	}
+	// Says what was released and where the list came from. "0 released" with a
+	// green tick would otherwise be indistinguishable from a release that
+	// worked, and the heartbeat snapshot is a moment old — a process contained
+	// since the last heartbeat is not in this sweep, and the operator has to
+	// know that rather than read the report as "this fleet holds nothing".
+	detail := fmt.Sprintf("released %d of %d contained process(es) across %d host(s), from each agent's latest heartbeat",
+		out.released, out.contained, out.total)
+	if out.gone > 0 {
+		detail += fmt.Sprintf("; %d had already exited", out.gone)
+	}
+	if out.contained == 0 {
+		detail = fmt.Sprintf("no contained process on %d host(s) as of their latest heartbeat; nothing to release", out.total)
+	}
+	writeJSON(w, 200, map[string]any{
+		// Every targeted host had to end up holding nothing. A release that
+		// left one host frozen is not a release, and the whole point of the
+		// per-host envelope is that the operator sees which one.
+		"ok": out.applied == out.total, "status": fleetStatus(out.hosts), "detail": detail,
+		"action": "thaw", "scope": "fleet", "reason": reason,
+		"routed_to": agents, "routing": routing,
+		"applied": out.applied, "total": out.total, "hosts": out.hosts,
+		// Beyond the fan-out envelope: how many processes actually came back,
+		// which is the number an operator is really asking for.
+		"released": out.released, "contained": out.contained, "already_exited": out.gone,
+	})
 }
 
 // handleChokeJailFromSoc — SOC dashboard alert "jail" {pids,binary,action,reason}.
@@ -626,8 +1083,17 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 		// Optional auto-revert, in seconds. See handleChokeManual.
 		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	fields, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
+	// An absent action used to fall through the switch below to the
+	// "quarantine" default, so a body that named a pid and nothing else
+	// froze that process. The normalisation of an unrecognised NAME stays —
+	// the SOC panel has richer tier words — but no name at all is silence,
+	// and silence must not pick the destructive rung.
+	if !requireBodyStates(w, fields, "action", "the containment rung to apply") {
 		return
 	}
 	var pid uint32
@@ -653,7 +1119,10 @@ func (s *Server) handleChokeJailFromSoc(w http.ResponseWriter, r *http.Request) 
 // delivered — the operator then sees success or failure at random for identical
 // actions. The agent parks in an open command stream and Enqueue wakes it, so
 // the realistic path is well under a second; the headroom covers a reconnect.
-const ackTimeout = 10 * time.Second
+// A var rather than a const only so tests can shorten the wait: a handler
+// test dispatching to an agent nobody is acking for would otherwise spend the
+// full ten seconds in every case.
+var ackTimeout = 10 * time.Second
 
 // waitAck blocks until the agent acks commandID or ackTimeout elapses. Empty
 // status means no ack arrived — deliberately distinct from an ack that reported
@@ -794,16 +1263,92 @@ func reduceAcks(acks map[string]*ebpfsocv1.CommandAck, agents []string) targeted
 	return out
 }
 
-// dispatchAll sends cmd to every agent in the tenant and reports how many
-// applied it. Fleet-wide posture only (mode, kill-switch, thresholds, preset) —
-// these act on the agent itself, not on a target, so every agent is a correct
-// recipient and there is nothing to route.
+// fleetHostResult is one host's outcome inside a fleet-wide write's response.
+// It is the multi-tenant half of the frontend's fan-out envelope: the console
+// reads `result.hosts ?? []` and summarises THAT, so a control-plane response
+// carrying only applied/total reported a write that reached every agent as
+// "0/0 hosts succeeded" — in a success-toned toast. Name is the agent id,
+// because on the control plane the tenant's agents ARE the fleet's hosts.
+type fleetHostResult struct {
+	Name   string `json:"name"`
+	OK     bool   `json:"ok"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// fleetDispatch is what a fleet-wide write actually achieved: the per-host
+// outcomes plus the applied/total/detail summary the existing keys carry.
+type fleetDispatch struct {
+	hosts   []fleetHostResult
+	applied int
+	total   int
+	detail  string
+}
+
+// resolveFleetTargets turns a write's "targets" field into the exact set of
+// agents it may touch, reading the tenant's registry ONCE so the validation and
+// the dispatch cannot disagree about who is in scope.
+//
+//   - absent or null  -> every agent in the tenant, unchanged from before.
+//   - a named list    -> exactly those agents, in the order given, and no others.
+//   - an empty list   -> refused. "Selected hosts only, nothing selected" must
+//     never degrade into "every host": that is the difference between a no-op
+//     and containing the whole estate.
+//   - an unknown name -> refused, naming it, with NOTHING dispatched. A write
+//     whose target set the server only half understood must not half apply; the
+//     operator has to learn that the host they picked is not one we know.
+func (s *Server) resolveFleetTargets(tenant string, targets *[]string) (agents, unknown []string, err error) {
+	known := s.tenantAgents(tenant)
+	if targets == nil {
+		return known, nil, nil
+	}
+	if len(*targets) == 0 {
+		return nil, nil, fmt.Errorf(
+			"targets was an empty list: name the hosts to write to, or omit targets to write to the whole tenant")
+	}
+	inTenant := make(map[string]bool, len(known))
+	for _, a := range known {
+		inTenant[a] = true
+	}
+	seen := make(map[string]bool, len(*targets))
+	for _, name := range *targets {
+		switch {
+		case !inTenant[name]:
+			unknown = append(unknown, name)
+		case !seen[name]:
+			// A name repeated in the request is one host, not two — counting it
+			// twice would inflate the "applied N of M" the operator reads.
+			seen[name] = true
+			agents = append(agents, name)
+		}
+	}
+	if len(unknown) > 0 {
+		return nil, unknown, fmt.Errorf("no agent in this tenant is named %s", strings.Join(unknown, ", "))
+	}
+	return agents, nil, nil
+}
+
+// writeFleetTargetError answers a target set we could not honour. The unknown
+// names are echoed because "one of the hosts you named is not here" is useless
+// to an operator holding a list of twelve.
+func writeFleetTargetError(w http.ResponseWriter, unknown []string, err error) {
+	body := map[string]any{"ok": false, "error": err.Error(), "detail": err.Error()}
+	if len(unknown) > 0 {
+		body["unknown"] = unknown
+	}
+	writeJSON(w, http.StatusBadRequest, body)
+}
+
+// dispatchFleet sends cmd to exactly the named agents and reports what each one
+// did. Fleet-wide posture only (mode, kill-switch, thresholds, preset) — these
+// act on the agent itself, not on a process, so every agent in the set is a
+// correct recipient and there is nothing to route.
 //
 // Enqueue for ALL agents first, then wait once. Enqueueing and waiting per
 // agent would cost N * ackTimeout, so one offline agent in a ten-agent tenant
 // would hang the operator's request for over a minute on what looks like a
 // single toggle.
-func (s *Server) dispatchAll(r *http.Request, tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
+func (s *Server) dispatchFleet(r *http.Request, agents []string, cmd *ebpfsocv1.Command) fleetDispatch {
 	// Stamp the operator HERE, not at the nine call sites. The agent writes
 	// this name into a tamper-evident audit row, and a call site that forgot
 	// would produce a row saying the platform acted on its own — the one
@@ -814,37 +1359,110 @@ func (s *Server) dispatchAll(r *http.Request, tenant string, cmd *ebpfsocv1.Comm
 	if a := s.subject(r); a != "" {
 		cmd.Actor = a
 	}
-	ids := map[string]string{} // command id -> agent
-	for _, rec := range s.registry.ListTenant(tenant) {
-		total++
-		ids[s.dispatcher.Enqueue(rec.AgentID, cmd)] = rec.AgentID
+	ids := make(map[string]string, len(agents)) // agent -> command id
+	for _, agent := range agents {
+		ids[agent] = s.dispatcher.Enqueue(agent, cmd)
 	}
-	seen := make(map[string]bool, len(ids))
+	acks := make(map[string]*ebpfsocv1.CommandAck, len(ids))
 	deadline := time.Now().Add(ackTimeout)
 	for {
 		pending := false
-		for id := range ids {
-			if seen[id] {
+		for agent, id := range ids {
+			if _, have := acks[agent]; have || id == "" {
 				continue
 			}
-			a, ok := s.dispatcher.Ack(id)
+			ack, ok := s.dispatcher.Ack(id)
 			if !ok {
 				pending = true
 				continue
 			}
-			seen[id] = true
-			if a.GetStatus() == ebpfsocv1.CommandAck_STATUS_APPLIED {
-				applied++
-			}
-			if d := a.GetDetail(); d != "" {
-				detail = d
-			}
+			acks[agent] = ack
 		}
 		if !pending || !time.Now().Before(deadline) {
-			return
+			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+
+	return fleetOutcome(agents, ids, acks)
+}
+
+// fleetOutcome folds the per-agent acks into the response the operator reads.
+// Split from the dispatch so the reporting rules — what counts as applied, what
+// an absent ack is allowed to be called — are testable without a live agent.
+func fleetOutcome(agents []string, ids map[string]string, acks map[string]*ebpfsocv1.CommandAck) fleetDispatch {
+	out := fleetDispatch{hosts: make([]fleetHostResult, 0, len(agents)), total: len(agents)}
+	// Reported in dispatch order, so the same write does not come back with its
+	// hosts shuffled by Go's map iteration.
+	for _, agent := range agents {
+		host := fleetHostResult{Name: agent}
+		ack, acked := acks[agent]
+		switch {
+		case ids[agent] == "":
+			// Enqueue refuses to sign a command it cannot canonicalise and
+			// returns no id, so nothing was sent to this agent at all. Calling
+			// that a timeout would blame the host for a control-plane refusal.
+			host.Status = "not_dispatched"
+			host.Error = "the control plane could not sign this command for dispatch"
+		case !acked:
+			// Silence is not a rejection: the command may well have applied on a
+			// host whose ack was still in flight. So the word is "timeout" and
+			// ok stays false — unconfirmed, which is what we actually know.
+			host.Status = "timeout"
+			host.Error = "no acknowledgement before the deadline"
+		default:
+			host.Status = ack.GetStatus().String()
+			host.OK = ack.GetStatus() == ebpfsocv1.CommandAck_STATUS_APPLIED
+			if host.OK {
+				out.applied++
+			} else {
+				host.Error = ack.GetDetail()
+			}
+			if d := ack.GetDetail(); d != "" {
+				out.detail = d
+			}
+		}
+		out.hosts = append(out.hosts, host)
+	}
+	return out
+}
+
+// fleetStatus reduces per-host outcomes to the single status word the
+// per-process envelope has always carried. Empty when nothing answered, which
+// is waitAck's convention for "no ack arrived" — deliberately not the same as
+// an ack that reported a non-applied status.
+func fleetStatus(hosts []fleetHostResult) string {
+	first := ""
+	for _, h := range hosts {
+		if h.OK {
+			return "STATUS_APPLIED"
+		}
+		if first == "" && h.Status != "" && h.Status != "timeout" {
+			first = h.Status
+		}
+	}
+	return first
+}
+
+// firstApplied names a host to attribute the action to — the first that
+// genuinely applied it, empty when none did. The full picture is in hosts.
+func firstApplied(hosts []fleetHostResult) string {
+	for _, h := range hosts {
+		if h.OK {
+			return h.Name
+		}
+	}
+	return ""
+}
+
+// dispatchAll sends cmd to every agent in the tenant and reports how many
+// applied it. The fleet-wide HTTP handlers call dispatchFleet directly, so they
+// can honour an explicit target set and report per host; this stays for the
+// callers that genuinely mean the whole tenant (an approved fleet change,
+// tenant settings, policy push).
+func (s *Server) dispatchAll(r *http.Request, tenant string, cmd *ebpfsocv1.Command) (applied, total int, detail string) {
+	out := s.dispatchFleet(r, s.tenantAgents(tenant), cmd)
+	return out.applied, out.total, out.detail
 }
 
 // handleChokeMode — fleet-wide SetMode on the PROCESS plane.
@@ -868,8 +1486,26 @@ func (s *Server) dispatchSetMode(w http.ResponseWriter, r *http.Request, plane e
 	var b struct {
 		Enforcing bool   `json:"enforcing"`
 		Reason    string `json:"reason"`
+		// Targets is the console's selected-host set. Absent or null still means
+		// every agent in the tenant; see resolveFleetTargets.
+		Targets *[]string `json:"targets"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	fields, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
+	if !requireBodyStates(w, fields, "enforcing",
+		"true arms the targeted hosts, false drops them to detect-only") {
+		return
+	}
+	// Resolved BEFORE the approval gate: a target set we do not understand is a
+	// bad request, not something to park for a second operator to judge.
+	agents, unknown, err := s.resolveFleetTargets(tenant, b.Targets)
+	if err != nil {
+		writeFleetTargetError(w, unknown, err)
+		return
+	}
 	mode := ebpfsocv1.EnforcementMode_ENFORCEMENT_MODE_DETECT_ONLY
 	modeStr := "detect-only"
 	if b.Enforcing {
@@ -879,13 +1515,19 @@ func (s *Server) dispatchSetMode(w http.ResponseWriter, r *http.Request, plane e
 	// threat model is about — one click puts every host into a posture where a
 	// score can SIGKILL. It waits for a second operator. DISARMING does not:
 	// the way back to detect-only must never need a quorum.
-	if s.requireFleetApproval(w, r, tenant, "mode", b.Enforcing, plane, b.Reason) {
+	// Targeted or not, the gate is the same one: what changes is the blast
+	// radius carried into the queue, which is what the approver judges and what
+	// the approved dispatch is held to. Refusing a targeted arming outright —
+	// as this did — withheld host-scoped containment from precisely the tenants
+	// that run four-eyes, and accepted the WIDER untargeted form of the same ask.
+	if s.requireFleetApproval(w, r, tenant, "mode", b.Enforcing, plane, b.Reason, agents, b.Targets != nil) {
 		return
 	}
-	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
+	out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_SetMode{SetMode: &ebpfsocv1.SetMode{Mode: mode, Plane: plane}}})
 	writeJSON(w, 200, map[string]any{
-		"ok": applied > 0, "mode": modeStr, "previous": "", "applied": applied, "total": total, "detail": detail})
+		"ok": out.applied > 0, "mode": modeStr, "previous": "",
+		"applied": out.applied, "total": out.total, "detail": out.detail, "hosts": out.hosts})
 }
 
 // handleChokeKill — fleet-wide KillSwitch on the PROCESS plane.
@@ -906,14 +1548,38 @@ func (s *Server) dispatchKillSwitch(w http.ResponseWriter, r *http.Request, plan
 	var b struct {
 		On     bool   `json:"on"`
 		Reason string `json:"reason"`
+		// Targets scopes the halt. A kill-switch on two named hosts and one on
+		// the whole tenant are different acts, and the console distinguishes
+		// them on screen, so the server has to distinguish them on the wire.
+		Targets *[]string `json:"targets"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
-	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
+	// The worst instance of the class: this discarded its decode error AND
+	// read the zero value as "off", so `null` — or a truncated body, or no
+	// body — dispatched HaltAllEnforcement=false to every agent in the
+	// tenant with an empty reason, indistinguishable from an operator
+	// releasing the kill-switch on purpose. Which is a legitimate act, and
+	// still works: it just has to be said.
+	fields, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
+	if !requireBodyStates(w, fields, "on",
+		"true halts all enforcement on the targeted hosts, false releases the halt") {
+		return
+	}
+	agents, unknown, err := s.resolveFleetTargets(tenant, b.Targets)
+	if err != nil {
+		writeFleetTargetError(w, unknown, err)
+		return
+	}
+	out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_KillSwitch{KillSwitch: &ebpfsocv1.KillSwitch{
 			HaltAllEnforcement: b.On, Reason: b.Reason, Plane: plane,
 		}}})
 	writeJSON(w, 200, map[string]any{
-		"ok": applied > 0, "engaged": b.On, "previous": !b.On, "applied": applied, "total": total, "detail": detail})
+		"ok": out.applied > 0, "engaged": b.On, "previous": !b.On,
+		"applied": out.applied, "total": out.total, "detail": out.detail, "hosts": out.hosts})
 }
 
 // handleChokeThresh — fleet-wide SetThresholds (PUT).
@@ -928,9 +1594,12 @@ func (s *Server) handleChokeThresh(w http.ResponseWriter, r *http.Request) {
 		QuarantineAt int32  `json:"quarantine_at"`
 		SeverAt      int32  `json:"sever_at"`
 		Reason       string `json:"reason"`
+		// Targets scopes the ladder to named hosts; absent means the tenant.
+		Targets *[]string `json:"targets"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "malformed request"})
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
 		return
 	}
 	// VALIDATE BEFORE DISPATCH.
@@ -951,6 +1620,11 @@ func (s *Server) handleChokeThresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
+	agents, unknown, err := s.resolveFleetTargets(tenant, b.Targets)
+	if err != nil {
+		writeFleetTargetError(w, unknown, err)
+		return
+	}
 	// Stored as a TENANT policy before dispatch, so an agent that enrols
 	// tomorrow inherits this ladder instead of the deploy default. Dispatch
 	// alone only reaches the agents that happen to exist right now — which is
@@ -961,29 +1635,57 @@ func (s *Server) handleChokeThresh(w http.ResponseWriter, r *http.Request) {
 	// every live agent, and failing the request because the note could not be
 	// written would be the wrong trade. Logged, because the consequence is
 	// quiet — it works today and the next agent does not inherit it.
+	//
+	// A TARGETED ladder is not stored at all: the operator changed two hosts,
+	// not the tenant's policy, and writing it here would silently hand the same
+	// ladder to every agent that enrols afterwards — the opposite of the scope
+	// they asked for. stored_for_tenant then reports false, which is true.
 	cfg := circuit.Config{
 		ThrottleAt: int(b.ThrottleAt), TarpitAt: int(b.TarpitAt),
 		QuarantineAt: int(b.QuarantineAt), SeverAt: int(b.SeverAt),
 	}
 	stored := false
-	if pg, ok := s.pgStore(); ok {
-		if err := pg.SetThresholds(tenant, cfg, b.Reason, s.subject(r)); err != nil {
+	if b.Targets == nil {
+		ok, err := storeTenantThresholds(s, tenant, cfg, b.Reason, s.subject(r))
+		if err != nil {
 			s.cfg.Logf("[thresholds] applied to the fleet but NOT stored for tenant=%s (%v) — "+
 				"a newly enrolled agent will start on the deployed ladder", tenant, err)
-		} else {
-			stored = true
 		}
+		stored = ok
 	}
-	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
+	out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_SetThresholds{SetThresholds: &ebpfsocv1.SetThresholds{
 			ThrottleAt: b.ThrottleAt, TarpitAt: b.TarpitAt, QuarantineAt: b.QuarantineAt, SeverAt: b.SeverAt}}})
 	writeJSON(w, 200, map[string]any{
-		"ok": applied > 0, "applied": applied, "total": total, "detail": detail,
+		"ok": out.applied > 0, "applied": out.applied, "total": out.total, "detail": out.detail,
+		"hosts": out.hosts,
 		// Stated rather than assumed: "applied to 3 agents" and "this is now
 		// the tenant's ladder" are different claims and only one of them
 		// survives a new enrolment.
 		"stored_for_tenant": stored,
 	})
+}
+
+// storeTenantThresholds records a ladder as the TENANT's policy, so an agent
+// that enrols tomorrow inherits it. Reports whether it was actually stored:
+// a deployment with no Postgres store has nowhere to put it, which is not an
+// error and must not be reported as one.
+//
+// A var, like ackTimeout above, and for the same kind of reason: it is the seam
+// the caller's targeting guard is TESTED through. That guard — only an
+// untargeted write is stored — has a silent failure mode. Drop it and a ladder
+// meant for two hosts becomes the tenant's policy, and the damage only appears
+// when the next agent enrols with thresholds nobody chose for it. Nothing in a
+// response reveals that, so the test has to watch the store itself.
+var storeTenantThresholds = func(s *Server, tenant string, cfg circuit.Config, reason, actor string) (bool, error) {
+	pg, ok := s.pgStore()
+	if !ok {
+		return false, nil
+	}
+	if err := pg.SetThresholds(tenant, cfg, reason, actor); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // handleChokePreset — fleet-wide ApplyPreset.
@@ -995,17 +1697,41 @@ func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		Name   string `json:"name"`
 		Reason string `json:"reason"`
+		// Targets is the whole point of this handler's fix. The console shows
+		// "Writes target 1 selected host." and sent that host list; this decoded
+		// {name, reason} only and dispatched to every agent in the tenant, so
+		// containing one host contained the fleet.
+		Targets *[]string `json:"targets"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
-	// "containment" is the mass-choke preset: it drops every threshold so that
-	// ordinary activity reaches a choke rung across the whole tenant. That is a
-	// fleet-wide destructive change; the calmer presets are not.
-	if s.requireFleetApproval(w, r, tenant, "preset", strings.EqualFold(b.Name, "containment"), ebpfsocv1.Plane_PLANE_PROCESS, b.Name) {
+	fields, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
 		return
 	}
-	applied, total, detail := s.dispatchAll(r, tenant, &ebpfsocv1.Command{
+	// A preset with no name is not an instruction. It used to reach every
+	// targeted agent as ApplyPreset("") for the agent to make sense of.
+	if !requireBodyStates(w, fields, "name", "the preset to apply") {
+		return
+	}
+	agents, unknown, err := s.resolveFleetTargets(tenant, b.Targets)
+	if err != nil {
+		writeFleetTargetError(w, unknown, err)
+		return
+	}
+	// "containment" is the mass-choke preset: it drops every threshold so that
+	// ordinary activity reaches a choke rung across every host it lands on. That
+	// is a destructive change; the calmer presets are not. Targeting narrows who
+	// it reaches, it does not make it something else, so the gate still fires on
+	// a containment aimed at a single host.
+	containment := strings.EqualFold(b.Name, "containment")
+	if s.requireFleetApproval(w, r, tenant, "preset", containment, ebpfsocv1.Plane_PLANE_PROCESS, b.Name,
+		agents, b.Targets != nil) {
+		return
+	}
+	out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: b.Name}}})
-	writeJSON(w, 200, map[string]any{"ok": applied > 0, "preset": b.Name, "applied": applied, "total": total, "detail": detail})
+	writeJSON(w, 200, map[string]any{"ok": out.applied > 0, "preset": b.Name,
+		"applied": out.applied, "total": out.total, "detail": out.detail, "hosts": out.hosts})
 }
 
 // handleChokeBulk — multi-target jail.
@@ -1026,8 +1752,9 @@ func (s *Server) handleChokeBulk(w http.ResponseWriter, r *http.Request) {
 		// decision, and per-target windows would be a different feature.
 		RevertAfterSeconds uint32 `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
 		return
 	}
 	if err := requireReasonForDestructive(b.Action, b.Reason); err != nil {
@@ -1089,7 +1816,11 @@ func (s *Server) handleChokeForget(w http.ResponseWriter, r *http.Request) {
 	var b struct {
 		ExecIDs []string `json:"exec_ids"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&b)
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
 	n := 0
 	for _, e := range b.ExecIDs {
 		// Forget is a thaw, which is reversible, so an unroutable target may
@@ -1133,6 +1864,10 @@ func (s *Server) handleChokeAnnotate(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizeRespond(w, r); !ok {
 		return
 	}
+	// No decode, deliberately: this endpoint stores nothing, so there is no
+	// body to read and nothing a body could change. Stated because every other
+	// write in this file now goes through decodeWriteBody, and a silent
+	// omission here would read as one more handler that forgot.
 	writeJSON(w, http.StatusNotImplemented, map[string]any{
 		"error": "this control plane cannot store an annotation yet, so it will not pretend to. " +
 			"The note was NOT saved. Record it in your ticketing system until annotations are persisted.",
@@ -1150,8 +1885,14 @@ func (s *Server) handleDeviceJail(w http.ResponseWriter, r *http.Request) {
 		Action string   `json:"action"`
 		Reason string   `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	fields, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
+		return
+	}
+	// Same rule as the process plane: an absent action dispatched a Jail
+	// with an empty tier to every agent for them to interpret.
+	if !requireBodyStates(w, fields, "action", "the containment rung to apply to these devices") {
 		return
 	}
 	// Same reason rule as the process plane. Severing a device cuts a host off
@@ -1240,8 +1981,9 @@ func (s *Server) handleDeviceThaw(w http.ResponseWriter, r *http.Request) {
 		Macs   []string `json:"macs"`
 		Reason string   `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
+	_, err := decodeWriteBody(r, &b)
+	if err != nil {
+		refuseWriteBody(w, err)
 		return
 	}
 	type res struct {
@@ -1752,6 +2494,8 @@ func (s *Server) handleChokeWriteStub(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.authorizeRead(w, r); !ok {
 		return
 	}
+	// Reads no body on purpose: it refuses every caller, so there is nothing a
+	// body could ask for. See handleChokeAnnotate.
 	writeJSON(w, http.StatusNotImplemented, map[string]any{
 		"error": "interactive choke actions are not yet enabled on the central console",
 	})

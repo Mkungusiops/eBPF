@@ -20,6 +20,29 @@
  * Every row therefore states which of these it is, and the UI renders them
  * differently rather than making them all look like editable fields.
  */
+import { ApiError } from "../../lib/api";
+
+/**
+ * Did that read fail, or does this deployment simply not serve the route?
+ *
+ * Retention, change control and the access trail are control-plane concepts. A
+ * single-tenant engine registers none of them and answers 404 — which is a
+ * fact about the deployment, not a fault, and warning about it would be crying
+ * wolf on every engine console. All three panels ask this rather than keeping
+ * their own copy of the test: two already agreed and the third did not, and the
+ * one that disagreed is what put an amber "Retention could not be read" on a
+ * correctly configured engine every time an operator opened Evidence.
+ *
+ * The status is preferred over the message: `getJSON` throws an ApiError that
+ * knows it. The message match stays for the paths that reach here as a plain
+ * Error, where "404 page not found" is all there is to go on.
+ */
+export function isRouteNotServed(error: unknown): boolean {
+  if (error instanceof ApiError) return error.status === 404;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /\b404\b|not found/i.test(message);
+}
+
 export type Lifecycle =
   /** Applies immediately and survives a restart. */
   | "live"

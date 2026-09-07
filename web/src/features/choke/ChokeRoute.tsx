@@ -9,8 +9,14 @@
 // the three-state chain verdict cannot drift between them. Both must consult
 // `supported` before rendering a verdict — src/test/auditHonesty.test.ts reads
 // this file's source and fails if either stops doing so.
-import React, { useRef } from "react";
+import React, { useEffect, useRef } from "react";
 import { copyToClipboard, updateThresholds } from "./api";
+import {
+  AUTHORITY_PENDING_REASON,
+  recordResponseAuthority,
+  useResponseAuthority,
+} from "../soc/api";
+import { readCanRespond, readOnlyReason } from "./canRespond";
 import { useStream } from "../../lib/stream";
 import type { ChokeState, HostPingResult, Thresholds, ToastMessage } from "./types";
 import { LADDER } from "../common/enforcement";
@@ -77,6 +83,47 @@ export function ChokeRoute(): React.ReactElement {
     windowMin: filters.windowMin,
     currentWindowDecisions: filters.currentWindowDecisions,
   });
+  // "NOBODY HAS ANSWERED YET" IS NOT "PERMITTED".
+  //
+  // `posture.canRespond` is read off `data.whoami`, which is null for the whole
+  // window between first paint and the first whoami landing — and null is the
+  // single-tenant engine's "the server did not publish the field", which arms
+  // everything. So this route drew a live kill-switch, sever and
+  // threshold-commit surface for a read-only operator until the first poll came
+  // back, which is the same defect the whoami read was supposed to close, one
+  // frame earlier.
+  //
+  // The shared authority store (features/soc/api.ts) carries the fourth state
+  // this route needs — "the question is still open" — so the answer is
+  // published there and read back from there rather than re-derived here for a
+  // fourth time.
+  //
+  // `undefined` is published while whoami has not answered: refreshWhoami sets
+  // `whoami` to null both BEFORE the first read and AFTER a failed one, and
+  // neither is an answer. recordResponseAuthority ignores undefined, which
+  // leaves the store at "loading" until the server actually speaks, and leaves
+  // the last real answer standing across a blip.
+  useEffect(() => {
+    recordResponseAuthority(data.whoami ? readCanRespond(data.whoami) : undefined);
+  }, [data.whoami]);
+  const authority = useResponseAuthority();
+  const readOnlyAccount = posture.readOnlyAccount || authority.readOnlyAccount;
+  // Two different withholdings behind one flag, and two different sentences,
+  // because they are two different facts about the operator. A responder told
+  // "your account is read-only" for the first second of every session would
+  // report that as a bug, and would be right.
+  const writesWithheld = readOnlyAccount || authority.pending;
+  const containmentWithheld = posture.containmentDisabled || writesWithheld;
+  const containmentBlockedReason = readOnlyAccount
+    ? readOnlyReason("this gateway")
+    : authority.pending
+      ? AUTHORITY_PENDING_REASON
+      : "";
+  // The banner keys off the ACCOUNT alone. Printing "Read-only account" over a
+  // session that turns out to hold response rights is a false statement about
+  // the operator, not a cautious one.
+  const readOnlyBannerReason = readOnlyAccount ? readOnlyReason("this gateway") : "";
+
   const actions = useChokeActions({
     chokeState: data.chokeState,
     setChokeState: data.setChokeState,
@@ -88,6 +135,20 @@ export function ChokeRoute(): React.ReactElement {
     refreshAll: data.refreshAll,
     refreshState: data.refreshState,
     refreshApprovals: data.refreshApprovals,
+    // THE REQUEST, NOT ONLY THE BUTTON. Hotkeys and the command palette reach
+    // these openers without touching a rendered control, so the in-flight
+    // window has to be closed here too. `false` is the only value this hook has
+    // for "refuse", so pending is expressed as a refusal — see the followUp on
+    // useChokeActions telling the operator WHICH refusal it was.
+    canRespond: writesWithheld ? false : posture.canRespond,
+    // The untargeted thaw has no target of its own, so it takes its blast
+    // radius from what this console is showing. Handing it the circuits (not
+    // the selection) is what lets it scope a fleet release to the hosts on
+    // screen instead of releasing the whole tenant, and lets it say which of
+    // the two it is doing — the two deployments answer the same POST
+    // differently, so `isFleetConsole` decides the sentence as well.
+    circuits: data.circuits,
+    isFleetConsole: posture.isFleetConsole,
   });
   useChokeHotkeys({ overlays, drill, filters, actions });
 
@@ -129,7 +190,8 @@ export function ChokeRoute(): React.ReactElement {
         windowOptions={WINDOW_OPTIONS}
         windowMin={filters.windowMin}
         onWindowMin={filters.setWindowMin}
-        disabled={posture.disabled}
+        disabled={containmentWithheld}
+        blockedReason={containmentBlockedReason}
         onPreset={actions.openPresetConfirm}
         trackedCount={data.chokeState?.tracked || data.circuits.length}
         refreshing={data.refreshing}
@@ -164,6 +226,7 @@ export function ChokeRoute(): React.ReactElement {
         onModeToggle={actions.openModeConfirm}
         onKillSwitch={actions.openKillSwitchConfirm}
         onPreset={actions.openPresetConfirm}
+        blockedReason={containmentBlockedReason}
         onClose={() => overlays.setPopover(null)}
       />
 
@@ -182,6 +245,7 @@ export function ChokeRoute(): React.ReactElement {
         onAck={ackDecisions}
         onSnapshot={() => void actions.downloadSnapshot()}
         onThaw={actions.openThawConfirm}
+        thawBlockedReason={containmentBlockedReason}
       />
 
       <ChokeBanners
@@ -193,9 +257,14 @@ export function ChokeRoute(): React.ReactElement {
         divergedAgents={posture.divergedAgents}
         ladderCorrections={posture.ladderCorrections}
         kernelFired={posture.kernelFired}
+        readOnlyReason={readOnlyBannerReason}
       />
 
-      <ApprovalsQueue pendingApprovals={posture.pendingApprovals} onDecide={(req, approve) => void actions.decideOnApproval(req, approve)} />
+      <ApprovalsQueue
+        pendingApprovals={posture.pendingApprovals}
+        onDecide={(req, approve) => void actions.decideOnApproval(req, approve)}
+        blockedReason={containmentBlockedReason}
+      />
 
       <KernelPostureBanner kernel={posture.kernel} agentsSilent={posture.agentsSilent} agentsTotal={posture.agentsTotal} />
 
@@ -216,8 +285,19 @@ export function ChokeRoute(): React.ReactElement {
         onViewMode={viewPrefs.setViewMode}
         onToggleMode={() => actions.openModeConfirm(posture.enforceMode !== "enforcing")}
         onKillSwitch={actions.openKillSwitchConfirm}
-        disabled={posture.disabled}
+        disabled={containmentWithheld}
       />
+      {/* The reason travels WITH the cluster, not only in the page banner at
+          the top: an operator who reaches for the kill-switch mid-incident is
+          looking at this control, and a disabled button with no sentence beside
+          it reads as a broken console. The header's own buttons still carry
+          only their generic titles — putting the sentence on the button itself
+          needs a prop this route does not own; see the followUp. */}
+      {containmentBlockedReason ? (
+        <p className="choke-permission-note" data-panel="containment-command-withheld">
+          {containmentBlockedReason}
+        </p>
+      ) : null}
       <ContainmentLadder counts={posture.stateCounts} activeRung={filters.activeRung} onRungClick={filters.toggleRungFilter} subject="processes" />
 
       {viewPrefs.viewMode === "assurance" ? (
@@ -250,6 +330,9 @@ export function ChokeRoute(): React.ReactElement {
           data={data}
           filters={filters}
           posture={posture}
+          writesWithheld={writesWithheld}
+          commitWithheld={containmentWithheld}
+          withheldReason={containmentBlockedReason}
           density={viewPrefs.density}
           acked={alertPrefs.ackedDecisionIds}
           onDensity={toggleDensity}
@@ -278,10 +361,13 @@ export function ChokeRoute(): React.ReactElement {
           viewPrefs,
           circuits: data.circuits,
           isFleetConsole: posture.isFleetConsole,
+          canRespond: writesWithheld ? false : posture.canRespond,
         })}
         toasts={toasts}
         pushToast={pushToast}
         disabled={posture.disabled}
+        readOnly={writesWithheld}
+        readOnlyReason={containmentBlockedReason}
         onCopy={copyValue}
         refreshAll={data.refreshAll}
         refreshCircuits={data.refreshCircuits}
@@ -317,6 +403,7 @@ function LayeredPanels({
   onModeToggle,
   onKillSwitch,
   onPreset,
+  blockedReason = "",
   onClose,
 }: {
   popover: PopoverName;
@@ -332,6 +419,12 @@ function LayeredPanels({
   onModeToggle: (enforcing: boolean) => void;
   onKillSwitch: () => void;
   onPreset: (name: string) => void;
+  /**
+   * Why the mode popover's write controls are withheld — set only when it is
+   * the account. The popover repeats the header's two controls, so leaving it
+   * ungated would put an armed kill-switch one click away from a disabled one.
+   */
+  blockedReason?: string;
   onClose: () => void;
 }) {
   if (!popover) return null;
@@ -409,10 +502,38 @@ function LayeredPanels({
             <div><span>tracked</span><strong>{chokeState?.tracked || 0}</strong></div>
           </div>
           <div className="choke-popover-actions">
-            <button type="button" onClick={() => onModeToggle(mode !== "enforcing")}>{mode === "enforcing" ? "Switch to detect-only" : "Switch to enforcing"}</button>
-            <button type="button" onClick={onKillSwitch}>Kill-switch</button>
+            <button
+              type="button"
+              disabled={Boolean(blockedReason)}
+              title={blockedReason || undefined}
+              onClick={() => onModeToggle(mode !== "enforcing")}
+            >
+              {mode === "enforcing" ? "Switch to detect-only" : "Switch to enforcing"}
+            </button>
+            <button
+              type="button"
+              disabled={Boolean(blockedReason)}
+              title={blockedReason || undefined}
+              onClick={onKillSwitch}
+            >
+              Kill-switch
+            </button>
           </div>
-          <div className="choke-chip-row">{Object.keys(PRESET_DESCRIPTIONS).map((name) => <button key={name} type="button" className="choke-chip" onClick={() => onPreset(name)}>{name}</button>)}</div>
+          {blockedReason ? <p className="choke-permission-note">{blockedReason}</p> : null}
+          <div className="choke-chip-row">
+            {Object.keys(PRESET_DESCRIPTIONS).map((name) => (
+              <button
+                key={name}
+                type="button"
+                className="choke-chip"
+                disabled={Boolean(blockedReason)}
+                title={blockedReason || undefined}
+                onClick={() => onPreset(name)}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
         </>
       ) : null}
     </div>

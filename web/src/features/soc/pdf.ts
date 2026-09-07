@@ -4,8 +4,60 @@
 // operator actually asks for a document, so they are loaded on demand — the
 // architectural lint (scripts/lint.mjs) enforces that these stay dynamic
 // imports.
+//
+// It also owns WHO AN ARTEFACT IS ABOUT (estateSubjectOf below). That rule
+// lives here, in the module that stamps the durable copies, because a file is
+// the unforgiving case: a screen can be corrected by the scope banner beside
+// it, a PDF handed to a customer or an auditor carries no banner and no
+// session. Every console surface that names the estate imports it from here so
+// a tile and the file it exports cannot drift apart.
+import { socIdentityOf } from "./api";
 import { MITRE_MATRIX, buildMitreCoverageModel } from "./panels";
-import type { SocAlert, SocSnapshot } from "./types";
+import type { SocAlert, SocSnapshot, SocWhoami } from "./types";
+
+/**
+ * WHAT THE NUMBERS ARE ABOUT, as opposed to what the account can reach.
+ *
+ * For a tenant-bound operator these are the same thing and `whoami.host` is
+ * both — nothing here changes for them.
+ *
+ * For a cross-tenant (MSOC) principal they are not. The control plane answers
+ * `host = "all tenants"` (crossTenantHost) because the account belongs to no
+ * tenant, while resolving every tenant-less read to the ONE customer named in
+ * `viewing_tenant`. Printing `host` as the subject therefore heads one
+ * customer's alerts, processes and containment history with the provider's
+ * whole book of business — an overclaim in the opposite direction to the
+ * original defect, and the one that survives being emailed.
+ *
+ * So the subject is the tenant whose rows are actually present. The account's
+ * reach is a true and separate fact, reported as `providerView` for callers to
+ * state somewhere it cannot be read as the subject of the numbers.
+ */
+export interface EstateSubject {
+  /** The estate the rows in hand belong to. Never a claim about reach. */
+  subject: string;
+  /** The account reaches more than one tenant. A fact about the OPERATOR. */
+  providerView: boolean;
+}
+
+/**
+ * Said out loud rather than left blank, and deliberately not the word "all":
+ * a provider session against a server too old to publish `viewing_tenant` is
+ * still looking at exactly one tenant's rows — the console just cannot name
+ * which. An empty subject would read as "no scope stated" and invite the same
+ * whole-estate reading this helper exists to prevent.
+ */
+export const UNNAMED_TENANT_SUBJECT = "a single unnamed tenant";
+
+export function estateSubjectOf(whoami: SocWhoami | undefined | null): EstateSubject {
+  const identity = socIdentityOf(whoami);
+  if (!identity.crossTenant) return { subject: whoami?.host || "", providerView: false };
+  // `host` is not consulted at all on this branch, on purpose. It is either the
+  // estate label (not a subject) or, on a deployment that predates the fix, the
+  // customer name the server picked out of a scope built from grants that
+  // authorize nothing — neither is evidence about whose rows these are.
+  return { subject: identity.viewingTenant || UNNAMED_TENANT_SUBJECT, providerView: true };
+}
 
 export async function loadPdfTools() {
   const [{ default: jsPDF }, { default: autoTable }] = await Promise.all([
@@ -46,7 +98,14 @@ export async function downloadMitrePdf(
   doc.text("eBPF SOC — MITRE ATT&CK Coverage", M, 34);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  const scope = whoami?.host ? `${whoami.host}${whoami.user ? ` · ${whoami.user}` : ""}` : (whoami?.user ?? "");
+  // The header band names the estate the report COVERS, then the account that
+  // produced it. Those were one field until 2026-09-02, so a provider's export
+  // of one customer was headed "all tenants" while every row in it belonged to
+  // that single customer — read by whoever the file was forwarded to, with no
+  // banner and no session to correct it.
+  const estate = estateSubjectOf(whoami);
+  const account = [whoami?.user, estate.providerView ? "cross-tenant account" : ""].filter(Boolean).join(" · ");
+  const scope = [estate.subject, account].filter(Boolean).join(" · ");
   doc.text(
     `${scope ? scope + "   ·   " : ""}Generated ${new Date().toLocaleString()}`,
     M,

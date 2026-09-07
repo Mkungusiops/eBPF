@@ -25,6 +25,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ShieldAlert, ShieldCheck } from "lucide-react";
 import { InlineNotice, cx } from "./components";
 import { getJSON } from "../../lib/api";
+import { isRouteNotServed } from "./settingsModel";
 
 export interface AccessRecord {
   subject: string;
@@ -85,7 +86,7 @@ export function AccessTrailPanel() {
       const msg = e instanceof Error ? e.message : "could not read the access trail";
       // A single-tenant engine has one operator and no tenant boundary to
       // cross, so it does not serve this route. That is not a failure.
-      if (/\b404\b|not found/i.test(msg)) {
+      if (isRouteNotServed(e)) {
         setUnsupported(true);
         setLoadError("");
       } else {

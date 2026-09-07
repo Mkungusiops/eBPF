@@ -20,6 +20,7 @@ export function DevicesBulkBar({
   loading,
   refreshing,
   disabled,
+  blockedReason = "",
   onAction,
   onReason,
   onRevertAfter,
@@ -35,6 +36,13 @@ export function DevicesBulkBar({
   loading: boolean;
   refreshing: boolean;
   disabled: boolean;
+  /**
+   * Why the bar is disabled when the reason is the OPERATOR rather than the
+   * data plane — refused, or not yet answered for. "" for every other disable:
+   * the plane already has its own banner, and two explanations for one
+   * greyed-out button is one too many.
+   */
+  blockedReason?: string;
   onAction: (action: DeviceAction) => void;
   onReason: (reason: string) => void;
   onRevertAfter: (seconds: string) => void;
@@ -51,6 +59,7 @@ export function DevicesBulkBar({
             <p className="devices-panel-copy">
               Select devices, choose a choke action, add an audit reason, and optionally schedule an auto-revert.
             </p>
+            {blockedReason ? <p className="devices-permission-note">{blockedReason}</p> : null}
           </div>
           <button
             type="button"
@@ -77,8 +86,12 @@ export function DevicesBulkBar({
               </option>
             ))}
           </select>
+          {/* Both fields are named for assistive tech rather than left to their
+              placeholders, which are announced as nothing and are gone the
+              moment an operator starts typing the reason an audit depends on. */}
           <input
             className="devices-input devices-reason-input"
+            aria-label="Audit reason for this containment"
             value={reason}
             disabled={disabled}
             onChange={(event) => onReason(event.target.value)}
@@ -86,6 +99,7 @@ export function DevicesBulkBar({
           />
           <input
             className="devices-input devices-revert-input"
+            aria-label="Auto-revert after, in seconds"
             type="number"
             min="0"
             inputMode="numeric"
@@ -98,6 +112,7 @@ export function DevicesBulkBar({
             type="button"
             className="devices-button devices-button--danger"
             disabled={disabled}
+            title={blockedReason || undefined}
             onClick={onChoke}
           >
             Choke
@@ -106,6 +121,7 @@ export function DevicesBulkBar({
             type="button"
             className="devices-button devices-button--good"
             disabled={disabled}
+            title={blockedReason || undefined}
             onClick={onThaw}
           >
             Thaw

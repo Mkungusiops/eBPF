@@ -663,7 +663,7 @@ test.describe("cross-tenant MSOC admin", () => {
   });
 
   /**
-   * WHAT BUG THIS PINS — a live one, hence `test.fail`.
+   * WHAT BUG THIS PINS — live until 2026-09-02, now fixed.
    *
    * The MSOC admin's dashboard is byte-for-byte a tenant analyst's. The top
    * bar's host pill names ONE customer — measured 2026-08-27 on
@@ -693,32 +693,30 @@ test.describe("cross-tenant MSOC admin", () => {
    * believes are their own, which is also how the records that matter get
    * buried.
    *
-   * WHY THE GUARDS BELOW EXIST. `test.fail(true, …)` makes ANY throw in this
-   * body count as the expected failure — a Keycloak flake, a renamed selector,
-   * a timeout. All of those would report green while saying nothing about the
-   * defect. So NOTHING on the way to the measurement is allowed to throw:
-   * sign-in and the whoami read are wrapped and SKIP on failure, the wait is
+   * FIXED 2026-09-02, both halves. authz.TenantScope no longer builds a scope out of
+   * grants that authorize nothing, so a cross-tenant principal's scope is empty
+   * — it reaches a tenant by naming it, and every such read is audited. And the
+   * console no longer takes element 0 of that list as the estate: it shows the
+   * provider identity and names the tenant it is currently displaying.
+   *
+   * WHY THE GUARDS BELOW REMAIN. Everything on the way to the measurement skips
+   * rather than throws — sign-in and the whoami read are wrapped, the wait is
    * tolerant, the pill is read defensively, and a reading that is not a real
-   * host name SKIPS. Only a genuine customer name on screen reaches the
-   * expectation and satisfies the `fail`.
-   *
-   * That list is exhaustive as written; if you add a step above the
-   * expectation, it has to skip on failure too, or this test starts reporting
-   * green for reasons that have nothing to do with the defect.
-   *
-   * Delete this `test.fail` when whoami stops handing a cross-tenant principal
-   * a tenant list (or the console stops pinning itself to element 0).
+   * host name SKIPS. A Keycloak flake or a renamed selector is a harness fault,
+   * and reporting one as this defect returning would send the next reader after
+   * a bug that is not there. Only a genuine customer name on screen fails this
+   * test. If you add a step above the expectation, it has to skip on failure
+   * too.
    */
   test("the cross-tenant admin's console does not present one customer as the whole estate", async ({
     browser,
     probe
   }) => {
-    test.fail(true, "known defect: TenantScope hands the msoc-admin a one-tenant scope built from capability-less default realm roles, so its console is pinned to one customer");
     test.skip(!probe.otherTenant, "Set PROBE_OTHER_TENANT");
     const foreign = probe.otherTenant!;
 
-    // Sign-in is a harness step, not the claim. Under `test.fail` a Keycloak
-    // flake here would otherwise be indistinguishable from the defect.
+    // Sign-in is a harness step, not the claim: a Keycloak flake here must not
+    // be reported as the defect returning.
     const admin = await signedInContext(browser, probe, {
       user: probe.adminUser!,
       password: probe.adminPassword!
@@ -735,11 +733,11 @@ test.describe("cross-tenant MSOC admin", () => {
       // Wait for the console to have the REAL whoami before reading the pill.
       // Until the first snapshot lands the pill renders EMPTY_WHOAMI.host,
       // "localhost", which is not any tenant's name — reading it that early
-      // makes this test report the defect as fixed. The account button carries
-      // the operator's name only once whoami has resolved, and the preceding
-      // test (not `test.fail`) is what proves that button appears at all. A
-      // timeout here is NOT failed on: it is handed to the sentinel guard
-      // below, which skips rather than passing the defect off as pinned.
+      // makes this test pass vacuously. The account button carries the
+      // operator's name only once whoami has resolved, and the preceding test
+      // is what proves that button appears at all. A timeout here is NOT failed
+      // on: it is handed to the sentinel guard below, which skips rather than
+      // reporting a harness fault as the defect.
       await session.page
         .getByRole("button", { name: subject, exact: true })
         .first()

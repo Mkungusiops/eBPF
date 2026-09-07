@@ -35,6 +35,8 @@ export default function FleetRoute() {
     totalHosts: derived.kpis.total,
     majorityThresholds: derived.majorityThresholds,
     pollStatus,
+    canRespond: feed.canRespond,
+    identityResolved: feed.identityResolved,
     pushToast,
     refresh: feed.refresh,
     setConfirmState
@@ -72,6 +74,7 @@ export default function FleetRoute() {
           onApplyMode={controls.setApplyMode}
           selectedCount={controls.selected.size}
           writesDisabled={controls.writesDisabled}
+          writesDisabledReason={controls.writesDisabledReason}
           onPreset={controls.requestPreset}
           thresholdDraft={controls.thresholdDraft}
           thresholdDirty={controls.thresholdDirty}

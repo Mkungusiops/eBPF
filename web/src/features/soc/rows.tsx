@@ -10,7 +10,7 @@ import { EmptyState, SeverityBadge, StatusPill, cx, relTime } from "./components
 import { classificationLabel, classifyAlert, processChainFromAlert } from "./analytics";
 import { PANELS, type AckState, type AlertGroup, type ContextMenuState, type HoverPreviewState } from "./dashboard";
 import { formatDuration } from "./format";
-import type { SocAlert, SocEvent } from "./types";
+import type { SocEvent } from "./types";
 
 // A panel whose feed cannot reach the whole window says so in its own header,
 // rather than the page carrying a permanent band about it. Renders nothing when
@@ -166,7 +166,13 @@ export function MiniBarList({
   if (!rows.length) return <EmptyState title={empty} />;
   return (
     <div className="soc-mini-bars">
-      {rows.slice(0, 8).map((row) => {
+      {rows.slice(0, 8).map((row, index) => {
+        // Keyed by the row's own id, NOT its label. Top-processes rows are one
+        // per exec instance, so two runs of the same binary are two rows with
+        // the same label — React then warns about duplicate keys and is free to
+        // drop or duplicate one of them, which is a row an analyst is looking
+        // at going missing.
+        const key = row.id || `${row.label}#${index}`;
         const body = (
           <>
             <span>{row.label}</span>
@@ -175,11 +181,11 @@ export function MiniBarList({
           </>
         );
         return onClick && row.id ? (
-          <button key={row.label} type="button" onClick={() => onClick(row.id || "")}>
+          <button key={key} type="button" onClick={() => onClick(row.id || "")}>
             {body}
           </button>
         ) : (
-          <div key={row.label}>{body}</div>
+          <div key={key}>{body}</div>
         );
       })}
     </div>
@@ -300,10 +306,14 @@ export function AlertContextMenu({
 }: {
   state: ContextMenuState | null;
   onClose: () => void;
-  onOpen: (alert: SocAlert) => void;
-  onAck: (alert: SocAlert) => void;
-  onResolve: (alert: SocAlert) => void;
-  onPin: (alert: SocAlert) => void;
+  // AlertGroup, not SocAlert: this menu is opened from a queue row, and a row
+  // can stand for N alerts. Typed as a lone alert, every handler behind it
+  // reached for `.id` and triaged one member of a ×N row — the row then went on
+  // reading "New" beside a menu that had just reported the work done.
+  onOpen: (alert: AlertGroup) => void;
+  onAck: (alert: AlertGroup) => void;
+  onResolve: (alert: AlertGroup) => void;
+  onPin: (alert: AlertGroup) => void;
 }) {
   return (
     <div

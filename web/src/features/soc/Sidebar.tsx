@@ -34,6 +34,26 @@ import { useLocalJsonState } from "./hooks";
 import { SOC_PANEL_INVENTORY } from "./panelInventory";
 import { PANELS, type OpenSurface } from "./dashboard";
 
+/**
+ * The surfaces this rail refuses to offer unless the SERVER reports lab_mode.
+ *
+ * Two of them are actively dangerous on a customer estate: Attack Sim runs a
+ * script as root on the host being defended and, on the control plane, writes
+ * fabricated alerts into the tenant's real evidence store; Honeypots reports
+ * decoy hits no host produced. The Rule Simulator tunes a ladder no endpoint
+ * can persist.
+ *
+ * Named here because the rail is not the only way into a surface — the command
+ * palette reaches the same ones by name, and an ungated palette was a second
+ * door onto exactly these three. One list, asked by both.
+ */
+export const LAB_ONLY_SURFACES: readonly OpenSurface[] = ["attacks", "honeypots", "simulator"];
+
+/** Whether this deployment offers `surface` at all. */
+export function surfaceOffered(surface: OpenSurface, labMode: boolean): boolean {
+  return labMode || !LAB_ONLY_SURFACES.includes(surface);
+}
+
 export function SocSidebar({
   sidebarOpen,
   openSurface,

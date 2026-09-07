@@ -28,6 +28,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Lock, ShieldCheck } from "lucide-react";
 import { InlineNotice, cx } from "./components";
 import { getJSON, putJSON } from "../../lib/api";
+import { isRouteNotServed } from "./settingsModel";
 
 export interface ChangeControlState {
   enabled: boolean;
@@ -86,7 +87,7 @@ export function ChangeControlControls({ onChanged }: { onChanged?: () => void })
       // A single-tenant engine has no approval queue and does not serve this
       // route. That is a different statement from "the read failed", and
       // showing a warning for it would be crying wolf on every engine console.
-      if (/\b404\b|not found/i.test(msg)) {
+      if (isRouteNotServed(e)) {
         setUnsupported(true);
         setLoadError("");
       } else {

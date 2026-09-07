@@ -34,6 +34,7 @@ export function ChokeDrawers({
   onAck,
   onSnapshot,
   onThaw,
+  thawBlockedReason = "",
 }: {
   overlays: ReturnType<typeof useOverlays>;
   alertPrefs: ReturnType<typeof useAlertPrefs>;
@@ -49,6 +50,8 @@ export function ChokeDrawers({
   onAck: (ids: number[]) => void;
   onSnapshot: () => void;
   onThaw: () => void;
+  /** Why "Thaw all" is withheld from this account — see ProfilePanel. */
+  thawBlockedReason?: string;
 }) {
   return (
     <>
@@ -84,6 +87,7 @@ export function ChokeDrawers({
           onCommand={() => { overlays.setProfileOpen(false); overlays.setCommandOpen(true); }}
           onHelp={() => { overlays.setProfileOpen(false); overlays.setHelpOpen(true); }}
           onThaw={() => { overlays.setProfileOpen(false); onThaw(); }}
+          thawBlockedReason={thawBlockedReason}
           onClose={() => overlays.setProfileOpen(false)}
         />
       )}
@@ -98,6 +102,8 @@ export function ChokeOverlays({
   toasts,
   pushToast,
   disabled,
+  readOnly = false,
+  readOnlyReason = "",
   onCopy,
   refreshAll,
   refreshCircuits,
@@ -108,6 +114,13 @@ export function ChokeOverlays({
   toasts: ToastMessage[];
   pushToast: (message: string, kind?: ToastMessage["kind"]) => void;
   disabled: boolean;
+  /**
+   * whoami says this account cannot respond. Separate from `disabled`, which
+   * is about the gateway serving at all — the layers below have to disable the
+   * same controls for two different reasons and say the right one.
+   */
+  readOnly?: boolean;
+  readOnlyReason?: string;
   onCopy: (value: string) => void;
   refreshAll: () => Promise<void>;
   refreshCircuits: () => Promise<void>;
@@ -116,6 +129,8 @@ export function ChokeOverlays({
     <>
       <ProcessDrill
         drill={drill.drill}
+        readOnly={readOnly}
+        readOnlyReason={readOnlyReason}
         onClose={() => drill.setDrill({ kind: "closed" })}
         onRefresh={() => void refreshAll()}
         onForget={async (execId) => {
@@ -145,6 +160,8 @@ export function ChokeOverlays({
       <JailPicker
         open={overlays.jailOpen}
         disabled={disabled}
+        readOnly={readOnly}
+        readOnlyReason={readOnlyReason}
         detail={overlays.jailDetail}
         onClose={() => overlays.setJailOpen(false)}
         onInspect={async (process) => {

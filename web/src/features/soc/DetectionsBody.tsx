@@ -28,6 +28,8 @@
 import { useCallback, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, HelpCircle, Pencil, Trash2, Upload } from "lucide-react";
 import { EmptyState, cx } from "./components";
+import { useResponseAuthority } from "./api";
+import { responseWithheldNow } from "./SettingsResponse";
 import { postJSON } from "../../lib/api";
 import { DETECTION_TEMPLATES, type DetectionTemplate } from "./detectionTemplates";
 import type { SocPolicy } from "./types";
@@ -71,19 +73,53 @@ export function DetectionsBody({
   open,
   onRefresh,
   canPush,
-  scope
+  scope,
+  identityAnswered = true
 }: {
   policies: SocPolicy[];
   open: boolean;
   onRefresh: () => void;
   /**
-   * Whether this deployment can change detection policy at all. The control
-   * plane can, by dispatching a signed command to its agents; the engine can,
-   * by applying to its own host's Tetragon. A deployment with neither — a
-   * fake/dev engine with no Tetragon connection — reports false, and the
-   * authoring surface is hidden rather than offering a button that cannot work.
+   * Whether a detection change can be dispatched from this session at all. The
+   * control plane can, by dispatching a signed command to its agents; the
+   * engine can, by applying to its own host's Tetragon.
+   *
+   * False has TWO causes and they are not interchangeable. A deployment with
+   * no Tetragon connection reports false because nothing downstream could
+   * apply the change; a read-only operator on a perfectly healthy deployment
+   * reports false because they may not ask. The copy below distinguishes them
+   * from `can_respond`: telling a read-only operator the deployment is broken
+   * sends them to Sensor Health to debug an agent that is fine.
    */
   canPush: boolean;
+  /**
+   * Whether /api/whoami has actually ANSWERED this session.
+   *
+   * `canPush` and the permission read both come off that one payload, so
+   * before it lands neither is a fact: the console is holding placeholders and
+   * cannot name a cause for anything. It named one anyway — every operator
+   * opening this panel during the first poll, and every operator on a session
+   * whose whoami failed, was told "This deployment has no Tetragon
+   * connection", which is the original defect firing during exactly the window
+   * an operator first looks at the panel.
+   *
+   * A FAILED whoami counts as unanswered here, and that is deliberately
+   * different from the fleet rail's rule (useFleetSnapshot's
+   * `identityResolved`, which resolves on failure). The rail is deciding
+   * whether to withhold a control — over an outage it must not — whereas this
+   * is deciding which SENTENCE to print, and over an outage the honest
+   * sentence is "not known yet".
+   *
+   * Defaults to true so a caller that does not track it keeps the behaviour it
+   * had — and that default is no longer load-bearing. SocModals never passed
+   * this, so the default won every time and every operator opening the panel
+   * before whoami landed fell straight through to the outage sentence. The
+   * panel now ORs in the shared authority store's own "nobody has answered
+   * yet", which is the same fact and needs no caller to remember to thread it:
+   * a prop that says `false` still wins, and a prop that says `true` cannot
+   * overrule a store that is still waiting.
+   */
+  identityAnswered?: boolean;
   /**
    * How far a change reaches. "fleet" dispatches to every agent the control
    * plane knows about and does not converge; "host" applies directly to the
@@ -92,6 +128,31 @@ export function DetectionsBody({
    */
   scope: "fleet" | "host";
 }) {
+  // The one permission read; every other surface in this feature consumes the
+  // same hook, so there is a single answer to "may this operator respond?".
+  //
+  // Deliberately `readOnlyAccount` and not `withheld` on the RENDER gate below,
+  // which is the opposite of the choice the ladder and the kill-switch make.
+  // The difference is `canPush`: it is read off the same whoami, so before that
+  // payload lands it is already false and every authoring control is already
+  // gone. There is no window here to close by rendering, and withholding on
+  // `pending` as well would only take the controls away from the single-tenant
+  // engine's console, which never publishes `can_respond` at all.
+  //
+  // What the loading window DOES need is the request gate — see push, restore
+  // and remove, each of which asks the shared store at the moment it fires.
+  const { readOnlyAccount, pending } = useResponseAuthority();
+  // Whether ANYBODY has answered for this session: the prop when a caller
+  // tracks it, and the shared authority store otherwise. `pending` is true only
+  // while no whoami has answered, and a FAILED whoami leaves it true — which is
+  // exactly the "we have not been told" the copy below needs.
+  const answered = identityAnswered && !pending;
+  // Two different refusals, and BOTH have to hold before this panel writes. The
+  // control plane reports `can_push_policy: false` for a read-only account
+  // today, so `canPush` alone happens to be enough — but that is a coincidence
+  // of one server's answer, not a contract, and every authoring control here
+  // dispatches a signed command.
+  const canAuthor = canPush && !readOnlyAccount;
   const [yaml, setYaml] = useState("");
   const [name, setName] = useState("");
   const [reason, setReason] = useState("");
@@ -134,6 +195,12 @@ export function DetectionsBody({
   );
 
   const push = useCallback(async () => {
+    // THE REQUEST, not only the button. Every write in this panel goes straight
+    // to postJSON, so the rendering gate was the only thing standing between an
+    // account the server refuses and a signed policy command — and the store is
+    // asked HERE, at the moment of the request, because a form opened before
+    // whoami answered carries a stale "permitted" in its render.
+    if (responseWithheldNow()) return;
     if (!name.trim() || !yaml.trim() || reason.trim().length < 3) return;
     setBusy(true);
     setResult(null);
@@ -164,6 +231,7 @@ export function DetectionsBody({
    * justification to undo a gap would just add friction to the safe direction.
    */
   async function restore(policy: SocPolicy) {
+    if (responseWithheldNow()) return;
     setBusy(true);
     setResult(null);
     try {
@@ -190,6 +258,10 @@ export function DetectionsBody({
    * the same path as the push, with the same required reason.
    */
   async function remove(policy: SocPolicy) {
+    // Unloading a detection is a signed command to every host that carries it,
+    // and it had no request-level guard at all — only the render gate on the
+    // button that opened this flow.
+    if (responseWithheldNow()) return;
     setBusy(true);
     setResult(null);
     try {
@@ -306,7 +378,7 @@ export function DetectionsBody({
                   where its own `loadedAgents === 0` condition could never be
                   true, so the button existed and could not appear. Unknown
                   load state offers nothing: acting needs a diagnosis. */}
-              {canPush && p.expected && p.yaml && p.kernelStateKnown && (p.loadedAgents ?? 0) === 0 ? (
+              {canAuthor && p.expected && p.yaml && p.kernelStateKnown && (p.loadedAgents ?? 0) === 0 ? (
                 <div className="soc-detections-cardactions">
                   <button
                     type="button"
@@ -319,7 +391,7 @@ export function DetectionsBody({
                 </div>
               ) : null}
 
-              {canPush && p.kernelStateKnown && (p.loadedAgents ?? 0) > 0 ? (
+              {canAuthor && p.kernelStateKnown && (p.loadedAgents ?? 0) > 0 ? (
                 removing?.name === p.name ? (
                   <div className="soc-detections-remove">
                     {p.expected ? (
@@ -396,11 +468,42 @@ export function DetectionsBody({
       </div>
 
       <div className="soc-detections-push">
-        {!canPush ? (
-          <p className="soc-detections-note">
-            This deployment has no Tetragon connection, so it cannot load or unload a detection. It can only
-            report what it is told. Check the agent on Sensor Health.
-          </p>
+        {!canAuthor ? (
+          // Three answers, three sentences, and which one is true depends on
+          // what the server actually said — never on which is easiest to
+          // render. The unanswered case comes FIRST because until whoami lands
+          // neither of the other two is a fact: `canPush` is a placeholder and
+          // the permission is unknown.
+          !answered ? (
+            // The third state, and the one that was missing: the server has
+            // not answered, so `canPush: false` is a default rather than a
+            // statement about anything. Naming either cause here would be a
+            // guess, and one of the two guesses sends the operator to Sensor
+            // Health to investigate an agent nobody has reported a fault on.
+            <p className="soc-detections-note" data-withheld="unknown">
+              This console has not been told yet whether detections can be loaded from here — the identity
+              endpoint has not answered this session. Nothing here reports a fault, and nothing here reports
+              anything about your account. It resolves on the next poll.
+            </p>
+          ) : (
+          // Two states, two sentences. `can_push_policy: false` on an account
+          // the control plane also reports `can_respond: false` for is a
+          // PERMISSION — the same deployment dispatches policy for a responding
+          // analyst — so naming an outage here would send an operator to
+          // investigate an agent that is healthy. Only when the server has not
+          // said the account is read-only is the missing capability the
+          // deployment's.
+          readOnlyAccount ? (
+            <p className="soc-detections-note" data-withheld="permission">
+              Your account is read-only, so you cannot load or unload a detection. This is a permission, not an
+              outage: nothing here says the agent is unhealthy. Ask an administrator for responder access.
+            </p>
+          ) : (
+            <p className="soc-detections-note" data-withheld="capability">
+              This deployment has no Tetragon connection, so it cannot load or unload a detection. It can only
+              report what it is told. Check the agent on Sensor Health.
+            </p>
+          ))
         ) : (
         <button
           type="button"

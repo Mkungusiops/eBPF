@@ -9,6 +9,7 @@
 import { useMemo } from "react";
 import { LADDER } from "../common/enforcement";
 import { computePosture, type CommandMetrics } from "../common/ContainmentCommand";
+import { readCanRespond, readOnlyReason } from "./canRespond";
 import type { ApprovalRequest } from "./api";
 import type { ChokeState, CircuitEntry, Decision, HostPingResult, LoadState, Whoami } from "./types";
 import type { StreamInfo } from "./constants";
@@ -77,6 +78,21 @@ export function useChokePosture({
   const staleSeconds = streamInfo.lastMessageAt ? Math.floor((now - streamInfo.lastMessageAt) / 1000) : 0;
   const disabled = loadState.kind === "disabled";
 
+  // `disabled` above is a fact about the DEPLOYMENT — whether the gateway is
+  // serving at all. It is not a fact about the operator, and the two were being
+  // conflated: every containment control on this page armed itself off
+  // loadState alone, so a read-only account was shown a live sever/jail/
+  // kill-switch surface and discovered the truth by pressing it on a real host.
+  // The server answers 404 and the fan-out summary reports what it reached,
+  // which is nothing — a silent failure at the moment of an incident.
+  const canRespond = readCanRespond(whoami);
+  const readOnlyAccount = canRespond === false;
+  const containmentDisabled = disabled || readOnlyAccount;
+  // Only the permission reason is named here. The deployment reason already has
+  // its own banner (ChokeBanners' disabled-banner), and saying it twice in two
+  // registers is how an operator ends up debugging the wrong thing.
+  const containmentBlockedReason = readOnlyAccount ? readOnlyReason("this gateway") : "";
+
   // ── Containment Command metrics (shared hero + ladder) ──────────────────
   // Contained = anything on a rung above pristine. Active threats = uncontained
   // processes already scoring at/over the first enforcement threshold — the
@@ -135,6 +151,10 @@ export function useChokePosture({
     stateCounts,
     staleSeconds,
     disabled,
+    canRespond,
+    readOnlyAccount,
+    containmentDisabled,
+    containmentBlockedReason,
     enforceMode,
     commandMetrics,
     userLabel,

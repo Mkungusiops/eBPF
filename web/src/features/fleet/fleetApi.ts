@@ -19,12 +19,13 @@ import {
   isFleetDisabled,
   readFleetSnapshot,
   readWhoami,
+  type FleetWhoami,
   writeKillSwitch,
   writePreset,
   writeThaw,
   writeThresholds
 } from "./api";
-import type { PresetName, Thresholds } from "./types";
+import type { FanoutEnvelope, PresetName, Thresholds } from "./types";
 
 /** Every call takes a signal: a fleet poll outlives the component that started it. */
 export interface FleetApiCallOptions {
@@ -42,11 +43,12 @@ export interface FleetSnapshotResponse {
 
 export interface FleetApi {
   fetchSnapshot(options?: FleetApiCallOptions): Promise<FleetSnapshotResponse>;
-  fetchWhoami(options?: FleetApiCallOptions): Promise<{ user?: string; host?: string; hostname?: string }>;
-  applyPreset(name: PresetName, targets: string[] | null, reason: string): Promise<unknown>;
-  applyThresholds(thresholds: Thresholds, targets: string[] | null): Promise<unknown>;
-  setKillSwitch(on: boolean, targets: string[] | null): Promise<unknown>;
-  thaw(reason: string, targets: string[] | null): Promise<unknown>;
+  fetchWhoami(options?: FleetApiCallOptions): Promise<FleetWhoami>;
+  applyPreset(name: PresetName, targets: string[] | null, reason: string): Promise<FanoutEnvelope>;
+  applyThresholds(thresholds: Thresholds, targets: string[] | null): Promise<FanoutEnvelope>;
+  /** `reason` is audited by the engine on every real transition — see writeKillSwitch. */
+  setKillSwitch(on: boolean, targets: string[] | null, reason: string): Promise<FanoutEnvelope>;
+  thaw(reason: string, targets: string[] | null): Promise<FanoutEnvelope>;
   /** Error classification lives behind the seam so a fake can exercise both paths. */
   isDisabled(error: unknown): boolean;
   errorMessage(error: unknown): string;
@@ -63,7 +65,7 @@ export function createFleetApi(): FleetApi {
     fetchWhoami: () => readWhoami(),
     applyPreset: (name, targets, reason) => writePreset(name, targets, reason),
     applyThresholds: (thresholds, targets) => writeThresholds(thresholds, targets),
-    setKillSwitch: (on, targets) => writeKillSwitch(on, targets),
+    setKillSwitch: (on, targets, reason) => writeKillSwitch(on, targets, reason),
     thaw: (reason, targets) => writeThaw(reason, targets),
     isDisabled: (error) => isFleetDisabled(error),
     errorMessage: (error) => fleetErrorMessage(error)

@@ -11,6 +11,7 @@ import { useCallback } from "react";
 import type { Dispatch, SetStateAction } from "react";
 
 import { isDisabledError, type DevicesApi } from "./api";
+import { readOnlyReason } from "../choke/canRespond";
 import type { ConfirmOptions, ConfirmResult } from "./ConfirmModal";
 import type { DeviceAction, DeviceDataPlaneState } from "./types";
 import type { ToastTone } from "./useDeviceToast";
@@ -31,6 +32,11 @@ export interface DeviceActionsOptions {
   requestConfirm: (options: ConfirmOptions) => Promise<ConfirmResult | null>;
   refresh: () => void;
   clearSelection: () => void;
+  /**
+   * whoami's `can_respond`, or `null` when the server did not publish one.
+   * Only `false` refuses — see features/choke/canRespond.ts.
+   */
+  canRespond?: boolean | null;
 }
 
 export interface DeviceActions {
@@ -53,9 +59,26 @@ export function useDeviceActions({
   setDisabledMessage,
   requestConfirm,
   refresh,
-  clearSelection
+  clearSelection,
+  canRespond = null
 }: DeviceActionsOptions): DeviceActions {
+  /**
+   * The device plane's permission gate.
+   *
+   * Deliberately its own, not inherited from the process plane: the two
+   * gateways arm independently, and a console that let one route's grant stand
+   * in for the other's would be guessing. Same grant today, separate reads —
+   * so if they ever diverge the console reports what it was told rather than
+   * what it assumed.
+   */
+  const refuseIfReadOnly = useCallback((): boolean => {
+    if (canRespond !== false) return false;
+    pushToast(readOnlyReason("the device plane"), "error");
+    return true;
+  }, [canRespond, pushToast]);
+
   const toggleMode = useCallback(async () => {
+    if (refuseIfReadOnly()) return;
     if (!state || state.dry_run) return;
     const currentlyEnforcing = Boolean(state.enforcing);
     const nextEnforcing = !currentlyEnforcing;
@@ -78,9 +101,10 @@ export function useDeviceActions({
     } catch (caught) {
       handleActionError(caught, pushToast, setDisabledMessage);
     }
-  }, [api, pushToast, refresh, requestConfirm, setDisabledMessage, state]);
+  }, [api, pushToast, refresh, refuseIfReadOnly, requestConfirm, setDisabledMessage, state]);
 
   const toggleKillSwitch = useCallback(async () => {
+    if (refuseIfReadOnly()) return;
     if (!state) return;
     // Do NOT derive a direction from an unknown state.
     //
@@ -117,9 +141,10 @@ export function useDeviceActions({
     } catch (caught) {
       handleActionError(caught, pushToast, setDisabledMessage);
     }
-  }, [api, pushToast, refresh, requestConfirm, setDisabledMessage, state]);
+  }, [api, pushToast, refresh, refuseIfReadOnly, requestConfirm, setDisabledMessage, state]);
 
   const jailSelected = useCallback(async () => {
+    if (refuseIfReadOnly()) return;
     const macs = [...selected];
     if (macs.length === 0) {
       pushToast("select at least one device", "error");
@@ -144,9 +169,10 @@ export function useDeviceActions({
     } catch (caught) {
       handleActionError(caught, pushToast, setDisabledMessage);
     }
-  }, [action, api, pushToast, reason, refresh, revertAfter, selected, setDisabledMessage]);
+  }, [action, api, pushToast, reason, refresh, refuseIfReadOnly, revertAfter, selected, setDisabledMessage]);
 
   const thawSelected = useCallback(async () => {
+    if (refuseIfReadOnly()) return;
     const macs = [...selected];
     if (macs.length === 0) {
       pushToast("select at least one device", "error");
@@ -164,7 +190,7 @@ export function useDeviceActions({
     } catch (caught) {
       handleActionError(caught, pushToast, setDisabledMessage);
     }
-  }, [api, clearSelection, pushToast, reason, refresh, selected, setDisabledMessage]);
+  }, [api, clearSelection, pushToast, reason, refresh, refuseIfReadOnly, selected, setDisabledMessage]);
 
   // Per-device enforcement for the shared ladder. The bulk bar above acts on a
   // checkbox selection; this acts on the one device the operator opened. A
@@ -172,6 +198,11 @@ export function useDeviceActions({
   // unlike a process sever, which is a SIGKILL (see DEVICE_TERMINAL).
   const applyToDevice = useCallback(
     async (mac: string, rung: Rung, why: string) => {
+      if (canRespond === false) {
+        // The ladder renders this string to the operator, so it must read as a
+        // permission refusal and not as a rejected command.
+        return { ok: false, detail: readOnlyReason("the device plane") };
+      }
       try {
         if (rung === "pristine") {
           const response = await api.thawDevices({ macs: [mac], reason: why || "operator thaw" });
@@ -194,7 +225,7 @@ export function useDeviceActions({
         return { ok: false, detail: (caught as Error).message || "action failed" };
       }
     },
-    [api, pushToast, setDisabledMessage]
+    [api, canRespond, pushToast, setDisabledMessage]
   );
 
   const readDeviceState = useCallback(

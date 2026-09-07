@@ -4,6 +4,9 @@ import type {
   Decision,
   DerivedFleet,
   DriftResult,
+  FanoutEnvelope,
+  FanoutHost,
+  FanoutReport,
   FleetDevice,
   FleetKpis,
   FleetPeer,
@@ -212,29 +215,118 @@ export function severityTone(severity?: string): "danger" | "warn" | "info" | "m
   return "muted";
 }
 
-export function summarizeFanout(label: string, hosts: Array<HostResult<unknown>>): {
+/**
+ * Reads a fan-out write's response into the coverage it actually claimed.
+ *
+ * Two servers answer these four routes with two shapes. The single-tenant
+ * engine returns a per-peer `hosts` array; the multi-tenant control plane
+ * historically returned only `{applied, total, detail}`. The console read
+ * `result.hosts ?? []` off both, so every control-plane write — one that may
+ * have reached every agent in the tenant — was summarised from an empty list
+ * and rendered "0/0 hosts succeeded" under a green "applied" title.
+ *
+ * So: prefer the named list when there is one, fall back to the counts when
+ * there is not, and keep nulls when the server reported neither. A response
+ * that says nothing about coverage must stay distinguishable from one that says
+ * it reached nobody, because only the second is a fact.
+ */
+export function readFanout(result: unknown): FanoutReport {
+  const envelope = (typeof result === "object" && result !== null ? result : {}) as FanoutEnvelope;
+  const detail = typeof envelope.detail === "string" ? envelope.detail.trim() : "";
+
+  if (Array.isArray(envelope.hosts)) {
+    // `ok` must be explicitly true. An entry the console cannot read is not a
+    // host that took the write.
+    const hosts: FanoutHost[] = envelope.hosts.map((entry) => {
+      const host = (typeof entry === "object" && entry !== null ? entry : {}) as FanoutHost;
+      return {
+        name: typeof host.name === "string" && host.name ? host.name : "unnamed host",
+        ok: host.ok === true,
+        status: host.status,
+        error: typeof host.error === "string" ? host.error : undefined
+      };
+    });
+    return {
+      hosts,
+      applied: hosts.filter((host) => host.ok).length,
+      total: hosts.length,
+      detail
+    };
+  }
+
+  return {
+    hosts: [],
+    applied: typeof envelope.applied === "number" ? envelope.applied : null,
+    total: typeof envelope.total === "number" ? envelope.total : null,
+    detail
+  };
+}
+
+/**
+ * Turns a fan-out report into what the operator is told.
+ *
+ * Only one branch here may be toned as success, and it requires the server to
+ * have stated a non-zero coverage that was fully applied. The old rule was
+ * `failed === 0`, which an EMPTY host list satisfies: a write that touched no
+ * host at all raised the same green "applied" toast as one that touched every
+ * host, and mid-incident that is the difference between an estate an operator
+ * believes is contained and one that is not.
+ */
+export function summarizeFanout(label: string, report: FanoutReport): {
   ok: boolean;
   title: string;
   body: string;
 } {
-  const total = hosts.length;
-  const success = hosts.filter((host) => host.ok).length;
-  const failed = total - success;
-  if (failed === 0) {
+  const { hosts, applied, total, detail } = report;
+  const trailer = detail ? ` ${detail}` : "";
+
+  if (total === null) {
     return {
-      ok: true,
-      title: `${label} applied`,
-      body: `${success}/${total} hosts succeeded.`
+      ok: false,
+      title: `${label}: coverage unknown`,
+      body: `The server did not report which hosts this reached, so it cannot be confirmed applied.${trailer}`
     };
   }
+  if (total === 0) {
+    return {
+      ok: false,
+      title: `${label}: no hosts`,
+      body: `This reached no hosts — 0/0 succeeded, so nothing on the estate changed.${trailer}`
+    };
+  }
+
+  if (applied === null) {
+    // The server named a target count and then said nothing about how many of
+    // them took it. `applied ?? 0` turned that silence into "0/3 succeeded" —
+    // a specific claim of total failure the server never made, and the same
+    // class of lie as the 0/0-as-success this function was written to kill.
+    // Unknown reads as unknown.
+    return {
+      ok: false,
+      title: `${label}: coverage unknown`,
+      body: `The server said this targeted ${total} host${total === 1 ? "" : "s"} but did not say how many took it, so it cannot be confirmed applied.${trailer}`
+    };
+  }
+
+  const success = applied;
   const failures = hosts
     .filter((host) => !host.ok)
     .map((host) => `${host.name} (${host.error || host.status || "error"})`)
     .join(", ");
+
+  if (failures === "" && success >= total) {
+    return {
+      ok: true,
+      title: `${label} applied`,
+      body: `${success}/${total} hosts succeeded.${trailer}`
+    };
+  }
   return {
     ok: false,
     title: `${label}: partial`,
-    body: `${success}/${total} succeeded; failures: ${failures}`
+    body: failures
+      ? `${success}/${total} succeeded; failures: ${failures}${trailer}`
+      : `${success}/${total} succeeded; the server did not name the hosts that failed.${trailer}`
   };
 }
 

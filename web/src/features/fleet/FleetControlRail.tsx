@@ -56,6 +56,7 @@ export function FleetControlRail({
   onApplyMode,
   selectedCount,
   writesDisabled,
+  writesDisabledReason,
   onPreset,
   thresholdDraft,
   thresholdDirty,
@@ -71,6 +72,8 @@ export function FleetControlRail({
   onApplyMode: (mode: ApplyMode) => void;
   selectedCount: number;
   writesDisabled: boolean;
+  /** Why the rail is disabled, in the operator's terms; "" when it is armed. */
+  writesDisabledReason: string;
   onPreset: (name: PresetName) => void;
   thresholdDraft: Thresholds;
   thresholdDirty: boolean;
@@ -109,6 +112,18 @@ export function FleetControlRail({
         </p>
       </section>
 
+      {/*
+        A disabled control that does not say why reads as a broken one. This
+        states the reason once, at the head of the rail, so an operator whose
+        account is read-only learns it here rather than by pressing the
+        kill-switch during an incident and watching nothing happen.
+      */}
+      {writesDisabledReason ? (
+        <p className="fleet-rail__blocked" role="status">
+          {writesDisabledReason}
+        </p>
+      ) : null}
+
       <section className="fleet-panel">
         <PanelTitle title="Posture Preset" />
         <div className="fleet-postures">
@@ -117,6 +132,7 @@ export function FleetControlRail({
               className={`fleet-posture fleet-posture--${preset.tone}`}
               disabled={writesDisabled}
               key={preset.name}
+              title={writesDisabledReason || undefined}
               type="button"
               onClick={() => onPreset(preset.name)}
             >
@@ -141,6 +157,7 @@ export function FleetControlRail({
           <button
             className="fleet-btn fleet-btn--primary"
             disabled={writesDisabled || !thresholdDirty}
+            title={writesDisabledReason || undefined}
             type="button"
             onClick={onApplyThresholds}
           >
@@ -156,19 +173,27 @@ export function FleetControlRail({
           <button
             className="fleet-btn fleet-btn--danger"
             disabled={writesDisabled}
+            title={writesDisabledReason || undefined}
             type="button"
             onClick={onKillSwitchOn}
           >
             <Power size={15} />
             Kill-switch on
           </button>
-          <button className="fleet-btn" disabled={writesDisabled} type="button" onClick={onKillSwitchOff}>
+          <button
+            className="fleet-btn"
+            disabled={writesDisabled}
+            title={writesDisabledReason || undefined}
+            type="button"
+            onClick={onKillSwitchOff}
+          >
             <Activity size={15} />
             Kill-switch off
           </button>
           <button
             className="fleet-btn"
             disabled={writesDisabled}
+            title={writesDisabledReason || undefined}
             type="button"
             onClick={onThaw}
           >

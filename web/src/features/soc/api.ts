@@ -15,6 +15,7 @@ import type {
   SocVersion,
   SocWhoami
 } from "./types";
+import { useSyncExternalStore } from "react";
 import { ApiError, getJSON, postForm, postJSON } from "../../lib/api";
 
 type AnyRecord = Record<string, unknown>;
@@ -132,9 +133,17 @@ export async function fetchSocSnapshot(signal?: AbortSignal): Promise<SocSnapsho
   const alerts = unwrapList(map.alerts.data, ["alerts", "items", "data"]).map(normalizeAlert);
   const events = unwrapList(map.events.data, ["events", "items", "data"]).map(normalizeEvent);
 
+  const whoami = normalizeWhoami(map.whoami.data);
+  // Only a whoami that actually ANSWERED may change what the console believes
+  // about this operator's authority. A failed read normalises to the empty
+  // record, whose canRespond is null — publishing that would read as "the
+  // server did not say", i.e. permitted, and one flaky poll would re-arm every
+  // containment control for a read-only account.
+  recordResponseAuthority(map.whoami.ok ? whoami.canRespond : undefined);
+
   return {
     snapshot: {
-      whoami: normalizeWhoami(map.whoami.data),
+      whoami,
       version: normalizeVersion(map.version.data),
       alerts: alerts.slice(0, MAX_BUFFERED_ALERTS),
       events: events.slice(0, MAX_BUFFERED_EVENTS),
@@ -359,6 +368,14 @@ export function jailSocAlert({
   // Both backends already prefer exec_id when resolving a target, so sending it
   // fixes both at once. pid and binary stay as corroborating hints for the
   // engine's process-table match when the drill panel has resolved them.
+  // THE REQUEST, NOT ONLY THE BUTTON. Every containment control is rendered by
+  // a component that reads useResponseAuthority, and every one of those is a
+  // separate chance to forget. This is the single point every jail passes
+  // through, so the rule that nothing fires while the answer is in flight — or
+  // after the server has refused — is enforced where it cannot be bypassed by a
+  // surface that gated on the wrong flag.
+  const withheld = responseWithheldReason();
+  if (withheld) return Promise.reject(new Error(withheld));
   return postJSON("/api/choke/jail", {
     exec_id: alert.execId,
     pids: alert.pid ? [alert.pid] : [],
@@ -476,8 +493,187 @@ export function decisionOutcome(d: { ok?: boolean; outcome?: string }): string {
   return text || "unknown";
 }
 
-function normalizeWhoami(value: unknown): SocWhoami {
+/**
+ * WHETHER THIS PRINCIPAL MAY RESPOND — the one place the console decides it.
+ *
+ * `true`  — the server said yes; behave exactly as before.
+ * `false` — the server said no. Every containment and write control is
+ *           disabled and says why, in the language of permission. It is not an
+ *           outage and it is not a missing feature: the deployment can do this,
+ *           this account may not ask for it.
+ * `null`  — the server ANSWERED WITHOUT the field. The single-tenant engine
+ *           publishes no `can_respond` because it has no concept of an
+ *           operator who may not contain, so that absence must read as
+ *           PERMITTED. Treating it as denial would take a working console's
+ *           controls away.
+ *
+ * "loading" — NOBODY HAS ANSWERED YET, and it is a fourth state rather than a
+ *           shade of `null` because collapsing the two is what armed every
+ *           containment surface on first paint. The module state starts here,
+ *           before the first whoami has been read, and a read-only account's
+ *           console painted a live, enabled kill-switch for as long as that
+ *           first poll took. Loading is not permission: while the answer is in
+ *           flight nothing may be armed, and the surface says it is checking
+ *           rather than claiming the account is read-only — which would be its
+ *           own lie for the operator who turns out to be a responder.
+ *
+ * It lives here, beside the normaliser that reads the field off the wire,
+ * because three surfaces re-deriving "may this operator respond?" is how the
+ * fourth copy drifts and re-arms a control the server refuses.
+ */
+export type ResponseAuthority = boolean | null;
+
+/**
+ * What the console currently KNOWS, which is one more thing than what the
+ * server can say: `ResponseAuthority` plus "the question is still open".
+ * Only `recordResponseAuthority` ever leaves the loading state, and only a
+ * whoami that actually answered may call it.
+ */
+export type ResponseAuthorityState = ResponseAuthority | "loading";
+
+export type SocWhoamiWithAuthority = SocWhoami & { canRespond: ResponseAuthority } & SocIdentity;
+
+/** Shown wherever containment is withheld because of who is asking. */
+export const READ_ONLY_ACCOUNT_REASON =
+  "Your account is read-only, so containment is not available to you. Ask an administrator for responder access.";
+
+/**
+ * Shown wherever containment is withheld because the answer has not arrived.
+ * Deliberately NOT the read-only sentence: telling a responder their account
+ * is read-only for the first second of every session is a different false
+ * statement, and the one they would report as a bug.
+ */
+export const AUTHORITY_PENDING_REASON =
+  "Checking what this account may do — containment stays disabled until the server answers.";
+
+let responseAuthority: ResponseAuthorityState = "loading";
+const responseAuthorityListeners = new Set<() => void>();
+
+export function responseAuthorityNow(): ResponseAuthorityState {
+  return responseAuthority;
+}
+
+/**
+ * Whether a containment request may be SENT at all, independent of which
+ * button was rendered, and the sentence to report when it may not.
+ *
+ * useResponseAuthority (below) is a RENDERING decision, and every rendering
+ * decision lives in a component this module does not own. This is the one place
+ * every containment request in this feature passes through, so it is where
+ * "nothing fires while the answer is in flight" can be made true of the request
+ * rather than only of the button that was drawn.
+ */
+function responseWithheldReason(): string | null {
+  if (responseAuthority === "loading") return AUTHORITY_PENDING_REASON;
+  if (responseAuthority === false) return READ_ONLY_ACCOUNT_REASON;
+  return null;
+}
+
+/**
+ * Record what whoami just said about this principal.
+ *
+ * `undefined` means whoami did not answer this poll — a network blip, a 503,
+ * an aborted refresh. That must NOT be confused with a server that answered
+ * without the field: re-arming the kill-switch for a known read-only operator
+ * because one poll failed is precisely the failure this whole file is fixing,
+ * so a non-answer leaves the last real answer standing — and when there has
+ * never been one, leaves the state at "loading", which withholds. A console
+ * whose whoami never succeeds does not know what this account may do, and the
+ * safe reading of not knowing is not to arm anything.
+ */
+export function recordResponseAuthority(next: ResponseAuthority | undefined): void {
+  if (next === undefined || next === responseAuthority) return;
+  responseAuthority = next;
+  for (const listener of responseAuthorityListeners) listener();
+}
+
+function subscribeResponseAuthority(listener: () => void): () => void {
+  responseAuthorityListeners.add(listener);
+  return () => responseAuthorityListeners.delete(listener);
+}
+
+/**
+ * What a component needs to render the gate: whether to disable, and the
+ * sentence to show when it does.
+ *
+ * TWO withheld flags rather than one, because there are two different reasons
+ * to withhold a control and they must not be told to the operator
+ * interchangeably:
+ *
+ * `withheld`       — the one flag a control's `disabled` should read. True while
+ *                    the answer is in flight AND when the server refused.
+ * `withheldReason` — the sentence that goes with whichever of the two it is.
+ * `readOnlyAccount`— strictly "the server said no". Unchanged, and deliberately
+ *                    NOT true during loading: every surface that renders the
+ *                    words "Read-only account" keys off this, and printing that
+ *                    over a responder's session for the first second is a lie of
+ *                    its own.
+ * `reason`         — the read-only sentence, or null. Unchanged.
+ *
+ * `reason` stays null when nothing is withheld so a surface cannot accidentally
+ * print a denial it is not applying.
+ */
+export function useResponseAuthority(): {
+  canRespond: ResponseAuthorityState;
+  readOnlyAccount: boolean;
+  pending: boolean;
+  withheld: boolean;
+  reason: string | null;
+  withheldReason: string | null;
+} {
+  const canRespond = useSyncExternalStore(subscribeResponseAuthority, responseAuthorityNow, responseAuthorityNow);
+  const readOnlyAccount = canRespond === false;
+  const pending = canRespond === "loading";
+  return {
+    canRespond,
+    readOnlyAccount,
+    pending,
+    withheld: pending || readOnlyAccount,
+    reason: readOnlyAccount ? READ_ONLY_ACCOUNT_REASON : null,
+    withheldReason: readOnlyAccount ? READ_ONLY_ACCOUNT_REASON : pending ? AUTHORITY_PENDING_REASON : null
+  };
+}
+
+/**
+ * WHO THE OPERATOR IS TO THE ESTATE, as distinct from which host answered.
+ *
+ * `crossTenant` — this principal reaches customers by naming them rather than
+ *   by belonging to one. Their `tenants` list is empty BY DESIGN (the control
+ *   plane refuses to enumerate the provider's customer roster over whoami), so
+ *   the console cannot and must not derive the estate identity from element 0
+ *   of it — which is exactly what it did, and is why a provider's console
+ *   displayed one customer's name as the whole book of business.
+ * `viewingTenant` — the single tenant this SERVER resolves this session's
+ *   tenant-less reads to. Every number on the dashboard is that one customer's.
+ *   It is not a claim about reach; it is the caption the screen was missing.
+ */
+export interface SocIdentity {
+  crossTenant: boolean;
+  viewingTenant?: string;
+}
+
+/**
+ * Read the identity fields back off a whoami that has been through the
+ * normaliser. `SocSnapshot["whoami"]` is typed as the narrower `SocWhoami`, so
+ * the fields are present at runtime but not in that type; this is the one
+ * place that reconciles the two, rather than a cast at every call site.
+ *
+ * Defensive rather than trusting: a snapshot built from the empty whoami (no
+ * server has answered) has neither field, and must read as "tenant-bound,
+ * nothing to caption" — never as a cross-tenant session, which would put a
+ * provider banner over a single-tenant engine's console.
+ */
+export function socIdentityOf(whoami: SocWhoami | undefined | null): SocIdentity {
+  const record = whoami as (SocWhoami & Partial<SocIdentity>) | undefined | null;
+  return {
+    crossTenant: record?.crossTenant === true,
+    viewingTenant: record?.viewingTenant || undefined
+  };
+}
+
+function normalizeWhoami(value: unknown): SocWhoamiWithAuthority {
   const record = asRecord(value);
+  const canRespondRaw = pick(record, "can_respond", "canRespond");
   return {
     user: asOptionalString(pick(record, "user", "username", "Username", "name", "Name")) || EMPTY_WHOAMI.user,
     host:
@@ -488,6 +684,18 @@ function normalizeWhoami(value: unknown): SocWhoami {
     // deployment cannot push", because the plane that cannot is the one that
     // never sends the field.
     canPushPolicy: pick(record, "can_push_policy", "canPushPolicy") === true,
+    // NOT strictly === true, and that asymmetry is the whole point. This field
+    // is about WHO is asking, not about what the deployment can do: the
+    // multi-tenant control plane publishes it from authz.CanRespond, the
+    // single-tenant engine has no notion of a principal who may not respond and
+    // sends nothing at all. Reading absence as `false` would strip the engine's
+    // console of every containment control it legitimately owns, so absence
+    // stays `null` — "the server did not say" — and only an explicit boolean
+    // decides anything. Dropping the field entirely, which is what this
+    // normaliser did until 2026-09-02, armed the whole kill-switch surface for
+    // an account the control plane 404s: the operator learned they were
+    // read-only by pressing sever on a live host and watching nothing happen.
+    canRespond: typeof canRespondRaw === "boolean" ? canRespondRaw : null,
     // Taken from what the server SAYS, not inferred from the shape of another
     // field. The previous version keyed off whether "tenants" was an array,
     // which broke for a cross-tenant MSOC admin — they have no tenant list, so
@@ -497,7 +705,16 @@ function normalizeWhoami(value: unknown): SocWhoami {
     // Anything other than an explicit "fleet" is treated as "host": the
     // narrower promise is the safe default for an older server that says
     // nothing.
-    policyScope: pick(record, "policy_scope", "policyScope") === "fleet" ? "fleet" : "host"
+    policyScope: pick(record, "policy_scope", "policyScope") === "fleet" ? "fleet" : "host",
+    // Strictly === true. A server that does not send the field is a
+    // single-tenant engine or an older control plane, and neither has a
+    // cross-tenant principal to describe — inventing one would caption a
+    // console that has exactly one customer with "you are the provider".
+    crossTenant: pick(record, "cross_tenant", "crossTenant") === true,
+    // The tenant whose data is ON SCREEN. Carried through even for a
+    // tenant-bound operator, where it simply equals their own tenant; the
+    // surface only captions it when it would otherwise be unstated.
+    viewingTenant: asOptionalString(pick(record, "viewing_tenant", "viewingTenant")) || undefined
   };
 }
 
@@ -765,6 +982,11 @@ export async function applyChokeAction(
   target: { execId: string; pid?: number; binary?: string },
   reason: string
 ): Promise<ChokeActionResult> {
+  // Same gate as jailSocAlert, and for the same reason: the ladder is driven
+  // from three different surfaces. Reported as a failed action rather than
+  // thrown, because that is this function's contract — it never rejects.
+  const withheld = responseWithheldReason();
+  if (withheld) return { ok: false, detail: withheld };
   const path = action === "pristine" ? "/api/choke/thaw" : "/api/choke/manual";
   const body =
     action === "pristine"

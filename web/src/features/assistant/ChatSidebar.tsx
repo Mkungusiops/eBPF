@@ -9,6 +9,13 @@
  * overlays, so routing the assistant through them would close whatever the
  * analyst was reading — the precise failure the design forbids.
  *
+ * IT READS THE CAPABILITY, through useChats — it is not a capability-free
+ * surface, and describing it as one is how the sidebar was left printing "No
+ * assistant agent is available on this deployment." for a read that failed. The
+ * agent list and the availability verdict both come from that read, and the
+ * sentence shown when there is no agent is the drill panel's own
+ * (`assistantOffText`), so the two surfaces cannot drift apart again.
+ *
  * It renders answers through AnswerText, the same renderer the drill panels use.
  * One renderer means one place to get escaping right (ai-and-console-reuse.md
  * §7a): model output is never treated as markup.

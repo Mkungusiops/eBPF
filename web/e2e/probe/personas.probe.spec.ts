@@ -199,8 +199,8 @@ async function closeAll(...sessions: Array<Session | null | undefined>): Promise
  *
  * "offered" means a real, enabled control an operator can press. `null` means
  * the reading itself failed — a detached node, a navigation mid-read — and is
- * never folded into a verdict: under `test.fail` a swallowed harness error
- * becomes a green report about a defect nothing measured.
+ * never folded into a verdict: a swallowed harness error reported as a
+ * permission verdict is a claim about a boundary nothing measured.
  */
 type ControlState = "absent" | "disabled" | "offered";
 
@@ -522,8 +522,8 @@ test.describe("read-only operator", () => {
   });
 
   /**
-   * WHAT BUG THIS PINS — the console offers containment to an operator the
-   * server will refuse. `test.fail`, because it is live.
+   * WHAT BUG THIS PINS — the console offered containment to an operator the
+   * server refuses. Live until 2026-09-02.
    *
    * ROOT CAUSE. handleWhoami publishes `can_respond`, authz.CanRespond's own
    * comment says the console uses it to enable/disable action controls, and
@@ -532,39 +532,33 @@ test.describe("read-only operator", () => {
    * `loadState.kind === "disabled"` (useChokePosture.ts), which is about
    * whether the deployment is serving data, not about who is asking.
    *
-   * THE FIX IS ONE LINE PLUS ITS USES: read `can_respond` in normalizeWhoami
-   * (beside the `can_push_policy` line that already does exactly this) and gate
-   * the containment controls on it. `can_push_policy` is the same capability
-   * under a different name and IS read — which is why the Detections authoring
-   * button is correctly withheld from this persona while the kill-switch is
-   * not. The capability already arrives; only this one field is dropped.
+   * FIXED 2026-09-02: normalizeWhoami reads `can_respond` (beside the
+   * `can_push_policy` line that already did exactly this) and every containment
+   * control is gated on one shared predicate — which also distinguishes "the
+   * server has not answered yet" from "the server said no", because a control
+   * armed while the answer is in flight is the same defect in a smaller window.
+   * `can_push_policy` is the same capability under a different name and was
+   * always read, which is why the Detections authoring button was correctly
+   * withheld from this persona while the kill-switch was not.
    *
    * WHY IT MATTERS. A kill-switch that does nothing is worse than no
    * kill-switch: the operator who presses it believes enforcement is bypassed.
    * The failure is silent at the console — the server answers 404 and the
    * fan-out summary reports what it reached, which is nothing.
    *
-   * WHY THE GUARDS. `test.fail(true, …)` makes ANY throw in this body the
-   * expected failure — a Keycloak flake, a renamed class, a timeout — every one
-   * of which would report green while measuring nothing. So nothing on the way
-   * to the expectation throws: both sign-ins skip on failure, the workbench is
-   * waited for tolerantly and skips if it never draws, every control reading is
-   * `null` on error and a `null` skips, and the ANALYST control must show the
-   * same controls as offered before the persona's reading is allowed to mean
-   * anything — otherwise a fleet in dry-run or a disabled poll would present
-   * itself as a fixed permission model. Add a step above the expectation and it
-   * has to skip on failure too, or this test starts reporting green for reasons
-   * that have nothing to do with the defect.
+   * WHY THE GUARDS. Nothing on the way to the expectation is allowed to throw:
+   * both sign-ins skip on failure, the workbench is waited for tolerantly and
+   * skips if it never draws, every control reading is `null` on error and a
+   * `null` skips, and the ANALYST control must show the same controls as
+   * offered before the persona's reading is allowed to mean anything —
+   * otherwise a fleet in dry-run or a disabled poll would present itself as a
+   * fixed permission model. Add a step above the expectation and it has to skip
+   * on failure too, or a harness fault gets reported as a permission boundary.
    */
   test("the containment controls a read-only operator must not be offered are offered anyway", async ({
     browser,
     probe
   }) => {
-    test.fail(
-      true,
-      "known defect: normalizeWhoami drops can_respond, so the console arms every containment control for a principal the server refuses"
-    );
-
     const opened = await personaAndControl(browser, probe, readOnly(probe)).catch(() => null);
     test.skip(opened === null, "could not open both sessions — a harness fault, not the defect");
     const { persona, analyst } = opened!;
@@ -662,11 +656,6 @@ test.describe("read-only operator", () => {
    * have gone green on half a fix.
    */
   test("the fleet write rail is offered to a read-only operator", async ({ browser, probe }) => {
-    test.fail(
-      true,
-      "known defect: useFleetControls computes writesDisabled from estate state only — never from can_respond"
-    );
-
     const opened = await personaAndControl(browser, probe, readOnly(probe)).catch(() => null);
     test.skip(opened === null, "could not open both sessions — a harness fault, not the defect");
     const { persona, analyst } = opened!;
@@ -798,11 +787,6 @@ test.describe("read-only operator", () => {
     browser,
     probe
   }) => {
-    test.fail(
-      true,
-      "known defect: DetectionsBody explains a withheld push as 'no Tetragon connection' — a permission reported as an outage"
-    );
-
     const opened = await personaAndControl(browser, probe, readOnly(probe)).catch(() => null);
     test.skip(opened === null, "could not open both sessions — a harness fault, not the defect");
     const { persona, analyst } = opened!;
@@ -869,11 +853,6 @@ test.describe("read-only operator", () => {
     browser,
     probe
   }) => {
-    test.fail(
-      true,
-      "known defect: handleWhoami derives `role` from HasCrossTenant alone, so a read-only operator is published as tenant-analyst"
-    );
-
     const session = await signedInContext(browser, probe, readOnly(probe)).catch(() => null);
     test.skip(session === null, "could not sign the read-only operator in — a harness fault, not the defect");
 
@@ -1025,21 +1004,17 @@ test.describe("cross-tenant responder", () => {
    * and no way to audit-review a screenshot of it.
    *
    * This is the same one-line derivation the read-only test pins from the other
-   * side. Fixing it once fixes both, and both markers turn into hard errors the
-   * moment it is fixed.
+   * side, and one fix closed both: since 2026-09-02 handleWhoami emits the principal's
+   * actual grant — read-only, tenant-analyst, cross-tenant-responder or
+   * msoc-admin — rather than a two-valued function of HasCrossTenant.
    *
-   * GUARDS: under `test.fail` every step before the expectation skips on
-   * failure, so only a real reading of `role` can satisfy the marker.
+   * GUARDS: every step before the expectation skips on failure, so a harness
+   * fault cannot be reported as a wrong role name.
    */
   test("whoami publishes a cross-tenant responder under the msoc-admin role name", async ({
     browser,
     probe
   }) => {
-    test.fail(
-      true,
-      "known defect: handleWhoami derives `role` from HasCrossTenant alone, so a cross-tenant-responder is published as msoc-admin"
-    );
-
     const session = await signedInContext(browser, probe, responder(probe)).catch(() => null);
     test.skip(session === null, "could not sign the responder in — a harness fault, not the defect");
 
@@ -1089,18 +1064,15 @@ test.describe("cross-tenant responder", () => {
    * book of business, the containment they fire is aimed by a console that has
    * silently chosen the tenant for them.
    *
-   * handleWhoami's own comment states the opposite — "a cross-tenant MSOC admin
+   * handleWhoami's own comment stated the opposite — "a cross-tenant MSOC admin
    * has no tenant list, so tenants is null" — and the console was corrected to
-   * match it. The deployment does not.
+   * match it; the deployment was not.
    *
-   * Delete this `test.fail` when whoami stops handing a cross-tenant principal
-   * a tenant list (or the console stops pinning itself to element 0).
+   * FIXED 2026-09-02: TenantScope stops fabricating a scope from grants that authorize
+   * nothing, so the list is genuinely empty, and the console names the tenant
+   * it is showing instead of presenting it as the estate.
    */
   test("the cross-tenant responder's console is not pinned to one customer", async ({ browser, probe }) => {
-    test.fail(
-      true,
-      "known defect: TenantScope hands a cross-tenant-responder a one-tenant scope built from capability-less default realm roles, so its console is pinned to one customer"
-    );
     test.skip(!probe.otherTenant, "Set PROBE_OTHER_TENANT");
     const foreign = probe.otherTenant!;
 

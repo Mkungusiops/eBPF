@@ -5,7 +5,7 @@
 // panels a short buffer actually affects — were interleaved with 500 lines of
 // JSX. They are decisions about what the console is allowed to claim, so they
 // live together here and the route only renders the answer.
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import {
   TIMELINE_BUCKETS,
   buildTimeline,
@@ -19,7 +19,7 @@ import {
   topProcessRows
 } from "./analytics";
 import { SEVERITIES, type AckState, type SortField } from "./dashboard";
-import { useAlertStats, useDecisionStats, useEstateBaseline } from "./hooks";
+import { eventIdentity, useAlertStats, useDecisionStats, useEstateBaseline } from "./hooks";
 import {
   aggregateNetwork,
   eventSpark,
@@ -29,7 +29,7 @@ import {
   mitreCoverage
 } from "./telemetry";
 import { estateHalfScale, riskScoreAgainst } from "./risk";
-import type { Severity, SocSnapshot } from "./types";
+import type { Severity, SocEvent, SocSnapshot } from "./types";
 
 export function useSocWindowModel({
   snapshot,
@@ -47,7 +47,8 @@ export function useSocWindowModel({
   pinnedAlerts,
   timelineHidden,
   streamFilter,
-  streamHideNoise
+  streamHideNoise,
+  streamPaused
 }: {
   snapshot: SocSnapshot;
   rangeMin: number;
@@ -65,6 +66,7 @@ export function useSocWindowModel({
   timelineHidden: Severity[];
   streamFilter: string;
   streamHideNoise: boolean;
+  streamPaused: boolean;
 }) {
   const rangeAlerts = useMemo(() => {
     const cutoff = now - rangeMin * 60_000;
@@ -252,10 +254,51 @@ export function useSocWindowModel({
   const topProcesses = useMemo(() => topProcessRows(rangeAlerts), [rangeAlerts]);
   const iocs = useMemo(() => extractIocs(rangeAlerts, rangeEvents), [rangeAlerts, rangeEvents]);
   const networkRows = useMemo(() => aggregateNetwork(rangeEvents), [rangeEvents]);
-  const visibleEvents = useMemo(
-    () => filterEvents(snapshot.events, streamFilter, streamHideNoise).slice(0, 200),
-    [snapshot.events, streamFilter, streamHideNoise]
-  );
+  // PAUSE FREEZES THE LIST, NOT THE INGEST.
+  //
+  // `paused` used to reach nothing but a pill label and `.is-paused { opacity:
+  // .62 }`: rows kept arriving and scrolling under the cursor of the operator
+  // who had just pressed Pause, so a click landed on whatever had moved into
+  // that position and they opened the drill panel for an event they never saw.
+  //
+  // What is held is the SET of events the buffer held at the pause edge — not a
+  // snapshot of the rendered rows — so the filter and the self-noise toggle
+  // still work on the frozen list, and nothing is dropped: everything that
+  // arrives while held is still written to the buffer (the KPIs, the timeline
+  // and the graph stay live), still counted below, and appears in one piece on
+  // resume. A pause that discarded frames would be worse than no pause, because
+  // the gap it left would be invisible.
+  // HELD BY IDENTITY, NOT BY `event.id`.
+  //
+  // On the control plane the event feed carries no id, so the normaliser
+  // synthesises one from the record's POSITION in the response — which means
+  // every 30s poll hands the same real event back under a new id. A pause set
+  // captured from `event.id` therefore matched nothing after the first poll:
+  // the frozen list emptied itself while the operator was reading it, and the
+  // readout beside it counted every row in the buffer as "arrived while held",
+  // including the ones that had been on screen before Pause was pressed. Both
+  // halves of the disclosure were wrong at once.
+  //
+  // eventIdentity is what makes two copies of a record the same record across
+  // polls (see hooks.ts), and it is memoised per record, so keying the held set
+  // by it costs one pass over the buffer at the pause edge and a lookup per row
+  // after that.
+  const heldEventKeysRef = useRef<Set<string> | null>(null);
+  if (!streamPaused) heldEventKeysRef.current = null;
+  else if (!heldEventKeysRef.current) heldEventKeysRef.current = new Set(snapshot.events.map(eventIdentity));
+  const heldEventKeys = streamPaused ? heldEventKeysRef.current : null;
+  const visibleEvents = useMemo(() => {
+    const source: SocEvent[] = heldEventKeys
+      ? snapshot.events.filter((event) => heldEventKeys.has(eventIdentity(event)))
+      : snapshot.events;
+    return filterEvents(source, streamFilter, streamHideNoise).slice(0, 200);
+  }, [heldEventKeys, snapshot.events, streamFilter, streamHideNoise]);
+  // How many frames reached the buffer while the list was held. The stream
+  // panel prints it, so a paused list that has stopped moving is distinguishable
+  // from an estate that has gone quiet.
+  const heldEventCount = heldEventKeys
+    ? snapshot.events.reduce((count, event) => (heldEventKeys.has(eventIdentity(event)) ? count : count + 1), 0)
+    : 0;
   // Does the console actually hold the whole selected window?
   //
   // The buffers are capped, and both feeds arrive newest-first, so a range
@@ -375,6 +418,7 @@ export function useSocWindowModel({
     iocs,
     networkRows,
     visibleEvents,
+    heldEventCount,
     windowCoverage,
     activeEndpointErrors,
     countsUnfounded,

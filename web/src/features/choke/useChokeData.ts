@@ -57,12 +57,30 @@ export interface ChokeData {
   pingHost: () => Promise<void>;
 }
 
+/**
+ * Deadline for one identity read.
+ *
+ * A whoami that REJECTS is handled below by the self-disarming retry. One that
+ * never settles is a different animal, and it is the shape a half-open
+ * connection through a load balancer takes — the control-plane outage this
+ * estate has actually seen. `refreshAll` awaits this read, so a hung one never
+ * releases `refreshing`: the Refresh button stays spinning and DISABLED (see
+ * sections.tsx) for the rest of the session, which takes the operator's manual
+ * recovery away exactly when the control plane is sick. Bounding the read makes
+ * silence settle as a failure, which the retry interval already knows how to
+ * recover from.
+ */
+const WHOAMI_TIMEOUT_MS = 8000;
+
 export function useChokeData({
   pushToast,
   sharedStream,
+  whoamiTimeoutMs = WHOAMI_TIMEOUT_MS,
 }: {
   pushToast: (message: string, kind?: ToastMessage["kind"]) => void;
   sharedStream: ReturnType<typeof useStream>;
+  /** Injectable so a test can drive a hung read to its deadline; see above. */
+  whoamiTimeoutMs?: number;
 }): ChokeData {
   const [loadState, setLoadState] = useState<LoadState>({ kind: "loading" });
   const [chokeState, setChokeState] = useState<ChokeState | null>(null);
@@ -171,13 +189,42 @@ export function useChokeData({
     }
   }, []);
 
+  // whoami is this route's AUTHORITY read, and it is on none of the staggered
+  // snapshot polls below — it only runs inside refreshAll. So a single failed
+  // whoami (a blip, a restart, a proxy hiccup) left `whoami` null, which
+  // ChokeRoute publishes as "the question is still open", which withholds every
+  // containment control. The operator's console then stayed disabled until they
+  // noticed and pressed Refresh, or the tab lost and regained visibility —
+  // during an incident, neither is a recovery path.
+  //
+  // So a failure arms its own retry rather than adding a ninth permanent poll:
+  // the flag below is only true while whoami is unanswered, and the interval
+  // stops the moment the server speaks.
+  const [whoamiUnanswered, setWhoamiUnanswered] = useState(true);
   const refreshWhoami = useCallback(async () => {
+    let deadline: number | null = null;
+    const request = getWhoami();
+    // Nothing awaits the request once the deadline wins the race, so a late
+    // rejection would be unhandled. Claim it here.
+    request.catch(() => {});
     try {
-      setWhoami(await getWhoami());
+      const identity = await Promise.race([
+        request,
+        new Promise<never>((_, reject) => {
+          deadline = window.setTimeout(() => reject(new Error("whoami timed out")), whoamiTimeoutMs);
+        }),
+      ]);
+      setWhoami(identity);
+      setWhoamiUnanswered(false);
     } catch {
+      // Silence and a refusal-to-connect are the same thing to this route: no
+      // authority, so containment stays withheld and the retry stays armed.
       setWhoami(null);
+      setWhoamiUnanswered(true);
+    } finally {
+      if (deadline !== null) window.clearTimeout(deadline);
     }
-  }, []);
+  }, [whoamiTimeoutMs]);
 
   // The approvals queue is only served by the fleet control plane; the
   // single-host engine has no such endpoint, so a 404 here is expected and must
@@ -332,6 +379,11 @@ export function useChokeData({
   useInterval(() => void pingHost(), 8000, true);
   useInterval(() => void refreshCgroups(), 9000, loadState.kind !== "disabled");
   useInterval(() => void refreshState(), 10000, loadState.kind !== "disabled");
+  // The authority retry. Deliberately NOT gated on `loadState`: a gateway that
+  // reports itself disabled still has an identity endpoint, and the operator
+  // whose whoami failed needs it answered before the gateway comes back, not
+  // after. It disarms itself as soon as whoami answers once.
+  useInterval(() => void refreshWhoami(), 6000, whoamiUnanswered);
 
   return {
     loadState,

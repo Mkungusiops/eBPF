@@ -1,3 +1,4 @@
+import { readCanRespond } from "../choke/canRespond";
 import type {
   DeviceDataPlaneState,
   DeviceFlowsResponse,
@@ -26,6 +27,19 @@ export interface DevicesApiCallOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * What the device console needs from /api/whoami: whether this account may
+ * send containment writes at all.
+ *
+ * The device plane arms independently of the process plane — they are separate
+ * commands to separate enforcers — but they are gated by the same grant, so the
+ * field is read with the same predicate (see features/choke/canRespond.ts)
+ * rather than reimplemented here.
+ */
+export interface DevicesWhoami {
+  canRespond: boolean | null;
+}
+
 export interface DevicesApi {
   fetchState(options?: DevicesApiCallOptions): Promise<DeviceDataPlaneState>;
   fetchDevices(options?: DevicesApiCallOptions): Promise<DeviceEntry[]>;
@@ -34,6 +48,13 @@ export interface DevicesApi {
   thawDevices(body: DeviceThawRequest): Promise<DeviceThawResponse>;
   setMode(enforcing: boolean, reason: string): Promise<DeviceModeResponse>;
   setKillSwitch(on: boolean): Promise<DeviceKillSwitchResponse>;
+  /**
+   * Optional so that the many hand-built fakes of this interface keep
+   * compiling. A fake that omits it reports `canRespond: null`, which is the
+   * single-tenant answer — controls armed — and therefore preserves exactly
+   * the behaviour those fixtures were written against.
+   */
+  fetchWhoami?(options?: DevicesApiCallOptions): Promise<DevicesWhoami>;
 }
 
 export type ApiRequest = <T>(url: string, init?: RequestInit) => Promise<T>;
@@ -51,7 +72,10 @@ export function createDevicesApi(request: ApiRequest = defaultApiRequest): Devic
     setMode: (enforcing, reason) =>
       request<DeviceModeResponse>("/api/choke/device-mode", jsonPost({ enforcing, reason })),
     setKillSwitch: (on) =>
-      request<DeviceKillSwitchResponse>("/api/choke/device-kill-switch", jsonPost({ on }))
+      request<DeviceKillSwitchResponse>("/api/choke/device-kill-switch", jsonPost({ on })),
+    fetchWhoami: async (options) => ({
+      canRespond: readCanRespond(await request<unknown>("/api/whoami", options))
+    })
   };
 }
 

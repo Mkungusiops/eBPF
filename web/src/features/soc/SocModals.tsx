@@ -6,7 +6,7 @@
 // suite selects panels that are in the DOM before they are visible — so this
 // component is a fan-out and nothing more. It must not learn to conditionally
 // mount.
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { Command as CommandPrimitive } from "cmdk";
 import { Search } from "lucide-react";
 import type * as React from "react";
@@ -32,6 +32,7 @@ import {
   PoliciesBody
 } from "./panels";
 import { SOC_STORAGE_KEYS } from "./panelInventory";
+import { surfaceOffered } from "./Sidebar";
 import type { SocWindowModel } from "./useSocWindowModel";
 import type { Severity, SocSnapshot } from "./types";
 
@@ -110,6 +111,12 @@ export function SocModals({
           onRefresh={onActionComplete}
           canPush={snapshot.whoami.canPushPolicy === true}
           scope={snapshot.whoami.policyScope}
+          /* identityAnswered is NOT passed, and that is deliberate: this shell
+             has no way to tell an empty whoami from one that has not arrived —
+             `snapshot.whoami` is the same placeholder object either way, which
+             is why every operator opening this panel on first paint was told
+             the deployment has no Tetragon connection. DetectionsBody reads the
+             shared authority store itself, which knows. */
         />
       </ModalShell>
 
@@ -172,25 +179,17 @@ export function SocModals({
       </ModalShell>
 
       <ModalShell panel={PANELS["command-palette"]} open={openSurface === "command"} onClose={closeModal}>
-        <CommandPrimitive label="SOC command palette" value={commandQuery} onValueChange={setCommandQuery}>
-          <label className="soc-command-input">
-            <Search size={16} />
-            <CommandPrimitive.Input placeholder="Type a command" autoFocus />
-          </label>
-          <CommandPrimitive.List className="soc-command-list">
-            <CommandPrimitive.Empty>No matching commands.</CommandPrimitive.Empty>
-            {commandItems.map((item) => (
-              <CommandPrimitive.Item
-                key={item.label}
-                value={`${item.kind} ${item.label}`}
-                onSelect={() => openSurfaceByName(item.surface)}
-              >
-                <span>{item.kind}</span>
-                <strong>{item.label}</strong>
-              </CommandPrimitive.Item>
-            ))}
-          </CommandPrimitive.List>
-        </CommandPrimitive>
+        {/* The palette is gated on the SAME server-reported lab_mode the rail
+            is. Every body here is mounted permanently, so an ungated palette
+            was a second, unlocked door onto surfaces the deployment hides on
+            purpose — the attack runner among them. */}
+        <CommandPalette
+          open={openSurface === "command"}
+          value={commandQuery}
+          onValueChange={setCommandQuery}
+          items={paletteCommands(snapshot.version.labMode)}
+          onSelect={openSurfaceByName}
+        />
       </ModalShell>
 
       <ModalShell panel={PANELS["notifications-center-modal"]} open={openSurface === "notifications"} onClose={closeModal} wide>
@@ -241,7 +240,13 @@ export function SocModals({
   );
 }
 
-const commandItems: Array<{ label: string; kind: string; surface: OpenSurface }> = [
+export interface CommandItem {
+  label: string;
+  kind: string;
+  surface: OpenSurface;
+}
+
+const commandItems: CommandItem[] = [
   { label: "Show policies", kind: "panel", surface: "policies" },
   { label: "Open attacks", kind: "panel", surface: "attacks" },
   { label: "Open correlation graph", kind: "panel", surface: "graph" },
@@ -251,6 +256,101 @@ const commandItems: Array<{ label: string; kind: string; surface: OpenSurface }>
   { label: "Open export", kind: "action", surface: "export" },
   { label: "Show help", kind: "panel", surface: "help" }
 ];
+
+/**
+ * What the palette offers on THIS deployment.
+ *
+ * A command is a way into a surface, so it has to answer the same question the
+ * rail answers before it draws a nav entry: does this deployment offer that
+ * surface at all? It asks the rail's own predicate rather than keeping a second
+ * list — a copy would drift, and the direction it drifts in is offering the
+ * attack runner on a customer estate.
+ */
+export function paletteCommands(labMode: boolean): CommandItem[] {
+  return commandItems.filter((item) => surfaceOffered(item.surface, labMode));
+}
+
+/**
+ * The command palette, and the focus it has to take.
+ *
+ * cmdk's `autoFocus` runs once, when the input mounts. Every body in this file
+ * is mounted at route load inside a shell that is `display: none` until it
+ * opens, so that single attempt landed on a hidden input and did nothing:
+ * Ctrl+K opened the palette with focus still on <body>, the next keystroke went
+ * nowhere, and the operator had to reach for the mouse — which is the whole
+ * reason a palette exists. Focus therefore moves when `open` flips, not when
+ * the input mounts.
+ *
+ * Closing has to be handled too. The shell hides itself with `display: none`,
+ * and a focused element inside it would keep taking keystrokes into a field
+ * nobody can see, so focus goes back to whatever the operator was on when they
+ * pressed Ctrl+K.
+ */
+export function CommandPalette({
+  open,
+  value,
+  onValueChange,
+  items,
+  onSelect
+}: {
+  open: boolean;
+  value: string;
+  onValueChange: (value: string) => void;
+  items: CommandItem[];
+  onSelect: (surface: OpenSurface) => void;
+}) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  /** Where focus was before Ctrl+K, so Escape can put it back. */
+  const returnTo = useRef<HTMLElement | null>(null);
+
+  // Layout effect, not an effect: the shell's `is-open` class is already in the
+  // DOM here, so the input is focusable — and focus never lands in a subtree
+  // the same commit is about to mark aria-hidden.
+  useLayoutEffect(() => {
+    const input = inputRef.current;
+    if (!input) return;
+    if (open) {
+      const active = document.activeElement;
+      returnTo.current = active instanceof HTMLElement && active !== document.body ? active : null;
+      input.focus();
+      // Any query left over from the last open is selected rather than kept:
+      // the first keystroke replaces a stale filter instead of extending it.
+      input.select();
+      return;
+    }
+    const back = returnTo.current;
+    returnTo.current = null;
+    // Only reclaim focus the palette itself was holding. Hiding the shell drops
+    // focus to <body>, so this cannot ask whether the input is still focused —
+    // but if something else has deliberately taken focus, leave it there.
+    const active = document.activeElement;
+    if (active && active !== document.body && active !== input) return;
+    if (back?.isConnected) back.focus();
+    else if (active === input) input.blur();
+  }, [open]);
+
+  return (
+    <CommandPrimitive label="SOC command palette" value={value} onValueChange={onValueChange}>
+      <label className="soc-command-input">
+        <Search size={16} />
+        <CommandPrimitive.Input ref={inputRef} placeholder="Type a command" />
+      </label>
+      <CommandPrimitive.List className="soc-command-list">
+        <CommandPrimitive.Empty>No matching commands.</CommandPrimitive.Empty>
+        {items.map((item) => (
+          <CommandPrimitive.Item
+            key={item.label}
+            value={`${item.kind} ${item.label}`}
+            onSelect={() => onSelect(item.surface)}
+          >
+            <span>{item.kind}</span>
+            <strong>{item.label}</strong>
+          </CommandPrimitive.Item>
+        ))}
+      </CommandPrimitive.List>
+    </CommandPrimitive>
+  );
+}
 
 function AttackRunnerList({
   attacks,

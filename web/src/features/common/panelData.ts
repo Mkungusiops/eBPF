@@ -12,7 +12,13 @@ export const socPanels: PanelSpec[] = [
   ["Version-update toast", "soc-version-toast", "L", "Reload prompt when /api/version SHA changes."],
   ["KPI row", "soc-kpi-row", "H", "Severity counts, deltas, sparklines, and KPI drill entry."],
   ["Severity timeline", "soc-severity-timeline", "H", "Stacked bars, anomalies, bucket click, brush, and legend toggles."],
-  ["Alert triage queue", "soc-alert-triage", "H", "DSL filter, classification, grouping, bulk actions, saved views, keyboard nav."],
+  // No "saved views". Nothing in src reads or writes the storage key the panel
+  // inventory used to advertise for it — there is no control to save the current
+  // query/sort/chip set and none to restore one — so the claim is withdrawn here
+  // as well as from the inventory, rather than sending an operator looking for a
+  // control that does not exist. (Deliberately not spelling the key here: a
+  // test greps the console's source for it to prove nothing claims it.)
+  ["Alert triage queue", "soc-alert-triage", "H", "DSL filter, classification, grouping, bulk actions, keyboard nav."],
   ["Drill-down slide-over", "soc-drill", "H", "Lineage, replay, inline Choke action, origin, and notes."],
   ["MITRE ATT&CK coverage", "soc-mitre-coverage", "L", "Per-policy technique bars."],
   ["Top processes by score", "soc-top-processes", "M", "Lazy origin lookup via /api/process."],

@@ -7,6 +7,7 @@
 // separately would mean a signature nobody reads and a rename in three files
 // every time a filter is added.
 import type { ChokeAction, CircuitEntry, Thresholds } from "./types";
+import { READ_ONLY_TITLE } from "./canRespond";
 import { auditVerdict } from "../common/enforcement";
 import { ACTIONS, appliedTierCounts, bucketizeDecisions, countCgroupPids, enforcementGapReason } from "./utils";
 import { formatWindow, toggleSetValue } from "./constants";
@@ -22,6 +23,9 @@ export function CommandView({
   data,
   filters,
   posture,
+  writesWithheld,
+  commitWithheld,
+  withheldReason,
   density,
   acked,
   onDensity,
@@ -37,6 +41,20 @@ export function CommandView({
   data: ChokeData;
   filters: ReturnType<typeof useChokeFilters>;
   posture: ReturnType<typeof useChokePosture>;
+  /**
+   * The operator gate, decided once in ChokeRoute and handed down rather than
+   * re-derived here.
+   *
+   * `writesWithheld` covers BOTH "the server refused" and "the server has not
+   * answered yet" — posture alone cannot express the second, and reading
+   * `posture.readOnlyAccount` here is what armed every row action for the first
+   * paint of a read-only session.
+   */
+  writesWithheld: boolean;
+  /** Also true when the DEPLOYMENT is not serving — the threshold commit's gate. */
+  commitWithheld: boolean;
+  /** The sentence that goes with whichever withholding it is; "" when none. */
+  withheldReason: string;
   density: "normal" | "compact";
   acked: Set<number>;
   onDensity: () => void;
@@ -51,6 +69,10 @@ export function CommandView({
 }) {
   const { buckets, cgroups, chokeState, circuits, decisions, now, streamInfo, systemHealth } = data;
   const { disabled, engineOnlyHint, isFleetConsole, mode, stateCounts, thresholds } = posture;
+  // Two different disablers, deliberately kept apart. `disabled` says the
+  // gateway is not serving; the withheld pair is about the OPERATOR — refused,
+  // or not yet answered for. Panels that only READ (the engine stack) stay on
+  // the first; anything that writes uses the second.
   return (
     <>
       <section className="choke-ti-ribbon" data-panel="threat-intelligence-ribbon">
@@ -106,7 +128,8 @@ export function CommandView({
             dataPanel="thresholds-panel"
             thresholds={thresholds}
             circuits={circuits}
-            disabled={disabled}
+            disabled={commitWithheld}
+            disabledReason={withheldReason}
             onCommit={onCommitThresholds}
           />
           <Panel dataPanel="choke-map-bpf-mirror" title="Choke Map / BPF Mirror">
@@ -128,7 +151,7 @@ export function CommandView({
             }
           >
             <div className="choke-table-toolbar">
-              <input value={filters.procFilter} onChange={(event) => filters.setProcFilter(event.target.value)} placeholder="filter binary, pid, exec_id, origin" />
+              <input aria-label="Filter tracked processes" value={filters.procFilter} onChange={(event) => filters.setProcFilter(event.target.value)} placeholder="filter binary, pid, exec_id, origin" />
               <div className="choke-chip-row">
                 {["throttled", "tarpit", "quarantined", "severed", "pristine"].map((state) => (
                   <button
@@ -157,6 +180,8 @@ export function CommandView({
               onFilterBinary={(binary) => filters.setGlobalSearch(`binary:${binary}`)}
               onFilterExec={filters.setTapeFilterExec}
               onCopy={onCopy}
+              readOnly={writesWithheld}
+              readOnlyTitle={withheldReason}
             />
           </Panel>
         </section>
@@ -170,8 +195,11 @@ export function CommandView({
             {/* Stacked, grouped toolbar (BPF-mirror style): full-width search, then a clean
                filter row — action facets divided from display toggles. */}
             <div className="choke-tape-toolbar">
+              {/* Named for assistive tech; the placeholder documents the syntax
+                  but vanishes as soon as anything is typed. */}
               <input
                 className="choke-tape-search"
+                aria-label="Search the decision tape"
                 value={filters.tapeSearch}
                 onChange={(event) => filters.setTapeSearch(event.target.value)}
                 placeholder="Search reason, pid, exec_id, binary or /regex/"
@@ -229,10 +257,30 @@ export function CommandView({
         <div className="choke-bulkbar" data-panel="bulk-action-bar">
           <span>{filters.selectedExecs.size} selected</span>
           {ACTIONS.map((action) => (
-            <button key={action} type="button" onClick={() => onBulkAction(action)}>{action}</button>
+            <button
+              key={action}
+              type="button"
+              disabled={writesWithheld}
+              title={writesWithheld ? withheldReason || READ_ONLY_TITLE : undefined}
+              onClick={() => onBulkAction(action)}
+            >
+              {action}
+            </button>
           ))}
-          <button type="button" onClick={onBulkForget}>forget</button>
+          <button
+            type="button"
+            disabled={writesWithheld}
+            title={writesWithheld ? withheldReason || READ_ONLY_TITLE : undefined}
+            onClick={onBulkForget}
+          >
+            forget
+          </button>
+          {/* Clearing the selection is not a write, and taking it away would
+              strand an operator with a selection they cannot dismiss. */}
           <button type="button" onClick={() => filters.setSelectedExecs(new Set())}>clear</button>
+          {withheldReason ? (
+            <span className="choke-bulkbar-note">{withheldReason}</span>
+          ) : null}
         </div>
       )}
 

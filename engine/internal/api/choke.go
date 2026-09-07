@@ -1,8 +1,10 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -31,6 +33,88 @@ func (s *Server) gatewayOrErr(w http.ResponseWriter) *choke.Gateway {
 		return nil
 	}
 	return s.gateway
+}
+
+// maxWriteBodyBytes caps what one choke write may send. decodeWrite reads the
+// body twice — once as an object, once into the handler's struct — so it has to
+// buffer it, and an unbounded buffer on an authenticated write is a cost the
+// operator never asked for. Orders of magnitude above the largest real body on
+// this surface (a bulk jail naming thousands of targets, a policy YAML).
+const maxWriteBodyBytes = 4 << 20
+
+// decodeWrite decodes a choke write's body into dst, refusing every body that
+// states no intent: absent, empty, whitespace-only, a literal `null`, or any
+// JSON that is not an object.
+//
+// WHY the map hop rather than decoding straight into dst: encoding/json decodes
+// `null` into a struct with a NIL ERROR and leaves every field at its zero
+// value, and on this surface the zero value is the disarming direction —
+// SetKillSwitch(false), detect-only, an empty audit reason. So POST
+// /api/choke/kill-switch with the body `null` released the single
+// widest-blast-radius toggle on the platform and wrote the audit row with no
+// reason, indistinguishable from an operator asking for exactly that. A
+// map[string]json.RawMessage separates the three cases a struct cannot: not an
+// object at all, an object that OMITS a key, and an object that STATES it. The
+// returned field set is what lets a handler tell "the operator said false" from
+// "the body said nothing".
+//
+// A pointer field carries the same fact (writeChangeControl in the control
+// plane uses a *bool for exactly this), but only for the fields somebody
+// remembered to make a pointer. The rule here has to hold for every write in
+// the file, including the next one added, so it lives at the decode point.
+//
+// Same rule and same refusals as the fleet fan-out's resolveTargets in
+// fleet.go, which is the layer above: two implementations of one rule drift.
+func decodeWrite(r *http.Request, dst any) (map[string]json.RawMessage, error) {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxWriteBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("bad json: unreadable request body: %w", err)
+	}
+	if len(raw) > maxWriteBodyBytes {
+		return nil, fmt.Errorf("request body is larger than the %d byte limit for a choke write", maxWriteBodyBytes)
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, fmt.Errorf("empty request body: a choke write must be a JSON object saying what to do")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		// An array, a string, a number, a bool, a truncated object. None of
+		// them can carry the fields this endpoint acts on, so none of them is
+		// an instruction.
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	if fields == nil {
+		// The literal `null`: valid JSON, unmarshals into a map with a nil
+		// error, and leaves the map NIL — so every key below would read as
+		// absent and every struct field as its zero value. This is the shape
+		// that turned an empty request into "disengage enforcement".
+		return nil, fmt.Errorf(`a choke write body must be a JSON object; a literal "null" states no intent`)
+	}
+	if err := json.Unmarshal(raw, dst); err != nil {
+		return nil, fmt.Errorf("bad json: %w", err)
+	}
+	return fields, nil
+}
+
+// stated reports whether the body actually named this field. A key whose value
+// is `null` is NOT stated: `{"on":null}` carries no more intent than omitting
+// the key, and decodes to the same false.
+func stated(fields map[string]json.RawMessage, key string) bool {
+	raw, ok := fields[key]
+	return ok && string(bytes.TrimSpace(raw)) != "null"
+}
+
+// requireStated guards a field whose ZERO VALUE IS AN ACT — `on` false releases
+// the kill-switch, `enforcing` false drops this host to detect-only. For those,
+// silence must never be read as a decision. Explicit false keeps working: it is
+// a legitimate request, and telling it apart from silence is the whole point.
+func requireStated(w http.ResponseWriter, fields map[string]json.RawMessage, key, meaning string) bool {
+	if stated(fields, key) {
+		return true
+	}
+	http.Error(w, fmt.Sprintf("%q is required: %s. State it explicitly — an absent field is not an instruction.",
+		key, meaning), http.StatusBadRequest)
+	return false
 }
 
 // GET /choke — the embedded console.
@@ -118,8 +202,9 @@ func (s *Server) handleChokeThresholds(w http.ResponseWriter, r *http.Request) {
 		SeverAt      int    `json:"sever_at"`
 		Reason       string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	cfg := circuit.Config{
@@ -197,8 +282,9 @@ func (s *Server) handleChokeManual(w http.ResponseWriter, r *http.Request) {
 		Reason             string `json:"reason"`
 		RevertAfterSeconds int    `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	action, err := parseAction(body.Action)
@@ -261,8 +347,9 @@ func (s *Server) handleChokeBulkManual(w http.ResponseWriter, r *http.Request) {
 		Reason             string `json:"reason"`
 		RevertAfterSeconds int    `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	action, err := parseAction(body.Action)
@@ -314,8 +401,9 @@ func (s *Server) handleChokeForget(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		ExecIDs []string `json:"exec_ids"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	for _, id := range body.ExecIDs {
@@ -340,7 +428,18 @@ func (s *Server) handleChokeThaw(w http.ResponseWriter, r *http.Request) {
 		PID    uint32 `json:"pid"`
 		Reason string `json:"reason"`
 	}
-	_ = json.NewDecoder(r.Body).Decode(&body)
+	// The decode error used to be discarded here, so a malformed body, an
+	// absent body and a real request were the same event: `null` fell
+	// through to the tier-wide branch below and unfroze the whole
+	// quarantine tier with an empty audit reason. No field is REQUIRED —
+	// the reason-only shape is the console's "Thaw quarantine" button and
+	// stays frictionless, because releasing must never be blocked — but the
+	// body still has to be an object that asks for something.
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	actor := s.auth.Username()
 
 	// Targeted release. Without this branch the only thing thaw could do was
@@ -397,8 +496,12 @@ func (s *Server) handleChokeMode(w http.ResponseWriter, r *http.Request) {
 		Enforcing bool   `json:"enforcing"`
 		Reason    string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	fields, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if !requireStated(w, fields, "enforcing", "true arms this host, false drops it to detect-only") {
 		return
 	}
 	prev := g.SetEnforcing(body.Enforcing, s.auth.Username(), body.Reason)
@@ -423,8 +526,9 @@ func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
 		Name   string `json:"name"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	actor := s.auth.Username()
@@ -470,8 +574,9 @@ func (s *Server) handleChokeAnnotate(w http.ResponseWriter, r *http.Request) {
 		ExecID string `json:"exec_id"`
 		Note   string `json:"note"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	actor := s.auth.Username()
@@ -594,8 +699,9 @@ func (s *Server) handleChokeJail(w http.ResponseWriter, r *http.Request) {
 		Reason             string `json:"reason"`
 		RevertAfterSeconds int    `json:"revert_after_seconds"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	action, err := parseAction(body.Action)
@@ -774,8 +880,17 @@ func (s *Server) handleChokeKillSwitch(w http.ResponseWriter, r *http.Request) {
 		On     bool   `json:"on"`
 		Reason string `json:"reason"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	fields, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	// `on` is required, and this is the reason the rule exists. It was
+	// decoded into a bool, so a body of `null` — or `{}`, or anything else
+	// that parsed — meant false, and false here BYPASSES ALL CONTAINMENT on
+	// this host. An operator releasing the kill-switch says so; a body that
+	// says nothing is not that operator.
+	if !requireStated(w, fields, "on", "true engages the kill-switch and halts all enforcement, false releases it") {
 		return
 	}
 	prev := g.SetKillSwitch(body.On)
@@ -817,8 +932,9 @@ func (s *Server) handleChokePolicyPreview(w http.ResponseWriter, r *http.Request
 	var body struct {
 		YAML string `json:"yaml"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		http.Error(w, "bad json: "+err.Error(), http.StatusBadRequest)
+	_, err := decodeWrite(r, &body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	var p policy.Policy

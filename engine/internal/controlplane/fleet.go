@@ -17,9 +17,10 @@ import (
 // Fleet page federates a fleet of single-host engines; here each of the tenant's
 // agents IS a "host", so the multi-tenant Fleet is the tenant's agents. Reads
 // answer the frontend's FleetEnvelope<T> = {hosts: HostResult<T>[]} contract
-// per-agent, tenant-scoped. Writes (fleet-wide preset/thresholds/kill-switch/
-// thaw) are stubbed 501 — they change live enforcement and are gated behind the
-// interactive-write increment.
+// per-agent, tenant-scoped. The four fleet-wide writes (preset, thresholds,
+// kill-switch, thaw) are live — they alias the Choke Gateway's handlers, which
+// dispatch signed commands — and answer in the same per-host envelope, so the
+// console reports coverage rather than "coverage unknown".
 
 // registerFleetRoutes wires the Fleet API onto the mux.
 func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
@@ -41,6 +42,19 @@ func (s *Server) registerFleetRoutes(mux *http.ServeMux) {
 	//
 	// These are aliases, not new behaviour — same handlers, same signed command
 	// dispatcher, same RBAC ActionRespond grant.
+	//
+	// All four now read the console's "targets" host list (see
+	// resolveFleetTargets in choke.go). Absent or null still means every agent
+	// in the tenant, which is what they have always done; a named list means
+	// EXACTLY those agents. Until they read it, the Fleet page's selected-host
+	// set was decoded by nobody: ticking one host, reading "Writes target 1
+	// selected host." and pressing Containment contained the whole tenant.
+	//
+	// /api/fleet/thaw is the odd one. The protocol has no "release everything"
+	// command, so the control plane builds one: with no exec_id or pid it
+	// enumerates what the targeted agents report as contained and sends a Thaw
+	// per process. Name a process instead and the host list scopes WHERE that
+	// one process is released. See handleChokeThaw.
 	mux.HandleFunc("/api/fleet/kill-switch", s.handleChokeKill)
 	mux.HandleFunc("/api/fleet/thresholds", s.handleChokeThresh)
 	mux.HandleFunc("/api/fleet/preset", s.handleChokePreset)

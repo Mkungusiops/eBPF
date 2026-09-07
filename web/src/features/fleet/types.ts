@@ -21,6 +21,49 @@ export interface FleetEnvelope<T> {
   hosts: Array<HostResult<T>>;
 }
 
+/**
+ * One host's outcome inside a fan-out WRITE result.
+ *
+ * Deliberately looser than HostResult about `status`: the single-tenant engine
+ * reports the peer's HTTP status code, while the control plane reports the
+ * agent's ack word ("APPLIED", or "timeout" when no ack arrived). Both are what
+ * an operator needs to read next to the host name, so both are kept as-is
+ * rather than coerced into a number the control plane never sent.
+ */
+export interface FanoutHost {
+  name: string;
+  ok: boolean;
+  status?: number | string;
+  error?: string;
+}
+
+/**
+ * A fan-out write's response, as either server may shape it.
+ *
+ * The engine answers with `hosts`; the control plane answers with `applied` /
+ * `total` / `detail` and, since the fleet-targeting contract, `hosts` too. Every
+ * field is optional because the console must be able to tell "the server said
+ * nothing about coverage" apart from "the server said it reached nobody" — the
+ * two used to be the same green toast.
+ */
+export interface FanoutEnvelope {
+  hosts?: FanoutHost[] | null;
+  applied?: number | null;
+  total?: number | null;
+  detail?: string | null;
+  [key: string]: unknown;
+}
+
+/** A fan-out response read into the only two facts a toast may claim. */
+export interface FanoutReport {
+  /** Per-host outcomes, when the server named them. Empty when it only counted. */
+  hosts: FanoutHost[];
+  /** Coverage as the server reported it; null when it reported none at all. */
+  applied: number | null;
+  total: number | null;
+  detail: string;
+}
+
 export interface Thresholds {
   throttle_at: number;
   tarpit_at: number;

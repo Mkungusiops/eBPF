@@ -443,6 +443,28 @@ button.soc-sidebar-group-toggle:hover .soc-sidebar-caret {
   font-style: normal;
 }
 
+/* THE TENANT ON SCREEN, next to the estate the operator reaches.
+   A provider account belongs to no tenant, so the panels underneath resolve to
+   ONE customer; the pill carries both facts or it states a breadth the data
+   does not have. Set in the accent so it reads as a scope, not as a second
+   host, and allowed to shrink rather than push the utilities off the bar on a
+   narrow window. */
+.soc-host-pill .soc-host-pill-scope {
+  max-width: 22ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding-left: 7px;
+  border-left: 1px solid var(--soc-line);
+  color: var(--soc-accent);
+  font-size: 11px;
+  font-style: normal;
+}
+
+.soc-host-pill.is-cross-tenant {
+  color: var(--soc-text);
+}
+
 .soc-range {
   overflow: hidden;
   border-radius: 7px;
@@ -2028,6 +2050,32 @@ button.soc-metric:hover {
 .soc-stale-banner.is-visible,
 .soc-version-toast.is-visible {
   display: flex;
+}
+
+/* THE PROVIDER'S SCOPE CAPTION.
+   Not a warning and not an outage — this is a correct, expected session — so it
+   is toned in the accent rather than the amber the stale/version banners use.
+   It is the first thing in the content column and it is not dismissible: it is
+   the caption for every number below it, and a caption that can be closed is a
+   caption the operator will be missing at the moment they read one customer's
+   posture as the whole estate. Always displayed when rendered (no .is-visible
+   toggle) because the route only mounts it for a cross-tenant principal. */
+.soc-scope-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(110, 139, 255, 0.45);
+  background: rgba(110, 139, 255, 0.1);
+  color: var(--soc-text);
+  line-height: 1.45;
+}
+
+.soc-scope-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--soc-accent);
 }
 
 .soc-stale-banner button,
@@ -4695,6 +4743,22 @@ button.soc-metric:hover {
 .soc-toggle-chip.is-on.tone-good .soc-toggle-chip-led { background: var(--soc-good); box-shadow: 0 0 8px var(--soc-good); }
 .soc-toggle-chip.is-on.tone-danger { border-color: rgba(240, 85, 107, 0.5); background: rgba(240, 85, 107, 0.12); }
 .soc-toggle-chip.is-on.tone-danger .soc-toggle-chip-led { background: var(--soc-danger); box-shadow: 0 0 8px var(--soc-danger); }
+
+/* The paused stream's held-frame readout. Sits in the same control row as the
+   toggle chips, so it takes their height and rhythm but deliberately NOT their
+   pill border: it is a reading, not a control, and one that looks clickable in
+   a row of controls gets clicked. Warn-toned because it only ever appears while
+   the list is held, which is a state the operator has to leave. */
+.soc-stream-held {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 4px;
+  color: var(--soc-warn);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
 
 .soc-stream-filter {
   min-width: 150px;

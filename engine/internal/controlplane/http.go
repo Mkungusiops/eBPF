@@ -84,22 +84,68 @@ func (s *Server) principal(r *http.Request) (authz.Principal, bool) {
 	return authz.Principal{}, false
 }
 
+// crossTenantHost is the estate label published to a principal whose reach is
+// every tenant. The console renders whoami.host as the estate identity — the
+// top-bar pill, exported PDF headers, the assistant's scope label — and for a
+// cross-tenant operator no single customer's name is a true answer there.
+const crossTenantHost = "all tenants"
+
 func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 	p, ok := s.principal(r)
 	if !ok {
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return
 	}
-	scope := authz.TenantScope(p)
+	writeJSON(w, 200, s.whoamiFor(p))
+}
+
+// whoamiFor builds the identity document for one principal. Split out of the
+// handler so the published contract can be tested against a hand-built
+// principal of every persona — the identity path (OIDC session) is not
+// constructible from a test.
+func (s *Server) whoamiFor(p authz.Principal) map[string]any {
+	crossTenant := authz.HasCrossTenant(p)
+	// TENANTS, THE ESTATE LABEL, AND THE TENANT ON SCREEN — three different
+	// facts, one of which used to answer for all three.
+	//
+	// `tenants` is REACH THAT NEEDS NO NAMING: the tenants this principal holds
+	// a tenant-bound grant for. A cross-tenant principal is normally not in it
+	// at all (authz.TenantScope excludes cross-tenant roles by design — they
+	// must name a tenant explicitly and be audited), and this route must never
+	// widen it into the provider's customer roster: the MSSP's customer list is
+	// itself confidential, and enumerating it here would make /api/whoami the
+	// one read that hands it over without an Authorize call or an audit record.
+	//
+	// `host` is the estate identity the console renders in the top bar, in
+	// exported report headers and as the assistant's scope label. This handler
+	// used to publish scope[0] there for everyone. Combined with a TenantScope
+	// built out of capability-less default realm roles (see authz.TenantScope),
+	// that named ONE customer as the whole estate on the screen of the operator
+	// least able to notice it — the provider's own.
+	//
+	// `viewing_tenant` is the third fact and the one that was missing: the
+	// tenant THIS SERVER resolves a tenant-less read to for this session
+	// (authorizeRead's default, from the same authz.DefaultTenant so the two
+	// cannot drift). It is not a claim about reach — it names the single
+	// customer whose data is already on screen, so the console can say so
+	// instead of presenting it as the whole book of business. Empty when the
+	// server would refuse such a read instead of resolving it.
+	tenants := authz.TenantScope(p)
 	host := "control-plane"
-	if len(scope) > 0 {
-		host = scope[0]
+	switch {
+	case crossTenant:
+		host = crossTenantHost
+	case len(tenants) > 0:
+		host = tenants[0]
 	}
-	writeJSON(w, 200, map[string]any{
+	return map[string]any{
 		"subject":      p.Subject,
-		"tenants":      scope,
-		"cross_tenant": authz.HasCrossTenant(p),
-		"can_respond":  authz.CanRespond(p),
+		"tenants":      tenants,
+		"cross_tenant": crossTenant,
+		// The one tenant a tenant-less read resolves to for this session — see
+		// the block above. Same source as authorizeRead's default.
+		"viewing_tenant": authz.DefaultTenant(p),
+		"can_respond":    authz.CanRespond(p),
 		// can_push_policy is a DEPLOYMENT capability, not only a permission.
 		//
 		// The console's Detections surface is one component serving two planes
@@ -122,10 +168,11 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		//
 		// The console needs to know whether a policy change reaches a fleet
 		// (dispatched, acked, not converged) or one host (applied). It was
-		// deriving that from whether "tenants" was an array — which is wrong
-		// for exactly the user most likely to push a policy: a cross-tenant
-		// MSOC admin has no tenant list, so tenants is null and the control
-		// plane's own console would have said "this host".
+		// deriving that from the shape of "tenants" — which is wrong for
+		// exactly the user most likely to push a policy: a cross-tenant MSOC
+		// admin's tenant list says which customers they may reach, not how far
+		// a push travels, and the control plane's own console would have said
+		// "this host".
 		//
 		// A deployment that knows the answer should say it. The engine sends no
 		// such field and the console defaults to "host", the narrower claim.
@@ -133,13 +180,12 @@ func (s *Server) handleWhoami(w http.ResponseWriter, r *http.Request) {
 		// Aliases the reused SOC frontend reads (normalizeWhoami): user + host.
 		"user": p.Subject,
 		"host": host,
-		"role": func() string {
-			if authz.HasCrossTenant(p) {
-				return "msoc-admin"
-			}
-			return "tenant-analyst"
-		}(),
-	})
+		// The role the principal actually HOLDS — see authz.PrimaryRole for the
+		// two-valued guess this replaced, and why publishing the wrong name is
+		// not cosmetic. Empty when no recognised role is held: the console
+		// shows no role rather than an invented one.
+		"role": string(authz.PrimaryRole(p)),
+	}
 }
 
 type telemetryRow struct {
@@ -238,13 +284,36 @@ func (s *Server) authorizeRead(w http.ResponseWriter, r *http.Request) (string, 
 		http.Error(w, "unauthenticated", http.StatusUnauthorized)
 		return "", false
 	}
+	return s.authorizeReadAs(w, r, p)
+}
+
+// authorizeReadAs is authorizeRead once the operator is known. Split out purely
+// so a test can drive the branch that actually runs on the estate: the
+// production identity path is an OIDC session, which no test can construct, and
+// the only principal a test could otherwise reach this code with is the bearer
+// admin — which carries no tenant and so never exercises the resolution below.
+// Every persona's tenant-less read was uncovered for exactly that reason.
+func (s *Server) authorizeReadAs(w http.ResponseWriter, r *http.Request, p authz.Principal) (string, bool) {
 	tenant := r.URL.Query().Get("tenant")
 	if tenant == "" {
-		// The reused SOC frontend makes tenant-less calls; default to the
-		// operator's primary tenant. A tenant switcher can override via ?tenant=.
-		if scope := authz.TenantScope(p); len(scope) > 0 {
-			tenant = scope[0]
-		}
+		// The reused SOC frontend makes tenant-less calls — it names a tenant
+		// on no request it makes — so this default is the whole read path for
+		// every persona, cross-tenant operators included. Refusing here with
+		// "name a tenant" answers 400 to every panel on the dashboard, which is
+		// a blank console rather than a safer one.
+		//
+		// authz.DefaultTenant, not TenantScope[0]: the scope no longer answers
+		// for a cross-tenant principal (it states reach, and a cross-tenant
+		// principal's reach is not a list), while the resolution the server has
+		// always used — the tenant stamped on the account — is unchanged.
+		//
+		// This grants nothing on its own. The resolved tenant still goes
+		// through Authorize below, and for a cross-tenant principal that read
+		// is recorded as a cross-tenant access exactly as a named one is. What
+		// the console needs in order to stop presenting this tenant as the
+		// whole estate is to KNOW it, which is why whoami publishes the same
+		// value as `viewing_tenant`.
+		tenant = authz.DefaultTenant(p)
 	}
 	if tenant == "" {
 		http.Error(w, "tenant required", http.StatusBadRequest)

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   createAssistantApi,
-  type AssistantAgent,
   type AssistantApi,
+  type AssistantCapability,
   type AssistantStep,
   type AssistantSurface
 } from "./api";
+import { assistantOffText, readCapability } from "./useAssistant";
 import { createChatApi, HISTORY_DISABLED, type Chat, type ChatApi, type ChatMessage } from "./chatApi";
 import { AssistantError } from "./api";
 
@@ -84,7 +85,14 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
   const [askError, setAskError] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   /**
-   * Agents the SERVER says exist. Never a hardcoded id.
+   * What the SERVER said about the assistant — agents included, never a
+   * hardcoded id, and the availability verdict alongside them.
+   *
+   * The verdict is kept because the agent list alone cannot carry it: an empty
+   * list is produced by an unconfigured deployment, by an enabled deployment
+   * that publishes nothing for this surface, by a 200 whose body was not the
+   * documented shape, and by a read that never completed — four different
+   * things for an operator to do about it.
    *
    * This is not caution, it is a bug already paid for: the sidebar shipped
    * asking for an agent called "triage", which has never existed — the registry
@@ -95,7 +103,7 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
    * Deriving the id from the capability endpoint makes the drift impossible
    * rather than merely unlikely.
    */
-  const [agents, setAgents] = useState<AssistantAgent[] | null>(null);
+  const [capability, setCapability] = useState<AssistantCapability | null>(null);
   /**
    * The in-flight capability lookup, so send() can WAIT for it.
    *
@@ -104,7 +112,7 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
    * handover fail with "still checking" and drop the question silently — the
    * continuity path failing exactly when it is used.
    */
-  const agentsPending = useRef<Promise<AssistantAgent[]> | null>(null);
+  const capabilityPending = useRef<Promise<AssistantCapability> | null>(null);
 
   const mounted = useRef(true);
   const inFlight = useRef<AbortController | null>(null);
@@ -202,18 +210,35 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
     return () => ctl.abort();
   }, [activeId]);
 
-  // Capability once per mount, for the agent list. A failure here is not shown
-  // as an error: the ask itself will report honestly if there is no agent.
+  // Capability once per mount. A failure here is not shown as an error banner —
+  // the ask itself reports it, in the composer the analyst is already looking
+  // at — but it IS kept apart from the other reasons there may be no agent.
+  //
+  // The old version was `.then((cap) => cap.agents ?? []).catch(() => [])`: a
+  // rejected read, the unreachable body the client degrades a 502 into, and a
+  // malformed 200 all became the same empty list, and send() then told the
+  // analyst the DEPLOYMENT had no assistant. readCapability is the same
+  // normaliser the drill panel uses, so both surfaces reach the same verdict
+  // from the same body.
   useEffect(() => {
     if (!active) return;
     const ctl = new AbortController();
     const pending = askRef.current
       .capability(surface, ctl.signal)
-      .then((cap) => cap.agents ?? [])
-      .catch(() => [] as AssistantAgent[]);
-    agentsPending.current = pending;
-    void pending.then((list) => {
-      if (mounted.current && !ctl.signal.aborted) setAgents(list);
+      .then((cap) => readCapability(cap))
+      .catch(
+        (): AssistantCapability => ({
+          // A read that never completed teaches us nothing about whether this
+          // deployment configured an assistant, so we must not say it has none.
+          enabled: false,
+          agents: [],
+          availability: "unreachable",
+          reason: "the capability request failed"
+        })
+      );
+    capabilityPending.current = pending;
+    void pending.then((cap) => {
+      if (mounted.current && !ctl.signal.aborted) setCapability(cap);
     });
     return () => ctl.abort();
   }, [active, surface]);
@@ -237,13 +262,20 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
       // Prefer the caller's choice, else the first agent the SERVER reports.
       // Awaiting the lookup rather than reading state means a question handed
       // over on open is not dropped for arriving a few hundred ms early.
-      const known = agents ?? (await agentsPending.current) ?? [];
+      const cap = capability ?? (await capabilityPending.current) ?? null;
+      const known = cap?.agents ?? [];
       // The CONVERSATIONAL agent, by flag. The task agents ignore the question
       // entirely, so falling back to the first in the list is how "Hello"
       // returned a process-chain analysis.
       const agentId = agent ?? known.find((a) => a.conversational)?.id ?? known[0]?.id;
       if (!agentId) {
-        setAskError("No assistant agent is available on this deployment.");
+        // WHY there is no agent, in the words the drill panel uses for the same
+        // state. This message lands in the composer an operator types into
+        // mid-incident, and it is also the only route to Behaviour & Intel, so
+        // "not configured on this deployment" said over a failed read costs
+        // them a call to a platform team that has nothing to fix.
+        const reason = cap?.reason;
+        setAskError(assistantOffText(cap?.availability, "chat") + (reason ? ` ${reason}` : ""));
         return;
       }
 
@@ -365,7 +397,7 @@ export function useChats({ chatApi, assistantApi, active = true, surface }: UseC
         if (mounted.current && !ctl.signal.aborted) setSending(false);
       }
     },
-    [activeId, status, agents, surface]
+    [activeId, status, capability, surface]
   );
 
   // History bookkeeping. These update the list optimistically and refetch

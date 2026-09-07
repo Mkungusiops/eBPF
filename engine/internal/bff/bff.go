@@ -336,6 +336,24 @@ func PrincipalFromContext(ctx context.Context) (authz.Principal, bool) {
 
 // Whoami is a convenience protected endpoint: it reports the caller's identity
 // and authorized tenants (never a token).
+//
+// NOT REGISTERED BY Routes, and nothing in cmd/controlplane mounts it: the
+// console's /api/whoami is served by controlplane.whoamiFor, and the only
+// caller of this handler is the BFF's own Keycloak integration test. It is kept
+// as that test's assertion point, not as a second production identity document.
+//
+// It nevertheless publishes the SAME fields with the SAME meanings, because two
+// whoami shapes that disagree is how a console ends up right on one plane and
+// wrong on the other. In particular the role name comes from authz.PrimaryRole
+// — the strongest role the principal actually holds — never from cross-tenant
+// reach alone, which named a read-only operator "tenant-analyst" and a
+// cross-tenant responder "msoc-admin".
+//
+// `tenants` is reach that needs no naming: authz.TenantScope, which excludes
+// cross-tenant roles by design, so a cross-tenant principal is normally listed
+// under none. This handler deliberately does not enumerate the deployment's
+// tenants to fill that gap — the provider's customer list is confidential and
+// would be published here with no Authorize call and no audit record.
 func (h *Handler) Whoami(w http.ResponseWriter, r *http.Request) {
 	p, ok := PrincipalFromContext(r.Context())
 	if !ok {
@@ -347,6 +365,11 @@ func (h *Handler) Whoami(w http.ResponseWriter, r *http.Request) {
 		"subject":      p.Subject,
 		"tenants":      authz.TenantScope(p),
 		"cross_tenant": authz.HasCrossTenant(p),
+		// The tenant a request naming none resolves to for this session — the
+		// same fact the control plane publishes, from the same source.
+		"viewing_tenant": authz.DefaultTenant(p),
+		"can_respond":    authz.CanRespond(p),
+		"role":           string(authz.PrimaryRole(p)),
 	})
 }
 

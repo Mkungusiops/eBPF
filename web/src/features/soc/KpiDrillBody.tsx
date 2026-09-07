@@ -109,11 +109,16 @@ export function KpiDrillBody({
         <h3>Top originating processes</h3>
         <MiniBarList rows={topRows.map((row) => ({ label: row.process, value: row.score, meta: `${row.count} alerts` }))} empty="No originating processes in this bucket." />
       </section>
+      {/* Sorted, because the heading says so. This was `scopedAlerts.slice(0,
+          10)` over a list that arrives in wire order, so on any bucket holding
+          more than ten alerts the table headed "Top 10 by score" showed the
+          first ten received and silently dropped the highest-scoring ones —
+          the exact rows an analyst opens this drill to find. */}
       <section className="soc-kpi-panel">
         <h3>Top 10 by score</h3>
         <div className="soc-kpi-table">
           <div><span>Time</span><span>Score</span><span>Title</span><span>State</span></div>
-          {scopedAlerts.slice(0, 10).map((alert) => (
+          {[...scopedAlerts].sort((a, b) => b.score - a.score).slice(0, 10).map((alert) => (
             <div key={alert.id}>
               <span>{formatTime(alert.timestamp)}</span>
               <strong className={`severity-${alert.severity}`}>{alert.score}</strong>

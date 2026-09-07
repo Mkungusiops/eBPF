@@ -23,8 +23,8 @@ import { expect, socNavItem, test } from "./support/test";
  *   · a scope selector that counts something other than what is on screen —
  *     "On screen (12)" over a queue showing three is a report whose stated
  *     scope is a lie, and so is a file that quietly ships two rows for the four
- *     alerts a grouped queue collapsed (that one is still broken; see the
- *     test.fail below);
+ *     alerts a grouped queue collapsed (broken until 2026-09-02; the last
+ *     test in this file is what holds it);
  *   · a decisions table that manufactures a verdict. `ok: d.ok !== false` once
  *     stamped every decision successful because no backend sends a boolean
  *     `ok`, so rows whose real outcome read "skipped: system-critical chain"
@@ -96,7 +96,17 @@ async function gotoSoc(page: Page, options: MockApiOptions = {}): Promise<void> 
   await page.addInitScript((range) => {
     window.localStorage.setItem("soc.prefDefaultRange", String(range));
   }, WIDE_RANGE);
-  await installMockApi(page, options);
+  // NO STREAM FRAMES BY DEFAULT, because every assertion in this file counts
+  // rows against a fixture it declares in the same breath — "three ungroupable
+  // fixtures must render three rows", "1 enforcement decisions", "Alerts: 1".
+  // The mock's default stream delivers one alert, one event and one decision on
+  // top of whatever the poll returns. Those used to vanish: the snapshot poll
+  // REPLACED the buffer, discarding any frame that raced it, which is the defect
+  // eventstream.spec.ts pins and which was fixed on 2026-09-02. Now they
+  // legitimately persist, and a count that did not declare them silently drifts
+  // by one. A test that counts owns its whole fixture; a test that wants the
+  // stream passes its own frames.
+  await installMockApi(page, { streamFrames: [], ...options });
   await page.goto("/");
   await expect(page.locator('[data-panel="left-sidebar"]')).toBeVisible();
 }
@@ -259,7 +269,7 @@ test.describe("export studio", () => {
   });
 
   /**
-   * WHAT BUG THIS PINS — a live one, hence test.fail.
+   * WHAT BUG THIS PINS — live until it was fixed on 2026-09-02.
    *
    * The alert queue GROUPS by default (soc.groupAlerts defaults to true in
    * SocRoute.tsx:88), so `filteredAlerts` is a list of AlertGroups, each one
@@ -286,8 +296,6 @@ test.describe("export studio", () => {
    * for every alert it claims to cover.
    */
   test("a grouped queue exports every alert it stands for", async ({ page }) => {
-    test.fail(true, "known defect: grouped scope exports one row per group and counts groups as alerts");
-
     const duplicate = (id: string, pid: number) => ({
       id,
       timestamp: FIXTURE_NOW,

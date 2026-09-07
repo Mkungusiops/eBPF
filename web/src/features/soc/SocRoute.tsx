@@ -18,7 +18,7 @@ import { AlertTriangle, Radio, RefreshCw, Search, Server, ShieldCheck } from "lu
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type * as React from "react";
-import { MAX_BUFFERED_DECISIONS, fetchProcessDetail } from "./api";
+import { MAX_BUFFERED_DECISIONS, fetchProcessDetail, socIdentityOf } from "./api";
 import { useStream } from "../../lib/stream";
 import { useOSTheme } from "../../lib/theme";
 import { IconButton, PanelFrame, PopoverCard, SeverityBadge, SlideOver, Sparkline, StatusPill, cx } from "./components";
@@ -36,22 +36,26 @@ import { TimelinePanel } from "./TimelinePanel";
 import { AlertContextMenu, AlertPreview } from "./rows";
 import { ExecutiveMetricTile } from "./tiles";
 import { watchCount } from "./WatchlistBody";
+import { alertGroupFor, groupAckState, groupMemberIds, queueExclusions } from "./analytics";
 import { applySocStreamBatch, useLocalJsonState, useNow, useSocData } from "./hooks";
 import { useSocWindowModel } from "./useSocWindowModel";
 import { rangeLabel } from "./format";
 import { buildCorrelationGraph, type ProcessInstance } from "./graphModel";
 import { RISK_HALF_SCALE_PER_HOUR, riskScoreFromRate } from "./risk";
-import { DEFAULT_WATCHLIST, PANELS, SEVERITIES, type AckState, type HoverPreviewState, type ContextMenuState, type KpiDrill, type OpenSurface, type PillSurface, type SortField, type StreamTelemetry } from "./dashboard";
-import type { Severity, SocAlert, SocEvent, SocProcessDetail } from "./types";
+import { DEFAULT_WATCHLIST, PANELS, SEVERITIES, type AckState, type AlertGroup, type HoverPreviewState, type ContextMenuState, type KpiDrill, type OpenSurface, type PillSurface, type SortField, type StreamTelemetry } from "./dashboard";
+import type { Severity, SocEvent, SocProcessDetail } from "./types";
 import "./soc.css";
 import { CorrelationGraph } from "./CorrelationGraph";
 import { ExportStudioBody } from "./exportStudio";
+import { estateSubjectOf } from "./pdf";
 
 // The posture curve and the graph builder are re-exported from the route so
 // consumers (and the tests that pin their behaviour) keep one entry point for
 // the SOC feature.
 export { RISK_HALF_SCALE_PER_HOUR, riskScoreFromRate, buildCorrelationGraph };
 export type { ProcessInstance };
+
+const NOTHING_EXCLUDED = { query: 0, baseline: 0, unacked: 0 };
 
 export function SocRoute() {
   const { snapshot, setSnapshot, loading, errors, statuses, truncated, refresh } = useSocData();
@@ -92,9 +96,23 @@ export function SocRoute() {
   // useCallback because the global keydown effect depends on it; as a plain
   // function declaration it was a new value every render, re-registering a
   // document-level listener on each one.
+  //
+  // It takes ONE id or MANY, because a queue row is not always one alert.
+  // The queue groups by default, so a row can stand for N alerts while carrying
+  // only members[0]'s id. Writing a single ack for it left the siblings
+  // outstanding: the row said "Ack'd" and the same alerts came straight back
+  // under "Unacked only", which is the view an analyst uses to decide the shift
+  // is done. Every ack call site now passes the ids the surface it was clicked
+  // on actually claims to cover.
   const setAckState = useCallback(
-    (id: string, value: AckState) => {
-      setAckStates((current) => ({ ...current, [id]: value }));
+    (ids: string | string[], value: AckState) => {
+      const list = typeof ids === "string" ? [ids] : ids;
+      if (!list.length) return;
+      setAckStates((current) => {
+        const next = { ...current };
+        for (const id of list) next[id] = value;
+        return next;
+      });
     },
     [setAckStates]
   );
@@ -119,7 +137,12 @@ export function SocRoute() {
   }, [assistantChat]);
   const [openPill, setOpenPill] = useState<PillSurface | null>(null);
   const [kpiDrill, setKpiDrill] = useState<KpiDrill | null>(null);
-  const [drillAlert, setDrillAlert] = useState<SocAlert | null>(null);
+  // The WHOLE ROW, not its representative alert. The queue hands this state an
+  // AlertGroup at runtime and always did; typing it `SocAlert` only hid that,
+  // and every triage action taken from the drill panel or the keyboard then
+  // wrote members[0] alone while the row behind it — whose state is the
+  // least-progressed member — kept reading "New".
+  const [drillAlert, setDrillAlert] = useState<AlertGroup | null>(null);
   const [processDetail, setProcessDetail] = useState<SocProcessDetail | null>(null);
   const [processDetailError, setProcessDetailError] = useState("");
   const [hoverPreview, setHoverPreview] = useState<HoverPreviewState | null>(null);
@@ -208,9 +231,9 @@ export function SocRoute() {
       } else if (event.key === "?") {
         setOpenSurface("help");
       } else if (event.key.toLowerCase() === "a" && drillAlert) {
-        setAckState(drillAlert.id, "ack");
+        setAckState(groupMemberIds(drillAlert), "ack");
       } else if (event.key.toLowerCase() === "r" && drillAlert) {
-        setAckState(drillAlert.id, "resolved");
+        setAckState(groupMemberIds(drillAlert), "resolved");
       }
     }
 
@@ -234,8 +257,21 @@ export function SocRoute() {
     pinnedAlerts,
     timelineHidden,
     streamFilter,
-    streamHideNoise
+    streamHideNoise,
+    streamPaused
   });
+
+  // Which of this panel's filters actually excluded something, for the empty
+  // state's copy. Only computed when the queue IS empty — the answer is unused
+  // otherwise, and this walks the whole window on a route that re-renders once
+  // a second off the clock.
+  const queueExcluded = useMemo(
+    () =>
+      model.filteredAlerts.length
+        ? NOTHING_EXCLUDED
+        : queueExclusions(model.rangeAlerts, { query, hideBaseline, filterUnack, ackStates }),
+    [ackStates, filterUnack, hideBaseline, model.filteredAlerts.length, model.rangeAlerts, query]
+  );
 
   const staleSeconds = stream.lastMessageAt ? Math.max(0, Math.floor((now - stream.lastMessageAt) / 1000)) : undefined;
   const streamStale = staleSeconds === undefined || staleSeconds > 30;
@@ -259,17 +295,39 @@ export function SocRoute() {
     });
   }
 
+  // The bulk bar counts SELECTED ROWS, and a selected row can be a group. Ack
+  // every member it stands for, for the same reason the per-row button does —
+  // "4 selected" acknowledging four of nine alerts is work reported done that
+  // is not.
   function applyBulkAck(value: AckState) {
-    setAckStates((current) => {
-      const next = { ...current };
-      for (const id of selectedIds) next[id] = value;
-      return next;
-    });
+    const resolved = new Set<string>();
+    const ids: string[] = [];
+    for (const group of model.filteredAlerts) {
+      if (!selectedIds.has(group.id)) continue;
+      resolved.add(group.id);
+      ids.push(...groupMemberIds(group));
+    }
+    // A selected row the filters have since dropped from the list is still a
+    // row the operator selected. Ack its own id rather than silently skipping
+    // it — a bulk action that quietly covers fewer rows than the bar counts is
+    // the same class of lie as the single-member group ack.
+    for (const id of selectedIds) if (!resolved.has(id)) ids.push(id);
+    setAckState(ids, value);
     setSelectedIds(new Set());
   }
 
-  function togglePin(id: string) {
-    setPinnedAlerts((current) => (current.includes(id) ? current.filter((item) => item !== id) : [id, ...current]));
+  // Pinning a grouped row pins every member: the queue sorts BEFORE it groups,
+  // so a pin that reached only the representative would leave the row's other
+  // alerts sitting wherever the sort put them, and the group would visibly
+  // shed members the moment the pin took effect.
+  function togglePin(ids: string | string[]) {
+    const list = typeof ids === "string" ? [ids] : ids;
+    if (!list.length) return;
+    setPinnedAlerts((current) => {
+      const pinned = list.every((id) => current.includes(id));
+      if (pinned) return current.filter((item) => !list.includes(item));
+      return [...list.filter((id) => !current.includes(id)), ...current];
+    });
   }
 
   function openKpi(kind: KpiDrill["kind"], title: string) {
@@ -277,19 +335,22 @@ export function SocRoute() {
     setOpenSurface("kpi");
   }
 
-  function openDrill(alert: SocAlert) {
+  function openDrill(alert: AlertGroup) {
     setDrillAlert(alert);
     setContextMenu(null);
   }
 
+  // Opened from somewhere that holds a bare alert (an event row, the graph).
+  // Resolve it back to the queue row it belongs to first, so triaging from here
+  // covers the same alerts the row's own buttons do.
   function openDrillByEvent(event: SocEvent) {
     const alert = model.rangeAlerts.find((item) => item.execId && item.execId === event.execId);
-    if (alert) openDrill(alert);
+    if (alert) openDrill(alertGroupFor(alert, model.filteredAlerts));
   }
 
   function openDrillByExecId(execId: string) {
     const alert = model.rangeAlerts.find((item) => item.execId === execId);
-    if (alert) openDrill(alert);
+    if (alert) openDrill(alertGroupFor(alert, model.filteredAlerts));
   }
 
   function closeModal() {
@@ -311,7 +372,7 @@ export function SocRoute() {
     );
   }
 
-  function onAlertContext(event: MouseEvent, alert: SocAlert) {
+  function onAlertContext(event: MouseEvent, alert: AlertGroup) {
     event.preventDefault();
     const width = typeof window === "undefined" ? 280 : window.innerWidth;
     const height = typeof window === "undefined" ? 220 : window.innerHeight;
@@ -322,7 +383,7 @@ export function SocRoute() {
     });
   }
 
-  function onAlertHover(event: MouseEvent, alert: SocAlert) {
+  function onAlertHover(event: MouseEvent, alert: AlertGroup) {
     const width = typeof window === "undefined" ? 320 : window.innerWidth;
     setHoverPreview({
       alert,
@@ -330,6 +391,17 @@ export function SocRoute() {
       y: event.clientY + 18
     });
   }
+
+  // WHO IS LOOKING, AND AT WHOSE ESTATE — two facts, and the console used to
+  // publish one answer for both. See socIdentityOf and the scope banner below.
+  const identity = socIdentityOf(snapshot.whoami);
+  // The same two facts for every surface that names a SUBJECT rather than an
+  // identity: the executive band's "What is affected", the assistant's scope
+  // chip, and the exports. They kept reading `whoami.host`, which for a
+  // provider account now says "all tenants" over one customer's rows — the
+  // scope banner cannot travel with an exported file, and a chip is read as a
+  // caption on the answer beside it. See estateSubjectOf.
+  const estate = estateSubjectOf(snapshot.whoami);
 
   return (
     <div className={cx("soc-route", theme === "light" && "theme-light", sidebarOpen && "sidebar-open")}>
@@ -340,7 +412,7 @@ export function SocRoute() {
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onCloseSidebar={() => setSidebarOpen(false)}
         onOpenSurface={openSurfaceByName}
-        onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: snapshot.whoami.host })}
+        onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: estate.subject })}
         assistantOpen={assistantChat?.open ?? false}
         // null (still probing) counts as AVAILABLE so the nav does not flicker
         // an entry in and straight back out on every load.
@@ -358,6 +430,8 @@ export function SocRoute() {
           rangeMin={rangeMin}
           onRangeMin={setRangeMin}
           host={snapshot.whoami.host}
+          crossTenant={identity.crossTenant}
+          viewingTenant={identity.viewingTenant}
           streamState={stream.state}
           openPill={openPill}
           onOpenPill={setOpenPill}
@@ -366,6 +440,30 @@ export function SocRoute() {
         />
 
         <main className="soc-content">
+          {/* THE PROVIDER'S CAPTION.
+              A cross-tenant operator holds no tenant of their own, so every
+              panel below is resolved by the server to ONE customer — and until
+              this banner existed, nothing on the screen said which. The
+              provider read one customer's alert count, posture and containment
+              history as the state of their whole book of business, and the
+              persona probes measured the sharper version: a cross-tenant
+              RESPONDER firing containment aimed by a console that had silently
+              chosen the tenant for them.
+              It is rendered only when the server says cross_tenant, and it
+              names viewing_tenant — the tenant the server itself resolves
+              these reads to — rather than a tenant the console picked. */}
+          {identity.crossTenant ? (
+            <div className="soc-scope-banner" role="status">
+              <Server size={16} />
+              <span>
+                <b>Provider view.</b>{" "}
+                {identity.viewingTenant
+                  ? <>Your account reaches customers by name, not by belonging to one. Every panel below is <b>{identity.viewingTenant}</b>&rsquo;s data only — not the whole estate — and any containment fired from this console lands there.</>
+                  : <>Your account reaches customers by name, not by belonging to one. This server has not said which customer these panels resolve to, so treat every reading below as a single tenant&rsquo;s until it does.</>}
+              </span>
+            </div>
+          ) : null}
+
           <div className={cx("soc-stale-banner", streamStale && "is-visible")} data-panel={PANELS["stale-data-banner"].id} role="status">
             <AlertTriangle size={16} />
             <span>
@@ -422,7 +520,8 @@ export function SocRoute() {
             eps={model.eps}
             activeProcesses={model.activeProcesses.count}
             topProcess={model.activeProcesses.top}
-            hostName={snapshot.whoami.host}
+            affectedScope={estate.subject}
+            providerView={estate.providerView}
             hostOk={!model.activeEndpointErrors.length}
             streamState={stream.state}
             onReviewCriticals={() => openKpi("critical", "Critical alerts")}
@@ -456,6 +555,10 @@ export function SocRoute() {
             <AlertQueue
               alerts={model.filteredAlerts}
               coverage={model.windowCoverage.alerts}
+              query={query}
+              windowAlertCount={model.rangeAlerts.length}
+              excluded={queueExcluded}
+              beyondWindow={model.beyondWindow.alerts}
               hideBaseline={hideBaseline}
               onHideBaseline={setHideBaseline}
               filterUnack={filterUnack}
@@ -484,6 +587,7 @@ export function SocRoute() {
           <EventStream
             events={model.visibleEvents}
             paused={streamPaused}
+            heldCount={model.heldEventCount}
             onPaused={setStreamPaused}
             hideNoise={streamHideNoise}
             onHideNoise={setStreamHideNoise}
@@ -498,11 +602,11 @@ export function SocRoute() {
         {drillAlert ? (
           <DrillPanel
             alert={drillAlert}
-            ack={ackStates[drillAlert.id] || "new"}
+            ack={groupAckState(drillAlert.members, ackStates)}
             note={alertNotes[drillAlert.id] || ""}
             processDetail={processDetail}
             processDetailError={processDetailError}
-            onAck={(value) => setAckState(drillAlert.id, value)}
+            onAck={(value) => setAckState(groupMemberIds(drillAlert), value)}
             onNote={(note) => setAlertNotes((current) => ({ ...current, [drillAlert.id]: note }))}
             onActionComplete={refresh}
           />
@@ -578,9 +682,9 @@ export function SocRoute() {
         state={contextMenu}
         onClose={() => setContextMenu(null)}
         onOpen={(alert) => openDrill(alert)}
-        onAck={(alert) => setAckState(alert.id, "ack")}
-        onResolve={(alert) => setAckState(alert.id, "resolved")}
-        onPin={(alert) => togglePin(alert.id)}
+        onAck={(alert) => setAckState(groupMemberIds(alert), "ack")}
+        onResolve={(alert) => setAckState(groupMemberIds(alert), "resolved")}
+        onPin={(alert) => togglePin(groupMemberIds(alert))}
       />
     </div>
   );
@@ -595,6 +699,8 @@ function SocTopBar({
   rangeMin,
   onRangeMin,
   host,
+  crossTenant,
+  viewingTenant,
   streamState,
   openPill,
   onOpenPill,
@@ -607,12 +713,23 @@ function SocTopBar({
   rangeMin: number;
   onRangeMin: (value: number) => void;
   host?: string;
+  crossTenant: boolean;
+  viewingTenant?: string;
   streamState: string;
   openPill: PillSurface | null;
   onOpenPill: (pill: PillSurface | null) => void;
   loading: boolean;
   onRefresh: () => void;
 }) {
+  // The estate identity for a principal that belongs to no tenant. The control
+  // plane publishes this in `host`, but the console must not DEPEND on it: the
+  // build that shipped the defect published scope[0] there, so a deployment
+  // that has not been updated still hands a cross-tenant operator a customer's
+  // name to display as their estate. When the label we were given is the very
+  // tenant we are captioning underneath it, it is not an estate identity and is
+  // not shown as one.
+  const estateLabel = crossTenant && (!host || host === viewingTenant) ? "all tenants" : host;
+
   return (
     <header className="soc-topbar" data-panel={PANELS["top-bar"].id}>
       <div className="soc-brand">
@@ -650,9 +767,33 @@ function SocTopBar({
           ))}
         </div>
         <span className="soc-topbar-sep" aria-hidden="true" />
-        <button type="button" className="soc-host-pill" onClick={() => onOpenPill(openPill === "host" ? null : "host")}>
+        {/* THE ESTATE IDENTITY, WHICH IS NOT ALWAYS A HOST NAME.
+            For a tenant-bound operator this pill reads their own tenant, which
+            is true. For a cross-tenant one the server publishes an estate label
+            here instead of a customer name — it used to publish the first entry
+            of a tenant list built out of grants that authorized nothing, which
+            put ONE customer's name in the provider's top bar, identical to what
+            that customer's own analyst sees.
+            The estate label alone would be its own falsehood: the panels
+            underneath are one customer's, so a pill reading "all tenants" over
+            them claims a breadth the data does not have. Both facts go in the
+            pill — reach, then the tenant actually on screen — and the banner at
+            the top of the content says it in a sentence. */}
+        <button
+          type="button"
+          className={cx("soc-host-pill", crossTenant && "is-cross-tenant")}
+          title={
+            crossTenant && viewingTenant
+              ? `Provider account: no tenant of its own. These panels show ${viewingTenant} only.`
+              : undefined
+          }
+          onClick={() => onOpenPill(openPill === "host" ? null : "host")}
+        >
           <Server size={14} />
-          <span>{host}</span>
+          <span>{estateLabel}</span>
+          {crossTenant && viewingTenant ? (
+            <em className="soc-host-pill-scope">showing {viewingTenant} only</em>
+          ) : null}
         </button>
         <button type="button" className={cx("soc-live-pill", streamState)} onClick={() => onOpenPill(openPill === "live" ? null : "live")}>
           <Radio size={14} />

@@ -10,7 +10,7 @@ import { FileText, GitBranch, Server, ShieldAlert } from "lucide-react";
 import { countSeverities } from "./analytics";
 import { cx } from "./components";
 import { shortGraphLabel } from "./format";
-import { extractFilePath, peerFromEvent } from "./telemetry";
+import { extractFilePath, isLoopbackPeer, peerFromEvent } from "./telemetry";
 import type { SocAlert, SocEvent } from "./types";
 
 export function GraphBrief({
@@ -38,16 +38,23 @@ export function GraphBrief({
   // inches away drew /etc/passwd, /etc/shadow and /etc/sudoers nodes pulled
   // out of `args` by the very same derivation. Measured live 2026-08-22 on a
   // 30m window: 0 reported against 6 on the canvas.
+  //
+  // The loopback filter is the second half of "the same way the canvas draws
+  // them": graphModel puts every peer through `!isLoopbackPeer(p)` before it
+  // adds a node, and this did not, so a host's own health checks inflated the
+  // count. Measured on the engine's ten-day store, 397 of 559 IPv4-carrying
+  // events are `curl 127.0.0.1:8090` — hundreds of "indicators observed"
+  // claimed two inches from a canvas correctly drawing none of them.
   const indicatorCount = useMemo(
     () =>
       new Set(
         events
-          .map(
-            (event) =>
-              event.path ||
-              (event.policyName ? extractFilePath(event.args) : undefined) ||
-              peerFromEvent(event)
-          )
+          .map((event) => {
+            const file = event.path || (event.policyName ? extractFilePath(event.args) : undefined);
+            if (file) return file;
+            const peer = peerFromEvent(event);
+            return peer && !isLoopbackPeer(peer) ? peer : undefined;
+          })
           .filter(Boolean)
       ).size,
     [events]

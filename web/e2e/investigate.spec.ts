@@ -797,7 +797,6 @@ test.describe("kpi drill", () => {
    * FIX (one line): `[...scopedAlerts].sort((a, b) => b.score - a.score).slice(0, 10)`.
    */
   test("the drill's 'Top 10 by score' table really is the top ten by score", async ({ page }) => {
-    test.fail(true, "known defect: the KPI drill's 'Top 10 by score' table never sorts by score");
     await openConsole(page, {
       routes: { "/api/alerts": SCORED_CRITICALS, "/api/alert-stats": SCORED_STATS }
     });

@@ -3,6 +3,7 @@
 // pinned by `data-choke-col` — the e2e certification selects on it.
 import { VirtualList } from "../../components/VirtualList";
 import type { ChokeAction, CircuitEntry } from "./types";
+import { READ_ONLY_TITLE } from "./canRespond";
 import { ACTIONS, originLabel } from "./utils";
 import { EmptyState, StateBadge } from "./components";
 
@@ -44,6 +45,8 @@ export function ProcessTable({
   onFilterBinary,
   onFilterExec,
   onCopy,
+  readOnly = false,
+  readOnlyTitle = "",
 }: {
   rows: CircuitEntry[];
   selected: Set<string>;
@@ -59,6 +62,21 @@ export function ProcessTable({
   onFilterBinary: (binary: string) => void;
   onFilterExec: (execId: string) => void;
   onCopy: (value: string) => void;
+  /**
+   * The escalations are withheld from this operator — either whoami said
+   * `can_respond: false`, or whoami has not answered yet and nothing may be
+   * armed on a guess. Only the escalations: selection, drill-in, copy and the
+   * tape filter are reads, and a read-only operator investigating an incident
+   * needs every one of them.
+   */
+  readOnly?: boolean;
+  /**
+   * The sentence to put on the withheld buttons. The caller supplies it because
+   * only the caller knows WHICH withholding this is: READ_ONLY_TITLE claims the
+   * account is read-only, which is a false statement about a responder whose
+   * whoami is merely still in flight.
+   */
+  readOnlyTitle?: string;
 }) {
   if (rows.length === 0) return <EmptyState title="No tracked processes match" body="Clear filters or wait for the next circuit snapshot." />;
   return (
@@ -96,7 +114,15 @@ export function ProcessTable({
               </span>
               <span className="choke-row-actions" data-choke-col="actions">
                 {ACTIONS.map((action) => (
-                  <button key={action} type="button" onClick={() => onAction(entry, action)}>{action.slice(0, 3)}</button>
+                  <button
+                    key={action}
+                    type="button"
+                    disabled={readOnly}
+                    title={readOnly ? readOnlyTitle || READ_ONLY_TITLE : action}
+                    onClick={() => onAction(entry, action)}
+                  >
+                    {action.slice(0, 3)}
+                  </button>
                 ))}
                 <button type="button" onClick={() => onFilterExec(entry.exec_id)}>tape</button>
               </span>

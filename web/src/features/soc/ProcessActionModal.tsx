@@ -3,6 +3,8 @@ import { useEffect } from "react";
 import { X } from "lucide-react";
 import { EnforcementLadder } from "../common/EnforcementLadder";
 import { PROCESS_TERMINAL, type Rung } from "../common/enforcement";
+import { useResponseAuthority } from "./api";
+import { InlineNotice } from "./components";
 import { baseName, formatTime, shortGraphLabel } from "./format";
 import type { ProcessInstance } from "./graphModel";
 
@@ -48,6 +50,12 @@ export function ProcessActionModal({
     window.addEventListener("keydown", onKey, { capture: true });
     return () => window.removeEventListener("keydown", onKey, { capture: true });
   }, [onClose]);
+
+  // Same permission read as every other containment surface here. false means
+  // the control plane will 404 each rung, so the ladder is replaced by the
+  // reason rather than drawn and left to fail on click; null (the single-tenant
+  // engine, which publishes no can_respond) draws it exactly as before.
+  const { readOnlyAccount, reason: readOnlyReason } = useResponseAuthority();
 
   const cls = drill.score >= 25 ? "attack" : drill.score >= 10 ? "threat" : "baseline";
 
@@ -137,18 +145,32 @@ export function ProcessActionModal({
           {/* Right: the same shared ladder as Choke Gateway and Devices, now
               with the width it needs. */}
           <section className="soc-proc-modal-action">
-            <EnforcementLadder
-              target={{
-                id: drill.execId,
-                label: drill.binary,
-                pid: drill.pid,
-                host: drill.agent ? shortGraphLabel(drill.agent, 18) : undefined
-              }}
-              state={state}
-              apply={apply}
-              readState={readState}
-              policy={PROCESS_TERMINAL}
-            />
+            {readOnlyAccount ? (
+              // The rung this process is ON is still stated — that is a
+              // reading, and a read-only operator is entitled to it. Only the
+              // controls that would move it are withheld, and the withholding
+              // is attributed to the account, not to the platform.
+              <div className="soc-proc-modal-readonly" data-withheld="permission">
+                <span className="soc-stat-label">Enforcement</span>
+                <InlineNotice tone="warn" title="Read-only account">
+                  {readOnlyReason} This process is currently on the <b>{state}</b> rung; a responder can move it up
+                  or down from here.
+                </InlineNotice>
+              </div>
+            ) : (
+              <EnforcementLadder
+                target={{
+                  id: drill.execId,
+                  label: drill.binary,
+                  pid: drill.pid,
+                  host: drill.agent ? shortGraphLabel(drill.agent, 18) : undefined
+                }}
+                state={state}
+                apply={apply}
+                readState={readState}
+                policy={PROCESS_TERMINAL}
+              />
+            )}
           </section>
         </div>
 

@@ -16,7 +16,7 @@ import { cx } from "./components";
 import { MITRE_MATRIX, buildMitreCoverageModel } from "./panels";
 import { extractIocs, peerFromEvent } from "./telemetry";
 import { EXPORT_PRESETS, csvBlock, exportJson, triggerDownload, type ExportFormat, type ExportModel, type ExportSection } from "./report";
-import { loadPdfTools } from "./pdf";
+import { estateSubjectOf, loadPdfTools } from "./pdf";
 import { type AlertGroup } from "./dashboard";
 import type { Severity, SocAlert, SocDecision, SocEvent, SocPolicy, SocSnapshot, SocWhoami } from "./types";
 import "./soc.css";
@@ -62,8 +62,20 @@ function buildExportModel(
   const rangeFrom = times.length ? new Date(Math.min(...times)).toLocaleString() : "—";
   const rangeTo = times.length ? new Date(Math.max(...times)).toLocaleString() : "—";
 
+  // WHOSE ROWS THESE ARE, and separately WHO EXPORTED THEM.
+  //
+  // `meta.host` was `whoami.host`, which a cross-tenant control plane answers
+  // as "all tenants" — so a provider's incident report of ONE customer was
+  // stamped, headed and copied into tickets as the whole estate, every row in
+  // it belonging to that single customer. A file outlives the session: there is
+  // no scope banner beside it and nobody to ask. The account's reach is true
+  // and stays, qualifying the OPERATOR field where it cannot be read as the
+  // subject of the numbers.
+  const estate = estateSubjectOf(whoami);
+  const operator = [whoami.user || "—", estate.providerView ? "cross-tenant account" : ""].filter(Boolean).join(" · ");
+
   return {
-    meta: { generated: new Date().toLocaleString(), host: whoami.host || "—", user: whoami.user || "—", sha: version.sha || "n/a", scope: scopeLabel, rangeFrom, rangeTo },
+    meta: { generated: new Date().toLocaleString(), host: estate.subject || "—", user: operator, sha: version.sha || "n/a", scope: scopeLabel, rangeFrom, rangeTo },
     summary: { risk, total: scopeAlerts.length, counts, events: events.length, decisions: decisions.length, iocs: ips.length + files.length + binaries.length, coveragePct: model.coveragePct, coverageMeasurable: model.mappingAvailable },
     alerts: scopeAlerts.map((a) => ({ severity: a.severity, score: a.score, title: a.title, process: a.process || "", policy: a.policyName || "", timestamp: a.timestamp })),
     events: events.slice(0, 500).map((e) => ({ type: e.eventType, process: e.process || "", policy: e.policyName || "", detail: e.path || e.args || peerFromEvent(e) || "", timestamp: e.timestamp })),
@@ -82,7 +94,7 @@ function exportCsv(model: ExportModel, sections: Set<ExportSection>) {
   if (sections.has("summary")) {
     const c = model.summary.counts;
     blocks.push(csvBlock("SUMMARY", ["metric", "value"], [
-      ["generated", model.meta.generated], ["host", model.meta.host], ["scope", model.meta.scope],
+      ["generated", model.meta.generated], ["host", model.meta.host], ["operator", model.meta.user], ["scope", model.meta.scope],
       ["risk", model.summary.risk], ["alerts", model.summary.total],
       ["critical", c.critical], ["high", c.high], ["medium", c.medium], ["low", c.low], ["info", c.info],
       ["mitre_coverage_pct", coverageLabel(model.summary)]
@@ -269,7 +281,14 @@ export function ExportStudioBody({
   const [sections, setSections] = useState<Set<ExportSection>>(() => new Set<ExportSection>(["summary", "alerts", "iocs", "mitre"]));
   const [copied, setCopied] = useState<string | null>(null);
 
-  const scopeAlerts = scope === "filtered" ? filteredAlerts : rangeAlerts;
+  // EXPAND THE GROUPS. The queue groups by default, so `filteredAlerts` is a
+  // list of AlertGroups, each standing for `groupCount` real alerts. Exporting
+  // that list wrote one row per GROUP and counted groups as alerts: on a window
+  // of three identical criticals plus one high the CSV's SUMMARY said alerts=2 /
+  // critical=1, and two critical alerts left the artefact silently. An export is
+  // evidence — it has to contain every alert it claims to cover.
+  const onScreenAlerts = useMemo(() => filteredAlerts.flatMap((group) => group.members), [filteredAlerts]);
+  const scopeAlerts = scope === "filtered" ? onScreenAlerts : rangeAlerts;
   const model = useMemo(
     () => buildExportModel(scope === "filtered" ? "filtered (on screen)" : "full range", scopeAlerts, events, decisions, policies, mitreRows, whoami, version),
     [scope, scopeAlerts, events, decisions, policies, mitreRows, whoami, version]
@@ -306,7 +325,11 @@ export function ExportStudioBody({
       const c = model.summary.counts;
       text = [
         `## eBPF SOC summary — ${model.meta.generated}`,
-        `- Host: ${model.meta.host} · Scope: ${model.meta.scope}`,
+        // "Estate", not "Host": for a provider account the subject is the
+        // customer whose rows these are, and this block is pasted into tickets
+        // that outlive the console session that produced them.
+        `- Estate: ${model.meta.host} · Scope: ${model.meta.scope}`,
+        `- Operator: ${model.meta.user}`,
         `- Risk: **${model.summary.risk}/100**`,
         `- Alerts: ${model.summary.total} (${c.critical} critical, ${c.high} high, ${c.medium} medium)`,
         `- ATT&CK coverage: ${coverageLabel(model.summary)} · ${model.mitre.gapCount} blind spots`,
@@ -350,7 +373,7 @@ export function ExportStudioBody({
           <div className="soc-export-row">
             <span className="soc-stat-label">Scope</span>
             <div className="soc-export-format">
-              <button type="button" className={cx("soc-export-fmt", scope === "filtered" && "is-active")} onClick={() => setScope("filtered")}>On screen ({filteredAlerts.length})</button>
+              <button type="button" className={cx("soc-export-fmt", scope === "filtered" && "is-active")} onClick={() => setScope("filtered")}>On screen ({onScreenAlerts.length})</button>
               <button type="button" className={cx("soc-export-fmt", scope === "range" && "is-active")} onClick={() => setScope("range")}>Full range ({rangeAlerts.length})</button>
             </div>
           </div>

@@ -11,7 +11,7 @@ import type { ApprovalRequest } from "./api";
 import type { ChokeState, Decision, KernelPosture, LadderCorrection, LoadState } from "./types";
 import type { PopoverName, StreamInfo } from "./constants";
 import { PRESET_DESCRIPTIONS, formatWindow } from "./constants";
-import { formatRelative, formatUptime, shortExec } from "./utils";
+import { approvalRadiusLabel, formatRelative, formatUptime, shortExec } from "./utils";
 import { Banner, FilterChip, SegmentedControl } from "./components";
 import { NotificationDot } from "./notifications";
 
@@ -37,6 +37,7 @@ export function ChokeTopBar({
   windowMin,
   onWindowMin,
   disabled,
+  blockedReason = "",
   onPreset,
   trackedCount,
   refreshing,
@@ -64,6 +65,11 @@ export function ChokeTopBar({
   windowMin: number;
   onWindowMin: (value: number) => void;
   disabled: boolean;
+  /**
+   * Why the write controls are withheld when it is the ACCOUNT that is
+   * withheld, not the deployment. "" for every other kind of disable.
+   */
+  blockedReason?: string;
   onPreset: (name: string) => void;
   trackedCount: number;
   refreshing: boolean;
@@ -94,9 +100,14 @@ export function ChokeTopBar({
             {isFleetConsole ? "FLEET" : "THIS HOST"}
           </span>
         </div>
+        {/* A placeholder is not a name: a screen reader announces this as
+            "edit text, blank", and the hint disappears on the first keystroke
+            for everyone else. There is no room for a visible label in a two-row
+            top bar, so the name is carried by aria-label. */}
         <input
           data-choke-global-search
           className="choke-search"
+          aria-label="Search processes, decisions and policies"
           value={globalSearch}
           onChange={(event) => onGlobalSearch(event.target.value)}
           placeholder="Search processes, decisions, policies…"
@@ -152,7 +163,13 @@ export function ChokeTopBar({
         <span className="choke-preset-label">Incident Response</span>
         <div className="choke-preset-group">
           {Object.keys(PRESET_DESCRIPTIONS).map((name) => (
-            <button key={name} type="button" onClick={() => onPreset(name)} disabled={disabled} title="Audited incident-response preset">
+            <button
+              key={name}
+              type="button"
+              onClick={() => onPreset(name)}
+              disabled={disabled}
+              title={blockedReason || "Audited incident-response preset"}
+            >
               {name}
             </button>
           ))}
@@ -169,7 +186,13 @@ export function ChokeTopBar({
             {refreshing ? "Refreshing" : "Refresh"}
           </button>
           <span className="choke-ops-sep" aria-hidden="true" />
-          <button className="choke-action-button" type="button" onClick={onJail} disabled={disabled}>
+          <button
+            className="choke-action-button"
+            type="button"
+            onClick={onJail}
+            disabled={disabled}
+            title={blockedReason || undefined}
+          >
             Jail Process
           </button>
           {/* Kill-switch + enforcement mode now live in the Containment Command
@@ -190,6 +213,7 @@ export function ChokeBanners({
   divergedAgents,
   kernelFired,
   ladderCorrections = [],
+  readOnlyReason = "",
 }: {
   loadState: LoadState;
   staleSeconds: number;
@@ -199,9 +223,23 @@ export function ChokeBanners({
   divergedAgents: string[];
   kernelFired: number;
   ladderCorrections?: LadderCorrection[];
+  /**
+   * Set when whoami says this account cannot respond. Stated once, at the top,
+   * so an operator learns it from the page rather than from a control that
+   * refuses when they press it mid-incident.
+   */
+  readOnlyReason?: string;
 }) {
   return (
     <>
+      {/* First, because it changes how everything below it should be read: the
+          containment controls on this page are drawn, disabled, and it is the
+          account — not the gateway — that disabled them. */}
+      {readOnlyReason ? (
+        <Banner dataPanel="read-only-account-banner" tone="warn" title="Read-only account">
+          {readOnlyReason}
+        </Banner>
+      ) : null}
       {loadState.kind === "disabled" && (
         <Banner dataPanel="disabled-banner" tone="warn" title="Choke gateway disabled">
           {loadState.message || "choke gateway not enabled"}
@@ -290,9 +328,29 @@ export function ChokeBanners({
 export function ApprovalsQueue({
   pendingApprovals,
   onDecide,
+  blockedReason = "",
 }: {
   pendingApprovals: ApprovalRequest[];
   onDecide: (req: ApprovalRequest, approve: boolean) => void;
+  /**
+   * Why deciding is withheld — the account was refused, or whoami has not
+   * answered yet. Seeing the queue is a read and stays; deciding on it does
+   * not, because approving IS what fires the sever.
+   *
+   * WHAT THE SERVER ACTUALLY CHECKS, stated precisely because a comment that
+   * misdescribes an authorization boundary is worse than none:
+   * handleApprovalDecide gates on `authz.ActionApprove`, NOT on the respond
+   * grant this console reads out of whoami's `can_respond`
+   * (authz.CanRespond → ActionRespond). They agree today only because
+   * authz.roleCan hands ActionRead+ActionRespond+ActionApprove to the same
+   * three roles and ActionRead alone to `read-only` — and authz.go says in as
+   * many words that ActionApprove is kept separate so an APPROVER-ONLY role can
+   * be introduced later. The day that role exists, this gate withholds the
+   * queue from the very operator it was created for, and whoami publishes no
+   * field that would tell the console otherwise. See the followUp: whoami needs
+   * to publish the approve grant, and this prop needs to read it.
+   */
+  blockedReason?: string;
 }) {
   if (pendingApprovals.length === 0) return null;
   return (
@@ -312,11 +370,11 @@ export function ApprovalsQueue({
           <li key={req.id} className={req.mine ? "mine" : ""}>
             <div className="choke-approval-what">
               <strong className="choke-approval-action">{req.action.toUpperCase()}</strong>
-              <span className="choke-approval-target">
-                {req.scope === "fleet"
-                  ? "the entire tenant"
-                  : `${req.exec_id ? shortExec(req.exec_id) : ""}${req.pid ? ` (pid ${req.pid})` : ""}`}
-              </span>
+              {/* The row states the request's OWN radius. "the entire tenant"
+                  for every fleet-scoped request made a two-host containment and
+                  one that arms every agent read identically, which is the one
+                  thing an approver is here to tell apart. */}
+              <span className="choke-approval-target">{approvalRadiusLabel(req)}</span>
               {req.agent_id && <code className="choke-approval-agent">{req.agent_id}</code>}
             </div>
             <div className="choke-approval-why">
@@ -338,6 +396,8 @@ export function ApprovalsQueue({
                   <button
                     type="button"
                     className="choke-action-button"
+                    disabled={Boolean(blockedReason)}
+                    title={blockedReason || undefined}
                     onClick={() => onDecide(req, false)}
                   >
                     Withdraw
@@ -348,6 +408,8 @@ export function ApprovalsQueue({
                   <button
                     type="button"
                     className="choke-action-button danger"
+                    disabled={Boolean(blockedReason)}
+                    title={blockedReason || undefined}
                     onClick={() => onDecide(req, true)}
                   >
                     Approve &amp; apply
@@ -355,6 +417,8 @@ export function ApprovalsQueue({
                   <button
                     type="button"
                     className="choke-action-button"
+                    disabled={Boolean(blockedReason)}
+                    title={blockedReason || undefined}
                     onClick={() => onDecide(req, false)}
                   >
                     Deny

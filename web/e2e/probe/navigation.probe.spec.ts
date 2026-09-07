@@ -982,6 +982,22 @@ test.describe("console navigation, live", () => {
     );
 
     const items = page.locator('[data-panel="left-sidebar"] .soc-sidebar-item');
+    // SNAPSHOT ONLY ONCE THE RAIL HAS STOPPED GROWING. Two entries arrive after
+    // first paint on a live deployment — "Behaviour & Intel" lands with the
+    // assistant capability read, and the account entry is a placeholder until
+    // whoami resolves — so a count taken at domcontentloaded is one or two short
+    // of the settled rail. Measured on engine.adanianlabs.io: 17 immediately,
+    // 18 six seconds later. Comparing the early number against a post-toggle one
+    // reported "collapsing the rail removed items from the DOM" for a rail that
+    // had simply finished loading, which is a false accusation against the very
+    // behaviour this test defends.
+    let previous = -1;
+    await settles(async () => {
+      const seen = await items.count();
+      const steady = seen === previous && seen > 12;
+      previous = seen;
+      return steady;
+    }, 20_000);
     const before = await items.count();
     expect(before, "no rail items to lose").toBeGreaterThan(12);
 
@@ -1207,13 +1223,11 @@ test.describe("console navigation, live", () => {
    * engineer opens to answer "where does this run, and against what?" renders
    * the question, the caveat about the value, and no value.
    *
-   * Marked test.fail: it is a live gap on both deployments, and this file is a
-   * probe rather than a patch. Remove the mark when the section renders the
-   * effective runtime configuration it advertises.
+   * FIXED 2026-09-02: the section renders the effective runtime configuration it
+   * advertises, and a field whose source did not answer says so rather than
+   * showing a default that reads as a measurement.
    */
   test("the Platform settings section shows the effective values it says it shows", async ({ page }) => {
-    test.fail(true, "settingsModel's runtime row promises the effective value; SettingsBody renders no control for it");
-
     await signIn(page, env);
     await page.goto("/", { waitUntil: "domcontentloaded" });
     await railItem(page, "Settings").click();
@@ -1224,9 +1238,9 @@ test.describe("console navigation, live", () => {
     // renders <strong>{title}</strong><span>{owner}</span> (SettingsBody.tsx),
     // and "Platform team" is the OWNER of Guardrails, Access AND Platform — so
     // hasText:"Platform" resolves to three buttons and throws a strict-mode
-    // violation. Under this test's `test.fail` that throw counted as the
-    // expected failure, so the test reported green while never reaching the
-    // product claim in its docstring at all.
+    // violation — which, while this test was pinned, counted as the expected
+    // failure, so it reported green while never reaching the product claim in
+    // its docstring at all.
     await modal
       .locator("nav.soc-settings-nav button.soc-settings-navitem")
       .filter({ has: page.locator("strong", { hasText: /^Platform$/ }) })
@@ -1257,18 +1271,13 @@ test.describe("console navigation, live", () => {
    * Evidence. That is the exact habit this codebase's own notes say a console
    * must not teach — a warning that means nothing on a healthy box.
    *
-   * Marked test.fail on the engine only. The control plane serves all three, so
-   * there is nothing to state as unavailable and the test skips there. Remove
-   * the mark when RetentionControls learns the 404 branch its two siblings have.
+   * FIXED 2026-09-02: RetentionControls has the 404 branch its two siblings have. The
+   * control plane serves all three, so there is nothing to state as unavailable
+   * and this test skips there — it is the engine that had the false warning.
    */
   test("a settings route this deployment does not serve is stated as not applicable, not as a failed read", async ({
     page
   }) => {
-    test.fail(
-      env.kind === "engine",
-      "RetentionControls treats a 404 as a failed read; ChangeControlControls and AccessTrailPanel both call the same 404 'not applicable'"
-    );
-
     await signIn(page, env);
     await page.goto("/", { waitUntil: "domcontentloaded" });
 
@@ -1680,13 +1689,10 @@ test.describe("console navigation, live", () => {
    * is mounted permanently, so "Open attacks" and "Show honeypots" open those
    * surfaces on a production deployment that deliberately hides them.
    *
-   * Marked test.fail: this is a live defect on both boxes, and the file is a
-   * probe rather than a patch — it says so and stays green. Remove the mark
-   * when commandItems learns about lab_mode.
+   * FIXED 2026-09-02: commandItems reads the same server-reported lab_mode the rail
+   * does, from one predicate, so the two cannot drift apart again.
    */
   test("the command palette does not offer surfaces the deployment gates off", async ({ page }) => {
-    test.fail(true, "commandItems in SocModals.tsx is not gated on lab_mode; the rail is");
-
     await signIn(page, env);
     await page.goto("/", { waitUntil: "domcontentloaded" });
     const lab = await labModeReported(page);
@@ -2162,7 +2168,25 @@ test.describe("console navigation, live", () => {
     const palette = page.locator('[data-panel="command-palette"]');
     await expect(palette, "the command palette did not open from the profile menu").toBeVisible();
     const commands = palette.locator("[cmdk-item]");
-    expect(await commands.count(), "the choke palette listed no commands").toBeGreaterThan(3);
+    // LAB-AWARE, like the SOC palette test below. The palette is gated on the
+    // server's lab_mode: Attack Sim, Honeypots and the Rule Simulator are
+    // withheld on a deployment that is not a lab, which takes this list from
+    // five items to three. A bare "more than three" encoded the UNGATED count
+    // and so failed the moment the gate started working — asserting the defect
+    // rather than the fix.
+    const chokeLab = await labModeReported(page);
+    const listed = await commands.count();
+    expect(listed, "the choke palette listed no commands").toBeGreaterThan(0);
+    if (chokeLab) {
+      expect(listed, "a lab deployment must still offer its lab commands here").toBeGreaterThan(3);
+    }
+    const labCommands = palette.getByText(/attack sim|honeypot|rule simulator/i);
+    expect(
+      (await labCommands.count()) > 0,
+      chokeLab
+        ? "this deployment reports lab_mode and the palette withholds the lab commands anyway"
+        : "the palette offers a lab surface on a deployment that hides it from the rail — the second door the gate exists to close"
+    ).toBe(chokeLab);
     // Enumerated, never selected: these items fire presets and the kill-switch.
     await page.keyboard.press("Escape");
     await expect(palette, "the choke palette would not close").toHaveCount(0);

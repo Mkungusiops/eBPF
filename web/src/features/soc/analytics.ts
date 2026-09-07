@@ -6,7 +6,7 @@
 // derivation can be re-used by the KPI drill-downs, the export studio and the
 // tests without dragging a component along with it.
 import type { AlertStats } from "./api";
-import { SEVERITIES, SEVERITY_WEIGHT, type AlertGroup, type SortField, type TimelineBucket } from "./dashboard";
+import { SEVERITIES, SEVERITY_WEIGHT, type AckState, type AlertGroup, type SortField, type TimelineBucket } from "./dashboard";
 import type { AlertClassification, Severity, SocAlert, SocEvent } from "./types";
 
 // How many columns the severity timeline draws. Shared with the server request
@@ -82,6 +82,10 @@ export function buildTimeline(
   return buckets.map((bucket) => ({ ...bucket, anomaly: bucket.total > avg + std * 2 && bucket.total > 2 }));
 }
 
+// A grouped row carries members[0]'s fields — its id included — so every
+// surface that ACTS on a row (ack, pin, export) must reach for `members`
+// rather than that id. A row that says "×2" and acknowledges one alert is work
+// reported done that is not.
 export function groupAlertList(alerts: SocAlert[]): AlertGroup[] {
   const groups = new Map<string, SocAlert[]>();
   for (const alert of alerts) {
@@ -89,6 +93,84 @@ export function groupAlertList(alerts: SocAlert[]): AlertGroup[] {
     groups.set(key, [...(groups.get(key) || []), alert]);
   }
   return [...groups.values()].map((members) => ({ ...members[0], groupCount: members.length, members }));
+}
+
+/**
+ * The row a given alert belongs to, so a surface opened from somewhere ELSE
+ * still acts on everything the queue says that row stands for.
+ *
+ * The drill panel can be reached from an event row, the graph or an exec id —
+ * paths that hold a bare SocAlert. Acknowledging from there used to write that
+ * one alert, and the queue row it appears in (which derives its state from its
+ * least-progressed member) went on reading "New". Resolving the alert back to
+ * its group first means the drill's Acknowledge covers the same alerts the
+ * row's own button does.
+ */
+export function alertGroupFor(alert: SocAlert, groups: AlertGroup[]): AlertGroup {
+  const owning = groups.find((group) => group.members.some((member) => member.id === alert.id));
+  return owning || { ...alert, groupCount: 1, members: [alert] };
+}
+
+/** Every alert id a row stands for. A ×N row is N acks, not one. */
+export function groupMemberIds(group: AlertGroup): string[] {
+  return group.members.map((member) => member.id);
+}
+
+/**
+ * How many alerts EACH queue filter actually excluded from this window.
+ *
+ * The empty-state copy names filters, and naming one that removed nothing is
+ * the same defect as the hard-coded "No alerts match current filters" it
+ * replaced, only quieter: "Hide baseline" is on by default, so an analyst whose
+ * search excluded everything was told the baseline chip was to blame as well
+ * and went switching off a control that had removed no rows at all.
+ *
+ * Counted per filter over the pre-filter window, independently — a row rejected
+ * by two filters is counted against both, because both did in fact reject it.
+ */
+export function queueExclusions(
+  alerts: SocAlert[],
+  {
+    query,
+    hideBaseline,
+    filterUnack,
+    ackStates
+  }: { query: string; hideBaseline: boolean; filterUnack: boolean; ackStates: Record<string, AckState> }
+): { query: number; baseline: number; unacked: number } {
+  const searching = Boolean(query.trim());
+  let excludedByQuery = 0;
+  let excludedByBaseline = 0;
+  let excludedByUnacked = 0;
+  for (const alert of alerts) {
+    if (searching && !matchesQuery(alert, query)) excludedByQuery += 1;
+    if (hideBaseline && classifyAlert(alert) === "baseline") excludedByBaseline += 1;
+    if (filterUnack && (ackStates[alert.id] || "new") !== "new") excludedByUnacked += 1;
+  }
+  return { query: excludedByQuery, baseline: excludedByBaseline, unacked: excludedByUnacked };
+}
+
+/**
+ * What ack state a queue row may claim, over every alert it stands for.
+ *
+ * The least-progressed member wins: a group with one unacknowledged alert is
+ * outstanding work, and a row that reads "Ack'd" over it is the same lie as the
+ * single-member ack it replaces.
+ *
+ * A partial group can now only come from a PREVIOUS session's stored ack state
+ * (soc.alertStates is per-alert and persists), or from a member that arrived
+ * after its siblings were acknowledged. Every surface in this console that acks
+ * — row buttons, bulk bar, drill panel, keyboard shortcut, context menu —
+ * passes every id the row it was clicked on stands for.
+ */
+export function groupAckState(members: SocAlert[], ackStates: Record<string, AckState>): AckState {
+  const rank: Record<AckState, number> = { new: 0, ack: 1, resolved: 2 };
+  let lowest: AckState = "resolved";
+  if (!members.length) return "new";
+  for (const member of members) {
+    const state = ackStates[member.id] || "new";
+    if (rank[state] < rank[lowest]) lowest = state;
+  }
+  return lowest;
 }
 
 export function compareAlerts(a: SocAlert, b: SocAlert, sortField: SortField, pinned: Set<string>) {

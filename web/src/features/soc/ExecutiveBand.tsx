@@ -102,7 +102,8 @@ export function ExecutiveBand({
   eps,
   activeProcesses,
   topProcess,
-  hostName,
+  affectedScope,
+  providerView,
   hostOk,
   streamState,
   onReviewCriticals,
@@ -156,7 +157,17 @@ export function ExecutiveBand({
   eps: number;
   activeProcesses: number;
   topProcess?: string;
-  hostName?: string;
+  /**
+   * The estate the numbers in this band describe — see estateSubjectOf.
+   *
+   * NOT `whoami.host`, which is what it used to be. For a cross-tenant MSOC
+   * account the server answers "all tenants" there, so the "What is affected"
+   * tile headed a process count drawn from ONE customer with the provider's
+   * entire book of business.
+   */
+  affectedScope?: string;
+  /** That account reaches more than one tenant — stated in the DETAIL line, never as the subject. */
+  providerView?: boolean;
   hostOk: boolean;
   streamState: string;
   onReviewCriticals: () => void;
@@ -215,8 +226,16 @@ export function ExecutiveBand({
     },
     {
       label: "What is affected",
-      value: hostName || "Current SOC host",
-      detail: `${activeProcesses} active process${activeProcesses === 1 ? "" : "es"} observed${readableTopProcess ? `; top signal is ${readableTopProcess}.` : "."}`
+      value: affectedScope || "Current SOC host",
+      // The reach of the ACCOUNT belongs here and not in the value above: a
+      // provider reads this tile to learn whose estate the count came from, and
+      // an answer of "all tenants" over one customer's processes is the same
+      // false breadth the scope banner exists to deny.
+      detail: `${activeProcesses} active process${activeProcesses === 1 ? "" : "es"} observed${readableTopProcess ? `; top signal is ${readableTopProcess}.` : "."}${
+        providerView
+          ? " Your account reaches more than one customer; this counts only the tenant named above."
+          : ""
+      }`
     },
     {
       label: "What has been done",

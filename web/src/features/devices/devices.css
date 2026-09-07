@@ -125,12 +125,17 @@
   white-space: nowrap;
 }
 
-/* Choke-Gateway header standard: brand · search · status-pills grid. */
+/* Choke-Gateway header standard: brand · search · status-pills grid.
+   No `flex-wrap` here: the element carries `.devices-topbar-row` too, but this
+   rule's `display: grid` wins (same specificity, later in the file), so any
+   flex-wrap value on it is inert and only reads as if the row's wrapping were
+   handled — the same lie that kept the Choke top bar overflowing. What
+   actually keeps this one inside a phone is the single-column fallback in the
+   760px block below. */
 .devices-topbar-primary {
   display: grid;
   grid-template-columns: auto minmax(200px, 1fr) auto;
   gap: 12px;
-  flex-wrap: nowrap;
 }
 
 .devices-brand {
@@ -1064,4 +1069,24 @@
 .devices-modal-actions {
   gap: 7px;
   padding: 0 15px 14px;
+}
+
+/* Permission, not outage. Said in the same muted register as the rest of the
+   panel copy: nothing is wrong with the data plane, this account simply has no
+   response rights. */
+.devices-permission-note {
+  margin: 6px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--devices-warn, #c2820a);
+}
+
+/* The mechanism that withholds the shared EnforcementLadder — it takes no
+   disabled prop, and fieldset[disabled] disables every control inside without
+   the ladder needing to know why. Reset so it draws as nothing. */
+.devices-permission-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
 }

@@ -191,12 +191,30 @@
   background: var(--border);
 }
 
+/* The six toolbar clusters. Every one of them is a ROW OF CONTROLS, and the
+   declarations that made it one were lost once already: the rule body and the
+   `.choke-brand-mark {` line that followed it were deleted together, which
+   fused this selector list onto that of the brand mark — a text run, not a
+   container. The clusters were left as plain blocks inheriting that mark's
+   `white-space: nowrap`, so their children became inline boxes on one
+   unbreakable line — `.choke-chip-row`'s five state chips laid out ~457px
+   inside a 338px panel and the route measured ~475px on a 390px phone.
+   Restored here, on the containers themselves: adding `flex-wrap` further
+   down to something that is not a flex container is what the previous repair
+   attempt did, and it changed nothing. */
 .choke-brand,
 .choke-status-cluster,
 .choke-user-cluster,
 .choke-panel-actions,
 .choke-chip-row,
-.choke-row-actions,
+.choke-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  /* Wrap on narrow viewports so toolbar chips never force horizontal scroll. */
+  flex-wrap: wrap;
+}
 
 .choke-brand-mark {
   color: var(--text);
@@ -2018,15 +2036,34 @@
 }
 
 @media (max-width: 1280px) {
-  .choke-topbar-primary,
+  /* Flex containers only. `.choke-grid` and `.choke-ti-ribbon` were listed
+     here too, and both are `display: grid` — `flex-wrap` on a grid is inert,
+     so the rails and the ribbon went on overflowing while the rule looked
+     like it handled them. They stack via `grid-template-columns` below. */
   .choke-ops-row,
-  .choke-grid,
-  .choke-ti-ribbon,
-  
   .choke-status-cluster,
   .choke-user-cluster,
   .choke-filter-strip {
     flex-wrap: wrap;
+  }
+
+  /* The primary top bar is a GRID, so the `flex-wrap` it used to be listed
+     with above did nothing at all: its four tracks (brand, a 260px-minimum
+     search box, the status cluster, the user cluster) kept their widths and
+     simply overflowed the page — a 1140px document inside a 390px phone
+     viewport, with the platform's headline surface scrolling sideways.
+     Below the desktop breakpoint it becomes a real wrapping row: the search
+     takes the space that is left and drops onto its own line once the
+     clusters no longer fit beside it. */
+  .choke-topbar-primary {
+    display: flex;
+    flex-wrap: wrap;
+    row-gap: 8px;
+  }
+
+  .choke-topbar-primary .choke-search {
+    flex: 1 1 240px;
+    min-width: 0;
   }
 
   /* When the operations bar wraps, drop the right-alignment so groups flow naturally. */
@@ -2040,9 +2077,13 @@
     grid-template-columns: 1fr;
   }
 
+  /* Four columns, so the eight-column floor must go with them: leaving
+     `min-width: 1010px` in place stretched a 342px-wide row to 1010px and
+     gave the process list its own horizontal scrollbar on every phone. */
   .choke-process-head,
   .choke-process-row {
     grid-template-columns: 46px 104px 72px minmax(120px, 1fr);
+    min-width: 0;
   }
 
   .choke-process-head [data-choke-col="origin"],
@@ -2057,17 +2098,55 @@
   }
 }
 
+/* The three-rail workbench has fixed track minimums (250 + 440 + 330 plus
+   gaps and page padding = ~1090px). A grid does not wrap when its tracks no
+   longer fit — it overflows — so below that width the rails stack instead. */
+@media (max-width: 1100px) {
+  .choke-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (max-width: 720px) {
   .choke-route {
     padding-bottom: 72px;
   }
 
+  /* 20px of side padding on a 390px screen leaves the ribbon tiles and the
+     tape chips fighting for room; trim the gutters and let the fixed
+     four-across strips fall to two, which is the widest that keeps each
+     tile's label inside its own track. */
   .choke-topbar-row,
-  .choke-ti-ribbon,
+  .choke-filter-strip,
   .choke-grid,
-  
-  .choke-kpi {
-    width: 100%;
+  .choke-ti-ribbon,
+  .choke-opsbar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .choke-banner {
+    flex-wrap: wrap;
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
+  .choke-ti-ribbon,
+  .choke-tape-filters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  /* The four-column mobile row still had a 366px floor (46+104+72+120 plus
+     three 8px gaps) against the 338px the panel actually gives it, which left
+     the tracked-process list scrolling sideways inside its own scroller. Each
+     fixed track is trimmed to what its content measures — 40px for the
+     checkbox, 92px for the widest state badge (QUARANTINED at 10px mono is
+     82px), 66px for the "process id" header — and the binary column takes the
+     rest and truncates, as it already does on every other width. */
+  .choke-process-head,
+  .choke-process-row {
+    grid-template-columns: 40px 92px 66px minmax(0, 1fr);
+    gap: 6px;
   }
 
   .choke-help div,
@@ -3235,4 +3314,30 @@
 }
 .choke-correction-list code {
   font-variant-numeric: tabular-nums;
+}
+
+/* Permission, not outage. A read-only account sees its containment controls
+   drawn and disabled, and this is the line that says which of the two reasons
+   it is — muted rather than alarmed, because nothing is wrong with the estate. */
+.choke-permission-note {
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--warn);
+}
+.choke-bulkbar-note {
+  font-size: 11px;
+  color: var(--warn);
+  margin-left: 8px;
+}
+
+/* `fieldset[disabled]` is what actually disables the shared EnforcementLadder's
+   buttons — it does not take a disabled prop, and a wrapper is how one surface
+   withholds it without every surface having to learn about permissions. The
+   reset keeps the fieldset invisible: it is a mechanism, not a group box. */
+.choke-permission-fieldset {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
 }

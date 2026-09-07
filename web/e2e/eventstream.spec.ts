@@ -268,8 +268,6 @@ test.describe("live event stream", () => {
    * report how many frames arrived while held.
    */
   test("pause freezes the list while frames keep arriving", async ({ page }) => {
-    test.fail(true, "known defect: Pause only dims the list (opacity .62); rows keep moving underneath");
-
     await openDashboard(page);
 
     const beforeAnything = eventFrame("live-1", { args: "/var/tmp/live-1" });
@@ -601,8 +599,6 @@ test.describe("live event stream", () => {
    * round-trip, so the frame is always delivered into the doomed window.
    */
   test("a frame that arrives during the first poll is not erased by it", async ({ page }) => {
-    test.fail(true, "known defect: a frame delivered while the first snapshot poll is in flight is discarded by setSnapshot");
-
     const preflight = eventFrame("preflight-1", { process: "sshd", args: "/var/tmp/preflight-1" });
 
     // The one test that opts back INTO the race openDashboard otherwise avoids:

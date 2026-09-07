@@ -22,6 +22,7 @@ export function DevicesTable({
   flows,
   allSelected,
   disabled,
+  blockedReason = "",
   loading,
   query,
   searchTerm,
@@ -43,6 +44,14 @@ export function DevicesTable({
   flows: Record<string, FlowLoadState>;
   allSelected: boolean;
   disabled: boolean;
+  /**
+   * Why containment is withheld when it is the OPERATOR that withholds it —
+   * either the server refused this account, or whoami has not answered yet and
+   * nothing may be armed on a guess. The rows stay readable — where a device
+   * sits on the ladder is evidence, and a read-only operator investigating an
+   * incident needs it — but the rungs cannot be pressed and the row says so.
+   */
+  blockedReason?: string;
   loading: boolean;
   /** Trimmed + lower-cased search term, and the operator's original casing. */
   query: string;
@@ -94,6 +103,7 @@ export function DevicesTable({
                     flowState={flows[device.mac]}
                     now={now}
                     disabled={disabled}
+                    blockedReason={blockedReason}
                     onSelect={onSelect}
                     onToggleFlows={onToggleFlows}
                     onApply={onApply}
@@ -128,6 +138,7 @@ function DeviceRow({
   flowState,
   now,
   disabled,
+  blockedReason = "",
   onSelect,
   onToggleFlows,
   onApply,
@@ -140,6 +151,7 @@ function DeviceRow({
   flowState?: FlowLoadState;
   now: () => number;
   disabled: boolean;
+  blockedReason?: string;
   onSelect: (mac: string, checked: boolean) => void;
   onToggleFlows: (mac: string) => void;
   onApply: (mac: string, rung: Rung, reason: string) => Promise<{ ok: boolean; detail: string }>;
@@ -199,18 +211,24 @@ function DeviceRow({
             {/* Evidence and control in one place: the flows say what this
                 device is doing, the ladder does something about it. Same
                 component as the correlation graph and Choke Gateway. */}
-            <EnforcementLadder
-              target={{
-                id: device.mac,
-                label: device.hostname || device.mac,
-                host: device.last_ip || undefined
-              }}
-              state={device.state || "pristine"}
-              policy={DEVICE_TERMINAL}
-              apply={(rung, why) => onApply(device.mac, rung, why)}
-              readState={() => onReadState(device.mac)}
-              onSettled={onSettled}
-            />
+            {blockedReason ? <p className="devices-permission-note">{blockedReason}</p> : null}
+            {/* The shared ladder takes no disabled prop, and it should not have
+                to learn about permissions to be withheld from one surface:
+                fieldset[disabled] disables every control inside it. */}
+            <fieldset className="devices-permission-fieldset" disabled={Boolean(blockedReason)}>
+              <EnforcementLadder
+                target={{
+                  id: device.mac,
+                  label: device.hostname || device.mac,
+                  host: device.last_ip || undefined
+                }}
+                state={device.state || "pristine"}
+                policy={DEVICE_TERMINAL}
+                apply={(rung, why) => onApply(device.mac, rung, why)}
+                readState={() => onReadState(device.mac)}
+                onSettled={onSettled}
+              />
+            </fieldset>
           </td>
         </tr>
       ) : null}

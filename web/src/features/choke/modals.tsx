@@ -29,6 +29,7 @@ export function ProfilePanel({
   onHelp,
   onThaw,
   onClose,
+  thawBlockedReason = "",
 }: {
   userLabel: string;
   bootMs: number;
@@ -45,6 +46,12 @@ export function ProfilePanel({
   onHelp: () => void;
   onThaw: () => void;
   onClose: () => void;
+  /**
+   * Why "Thaw all" is withheld — set only when the account, not the gateway,
+   * is what withholds it. Releasing a quarantine is a respond action like any
+   * other, so it cannot stay armed for an operator the server will refuse.
+   */
+  thawBlockedReason?: string;
 }) {
   return (
     <aside className="choke-floating-panel profile" data-panel="admin-profile-dropdown-avatar">
@@ -73,7 +80,14 @@ export function ProfilePanel({
       </label>
       <div className="choke-popover-actions">
         <button type="button" onClick={onSnapshot}>Snapshot</button>
-        <button type="button" onClick={onThaw}>Thaw all</button>
+        <button
+          type="button"
+          disabled={Boolean(thawBlockedReason)}
+          title={thawBlockedReason || undefined}
+          onClick={onThaw}
+        >
+          Thaw all
+        </button>
         <a href="/api/logout">Sign out</a>
       </div>
     </aside>
@@ -148,7 +162,7 @@ export function ConfirmModal({ request, onClose, pushToast }: { request: Confirm
       <div className={`choke-confirm ${request.danger ? "danger" : ""}`}>
         <h2>{request.title}</h2>
         <p>{request.body}</p>
-        {request.reasonRequired ? <input autoFocus value={reason} onChange={(event) => setReason(event.target.value)} placeholder="audit reason" /> : null}
+        {request.reasonRequired ? <input autoFocus aria-label="Audit reason" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="audit reason" /> : null}
         {request.withRevert ? (
           <label><input type="checkbox" checked={revert} onChange={(event) => setRevert(event.target.checked)} /> auto-revert
             <select value={revertSeconds} onChange={(event) => setRevertSeconds(Number(event.target.value))} disabled={!revert}>

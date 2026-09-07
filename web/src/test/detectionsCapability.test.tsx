@@ -1,6 +1,7 @@
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
+import { recordResponseAuthority } from "../features/soc/api";
 import { DetectionsBody } from "../features/soc/DetectionsBody";
 import type { SocPolicy } from "../features/soc/types";
 
@@ -16,6 +17,16 @@ import type { SocPolicy } from "../features/soc/types";
  * asserting a capability the deployment behind it does not have — so the gate
  * is pinned rather than left to the next reader to notice.
  */
+// The panel refuses to name a CAUSE for a withheld control until it knows who
+// is asking: before whoami answers, "you may not" and "the deployment cannot"
+// are indistinguishable, and guessing between them is the defect these tests
+// pin from the other side. The shared authority store starts at "loading", so
+// every test here first puts the session where a real one is — whoami answered,
+// with no can_respond field, which is what the single-tenant engine sends.
+beforeEach(() => {
+  act(() => recordResponseAuthority(null));
+});
+
 const loaded: SocPolicy[] = [
   {
     name: "sensitive-file-access",

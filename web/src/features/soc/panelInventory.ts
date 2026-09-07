@@ -58,7 +58,13 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     mode: "live",
     description: "Search, classification, sort, grouping, pinning, local ack state, and keyboard-ready rows.",
     api: ["/api/alerts", "/api/stream"],
-    storage: ["soc.alertStates", "soc.pinnedAlerts", "soc.savedViews"]
+    // No soc.savedViews. It was advertised here (and counted on the account
+    // page's "N local preference keys" inventory) while nothing in src ever
+    // read or wrote it: there is no control to save the current query/sort/chip
+    // set and none to restore one. An operator told the panel keeps views goes
+    // looking for a control that does not exist, so the claim is withdrawn
+    // rather than left standing.
+    storage: ["soc.alertStates", "soc.pinnedAlerts"]
   },
   {
     id: "drill-down-slide-over",
@@ -305,7 +311,6 @@ export const SOC_STORAGE_KEYS = [
   "soc.notifyHistory",
   "soc.pinnedAlerts",
   "soc.alertNotes",
-  "soc.savedViews",
   "soc.refreshInterval",
   "soc.prefDefaultRange",
   "soc.prefGroupAlerts",

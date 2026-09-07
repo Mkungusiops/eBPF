@@ -6,6 +6,7 @@ import { AssistantPanel } from "../assistant";
 // enforcement of its own: picking a process hands it back up to the surface,
 // which opens the action modal.
 import { cx } from "./components";
+import { useResponseAuthority } from "./api";
 import { shortGraphLabel } from "./format";
 import type { ChokeCircuit } from "./api";
 import type { GraphNode, ProcessInstance } from "./graphModel";
@@ -37,6 +38,10 @@ export function GraphSelectionRail({
   onPickProcess: (proc: ProcessInstance) => void;
   onSelectNode: (id: string) => void;
 }) {
+  // The rail enforces nothing itself, but it is where an operator is told what
+  // picking a process will get them. Saying "pick one to act" to an account the
+  // server refuses is a promise the modal then has to withdraw.
+  const { readOnlyAccount } = useResponseAuthority();
   return (
     <aside className="soc-graph-selection">
       <span className="soc-stat-label">Selection</span>
@@ -94,6 +99,11 @@ export function GraphSelectionRail({
                   Contained
                 </button>
               </div>
+            ) : null}
+            {readOnlyAccount ? (
+              <p className="soc-graph-selection-empty">
+                Your account is read-only: open a process to inspect it, but containment is not offered to you.
+              </p>
             ) : null}
             {visibleProcesses.length ? (
               visibleProcesses.map((proc) => (
@@ -155,7 +165,9 @@ export function GraphSelectionRail({
 
       {!selected ? (
         <p className="soc-graph-selection-empty">
-          Click a node to see the processes behind it, then pick one to inspect and act.
+          {readOnlyAccount
+            ? "Click a node to see the processes behind it, then pick one to inspect. Your account is read-only, so containment is not offered to you."
+            : "Click a node to see the processes behind it, then pick one to inspect and act."}
         </p>
       ) : null}
       {drillExecId ? (

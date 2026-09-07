@@ -27,6 +27,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { InlineNotice, cx } from "./components";
 import { getJSON, putJSON } from "../../lib/api";
+import { isRouteNotServed } from "./settingsModel";
 
 export interface RetentionPolicy {
   deployment_event_days: number;
@@ -70,6 +71,8 @@ export function validateRetentionDays(v: string, floor: number): string {
 export function RetentionControls({ onChanged }: { onChanged?: () => void }) {
   const [state, setState] = useState<RetentionState | null>(null);
   const [loadError, setLoadError] = useState("");
+  /** The route is not registered here at all — a deployment fact, not a fault. */
+  const [unsupported, setUnsupported] = useState(false);
   const [days, setDays] = useState("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
@@ -87,8 +90,20 @@ export function RetentionControls({ onChanged }: { onChanged?: () => void }) {
       };
       setState(s);
       setDays(s.policy?.tenant_days ? String(s.policy.tenant_days) : "");
+      setUnsupported(false);
       setLoadError("");
     } catch (e) {
+      // A single-tenant engine has no per-tenant store and does not register
+      // this route. Its two siblings — change control and the access trail —
+      // both branch on that already; this one did not, so a correctly
+      // configured engine raised an amber warning every time an operator
+      // opened Evidence. A warning that means nothing on a healthy box is how
+      // a console teaches its operators to ignore warnings.
+      if (isRouteNotServed(e)) {
+        setUnsupported(true);
+        setLoadError("");
+        return;
+      }
       // Absent is not "no retention set". Rendering a blank control on a failed
       // read invites an operator to set a horizon believing none exists.
       setLoadError(e instanceof Error ? e.message : "could not read the retention setting");
@@ -123,6 +138,14 @@ export function RetentionControls({ onChanged }: { onChanged?: () => void }) {
     }
   }
 
+  if (unsupported) {
+    return (
+      <InlineNotice tone="info" title="Not applicable to this deployment">
+        This single-host engine keeps no per-tenant retention setting: telemetry is pruned on the horizon its
+        deploy configured, which is not exposed to the console. Containment decisions are never pruned.
+      </InlineNotice>
+    );
+  }
   if (loadError) {
     return (
       <InlineNotice tone="warn" title="Retention could not be read">

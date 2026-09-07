@@ -8,6 +8,7 @@ import { EventReplay } from "../../components/EventReplay";
 import { EnforcementLadder } from "../common/EnforcementLadder";
 import { ACTION_FOR_RUNG, PROCESS_TERMINAL } from "../common/enforcement";
 import { chokeApplied, getCircuits, manualAction, releaseProcess } from "./api";
+import { READ_ONLY_TITLE } from "./canRespond";
 import type { ChokeAction } from "./types";
 import type { DrillState } from "./constants";
 import { basename, formatTime, originLabel } from "./utils";
@@ -20,6 +21,8 @@ export function ProcessDrill({
   onAnnotate,
   onCopy,
   onRefresh,
+  readOnly = false,
+  readOnlyReason = "",
 }: {
   drill: DrillState;
   onClose: () => void;
@@ -27,6 +30,9 @@ export function ProcessDrill({
   onRefresh: () => void;
   onAnnotate: (execId: string, note: string) => Promise<void>;
   onCopy: (value: string) => void;
+  /** whoami says this account cannot respond — see canRespond.ts. */
+  readOnly?: boolean;
+  readOnlyReason?: string;
 }) {
   const [note, setNote] = useState("");
   useEffect(() => {
@@ -96,59 +102,74 @@ export function ProcessDrill({
                 more detail and no visualisation; the graph has visualisation
                 and less detail — but the enforcement control is identical, so
                 an operator never has to relearn it when switching surface. */}
-            <EnforcementLadder
-              target={{
-                id: entry.exec_id || drill.execId,
-                label: entry.binary || "(unknown process)",
-                pid: entry.pid,
-                host: originLabel(entry) || undefined
-              }}
-              state={entry.state || "pristine"}
-              policy={PROCESS_TERMINAL}
-              apply={async (rung, why) => {
-                const execId = entry.exec_id || drill.execId;
-                try {
-                  if (rung === "pristine") {
-                    await releaseProcess(execId, entry.pid, why, entry.agent);
-                    return { ok: true, detail: "release accepted" };
-                  }
-                  const result = await manualAction({
-                    exec_id: execId,
-                    pid: entry.pid,
-                    binary: entry.binary,
-                    agent_id: entry.agent,
-                    action: ACTION_FOR_RUNG[rung] as ChokeAction,
-                    reason: why
-                  });
-                  // "accepted" is not "applied". The ladder must show the rung
-                  // as reached only when an agent reported it actually enforced,
-                  // or the operator watches the ladder climb on a process no
-                  // host is running.
-                  if (result?.approval_required) {
+            {/* The ladder is still DRAWN for a read-only account — where a
+                process sits on it is evidence, and hiding the rungs would hide
+                what has already been done to it. What goes away is the ability
+                to move it, and a `fieldset[disabled]` disables every control
+                inside without the shared ladder having to know why. */}
+            {readOnly ? <p className="choke-permission-note">{readOnlyReason}</p> : null}
+            <fieldset className="choke-permission-fieldset" disabled={readOnly}>
+              <EnforcementLadder
+                target={{
+                  id: entry.exec_id || drill.execId,
+                  label: entry.binary || "(unknown process)",
+                  pid: entry.pid,
+                  host: originLabel(entry) || undefined
+                }}
+                state={entry.state || "pristine"}
+                policy={PROCESS_TERMINAL}
+                apply={async (rung, why) => {
+                  const execId = entry.exec_id || drill.execId;
+                  try {
+                    if (rung === "pristine") {
+                      await releaseProcess(execId, entry.pid, why, entry.agent);
+                      return { ok: true, detail: "release accepted" };
+                    }
+                    const result = await manualAction({
+                      exec_id: execId,
+                      pid: entry.pid,
+                      binary: entry.binary,
+                      agent_id: entry.agent,
+                      action: ACTION_FOR_RUNG[rung] as ChokeAction,
+                      reason: why
+                    });
+                    // "accepted" is not "applied". The ladder must show the rung
+                    // as reached only when an agent reported it actually enforced,
+                    // or the operator watches the ladder climb on a process no
+                    // host is running.
+                    if (result?.approval_required) {
+                      return {
+                        ok: false,
+                        detail: `queued for approval (${result.approval?.id || "pending"}) — a second operator must approve it`,
+                      };
+                    }
+                    if (!chokeApplied(result)) {
+                      return { ok: false, detail: result?.detail || result?.status || "no agent applied it" };
+                    }
                     return {
-                      ok: false,
-                      detail: `queued for approval (${result.approval?.id || "pending"}) — a second operator must approve it`,
+                      ok: true,
+                      detail: `${ACTION_FOR_RUNG[rung]} applied${result.agent ? ` on ${result.agent}` : ""}`
                     };
+                  } catch (error) {
+                    return { ok: false, detail: (error as Error).message || "action failed" };
                   }
-                  if (!chokeApplied(result)) {
-                    return { ok: false, detail: result?.detail || result?.status || "no agent applied it" };
-                  }
-                  return {
-                    ok: true,
-                    detail: `${ACTION_FOR_RUNG[rung]} applied${result.agent ? ` on ${result.agent}` : ""}`
-                  };
-                } catch (error) {
-                  return { ok: false, detail: (error as Error).message || "action failed" };
-                }
-              }}
-              readState={async () => {
-                const list = await getCircuits();
-                return list.find((c) => c.exec_id === (entry.exec_id || drill.execId))?.state;
-              }}
-              onSettled={onRefresh}
-            />
+                }}
+                readState={async () => {
+                  const list = await getCircuits();
+                  return list.find((c) => c.exec_id === (entry.exec_id || drill.execId))?.state;
+                }}
+                onSettled={onRefresh}
+              />
+            </fieldset>
             <div className="choke-row-actions wide">
-              <button type="button" onClick={() => void onForget(drill.execId)}>forget</button>
+              <button
+                type="button"
+                disabled={readOnly}
+                title={readOnly ? readOnlyReason || READ_ONLY_TITLE : undefined}
+                onClick={() => void onForget(drill.execId)}
+              >
+                forget
+              </button>
               <button type="button" onClick={() => onCopy(entry.exec_id || drill.execId)}>copy exec_id</button>
               {entry.pid ? <button type="button" onClick={() => onCopy(String(entry.pid))}>copy pid</button> : null}
             </div>
@@ -166,8 +187,24 @@ export function ProcessDrill({
           </section>
           <section>
             <h3>Operator note</h3>
-            <textarea value={note} onChange={(event) => setNote(event.target.value)} />
-            <button className="choke-action-button ok" type="button" onClick={() => void onAnnotate(drill.execId, note)}>Save note</button>
+            {/* Annotating is a write the control plane gates on the same
+                respond grant as a sever (handleChokeAnnotate keeps
+                authorizeRespond), so the box that records it is withheld with
+                the rest rather than accepting a note nobody will store. */}
+            <textarea
+              value={note}
+              disabled={readOnly}
+              onChange={(event) => setNote(event.target.value)}
+            />
+            <button
+              className="choke-action-button ok"
+              type="button"
+              disabled={readOnly}
+              title={readOnly ? readOnlyReason || READ_ONLY_TITLE : undefined}
+              onClick={() => void onAnnotate(drill.execId, note)}
+            >
+              Save note
+            </button>
           </section>
           <section>
             <h3>Process lineage</h3>

@@ -21,10 +21,13 @@
  * 4. PROGRESS IS NAMED, NOT SPUN. A tool-calling answer takes 5-20s. A bare
  *    spinner for 20 seconds reads as "hung". Naming the step reads as "working".
  *
- * 5. FAILURE IS CONTAINED. Disabled, unreachable and errored are three distinct
- *    states with three distinct treatments, and none of them is a red banner:
- *    an optional feature that is switched off is not a fault, and colouring it
- *    like one teaches operators to ignore the colour that means an incident.
+ * 5. FAILURE IS CONTAINED. Not-configured, on-but-no-agents-here, answered-but-
+ *    unreadable and could-not-reach are four distinct states with four distinct
+ *    sentences, and none of them is a red banner: an optional feature that is
+ *    switched off is not a fault, and colouring it like one teaches operators
+ *    to ignore the colour that means an incident. They were one sentence —
+ *    "Not configured on this deployment" — which told an operator whose console
+ *    had simply failed to read the server to go and change a setting.
  */
 import { useState } from "react";
 import {
@@ -39,7 +42,7 @@ import {
   X
 } from "lucide-react";
 import { AnswerText } from "./AnswerText";
-import { useAssistant } from "./useAssistant";
+import { assistantOffText, useAssistant } from "./useAssistant";
 import { useAssistantChat } from "./AssistantChatProvider";
 import type { AssistantApi, AssistantSurface } from "./api";
 import "./assistant.css";
@@ -77,15 +80,42 @@ export function AssistantPanel({ api, execId, subjectLabel, surface }: Assistant
   // "unavailable" is churn in the analyst's peripheral vision.
   if (!capability) return null;
 
-  if (!capability.enabled) {
+  // Which of the five states this report is. The fallback is for a capability
+  // built somewhere other than useAssistant — every fake in the suite is an
+  // object literal with no `availability` — and reproduces exactly what this
+  // panel used to do with `enabled` alone.
+  const availability =
+    capability.availability ??
+    (capability.enabled ? (capability.agents?.length ? "ready" : "no-agents") : "disabled");
+
+  if (availability !== "ready") {
+    // FOUR DIFFERENT FACTS, FOUR DIFFERENT SENTENCES.
+    //
+    // All four used to print "Not configured on this deployment.", which is a
+    // claim about the DEPLOYMENT. An operator reading it goes to their platform
+    // team and asks for an assistant to be configured — the right move for
+    // exactly one of these states and a waste of an incident's minutes for the
+    // other three, two of which are console-to-server faults that nobody will
+    // even look for while the console is calling them a settings gap.
+    //
+    // None of them is a red alert: an optional feature that is off is not a
+    // fault, and colouring it like one teaches operators to ignore the colour
+    // that means an incident. They are told apart by words, not by red.
+    //
+    // The sentences themselves live in useAssistant so the chat sidebar says
+    // exactly the same thing for exactly the same state.
     return (
-      <section className="asst asst--off" aria-label="Analyst assistant">
+      <section
+        className="asst asst--off"
+        aria-label="Analyst assistant"
+        data-assistant-state={availability}
+      >
         <header className="asst__head">
           <Sparkles size={14} aria-hidden />
           <h3>Analyst Assistant</h3>
         </header>
         <p className="asst__off-text">
-          Not configured on this deployment.
+          {assistantOffText(availability, "panel")}
           {capability.reason ? <span className="asst__dim"> {capability.reason}</span> : null}
         </p>
       </section>
@@ -152,7 +182,7 @@ export function AssistantPanel({ api, execId, subjectLabel, surface }: Assistant
             has no fixed job, so rendering it as a one-click button would promise
             an action it cannot perform — it belongs in the sidebar, which has a
             composer. */}
-        {capability.agents.filter((a) => !a.conversational).map((a) => (
+        {(capability.agents ?? []).filter((a) => !a.conversational).map((a) => (
           <button
             key={a.id}
             type="button"

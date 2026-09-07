@@ -12,13 +12,14 @@ import { expect, test } from "./support/test";
  * the controls on them send the right thing to the right hosts. Every claim
  * below is a blast-radius or an honesty property:
  *
- *  1. THE TARGET SET ON SCREEN IS THE TARGET SET ON THE WIRE — CLIENT SIDE
- *     ONLY. "All hosts" is `targets: null` and "Selected only" is an explicit
- *     host list, and those two are one segment click apart. The assertions
- *     below pin the BODY THE BROWSER EMITS and nothing further, because
- *     `targets` is presently read by NO server — see SERVER-SIDE GAPS below.
- *     Read a green run here as "the console computed the target set the rail
- *     is showing", never as "the write was scoped".
+ *  1. THE TARGET SET ON SCREEN IS THE TARGET SET ON THE WIRE. "All hosts" is
+ *     `targets: null` and "Selected only" is an explicit host list, and those
+ *     two are one segment click apart. The assertions below pin the BODY THE
+ *     BROWSER EMITS and nothing further — a mock answers whatever the console
+ *     sends, so no browser test can prove a write was scoped. Both servers
+ *     have honoured `targets` since 2026-09-02 and each half is pinned by its
+ *     own Go test (engine/internal/api/fleet_targets_test.go and
+ *     engine/internal/controlplane/fleettargeting_test.go).
  *  2. "SELECTED ONLY" WITH NOTHING SELECTED SENDS NOTHING. An empty list that
  *     leaked onto the wire as `[]` — or worse, degraded to `null` — would turn
  *     "I have not picked a host yet" into an estate-wide write. This one holds
@@ -32,8 +33,8 @@ import { expect, test } from "./support/test";
  *     Containment, maintenance, kill-switch-ON and thaw go through a confirm
  *     (all four are clicked below); kill-switch-OFF (restoring enforcement)
  *     does not. The gated ones that carry an audit reason must refuse to send
- *     without one — and the kill-switch, which the engine audits, carries none
- *     at all today; that is pinned as a known defect rather than accepted.
+ *     without one — including the kill-switch, which the engine audits and
+ *     which carried none at all until 2026-09-02.
  *  5. A HALF-APPLIED FAN-OUT READS AS HALF-APPLIED. This is the worst outcome
  *     this view can produce: an operator who is told "applied" while one host
  *     never took the change believes the estate is uniform when it is not.
@@ -51,27 +52,24 @@ import { expect, test } from "./support/test";
  * ── SERVER-SIDE GAPS THIS SUITE STRUCTURALLY CANNOT FAIL ON ────────────────
  * A browser suite talks to a mock, so a field the console sends correctly and
  * the server then ignores produces a green run. Two such gaps were found
- * reading the handlers behind these routes, and they are recorded here because
- * nothing in e2e can catch them:
+ * reading the handlers behind these routes. Both were closed on 2026-09-02;
+ * they are kept here because the reason e2e cannot catch them has not changed,
+ * so a regression in either would show up as a green run:
  *
- *  A. `targets` IS READ BY NO SERVER, so "Selected only" scopes nothing.
- *     Single-tenant: `(*Fleet).fanout` (engine/internal/api/fleet.go) calls
- *     `f.Peers()` — the whole hosts file — and forwards the body verbatim to
- *     every peer; the receiving `handleChokePreset` (engine/internal/api/
- *     choke.go) decodes only `{name, reason}`. Multi-tenant:
- *     engine/internal/controlplane/fleet.go routes /api/fleet/preset to
- *     controlplane/choke.go's `handleChokePreset`, which likewise decodes only
- *     `{name, reason}` and then calls `dispatchAll(r, tenant, ...)` — every
- *     agent in the tenant. docs/api/openapi.yaml documents the request body as
- *     name+reason only. Ticking alpha-edge, reading "Writes target 1 selected
- *     host." and pressing Containment contains bravo-edge too.
- *     SERVER FIX: filter `peers` by the decoded `targets` in `fanout`, and
- *     decode + honour `targets` in the control plane's handlers (dispatch to
- *     the named agents rather than `dispatchAll`). Until then test 1 is a
- *     client-side claim.
- *  B. THE KILL-SWITCH CARRIES NO AUDIT REASON. Pinned as an executable
- *     known-defect test below rather than left as prose, because that half IS
- *     observable in the browser — the console never collects one.
+ *  A. `targets` WAS READ BY NO SERVER, so "Selected only" scoped nothing.
+ *     CLOSED 2026-09-02. Single-tenant: `(*Fleet).fanout` called `f.Peers()` —
+ *     the whole hosts file — and forwarded the body verbatim to every peer.
+ *     Multi-tenant: controlplane/choke.go's `handleChokePreset` decoded only
+ *     `{name, reason}` and called `dispatchAll(r, tenant, ...)`, every agent in
+ *     the tenant. Ticking alpha-edge, reading "Writes target 1 selected host."
+ *     and pressing Containment contained bravo-edge too.
+ *     Now: both servers resolve `targets` before dispatching anything — an
+ *     unknown name or an empty list is a 400 that applies NOWHERE, rather than
+ *     a partial write against a target set the server misunderstood — and both
+ *     return one `hosts` entry per host actually written to.
+ *  B. THE KILL-SWITCH CARRIED NO AUDIT REASON. CLOSED 2026-09-02, and pinned
+ *     by an executable test below rather than prose, because that half IS
+ *     observable in the browser — the console now collects one.
  *
  * FIXTURES: the default mock fleet — peers `alpha-edge` and `bravo-edge`, both
  * reachable, both on thresholds 5/10/20/40 (so the majority ladder the draft
@@ -476,19 +474,15 @@ test.describe("fleet write path", () => {
    * enforcement across the whole estate does not, so the audit row says who
    * and when but never why.
    *
-   * THE FIX: add `reasonLabel: "Audit reason"` and `reasonRequired: true` to
-   * the ConfirmState in `requestKillSwitchOn`, thread the confirmed reason
-   * through `setKillSwitch`, and post it as a third field from
-   * `writeKillSwitch`.
+   * FIXED 2026-09-02: `requestKillSwitchOn` collects an audit reason and
+   * threads it through `setKillSwitch` to `writeKillSwitch`, which posts it as
+   * a third field — the shape thaw already used.
    *
    * NOTE ON THIS TEST'S SHAPE: it is separate from the gating test above
-   * rather than folded into it, because `test.fail` inverts a WHOLE test —
-   * folding it in would have suspended that test's live gating and
-   * disengage-is-ungated assertions behind this defect.
+   * rather than folded into it, so a regression in the reason cannot take that
+   * test's live gating and disengage-is-ungated assertions down with it.
    */
   test("engaging the kill-switch records the operator's audit reason", async ({ page }) => {
-    test.fail(true, "known defect: fleet kill-switch sends no audit reason though the engine audits one");
-
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
     await page.goto("/fleet");
@@ -623,12 +617,13 @@ test.describe("fleet write path", () => {
    * the floor and every multi-tenant fleet write renders "0/0 hosts succeeded".
    *
    * THIS TEST pins the honest reading of THIS envelope: a preset that reached
-   * two of two agents must say so. It fails today because the console prints
-   * 0/0 — measured, with `test.fail` removed: "Preset default applied0/0 hosts
-   * succeeded."
+   * two of two agents must say so. Until 2026-09-02 the console printed
+   * "Preset default applied0/0 hosts succeeded."
    *
-   * THE FIX: normalise the control-plane envelope before summarizeFanout —
-   * read `applied`/`total`/`ok` when `hosts` is absent.
+   * FIXED 2026-09-02 on both sides: the control plane now returns a `hosts`
+   * array built from the per-agent acks, and the console normalises the
+   * envelope before summarizeFanout — reading `applied`/`total` when `hosts`
+   * is absent, and never reading an absent list as full coverage.
    *
    * WHY IT IS SPLIT FROM THE TEST BELOW: this envelope describes a fan-out that
    * REACHED EVERY AGENT, so asserting "no hosts" over it would pin an end state
@@ -637,8 +632,6 @@ test.describe("fleet write path", () => {
    * case has its own envelope and its own test.
    */
   test("a multi-tenant fan-out reports the coverage the control plane gave it", async ({ page }) => {
-    test.fail(true, "known defect: the CP envelope has no `hosts` key, so applied/total are discarded and every MT write renders 0/0");
-
     const recorder = new RequestLog();
     await installMockApi(page, {
       recorder,
@@ -689,21 +682,16 @@ test.describe("fleet write path", () => {
    * zero-coverage fan-out — so this pins only the `total === 0` half and is
    * unaffected by the control-plane normalisation the test above requires.
    *
-   * THE FIX: `total === 0` is not success. summarizeFanout should return
-   * `ok: false` with title `${label}: no hosts`.
+   * FIXED 2026-09-02: `total === 0` is not success — summarizeFanout reports a
+   * zero-coverage fan-out as a failure and says so in the toast.
    *
-   * NOTE ON SHAPE: `test.fail` inverts the whole test, so the precondition
-   * cannot protect it from a future vacuous pass the way it does elsewhere in
-   * this file. The assertions are therefore POSITIVE — the toast must SAY it
-   * reached no hosts, and must be error-toned — rather than a
+   * NOTE ON SHAPE: the assertions are POSITIVE — the toast must SAY it reached
+   * no hosts, and must be error-toned — rather than a
    * `.not.toContainText(/applied/i)`, which any toast lacking the word
    * "applied" satisfies, including the "Preset failed" toast the catch arm
-   * raises when the request never completed at all. Delete the `test.fail`
-   * line when the fix lands and the precondition guards it again.
+   * raises when the request never completed at all.
    */
   test("a fan-out that reached no hosts must not report as applied", async ({ page }) => {
-    test.fail(true, "known defect: summarizeFanout treats 0/0 hosts as success");
-
     const recorder = new RequestLog();
     await installMockApi(page, {
       recorder,

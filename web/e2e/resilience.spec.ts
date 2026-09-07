@@ -28,16 +28,13 @@ test.describe("degraded backends", () => {
    * live — but the code path that produces it is the one whose own comment
    * promises the assistant "must never take the drill panel down with it".
    *
-   * Marked expected-to-fail: the assertion is correct and unfixed. `test.fail`
-   * turns it into a hard error the moment the guard is added, so the marker
-   * cannot outlive the defect.
-   *
-   * THE FIX is one line in src/features/assistant/useAssistant.ts:
-   *   capability?.agents?.find(...) ?? capability?.agents?.[0]?.id ?? null
+   * FIXED 2026-09-02 in src/features/assistant/useAssistant.ts: the capability
+   * read is guarded, and a body the console cannot read now degrades the
+   * assistant panel rather than the route — saying which of the three states it
+   * is in (disabled by the deployment, enabled with no agents for this surface,
+   * or unreadable) instead of collapsing all three into "not configured".
    */
   test("survives an assistant capability whose body omits `agents`", async ({ page }) => {
-    test.fail(true, "known defect: useAssistant dereferences capability.agents without a guard");
-
     await installMockApi(page, {
       routes: { "/api/assistant": { enabled: false, reason: "older server, no agents field" } }
     });

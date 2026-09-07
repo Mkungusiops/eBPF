@@ -251,7 +251,10 @@ describe("ChatSidebar", () => {
 
   it("refuses to ask at all when the deployment advertises no agent", async () => {
     // Better a clear message than a request the server will reject with a
-    // generic failure the analyst cannot act on.
+    // generic failure the analyst cannot act on. The server SAID it is off, so
+    // this is the one case allowed to name the deployment; the states where the
+    // console merely failed to read the server say something else, and
+    // assistantChats3CapabilityStates covers all four.
     const ask = vi.fn(async (_req: AssistantAskRequest) => answer);
     open({
       assistantApi: fakeAssistantApi({
@@ -264,7 +267,7 @@ describe("ChatSidebar", () => {
     await userEvent.type(screen.getByLabelText("Ask the assistant"), "what happened?");
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
 
-    await screen.findByText(/No assistant agent is available/);
+    await screen.findByText(/Not configured on this deployment/);
     expect(ask).not.toHaveBeenCalled();
   });
 

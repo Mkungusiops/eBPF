@@ -4,10 +4,10 @@ import type {
   ChokeState,
   CgroupSnapshot,
   Decision,
+  FanoutEnvelope,
   FleetDevice,
   FleetEnvelope,
   FleetPeer,
-  HostResult,
   PresetName,
   Thresholds
 } from "./types";
@@ -59,12 +59,39 @@ export async function readFleetSnapshot(): Promise<{
   return { peers, states, cgroups, decisions, alerts, devices };
 }
 
-export function readWhoami(): Promise<{ user?: string; host?: string; hostname?: string }> {
-  return getJSON<{ user?: string; host?: string; hostname?: string }>("/api/whoami");
+export interface FleetWhoami {
+  user?: string;
+  host?: string;
+  hostname?: string;
+  /**
+   * Whether this account may send containment and configuration writes.
+   *
+   * `null` is "the server did not say", and it must be read as PERMITTED. Only
+   * the multi-tenant control plane publishes `can_respond`; the single-tenant
+   * engine has no such concept, so treating a missing field as false would take
+   * the emergency controls away from every single-tenant operator on the
+   * grounds of a permission model their server does not implement.
+   */
+  canRespond: boolean | null;
+}
+
+export async function readWhoami(): Promise<FleetWhoami> {
+  const raw = await getJSON<{
+    user?: string;
+    host?: string;
+    hostname?: string;
+    can_respond?: unknown;
+  }>("/api/whoami");
+  return {
+    user: raw.user,
+    host: raw.host,
+    hostname: raw.hostname,
+    canRespond: typeof raw.can_respond === "boolean" ? raw.can_respond : null
+  };
 }
 
 export function writePreset(name: PresetName, targets: string[] | null, reason: string) {
-  return postJSON<{ hosts: Array<HostResult<unknown>> }>("/api/fleet/preset", {
+  return postJSON<FanoutEnvelope>("/api/fleet/preset", {
     name,
     reason,
     targets
@@ -72,21 +99,29 @@ export function writePreset(name: PresetName, targets: string[] | null, reason: 
 }
 
 export function writeThresholds(thresholds: Thresholds, targets: string[] | null) {
-  return putJSON<{ hosts: Array<HostResult<unknown>> }>("/api/fleet/thresholds", {
+  return putJSON<FanoutEnvelope>("/api/fleet/thresholds", {
     ...thresholds,
     targets
   });
 }
 
-export function writeKillSwitch(on: boolean, targets: string[] | null) {
-  return postJSON<{ hosts: Array<HostResult<unknown>> }>("/api/fleet/kill-switch", {
+/**
+ * The kill-switch carries a reason because the engine audits one:
+ * `handleChokeKillSwitch` records the transition with the operator's
+ * `reason`, and the console used to leave that field empty on the single
+ * widest-blast-radius toggle on the platform — the audit row said who and when
+ * but never why.
+ */
+export function writeKillSwitch(on: boolean, targets: string[] | null, reason: string) {
+  return postJSON<FanoutEnvelope>("/api/fleet/kill-switch", {
     on,
+    reason,
     targets
   });
 }
 
 export function writeThaw(reason: string, targets: string[] | null) {
-  return postJSON<{ hosts: Array<HostResult<unknown>> }>("/api/fleet/thaw", {
+  return postJSON<FanoutEnvelope>("/api/fleet/thaw", {
     reason,
     targets
   });

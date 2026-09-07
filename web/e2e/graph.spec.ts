@@ -501,8 +501,6 @@ test.describe("correlation graph", () => {
    * indicatorCount, exactly as graphModel.ts does.
    */
   test("the indicator count excludes loopback, like the canvas does", async ({ page }) => {
-    test.fail(true, "known defect: GraphBrief counts loopback peers the graph refuses to draw");
-
     const surface = await openGraph(page, {
       routes: { "/api/events": [...graphEvents, loopbackEvent] }
     });

@@ -216,16 +216,42 @@
   color: var(--muted, #8b98b0);
 }
 
-/* Controls: view toggle, mode, kill-switch. */
+/* Controls: view toggle, mode, kill-switch.
+
+   `min-width: 0` is load-bearing, not tidiness. A grid item's automatic minimum
+   size is its MIN-CONTENT, so whatever floor the widest control declares is
+   propagated up through this column into `.cc-header`'s own track and out to
+   the page: the header cannot become narrower than its widest button, however
+   narrow the phone is. Releasing it here stops that chain at the column.
+
+   `grid-template-columns: 312px` is the other half of the contract, and it is
+   what makes the auto-fit below able to resolve at all. This column had no
+   track list, so its single implicit track was `auto` — content-sized — and
+   `.cc-header`'s third track is `auto` too, so NOTHING in this chain ever had a
+   definite inline size. `repeat(auto-fit, …)` counts repetitions against the
+   container's DEFINITE size (or definite max, or definite min); against an
+   indefinite one the spec says the track list repeats exactly once. So the
+   instrument cluster stacked on a 2560px monitor for the same reason it stacked
+   on a phone: not because it ran out of room, but because it could not measure
+   the room it had. A fixed bay is also the honest description of what this
+   column is — 312px = 148 + 1px divider + 148, plus 15px of slack so the bay
+   does not fall to one column on a font-rounding difference. It stays under the
+   344px phone budget, and the two narrow-viewport blocks below re-declare it. */
 .cc-head-controls {
   display: grid;
+  grid-template-columns: 312px;
   gap: 8px;
   justify-items: end;
   align-content: center;
+  min-width: 0;
 }
 
 .cc-viewtoggle {
   display: inline-flex;
+  /* Two words that must be allowed to sit on two lines rather than pin a
+     ~190px floor into the header on a 390px screen. */
+  flex-wrap: wrap;
+  max-width: 100%;
   border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.32));
   border-radius: 999px;
   padding: 3px;
@@ -251,42 +277,86 @@
 
 /* Instrument cluster: the two consequential controls in one bordered housing,
    side by side, split by a hairline — reads as a deliberate control surface
-   rather than two loose buttons. */
+   rather than two loose buttons.
+
+   THE FLOOR THIS RULE USED TO PIN. It was `grid-template-columns: 1fr 1fr`
+   over two `.cc-ctl` buttons each declaring `min-width: 148px`. An `fr` track's
+   automatic minimum is the min-content contribution of its item, and a declared
+   min-width IS that minimum, so the cluster could never measure less than
+   148 + 148 + the divider = 297px — and because a grid item's automatic minimum
+   propagates, that 297px floor travelled up through `.cc-head-controls` into
+   `.cc-header`'s own track. On a 390px phone the header has 305px of content
+   box on the Devices route (390 − 24 layout padding − 44 header padding − 2
+   border) and 329px on the Choke route: the cluster fitted with 8px to spare,
+   which is not a fit, it is a coincidence. A slightly wider system font, a
+   longer translated label, or the 12px gutter this file now gives the hero on
+   the Choke route would each have spent it.
+
+   `repeat(auto-fit, minmax(min(148px, 100%), 1fr))` is the honest form of the
+   same intention: 148px is the width at which the two controls read side by
+   side, and `min(…, 100%)` says that preference yields to the container rather
+   than overflowing it. Two columns while both fit, one column below ~297px,
+   never wider than the housing.
+
+   `justify-self: stretch` is what makes that sentence TRUE rather than
+   aspirational. The parent sets `justify-items: end`, which sizes this box
+   shrink-to-fit — an indefinite inline size, and auto-fit against an indefinite
+   size repeats the track list once, at every viewport. The cluster therefore
+   stacked on a desktop monitor exactly as it did on a phone, while this comment
+   claimed it reflowed. Stretched into the definite 312px bay declared on
+   `.cc-head-controls`, auto-fit has a number to count against: 2×148 + 1 = 297
+   fits 312, so two columns; on a 390px phone the bay becomes the full
+   `minmax(0, 1fr)` header column (~336px of content box on both routes), still
+   two; below ~298px of bay it resolves to one and `min(148px, 100%)` collapses
+   the track's own minimum onto the container, so the housing can never be wider
+   than what holds it. The stacked form is a real state, not the only state.
+
+   The divider had to move with it. `border-left` on the second button is only
+   correct while the two sit in one row — once the cluster stacks it draws a
+   vertical hairline down the left edge of a full-width control. So the housing
+   paints the hairline colour and a 1px `gap` reveals it, which is a divider in
+   whichever direction the cells happen to be laid out. That is why the cells
+   below carry an OPAQUE background instead of `transparent`: a transparent cell
+   would let the housing's hairline colour flood the whole cluster. */
 .cc-plane-controls {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  justify-self: stretch;
+  grid-template-columns: repeat(auto-fit, minmax(min(148px, 100%), 1fr));
+  gap: 1px;
   border: 1px solid var(--border-strong, rgba(127, 140, 165, 0.34));
   border-radius: 10px;
   overflow: hidden;
-  background: var(--cc-sunken);
+  background: var(--border-strong, rgba(127, 140, 165, 0.34));
 }
 
 .cc-ctl {
   display: flex;
   gap: 9px;
   align-items: center;
-  min-width: 148px;
+  min-width: 0;
   padding: 9px 15px;
   border: 0;
-  background: transparent;
+  background: var(--cc-sunken);
   color: var(--text, #e8ecf4);
   text-align: left;
   cursor: pointer;
   transition: background 0.14s ease, color 0.14s ease;
 }
 
-.cc-ctl + .cc-ctl {
-  border-left: 1px solid var(--border-strong, rgba(127, 140, 165, 0.28));
-}
-
 .cc-ctl svg {
   flex: 0 0 auto;
 }
 
+/* "ENFORCEMENT" and "Kill-switch" are single unbreakable words at 9px/13px, so
+   their min-content is ~80px each; with the icon and the button padding that is
+   a ~130px floor per cell that no `min-width: 0` above can release, because
+   min-width does not make a word breakable. Allowing the break inside the label
+   is what actually lets a cell narrow. */
 .cc-ctl-body {
   display: grid;
   gap: 1px;
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .cc-ctl-label {
@@ -303,20 +373,23 @@
   line-height: 1.2;
 }
 
-/* Mode = state. Amber while only watching, green once armed. */
+/* Mode = state. Amber while only watching, green once armed.
+   Every state below MIXES INTO the cell's own surface rather than laying a
+   translucent film over it: the cells are opaque now (see the divider note
+   above), so a translucent tint would composite over the wrong colour. */
 .cc-ctl-mode.enforcing,
 .cc-ctl-mode.enforcing svg {
   color: #6fe0a2;
 }
 .cc-ctl-mode.enforcing {
-  background: rgba(74, 222, 128, 0.08);
+  background: color-mix(in srgb, var(--cc-sunken) 92%, #4ade80 8%);
 }
 .cc-ctl-mode.detect,
 .cc-ctl-mode.detect svg {
   color: #f5c67a;
 }
 .cc-ctl-mode:not(:disabled):hover {
-  background: rgba(127, 140, 165, 0.14);
+  background: color-mix(in srgb, var(--cc-sunken) 86%, var(--text, #e8ecf4) 14%);
 }
 
 /* Kill-switch = break-glass action. Danger outline idle; solid red + pulse
@@ -326,10 +399,17 @@
   color: #ff8296;
 }
 .cc-ctl-kill:not(:disabled):hover {
-  background: rgba(244, 85, 110, 0.12);
+  background: color-mix(in srgb, var(--cc-sunken) 88%, var(--danger, #f4556e) 12%);
+}
+/* Hovered as well as idle. `.cc-ctl-kill.engaged` alone is less specific than
+   the hover rule above it, so pointing at an engaged kill-switch replaced the
+   solid red with a pale tint — the console dropped the one state it must never
+   understate exactly when the operator reached for it. */
+.cc-ctl-kill.engaged,
+.cc-ctl-kill.engaged:not(:disabled):hover {
+  background: var(--danger, #f4556e);
 }
 .cc-ctl-kill.engaged {
-  background: var(--danger, #f4556e);
   animation: cc-kill-pulse 2s ease-in-out infinite;
 }
 .cc-ctl-kill.engaged,
@@ -440,10 +520,15 @@
   color: var(--muted, #8b98b0);
 }
 
+/* The legend is two independent sentences, and the right-hand one grows with
+   the estate ("1,204 contained · 38,910 clean devices · click a rung to
+   filter"). Without a wrap they share one line and the row's floor is the sum
+   of both, so the summary is the thing that pushes the ladder past a phone. */
 .cc-ladder-legend {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 12px;
+  gap: 4px 12px;
   margin-top: 10px;
   color: var(--muted, #8b98b0);
   font-size: 11px;
@@ -460,26 +545,69 @@
 }
 
 @media (max-width: 1180px) {
+  /* `minmax(0, 1fr)`, not `1fr`. A bare `1fr` is `minmax(auto, 1fr)`, and that
+     `auto` minimum is the item's min-content — which is precisely how a floor
+     declared on a button three levels down became a floor on the hero band.
+     The metric strip, the lead and the controls all release their own minimums
+     (`min-width: 0`), and this releases the track that holds them. */
   .cc-header {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     gap: 14px;
   }
+  /* The hero is one column now, so the toggle and the instrument bay sit side
+     by side in one row. Declared as two explicit tracks rather than
+     `grid-auto-flow: column`: an implicit column is `auto`, which is
+     content-sized, and a content-sized bay is an indefinite one — the auto-fit
+     inside it would fall back to a single track and the cluster would stack
+     across this whole band. `auto` takes the toggle's own width; 312px is the
+     same definite bay as at desktop. At the top of the band the header has
+     ~1126px of content box and at the bottom ~635px, so `auto + 8 + 312`
+     (~510px) is never the thing that overflows. */
   .cc-head-controls {
     justify-items: stretch;
-    grid-auto-flow: column;
+    grid-template-columns: auto 312px;
     justify-content: start;
   }
 }
 
 @media (max-width: 720px) {
+  /* Phone padding. 22px of side padding plus the border spends 46px of a 390px
+     screen on nothing; trimming to 14px returns 16px to the metric strip and
+     the control cluster, which are the two things that were running out. */
+  .cc-header {
+    padding: 14px;
+  }
+
+  /* The hero and the ladder were the only two top-level rows on the Choke
+     Gateway with no gutter: every other row there is inset 12px at this width,
+     so this pair ran edge to edge and read as a rendering fault rather than a
+     design. Scoped to that host because the Devices route already insets its
+     whole layout by 12px — applying it there too would push the hero away from
+     its own siblings. Safe to spend the 24px now only because the cluster
+     inside no longer pins a 297px floor. */
+  .choke-route > .cc-header,
+  .choke-route > .cc-ladder {
+    margin-left: 12px;
+    margin-right: 12px;
+  }
+
   .cc-ladder-track {
     flex-wrap: wrap;
   }
   .cc-ladder-cell {
     flex-basis: 46%;
   }
+  /* Phone: the toggle and the bay stack, and the bay stops being a fixed 312px
+     — it becomes the header column itself. `minmax(0, 1fr)` is a definite track
+     inside a definite grid, so the auto-fit still has a size to count against
+     (~336px of header content box at 390px on both routes → two columns, 297px
+     of minimum inside 336px of track), while the `0` floor means a narrower
+     phone shrinks the bay instead of overflowing the page: below ~298px the
+     auto-fit resolves to one track and the cluster stacks. A fixed 312px here
+     would be a floor wider than the 320px viewport this console still has to
+     survive. */
   .cc-head-controls {
-    grid-auto-flow: row;
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
@@ -505,10 +633,17 @@
   grid-column: span 2;
 }
 
+/* Title left, value right — until they no longer fit beside each other, at
+   which point they stack. A no-wrap row here floors the card at the sum of an
+   uppercase heading and its number, and the assurance grid is already down to
+   one column on a phone with nothing left to give. */
 .cc-assur-card header {
   display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
   justify-content: space-between;
   align-items: baseline;
+  min-width: 0;
 }
 
 .cc-assur-card h3 {
@@ -582,9 +717,12 @@
   line-height: 1.5;
 }
 
+/* The value column is `auto`, whose minimum is min-content — an unbroken value
+   (an interface name, a policy id) would widen the card rather than wrap inside
+   it. Both tracks are floored at 0 and the value is allowed to break. */
 .cc-assur-kv {
   display: grid;
-  grid-template-columns: 1fr auto;
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
   gap: 6px 12px;
   font-size: 12.5px;
 }
@@ -597,6 +735,7 @@
 .cc-assur-kv strong {
   color: var(--text, #e8ecf4);
   text-align: right;
+  overflow-wrap: anywhere;
 }
 
 .cc-assur-audit {
@@ -624,10 +763,16 @@
   gap: 4px;
 }
 
+/* Name left, count right; the names are host and interface identifiers, which
+   are long and unbreakable, so the row wraps rather than setting the width of
+   the card it sits in. */
 .cc-assur-top li {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
-  gap: 10px;
+  gap: 2px 10px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 12.5px;
   color: var(--text, #e8ecf4);
 }

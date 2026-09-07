@@ -77,19 +77,22 @@ async function unnamedControls(page: Page): Promise<string[]> {
  * Controls that are unnamed TODAY, recorded so the check can run against the
  * rest of the console instead of being deleted.
  *
- * Every entry is a text input whose only description is a `placeholder`, which
- * is not an accessible name: a screen reader announces "edit text, blank" and
- * the placeholder vanishes the moment anything is typed. Each needs an
- * `aria-label` (or a visible <label>) — a one-line change per control.
+ * EMPTY since 2026-09-02. It held six text inputs whose only description was a
+ * `placeholder`, which is not an accessible name: a screen reader announces
+ * "edit text, blank" and the placeholder vanishes the moment anything is typed.
+ * All six were given real names (the stream filter, the two choke searches, the
+ * unlabelled choke input, and the two devices reason/revert inputs).
  *
- * This list may only ever SHRINK. A new unnamed control fails the test, which
- * is the whole point of writing the gap down rather than lowering the bar.
+ * This list may only ever SHRINK — a new unnamed control fails the test, and an
+ * entry that has been fixed fails it too until it is struck — which is the
+ * whole point of writing the gap down rather than lowering the bar. Now that it
+ * is empty, any unnamed control on these routes is a failure.
  */
 const KNOWN_UNNAMED_CONTROLS: Record<string, string[]> = {
   login: [],
-  soc: ["input.soc-stream-filter"],
-  choke: ["input.choke-search", "input.choke-tape-search", "input"],
-  devices: ["input.devices-input.devices-reason-input", "input.devices-input.devices-revert-input"],
+  soc: [],
+  choke: [],
+  devices: [],
   fleet: []
 };
 
@@ -156,8 +159,6 @@ test.describe("keyboard operation", () => {
    * turns green into a hard error the moment focus is moved on open.
    */
   test("the command palette takes focus when it opens", async ({ page }) => {
-    test.fail(true, "known defect: Ctrl+K opens the palette but focus stays on <body>");
-
     await installMockApi(page);
     await page.goto("/");
     await expect(page.locator('[data-panel="left-sidebar"]')).toBeVisible();
@@ -173,9 +174,9 @@ test.describe("keyboard operation", () => {
 
     await page.keyboard.press("Control+k");
     const palette = page.locator('[data-panel="command-palette"]');
-    // Clicked, not tabbed to: focus does not land here on open (see the
-    // expected-to-fail test above). When that is fixed this line becomes
-    // redundant rather than wrong.
+    // Clicked rather than tabbed to. Focus now lands here on open — the test
+    // above is what pins that — so this click is redundant rather than wrong,
+    // and it keeps this test about filtering and selection.
     const input = palette.locator("input");
     await input.click();
     await input.fill("help");

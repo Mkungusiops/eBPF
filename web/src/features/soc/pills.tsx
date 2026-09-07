@@ -2,7 +2,9 @@
 // reachability, and the risk breakdown. Each answers the one question the pill
 // itself can only hint at.
 import { useMemo } from "react";
+import { socIdentityOf } from "./api";
 import { InlineNotice, MetricTile } from "./components";
+import { estateSubjectOf } from "./pdf";
 import { RiskGauge } from "./panels";
 import type { StreamTelemetry } from "./dashboard";
 import type { Severity, SocAlert, SocSnapshot } from "./types";
@@ -40,17 +42,31 @@ export function PillHostContent({
   statuses: Record<string, number | undefined>;
   onRefresh: () => void;
 }) {
+  // The same two facts the host pill carries, in the popover the pill opens.
+  // `whoami.host` is an IDENTITY — for a cross-tenant account the server
+  // answers "all tenants", because the account belongs to no tenant — and the
+  // endpoint statuses listed below it are reads of exactly one customer's data.
+  // Left on its own the row read as the scope of everything under it, so the
+  // tenant those reads actually resolve to is named beside it.
+  const identity = socIdentityOf(whoami);
+  const estate = estateSubjectOf(whoami);
   return (
     <div className="soc-popover-body">
       <div className="soc-popover-kv">
         <div>
           <span>User</span>
-          <strong>{whoami.user}</strong>
+          <strong>{whoami.user}{identity.crossTenant ? " · cross-tenant account" : ""}</strong>
         </div>
         <div>
           <span>Host</span>
           <strong>{whoami.host}</strong>
         </div>
+        {identity.crossTenant ? (
+          <div>
+            <span>Showing</span>
+            <strong>{estate.subject} only</strong>
+          </div>
+        ) : null}
       </div>
       <div className="soc-endpoint-list">
         {Object.entries(statuses).map(([key, status]) => (

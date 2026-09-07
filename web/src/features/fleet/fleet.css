@@ -392,6 +392,21 @@ input:focus-visible {
   padding: 14px;
 }
 
+/*
+ * The rail's "why is this off" note. Warn-toned rather than danger: a read-only
+ * account and an unconfigured fleet are both correct states, not faults.
+ */
+.fleet-rail__blocked {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid rgb(var(--fleet-warn) / 0.35);
+  border-radius: 10px;
+  background: rgb(var(--fleet-warn) / 0.08);
+  color: rgb(var(--fleet-warn));
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .fleet-panel--table,
 .fleet-feed-panel,
 .fleet-alert-panel {

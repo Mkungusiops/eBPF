@@ -530,7 +530,6 @@ test.describe("alert triage queue", () => {
    * a row whose actions only reach one member.
    */
   test("acknowledging a grouped row acknowledges everything it stands for", async ({ page }) => {
-    test.fail(true, "known defect: Ack on a ×2 group row acks only members[0]");
     const queue = await loadQueue(page);
     const credRow = rowFor(queue, CRED);
     await expect(
@@ -570,7 +569,6 @@ test.describe("alert triage queue", () => {
    * from panelInventory and the claim from panelData.
    */
   test("every storage key the queue advertises is one the queue actually writes", async ({ page }) => {
-    test.fail(true, "known defect: soc.savedViews is advertised but never written — no saved-view control exists");
     const advertised = SOC_PANEL_INVENTORY.find((panel) => panel.id === "alert-triage-queue")?.storage ?? [];
     expect(advertised, "the queue advertises no storage at all, so nothing is under test").not.toEqual([]);
 
@@ -616,7 +614,6 @@ test.describe("alert triage queue", () => {
    * already computes when alerts exist outside the range.
    */
   test("an empty estate and an over-filtered queue are different claims", async ({ page }) => {
-    test.fail(true, "known defect: an empty feed blames filters that are not set");
     let feedIsEmpty = false;
     await installMockApi(page, {
       streamFrames: [],

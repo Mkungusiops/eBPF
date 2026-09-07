@@ -5,7 +5,7 @@ import { AssistantPanel } from "../assistant";
 // event replay.
 import { useState } from "react";
 import { EventReplay } from "../../components/EventReplay";
-import { jailSocAlert } from "./api";
+import { READ_ONLY_ACCOUNT_REASON, jailSocAlert, useResponseAuthority } from "./api";
 import { EmptyState, InlineNotice, MetricTile, SeverityBadge, StatusPill } from "./components";
 import { baseName, formatTime } from "./format";
 import { IocList } from "./rows";
@@ -46,6 +46,11 @@ export function DrillPanel({
   onNote: (note: string) => void;
   onActionComplete: () => void;
 }) {
+  // Whether the SERVER will accept a containment from this operator. The one
+  // read, shared with every other surface in this feature — see
+  // useResponseAuthority. null (the single-tenant engine, which never publishes
+  // the field) leaves the form exactly as it was.
+  const { readOnlyAccount, reason: readOnlyReason } = useResponseAuthority();
   const [action, setAction] = useState<"throttle" | "tarpit" | "quarantine" | "sever">("quarantine");
   const [reason, setReason] = useState("");
   const [descendants, setDescendants] = useState(true);
@@ -87,7 +92,7 @@ export function DrillPanel({
   // guard existed precisely to prevent that and the fallback defeated it.
   const hasRealProcessName = Boolean(alert.process) && alert.process !== alert.execId;
   const canTarget = Boolean(alert.execId || alert.pid || hasRealProcessName);
-  const canSubmit = canTarget && reason.trim().length > 2 && !busy;
+  const canSubmit = canTarget && !readOnlyAccount && reason.trim().length > 2 && !busy;
 
   async function submitChokeAction() {
     if (!canSubmit) return;
@@ -148,10 +153,22 @@ export function DrillPanel({
       </section>
       <section className="soc-drill-section">
         <h3>Choke response</h3>
+        {/* Withheld by permission, not by posture: the form stays on the page,
+            visibly inert, and says whose decision it was. Hiding it would read
+            as a console that does not have the feature. */}
+        {readOnlyAccount ? (
+          <InlineNotice tone="warn" title="Read-only account">
+            {readOnlyReason} You can still acknowledge, resolve and take notes on this alert.
+          </InlineNotice>
+        ) : null}
         <div className="soc-choke-action-grid">
           <label>
             <span>Action</span>
-            <select value={action} onChange={(event) => setAction(event.target.value as typeof action)}>
+            <select
+              value={action}
+              disabled={readOnlyAccount}
+              onChange={(event) => setAction(event.target.value as typeof action)}
+            >
               <option value="throttle">throttle</option>
               <option value="tarpit">tarpit</option>
               <option value="quarantine">quarantine</option>
@@ -160,7 +177,11 @@ export function DrillPanel({
           </label>
           <label>
             <span>Revert after</span>
-            <select value={revertAfterSeconds} onChange={(event) => setRevertAfterSeconds(Number(event.target.value))}>
+            <select
+              value={revertAfterSeconds}
+              disabled={readOnlyAccount}
+              onChange={(event) => setRevertAfterSeconds(Number(event.target.value))}
+            >
               <option value={0}>manual</option>
               <option value={300}>5 minutes</option>
               <option value={900}>15 minutes</option>
@@ -168,14 +189,30 @@ export function DrillPanel({
             </select>
           </label>
           <label className="soc-checkbox-row">
-            <input type="checkbox" checked={descendants} onChange={(event) => setDescendants(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={descendants}
+              disabled={readOnlyAccount}
+              onChange={(event) => setDescendants(event.target.checked)}
+            />
             <span>Include descendants</span>
           </label>
           <label className="soc-choke-reason">
             <span>Audit reason</span>
-            <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="required for /api/choke/jail" />
+            <input
+              value={reason}
+              disabled={readOnlyAccount}
+              onChange={(event) => setReason(event.target.value)}
+              placeholder="required for /api/choke/jail"
+            />
           </label>
-          <button type="button" className="soc-danger-button" disabled={!canSubmit} onClick={() => void submitChokeAction()}>
+          <button
+            type="button"
+            className="soc-danger-button"
+            disabled={!canSubmit}
+            title={readOnlyAccount ? READ_ONLY_ACCOUNT_REASON : undefined}
+            onClick={() => void submitChokeAction()}
+          >
             {busy ? "Sending" : `Send ${action}`}
           </button>
         </div>

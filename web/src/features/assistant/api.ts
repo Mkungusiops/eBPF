@@ -76,6 +76,32 @@ export interface AssistantAgent {
 }
 
 /**
+ * What the console actually knows about the assistant — five facts an operator
+ * acts on DIFFERENTLY, and which were collapsed into one sentence.
+ *
+ *  - "ready"       on, with agents published for this surface.
+ *  - "no-agents"   on and reachable, but this surface has none. There is
+ *                  nothing for the platform team to switch on; the surface
+ *                  itself is unwired. Both servers marshal a nil slice as
+ *                  `"agents": null` (no `omitempty`), so this is a real wire
+ *                  shape, not a hypothetical one.
+ *  - "disabled"    the deployment never configured an assistant — ask the
+ *                  platform team to configure one.
+ *  - "unreadable"  a 200 whose body was not the documented shape. The server
+ *                  answered and the console could not understand it: a defect
+ *                  to report, not a setting to change.
+ *  - "unreachable" the capability read itself failed (HTTP error, network,
+ *                  a proxy's own 502). We do not know whether this deployment
+ *                  has an assistant at all, and must not claim it has none.
+ *
+ * The distinction is the whole point: "not configured on this deployment" sends
+ * an operator to their platform team, and telling them that when the console
+ * merely failed to READ the server sends them to the wrong place with a wrong
+ * fact.
+ */
+export type AssistantAvailability = "ready" | "no-agents" | "disabled" | "unreadable" | "unreachable";
+
+/**
  * Capability report. `enabled: false` is a normal, expected state — the
  * assistant is opt-in and most deployments will not configure it. The console
  * renders an explanation, never an error: a disabled optional feature is not a
@@ -87,6 +113,16 @@ export interface AssistantCapability {
   agents: AssistantAgent[];
   /** Why it is unavailable, when it is. Shown verbatim to the operator. */
   reason?: string;
+  /**
+   * Which of the five states above this report is.
+   *
+   * Set by the client and by the hook that normalise the wire body, never by
+   * the server — the server cannot know that its own answer was unreadable or
+   * that it never arrived. Optional because every existing fake in the suite
+   * builds a capability literal without it; a consumer that meets one falls
+   * back to reading `enabled` and `agents`, which is what it did before.
+   */
+  availability?: AssistantAvailability;
 }
 
 /**
@@ -240,7 +276,17 @@ export function createAssistantApi(request: Requester = defaultRequest): Assista
       if (!res.ok) {
         // Treat any failure as "unavailable" rather than throwing. The
         // assistant is an aid; it must never take the drill panel down with it.
-        return { enabled: false, agents: [], reason: `unavailable (HTTP ${res.status})` };
+        //
+        // "unreachable", NOT "disabled": a read that failed says nothing about
+        // whether this deployment configured an assistant, and reporting it as
+        // an unconfigured deployment sends the operator to their platform team
+        // to fix a setting that may already be correct.
+        return {
+          enabled: false,
+          agents: [],
+          availability: "unreachable",
+          reason: `unavailable (HTTP ${res.status})`
+        };
       }
       return (await res.json()) as AssistantCapability;
     },

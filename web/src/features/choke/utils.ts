@@ -215,6 +215,84 @@ export function shortExec(execId?: string): string {
   return execId.length > 12 ? `${execId.slice(0, 12)}...` : execId;
 }
 
+/**
+ * Is this circuit holding something a thaw could release?
+ *
+ * Mirrors releasableState in engine/internal/controlplane/choke.go, which is
+ * what a fleet release actually sweeps: pristine is not containment, and
+ * severed is a process that already took a SIGKILL — calling that "released"
+ * would be a claim about a dead process. Anything else counts, including a rung
+ * this build does not recognise, because an unknown rung is far more likely to
+ * be a new containment tier than a new form of idleness.
+ *
+ * Only the EXPLICIT state is read. A pristine row scoring above the quarantine
+ * threshold is a process nobody has contained yet, and inferring containment
+ * from its score would put its host into a release the operator did not ask for.
+ */
+export function isContainedState(state?: string): boolean {
+  const value = (state || "").trim().toLowerCase();
+  if (value === "") return false;
+  return !["pristine", "watch", "watched", "none", "sever", "severed"].includes(value);
+}
+
+/**
+ * The hosts this console can currently attribute containment to, de-duplicated
+ * and stable-ordered so the sentence an operator reads before a release matches
+ * the list that is sent.
+ *
+ * Empty has two meanings and the caller must handle both: the single-host
+ * engine puts no `agent` on a circuit at all, and a fleet console showing no
+ * contained process has nothing to name. Neither can be scoped, so neither may
+ * be described to the operator as scoped.
+ */
+export function containedHosts(entries: CircuitEntry[]): string[] {
+  const hosts = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.agent || !isContainedState(entry.state)) continue;
+    hosts.add(entry.agent);
+  }
+  return Array.from(hosts).sort();
+}
+
+/**
+ * The radius one approval request actually asks for, in words an approver can
+ * act on.
+ *
+ * The console used to print "the entire tenant" for every `scope: "fleet"`
+ * request, so an approver clicking through a confirm for a one-host containment
+ * was told they were arming the whole estate — and the next one, who really was
+ * arming the whole estate, read the identical sentence. The control plane now
+ * publishes `targets` (the named hosts) and `radius` (the same thing in words),
+ * and this is the single place both are turned into that sentence, so the queue
+ * row and the confirm dialog cannot drift apart.
+ *
+ * The unknown case is kept distinct on purpose. When the server publishes
+ * neither field the radius was never recorded or has aged out of its ledger; it
+ * says so rather than guessing, and so does this — naming the safe assumption
+ * without dressing it up as a fact.
+ */
+export function approvalRadiusLabel(req: {
+  scope?: string;
+  targets?: string[];
+  radius?: string;
+  exec_id?: string;
+  pid?: number;
+}): string {
+  if (req.scope !== "fleet") {
+    return `${shortExec(req.exec_id || "")}${req.pid ? ` (pid ${req.pid})` : ""}`;
+  }
+  const targets = req.targets || [];
+  if (targets.length > 0) {
+    return `${targets.join(", ")} (${targets.length} host${targets.length === 1 ? "" : "s"})`;
+  }
+  const stated = (req.radius || "").trim();
+  // "the whole tenant" is the server's own wording for an untargeted request;
+  // anything else it states (e.g. "no host") is the request's real radius and
+  // is passed through untouched.
+  if (stated) return /tenant/i.test(stated) ? "the entire tenant" : stated;
+  return "a radius this server did not report — assume the entire tenant";
+}
+
 export function basename(path?: string): string {
   if (!path) return "(unknown)";
   const idx = path.lastIndexOf("/");

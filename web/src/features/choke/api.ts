@@ -133,6 +133,24 @@ export interface ApprovalRequest {
   created_at?: string;
   expires_at?: string;
   status: "pending" | "approved" | "denied" | "expired";
+  /**
+   * The BLAST RADIUS of a parked fleet change, as the control plane recorded it
+   * when the request was made (handleApprovals in
+   * engine/internal/controlplane/approvals.go).
+   *
+   * `targets` names the hosts a scoped request will touch and is absent for an
+   * untargeted one; `radius` says the same thing in words ("the whole tenant",
+   * "no host", or the host list). BOTH are absent when the server no longer
+   * knows — the ledger is bounded, and the server deliberately renders nothing
+   * rather than claim a radius it cannot support.
+   *
+   * The console read neither, and told every approver of a `scope: "fleet"`
+   * request that they were approving "the entire tenant" — including for a
+   * one-host containment. Approving is what fires the kill, so the sentence in
+   * the confirm has to be the request's own radius, never the widest one.
+   */
+  targets?: string[];
+  radius?: string;
   approver?: string;
   decided_at?: string;
   decide_note?: string;
@@ -196,8 +214,42 @@ export function forgetCircuits(execIds: string[]): Promise<unknown> {
   return postJSON("/api/choke/forget", { exec_ids: execIds });
 }
 
-export function thawQuarantine(reason: string): Promise<unknown> {
-  return postJSON("/api/choke/thaw", { reason });
+/**
+ * What a release achieved. The control plane counts PROCESSES, not just hosts:
+ * `released` of `contained` across `total` hosts, from each agent's latest
+ * heartbeat snapshot. The single-host engine answers `{thawed, scope}` and none
+ * of these, which is why every field is optional and `chokeApplied` (absence of
+ * `ok` = the engine contract) still decides whether it landed.
+ */
+export interface ThawResult extends ChokeActionResult {
+  scope?: string;
+  released?: number;
+  contained?: number;
+  already_exited?: number;
+  applied?: number;
+  total?: number;
+  routed_to?: string[];
+}
+
+/**
+ * Release containment WITHOUT naming a process — the "Thaw containment" control.
+ *
+ * `targets` is the blast radius, and is not decoration. On the control plane a
+ * body with no targets releases every contained process on EVERY agent in the
+ * tenant (handleChokeThaw → writeFleetRelease), so the console names the hosts
+ * it can attribute containment to and the release is scoped to exactly those.
+ * Omitting it keeps the tenant-wide shape, which is also the only shape the
+ * single-host engine understands — there it releases that host's quarantine
+ * tier. Callers must state in the confirm which of the two they are sending.
+ *
+ * An empty list is never sent: the control plane resolves absent targets as
+ * "the whole tenant", and `[]` would be the widest possible request wearing the
+ * narrowest possible intent.
+ */
+export function thawQuarantine(reason: string, targets?: string[]): Promise<ThawResult> {
+  const body: { reason: string; targets?: string[] } = { reason };
+  if (targets && targets.length > 0) body.targets = targets;
+  return postJSON("/api/choke/thaw", body) as Promise<ThawResult>;
 }
 
 /**

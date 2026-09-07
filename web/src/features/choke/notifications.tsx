@@ -167,6 +167,7 @@ export function NotificationsPanel({
       <input
         className="choke-alert-search"
         type="search"
+        aria-label="Filter alerts by reason or binary"
         value={query}
         placeholder="filter by reason or binary"
         onChange={(event) => setQuery(event.target.value)}

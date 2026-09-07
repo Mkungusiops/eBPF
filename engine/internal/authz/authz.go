@@ -145,11 +145,34 @@ func Authorize(p Principal, tenant string, action Action, aud Auditor) Decision 
 // cross-tenant role — i.e. the tenants safe to list as "yours". Cross-tenant
 // roles are excluded here on purpose: they must name a tenant explicitly and be
 // audited via Authorize, not enumerated implicitly.
+//
+// Only grants whose role can actually authorize a READ count, and that filter
+// is load-bearing rather than tidiness. identity.PrincipalFromClaims stamps the
+// account's `tenant` attribute onto EVERY realm role in the token, Keycloak's
+// default composites included (offline_access, uma_authorization,
+// default-roles-…), which roleCan authorizes for nothing. Those grants are
+// inert everywhere else in this package, so a scope built out of them named
+// tenants the principal could not read one row of.
+//
+// The victim was the cross-tenant operator, whose only capable role IS excluded
+// here: an MSOC admin came back with a one-tenant scope assembled entirely from
+// capability-less grants, so every caller that publishes the scope as reach —
+// whoami's `tenants`, which the console pins itself to — told the provider's
+// estate-wide operator that one customer was the whole book of business. A
+// cross-tenant principal holding no tenant-bound grant now scopes to NOTHING,
+// which is the truth: it reaches a tenant by naming it, one audited read at a
+// time. A cross-tenant operator who ALSO holds a real tenant-bound grant keeps
+// that one — it is a grant, not a fabrication.
+//
+// This states REACH. It is NOT the default for a request that named no tenant:
+// read paths that need such a default call DefaultTenant. Routing them through
+// here instead answered 400 to every tenant-less read, and since the console
+// names a tenant on no request it makes, that blanked the provider's dashboard.
 func TenantScope(p Principal) []string {
 	seen := make(map[string]struct{})
 	var out []string
 	for _, g := range p.Grants {
-		if isCrossTenant(g.Role) || g.TenantID == "" {
+		if isCrossTenant(g.Role) || g.TenantID == "" || !roleCan(g.Role, ActionRead) {
 			continue
 		}
 		if _, dup := seen[g.TenantID]; dup {
@@ -161,6 +184,34 @@ func TenantScope(p Principal) []string {
 	return out
 }
 
+// DefaultTenant is the tenant a request that named none resolves to for this
+// principal: the first tenant stamped on a non-cross-tenant grant, which for a
+// Keycloak-issued token is the account's own `tenant` attribute (identity.
+// PrincipalFromClaims stamps it onto every realm role). Empty when the
+// principal carries no tenant at all — the break-glass admin bearer token — and
+// the caller must then refuse rather than pick one.
+//
+// Deliberately NOT TenantScope[0], and that difference is the whole point of
+// the function. TenantScope answers "which tenants are yours", and for a
+// cross-tenant operator the honest answer is none; this answers "which tenant
+// is this session already looking at", which for the same operator is a real
+// tenant. Collapsing the two refuses every read the console makes, because the
+// console names a tenant nowhere.
+//
+// It confers nothing. Whatever it returns is still put through Authorize, and
+// for a cross-tenant principal that read is recorded as a cross-tenant access
+// exactly as a named one is. whoami publishes it as `viewing_tenant` so the
+// console can say WHICH customer is on screen instead of presenting one
+// customer's estate as the whole of it.
+func DefaultTenant(p Principal) string {
+	for _, g := range p.Grants {
+		if !isCrossTenant(g.Role) && g.TenantID != "" {
+			return g.TenantID
+		}
+	}
+	return ""
+}
+
 // HasCrossTenant reports whether the principal holds any cross-tenant role.
 func HasCrossTenant(p Principal) bool {
 	for _, g := range p.Grants {
@@ -169,6 +220,41 @@ func HasCrossTenant(p Principal) bool {
 		}
 	}
 	return false
+}
+
+// rolePrecedence orders the recognised roles from most to least authority,
+// across the two axes that actually distinguish them: reach (cross-tenant
+// before tenant-bound) and capability (able to respond before read-only).
+var rolePrecedence = []Role{RoleMSOCAdmin, RoleCrossTenantResponder, RoleTenantAnalyst, RoleReadOnly}
+
+// PrimaryRole is the role a principal should be PUBLISHED under: the strongest
+// role it actually holds. Empty when it holds none this platform recognises,
+// which is the honest answer for a principal whose grants authorize nothing —
+// naming it after a real role would be a new lie in place of the old one.
+//
+// The old lie: whoami derived its published role name from HasCrossTenant
+// alone, one bit standing in for a four-valued fact. A read-only operator was
+// therefore published as "tenant-analyst" — the name of the role directly above
+// them, the one that CAN respond — and a cross-tenant RESPONDER was published as
+// "msoc-admin". The console renders that string verbatim on the account
+// surface, so the one place it states an operator's authority stated somebody
+// else's, and a deployment that separates administration from response had no
+// way to tell from the screen (or a screenshot of it) which was signed in.
+//
+// Precedence, not first-match: the token lists realm roles in no meaningful
+// order, so an account holding both read-only and tenant-analyst must be named
+// by what it can do, not by which grant Keycloak happened to emit first.
+func PrimaryRole(p Principal) Role {
+	held := make(map[Role]bool, len(p.Grants))
+	for _, g := range p.Grants {
+		held[g.Role] = true
+	}
+	for _, r := range rolePrecedence {
+		if held[r] {
+			return r
+		}
+	}
+	return ""
 }
 
 // IsCrossTenant reports whether the role grants reach beyond one tenant.

@@ -15,6 +15,7 @@
  */
 import { useState } from "react";
 import { InlineNotice, cx } from "./components";
+import { AUTHORITY_PENDING_REASON, READ_ONLY_ACCOUNT_REASON, responseAuthorityNow, useResponseAuthority } from "./api";
 import { postJSON } from "../../lib/api";
 
 export interface Thresholds {
@@ -43,6 +44,37 @@ export function validateLadder(t: Thresholds): string {
   return "";
 }
 
+/**
+ * WHETHER A WRITE MAY BE SENT AT ALL, read at the instant of the request rather
+ * than off the render that drew the button.
+ *
+ * api.ts has this rule already, but only inside `jailSocAlert` and
+ * `applyChokeAction` — the two containment calls that module makes itself.
+ * Every other write in this feature (the score ladder, the enforcement mode,
+ * the kill-switch, the suppression list) goes straight from a component to
+ * `postJSON`, so a button's `disabled` was the ONLY thing between a read-only
+ * account and POST /api/choke/kill-switch. That is one forgotten flag away from
+ * armed, and it WAS armed: while the authority store sits at "loading" every
+ * one of those surfaces read `readOnlyAccount === false` and enabled itself —
+ * not merely for a first paint, but for the whole of an outage in which
+ * /api/whoami never answers, which this control plane has had.
+ *
+ * Reading the store NOW rather than the value captured when the control
+ * rendered also closes the confirm-panel window: a panel opened before whoami
+ * answered carries a stale "permitted", and the operator presses it after the
+ * refusal has landed.
+ *
+ * It lives in this file rather than in api.ts only because api.ts was not this
+ * change's to edit. It belongs beside `responseWithheldReason` there, which is
+ * the identical rule for the two calls api.ts owns.
+ */
+export function responseWithheldNow(): string | null {
+  const authority = responseAuthorityNow();
+  if (authority === "loading") return AUTHORITY_PENDING_REASON;
+  if (authority === false) return READ_ONLY_ACCOUNT_REASON;
+  return null;
+}
+
 export function ResponseControls({
   thresholds,
   mode,
@@ -54,6 +86,31 @@ export function ResponseControls({
   killSwitched: boolean | null | undefined;
   onChanged: () => void;
 }) {
+  // Whether the SERVER will accept a write from this operator, read from the
+  // one shared predicate every containment surface in this feature consumes.
+  //
+  // This section was the largest hole in the permission gate: the kill-switch,
+  // the enforcement-mode toggle and the score ladder are the three widest
+  // blast radii on the platform, and all three were armed for an account the
+  // control plane refuses. A read-only operator pressed "Engage the
+  // kill-switch", got a 403 they could not see, and had no way to tell a
+  // refused write from a platform that had stopped enforcing.
+  //
+  // null — the single-tenant engine, which has no notion of a principal who
+  // may not respond and never publishes the field — leaves every control
+  // exactly as it was.
+  //
+  // `withheld` and not `readOnlyAccount` is what every `disabled` below reads.
+  // The two differ in exactly the state that armed this panel: before whoami
+  // answers, `readOnlyAccount` is FALSE (the server has not said no — it has
+  // said nothing), so keying the controls off it painted a live kill-switch for
+  // an account that may not press it. `withheld` covers that window too.
+  //
+  // `readOnlyAccount` is still read, but only to choose WHICH sentence to
+  // print: "your account is read-only" is a claim about the operator, and
+  // making it while the answer is in flight is a different lie told to a
+  // responder.
+  const { readOnlyAccount, pending, withheld, withheldReason, reason: readOnlyReason } = useResponseAuthority();
   const [draft, setDraft] = useState<Thresholds | null>(null);
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState("");
@@ -66,6 +123,16 @@ export function ResponseControls({
     !!draft && !!thresholds && (Object.keys(thresholds) as (keyof Thresholds)[]).some((k) => draft[k] !== thresholds[k]);
 
   async function run(path: string, body: Record<string, unknown>, label: string) {
+    // The disabled buttons are the affordance; THIS is the guard, and it asks
+    // the authority store at the moment of the request rather than trusting the
+    // render that drew the control. No path from this panel may reach
+    // POST /api/choke/* while the answer is in flight or after the server has
+    // refused — including a confirm panel opened before whoami landed.
+    const denied = responseWithheldNow();
+    if (denied) {
+      setResult({ ok: false, message: denied });
+      return;
+    }
     setBusy(label);
     setResult(null);
     try {
@@ -86,6 +153,27 @@ export function ResponseControls({
     <>
       {result ? <div className={cx("soc-sensor-result", result.ok ? "ok" : "bad")}>{result.message}</div> : null}
 
+      {/* Stated once, at the top, in the language of PERMISSION — not
+          "unavailable" and not "not configured", either of which sends an
+          operator to debug an estate that is healthy. The controls below stay
+          on the page, visibly inert: hiding them would read as a console that
+          does not have a kill-switch at all. */}
+      {readOnlyAccount ? (
+        <InlineNotice tone="warn" title="Read-only account">
+          {readOnlyReason} The thresholds, the enforcement mode and the kill-switch below are shown as readings only.
+        </InlineNotice>
+      ) : pending ? (
+        // Deliberately NOT the read-only sentence. Until whoami answers, this
+        // console does not know what the account may do, and telling a
+        // responder they are read-only — for the first second of a session, or
+        // for the length of a whoami outage — is a false statement of its own.
+        // The controls are inert either way; only the reason differs.
+        <InlineNotice tone="warn" title="Checking what this account may do">
+          {AUTHORITY_PENDING_REASON} The thresholds, the enforcement mode and the kill-switch below stay inert until
+          it does.
+        </InlineNotice>
+      ) : null}
+
       {/* THE LADDER */}
       <div className="soc-settings-form">
         <div className="soc-settings-ladder">
@@ -95,6 +183,8 @@ export function ResponseControls({
               <input
                 type="number"
                 min={1}
+                disabled={withheld}
+                title={withheldReason ?? undefined}
                 value={editing ? editing[k] : ""}
                 onChange={(e) =>
                   setDraft({ ...(editing as Thresholds), [k]: Number(e.target.value) } as Thresholds)
@@ -114,13 +204,20 @@ export function ResponseControls({
         )}
         <label>
           <span>Reason — recorded in the audit chain</span>
-          <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="CAB-1234: tuning for the billing estate" />
+          <input
+            value={reason}
+            disabled={withheld}
+            title={withheldReason ?? undefined}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="CAB-1234: tuning for the billing estate"
+          />
         </label>
         <div className="soc-settings-actions">
           <button
             type="button"
             className="soc-action-button ok"
-            disabled={!ladderChanged || !!ladderError || reason.trim().length < 3 || busy !== ""}
+            disabled={withheld || !ladderChanged || !!ladderError || reason.trim().length < 3 || busy !== ""}
+            title={withheldReason ?? undefined}
             onClick={() => void run("/api/choke/thresholds", { ...(editing as Thresholds) }, "New thresholds")}
           >
             {busy === "New thresholds" ? "Applying…" : "Apply thresholds"}
@@ -140,7 +237,8 @@ export function ResponseControls({
         <button
           type="button"
           className="soc-ghost-button"
-          disabled={busy !== "" || (mode !== "enforcing" && mode !== "detect-only")}
+          disabled={withheld || busy !== "" || (mode !== "enforcing" && mode !== "detect-only")}
+          title={withheldReason ?? undefined}
           onClick={() => setConfirming(mode === "enforcing" ? "disarm" : "arm")}
         >
           {mode === "enforcing" ? "Return to detect-only" : "Arm automatic containment"}
@@ -153,7 +251,9 @@ export function ResponseControls({
           </strong>
         </span>
         {killSwitched === true || killSwitched === false ? (
-          <button type="button" className="soc-ghost-button" disabled={busy !== ""}
+          <button type="button" className="soc-ghost-button"
+            disabled={withheld || busy !== ""}
+            title={withheldReason ?? undefined}
             onClick={() => setConfirming(killSwitched ? "release" : "engage")}>
             {killSwitched ? "Release the kill-switch" : "Engage the kill-switch"}
           </button>
@@ -171,7 +271,8 @@ export function ResponseControls({
           </label>
           <div className="soc-settings-actions">
             <button type="button" className="soc-action-button ok"
-              disabled={busy !== "" || reason.trim().length < 3}
+              disabled={withheld || busy !== "" || reason.trim().length < 3}
+              title={withheldReason ?? undefined}
               onClick={() => void run(CONFIRM[confirming].path, CONFIRM[confirming].body, CONFIRM[confirming].label)}>
               {busy ? "Working…" : CONFIRM[confirming].label}
             </button>

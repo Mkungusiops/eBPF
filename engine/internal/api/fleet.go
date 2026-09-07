@@ -247,11 +247,24 @@ type hostResult struct {
 
 // fanout calls path on every peer in parallel and returns a slice of
 // hostResult preserving hosts-file order. Method "" means GET.
+//
+// This is the READ path. Reads deliberately keep reaching every peer: asking
+// all hosts what their state is answers a question, it does not change one, so
+// there is no blast radius to narrow. WRITES go through fanoutTo with the peer
+// subset resolveTargets worked out from the request's "targets" key — that is
+// where the split between "who am I asking" and "who am I changing" is made.
 func (f *Fleet) fanout(method, path string, body []byte) ([]hostResult, error) {
 	peers, err := f.Peers()
 	if err != nil {
 		return nil, err
 	}
+	return f.fanoutTo(peers, method, path, body), nil
+}
+
+// fanoutTo calls path on exactly the peers it is handed, in parallel, keeping
+// their order in the returned slice. Callers pass hosts-file order, so the
+// per-host list the console renders lines up with the table it was chosen from.
+func (f *Fleet) fanoutTo(peers []FleetPeer, method, path string, body []byte) []hostResult {
 	if method == "" {
 		method = http.MethodGet
 	}
@@ -281,7 +294,7 @@ func (f *Fleet) fanout(method, path string, body []byte) ([]hostResult, error) {
 		}(i, p)
 	}
 	wg.Wait()
-	return results, nil
+	return results
 }
 
 func truncate(s string, n int) string {
@@ -289,6 +302,145 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ─────────── write targeting ───────────────────────────────────────────
+
+// targetSelection is the outcome of reading a write's "targets" key: the peers
+// the write may touch, and the body to forward to each of them.
+type targetSelection struct {
+	Peers []FleetPeer
+	// Forward is the request body with "targets" removed. That key addresses
+	// the fan-out itself, not the peer's handler, so it must not travel onward.
+	Forward []byte
+}
+
+// targetError refuses a write whole, before any peer is called. Unknown holds
+// the names that did not resolve so the console can say which ones it was.
+type targetError struct {
+	Message string
+	Unknown []string
+}
+
+// resolveTargets decides which peers a fleet WRITE is allowed to reach.
+//
+// The console's host selection used to be inert: every write called Peers() and
+// forwarded the body verbatim, so ticking one host, reading "Writes target 1
+// selected host" and pressing Containment contained the entire fleet. The rules
+// below are exactly what the rail claims on screen:
+//
+//	a JSON object with no "targets" key -> every peer ("All hosts")
+//	"targets": null -> every peer, said out loud; what the console sends for
+//	                   "All hosts"
+//	["a","b"]       -> those peers and no others
+//	[]              -> 400. "I have not picked a host yet" must never widen
+//	                   into an estate-wide write by silent degradation.
+//	an unknown name -> 400 naming it, with nothing dispatched: a write whose
+//	                   target set was misunderstood must not half-apply and
+//	                   leave the operator believing the fleet is uniform.
+//
+// Everything that is not a JSON object is refused 400 as well, and that is the
+// whole of that class: an empty body, a whitespace-only body, a literal `null`,
+// a JSON array, a string, a number, a bool, a truncated object. Only a JSON
+// object can carry a "targets" key at all, so anything else is a write whose
+// blast radius cannot be checked — and the previous "unset means everybody"
+// default silently turned each of those into the estate-wide write this
+// function exists to prevent. `null` was the sharpest edge: it decodes into a
+// map without error, so it read as "no targets key present" and fanned out,
+// while on the peer side it decodes into the handler's body struct as all zero
+// values — POST /api/fleet/kill-switch with `null` disengaged enforcement on
+// every host in the file, with an empty audit reason, from a body that says
+// nothing. A body that names neither hosts nor an intent is not an estate-wide
+// instruction; it is not an instruction.
+//
+// Validation runs before any peer call because there is no unwinding a preset
+// that already landed on three boxes.
+func resolveTargets(peers []FleetPeer, body []byte) (targetSelection, *targetError) {
+	if len(bytes.TrimSpace(body)) == 0 {
+		return targetSelection{}, &targetError{
+			Message: "empty request body: a fleet write must be a JSON object; " +
+				`send "targets":null to write to every host`,
+		}
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(body, &fields); err != nil {
+		// A body that is not a JSON object cannot be checked for a target set,
+		// and forwarding it to every peer is the estate-wide write this
+		// function exists to prevent. Refuse it here instead.
+		//
+		// This is a DELIBERATE behaviour change beyond the targeting defect,
+		// and it is documented as the 400 on these paths in
+		// docs/api/openapi.yaml. Such a body used to reach every peer and come
+		// back as an all-failed per-host list inside a 200 envelope. That
+		// envelope cannot tell an operator whether the write was scoped the way
+		// they intended — it only says everybody said no — so an unreadable
+		// body is now rejected whole, before any peer is called.
+		return targetSelection{}, &targetError{Message: "invalid JSON body: " + err.Error()}
+	}
+	if fields == nil {
+		// A literal `null` unmarshals into a map with err == nil and leaves the
+		// map NIL, so every key lookup below would report "absent" and the write
+		// would fan out to the whole hosts file. It is JSON, but it is not an
+		// object, and it is refused on exactly the same ground as an array.
+		return targetSelection{}, &targetError{
+			Message: `a fleet write body must be a JSON object; a literal "null" ` +
+				`names no hosts and asks for nothing`,
+		}
+	}
+	raw, present := fields["targets"]
+	if !present {
+		return targetSelection{Peers: peers, Forward: body}, nil
+	}
+	delete(fields, "targets")
+	forward, err := json.Marshal(fields)
+	if err != nil {
+		return targetSelection{}, &targetError{Message: "invalid JSON body: " + err.Error()}
+	}
+
+	var names []string
+	if err := json.Unmarshal(raw, &names); err != nil {
+		return targetSelection{}, &targetError{Message: `"targets" must be null or an array of host names`}
+	}
+	if names == nil {
+		// Explicit null is the estate-wide write, same as omitting the key.
+		return targetSelection{Peers: peers, Forward: forward}, nil
+	}
+	if len(names) == 0 {
+		return targetSelection{}, &targetError{
+			Message: `"targets" was an empty list: name the hosts to write to, or send null to write to every host`,
+		}
+	}
+
+	known := make(map[string]bool, len(peers))
+	for _, p := range peers {
+		known[p.Name] = true
+	}
+	wanted := make(map[string]bool, len(names))
+	var unknown []string
+	for _, n := range names {
+		name := strings.TrimSpace(n)
+		if !known[name] {
+			unknown = append(unknown, n)
+			continue
+		}
+		wanted[name] = true
+	}
+	if len(unknown) > 0 {
+		return targetSelection{}, &targetError{
+			Message: "unknown fleet host(s): " + strings.Join(unknown, ", "),
+			Unknown: unknown,
+		}
+	}
+
+	// Hosts-file order, deduplicated: the response's per-host list is what the
+	// console reconciles against its own table.
+	selected := make([]FleetPeer, 0, len(wanted))
+	for _, p := range peers {
+		if wanted[p.Name] {
+			selected = append(selected, p)
+		}
+	}
+	return targetSelection{Peers: selected, Forward: forward}, nil
 }
 
 // ─────────── HTTP handlers ─────────────────────────────────────────────
@@ -339,6 +491,34 @@ func (s *Server) fanoutJSON(w http.ResponseWriter, method, path string, body []b
 	writeJSON(w, map[string]interface{}{"hosts": results})
 }
 
+// fanoutWriteJSON is the shared body for fleet WRITES. It differs from
+// fanoutJSON in one way that matters: the peer set is whatever the request's
+// "targets" key resolved to, not the whole hosts file. Everything is validated
+// before the first peer call, so a rejected target set applies nowhere.
+func (s *Server) fanoutWriteJSON(w http.ResponseWriter, method, path string, body []byte) {
+	fl := s.requireFleet(w)
+	if fl == nil {
+		return
+	}
+	peers, err := fl.Peers()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	sel, terr := resolveTargets(peers, body)
+	if terr != nil {
+		out := map[string]interface{}{"error": terr.Message}
+		if len(terr.Unknown) > 0 {
+			out["unknown"] = terr.Unknown
+		}
+		writeJSONStatus(w, http.StatusBadRequest, out)
+		return
+	}
+	writeJSON(w, map[string]interface{}{
+		"hosts": fl.fanoutTo(sel.Peers, method, path, sel.Forward),
+	})
+}
+
 func (s *Server) handleFleetState(w http.ResponseWriter, r *http.Request) {
 	s.fanoutJSON(w, http.MethodGet, "/api/choke/state", nil)
 }
@@ -365,6 +545,18 @@ func readBody(r *http.Request) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(r.Body, 64*1024))
 }
 
+// handleFleetPreset applies a choke preset across the targeted peers.
+//
+// Body: a JSON object — the peer's own payload, plus an optional "targets" list
+// naming the hosts the write may reach. Absent or null "targets" means every
+// peer in the hosts file (the estate-wide write); a named list means exactly
+// those peers and no others. An empty list, a name that is not in the hosts
+// file, or a body that is not a JSON object — an empty or whitespace-only body,
+// a literal null, an array, a string, a number, a truncated object — is refused
+// 400 with {error, unknown[]} and nothing dispatched, because there is no
+// unwinding a write that already landed. The "targets" key addresses this
+// fan-out, not the peer, so it is stripped before the request is forwarded.
+// See resolveTargets.
 func (s *Server) handleFleetPreset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -375,9 +567,21 @@ func (s *Server) handleFleetPreset(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.fanoutJSON(w, http.MethodPost, "/api/choke/preset", body)
+	s.fanoutWriteJSON(w, http.MethodPost, "/api/choke/preset", body)
 }
 
+// handleFleetThresholds sets the choke ladder across the targeted peers.
+//
+// Body: a JSON object — the peer's own payload, plus an optional "targets" list
+// naming the hosts the write may reach. Absent or null "targets" means every
+// peer in the hosts file (the estate-wide write); a named list means exactly
+// those peers and no others. An empty list, a name that is not in the hosts
+// file, or a body that is not a JSON object — an empty or whitespace-only body,
+// a literal null, an array, a string, a number, a truncated object — is refused
+// 400 with {error, unknown[]} and nothing dispatched, because there is no
+// unwinding a write that already landed. The "targets" key addresses this
+// fan-out, not the peer, so it is stripped before the request is forwarded.
+// See resolveTargets.
 func (s *Server) handleFleetThresholds(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPut {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -388,9 +592,24 @@ func (s *Server) handleFleetThresholds(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.fanoutJSON(w, http.MethodPut, "/api/choke/thresholds", body)
+	s.fanoutWriteJSON(w, http.MethodPut, "/api/choke/thresholds", body)
 }
 
+// handleFleetKillSwitch halts (or resumes) enforcement across the targeted
+// peers — the emergency stop. Targeting matters here as much as it does for
+// containment: a halt on two named hosts and a halt on the estate are
+// different acts, and the console distinguishes them on screen.
+//
+// Body: a JSON object — the peer's own payload, plus an optional "targets" list
+// naming the hosts the write may reach. Absent or null "targets" means every
+// peer in the hosts file (the estate-wide write); a named list means exactly
+// those peers and no others. An empty list, a name that is not in the hosts
+// file, or a body that is not a JSON object — an empty or whitespace-only body,
+// a literal null, an array, a string, a number, a truncated object — is refused
+// 400 with {error, unknown[]} and nothing dispatched, because there is no
+// unwinding a write that already landed. The "targets" key addresses this
+// fan-out, not the peer, so it is stripped before the request is forwarded.
+// See resolveTargets.
 func (s *Server) handleFleetKillSwitch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -401,9 +620,21 @@ func (s *Server) handleFleetKillSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.fanoutJSON(w, http.MethodPost, "/api/choke/kill-switch", body)
+	s.fanoutWriteJSON(w, http.MethodPost, "/api/choke/kill-switch", body)
 }
 
+// handleFleetThaw releases a choke across the targeted peers.
+//
+// Body: a JSON object — the peer's own payload, plus an optional "targets" list
+// naming the hosts the write may reach. Absent or null "targets" means every
+// peer in the hosts file (the estate-wide write); a named list means exactly
+// those peers and no others. An empty list, a name that is not in the hosts
+// file, or a body that is not a JSON object — an empty or whitespace-only body,
+// a literal null, an array, a string, a number, a truncated object — is refused
+// 400 with {error, unknown[]} and nothing dispatched, because there is no
+// unwinding a write that already landed. The "targets" key addresses this
+// fan-out, not the peer, so it is stripped before the request is forwarded.
+// See resolveTargets.
 func (s *Server) handleFleetThaw(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -414,7 +645,7 @@ func (s *Server) handleFleetThaw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.fanoutJSON(w, http.MethodPost, "/api/choke/thaw", body)
+	s.fanoutWriteJSON(w, http.MethodPost, "/api/choke/thaw", body)
 }
 
 // handleFleetProbe answers "are these peers up?" on behalf of the browser.
@@ -452,10 +683,21 @@ func (s *Server) handleFleetDevices(w http.ResponseWriter, r *http.Request) {
 	s.fanoutJSON(w, http.MethodGet, "/api/choke/devices", nil)
 }
 
-// handleFleetDeviceJail chokes a device by MAC across every gateway. A MAC
-// only enforces on the gateway(s) actually in its traffic path; the others
+// handleFleetDeviceJail chokes a device by MAC across the targeted gateways. A
+// MAC only enforces on the gateway(s) actually in its traffic path; the others
 // record the decision and report no-op, which the per-host envelope makes
 // visible.
+//
+// Body: a JSON object — the peer's own payload, plus an optional "targets" list
+// naming the hosts the write may reach. Absent or null "targets" means every
+// peer in the hosts file (the estate-wide write); a named list means exactly
+// those peers and no others. An empty list, a name that is not in the hosts
+// file, or a body that is not a JSON object — an empty or whitespace-only body,
+// a literal null, an array, a string, a number, a truncated object — is refused
+// 400 with {error, unknown[]} and nothing dispatched, because there is no
+// unwinding a write that already landed. The "targets" key addresses this
+// fan-out, not the peer, so it is stripped before the request is forwarded.
+// See resolveTargets.
 func (s *Server) handleFleetDeviceJail(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -466,5 +708,5 @@ func (s *Server) handleFleetDeviceJail(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	s.fanoutJSON(w, http.MethodPost, "/api/choke/device-jail", body)
+	s.fanoutWriteJSON(w, http.MethodPost, "/api/choke/device-jail", body)
 }

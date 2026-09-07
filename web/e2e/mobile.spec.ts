@@ -55,17 +55,12 @@ test.describe("mobile responsiveness", () => {
 
   for (const [name, path] of routes) {
     test(`${name} fits the phone viewport without horizontal overflow`, async ({ page }) => {
-      // KNOWN DEFECT (found by this suite, 2026-08-27): the Choke Gateway
-      // topbar does not wrap. `.choke-topbar-primary` lays the search box and
-      // the four status pills (`.choke-status-cluster`) out on one unwrapped
-      // row, so the document is 1140px wide inside a 390px viewport and the
-      // platform's headline surface scrolls sideways on every phone.
-      //
-      // Marked expected-to-fail rather than deleted or loosened: the assertion
-      // is correct, and `test.fail` turns green into a hard error the moment
-      // the CSS is fixed, so the marker cannot outlive the bug.
-      test.fail(name === "choke", "known defect: .choke-topbar-primary does not wrap at phone widths");
-
+      // FOUND BY THIS SUITE 2026-08-27, FIXED 2026-09-02: the Choke Gateway
+      // topbar did not wrap. `.choke-topbar-primary` and the clusters beside
+      // it laid the search box and the status pills out on one unwrapped row,
+      // so the document measured 1140px inside a 390px viewport and the
+      // platform's headline surface scrolled sideways on every phone. The
+      // assertion below is what holds it.
       await installMockApi(page);
       await page.goto(path);
       // Wait for the route's own content rather than a fixed sleep: a

@@ -194,12 +194,22 @@ export function ThresholdPanel({
   thresholds,
   circuits,
   disabled,
+  disabledReason = "",
   onCommit,
   dataPanel,
 }: {
   thresholds: Thresholds;
   circuits: CircuitEntry[];
   disabled: boolean;
+  /**
+   * Why the ladder cannot be COMMITTED, when the reason is the operator —
+   * refused by the server, or not yet answered for. Empty for every other kind
+   * of disable: those already have their own banner, and repeating them here
+   * would name a second cause for one effect.
+   *
+   * It says nothing about the sliders above, which stay live for everyone.
+   */
+  disabledReason?: string;
   onCommit: (thresholds: Thresholds) => Promise<void>;
   dataPanel: string;
 }) {
@@ -228,6 +238,15 @@ export function ThresholdPanel({
 
   return (
     <Panel dataPanel={dataPanel} title="Thresholds" actions={<span className={thresholdsAscending(draft) ? "choke-ok" : "choke-danger"}>{thresholdsAscending(draft) ? "ascending" : "invalid"}</span>}>
+      {/* THE SLIDERS ARE NOT THE WRITE. Moving one re-buckets the tracked
+          snapshot in this browser and changes the blast-radius table below;
+          nothing leaves the page until "Commit thresholds" is pressed, and that
+          button is what the permission gate belongs on.
+          They were disabled for a read-only account, which took the SIMULATION
+          away from the one role that exists to read the estate: an analyst who
+          may not move the ladder still has to be able to answer "how many
+          processes would a sever-at-70 catch?" before asking someone who can.
+          So: gate the write, never the thinking. */}
       <div className="choke-threshold-track">
         {(["throttle_at", "tarpit_at", "quarantine_at", "sever_at"] as Array<keyof Thresholds>).map((key) => (
           <input
@@ -237,7 +256,6 @@ export function ThresholdPanel({
             max={120}
             value={draft[key]}
             onChange={(event) => patch(key, Number(event.target.value))}
-            disabled={disabled}
             aria-label={key}
           />
         ))}
@@ -246,7 +264,7 @@ export function ThresholdPanel({
         {(["throttle_at", "tarpit_at", "quarantine_at", "sever_at"] as Array<keyof Thresholds>).map((key) => (
           <label key={key}>
             <span>{key.replace("_at", "")}</span>
-            <input type="number" min={1} value={draft[key]} onChange={(event) => patch(key, Number(event.target.value))} disabled={disabled} />
+            <input type="number" min={1} value={draft[key]} onChange={(event) => patch(key, Number(event.target.value))} />
           </label>
         ))}
       </div>
@@ -259,11 +277,13 @@ export function ThresholdPanel({
           </div>
         ))}
       </div>
+      {disabledReason ? <p className="choke-permission-note">{disabledReason}</p> : null}
       <div className="choke-panel-footer">
         <button className="choke-inline-button" type="button" onClick={() => setDraft(thresholds)}>Cancel</button>
         <button
           className="choke-action-button warn"
           type="button"
+          title={disabledReason || undefined}
           disabled={disabled || saving || !thresholdsAscending(draft)}
           onClick={async () => {
             setSaving(true);

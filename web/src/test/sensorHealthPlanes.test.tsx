@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { recordResponseAuthority } from "../features/soc/api";
 import { SensorHealthBody } from "../features/soc/SensorHealthBody";
 
 /**
@@ -18,6 +19,17 @@ import { SensorHealthBody } from "../features/soc/SensorHealthBody";
  * curl and the screen was never opened; these are the tests that would have
  * caught it.
  */
+
+// This panel's write controls are withheld until the server has said what the
+// account may do, and the shared authority store starts at "loading" — so a
+// test that renders and immediately presses a button is testing the gate, not
+// the payload. These tests are about the BODY the server decodes, so they put
+// the session where a real one is: whoami answered. `null` is the answer the
+// single-tenant engine gives (it publishes no can_respond), which is the
+// deployment every payload below was captured from.
+beforeEach(() => {
+  act(() => recordResponseAuthority(null));
+});
 
 // Captured verbatim from https://engine.adanianlabs.io on 2026-08-22. Using the
 // real payload rather than a fixture is the point: a hand-built one would have

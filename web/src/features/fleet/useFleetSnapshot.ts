@@ -30,6 +30,21 @@ export const POLL_MS = 5000;
 
 export interface FleetSnapshotFeed {
   who: string;
+  /**
+   * Whether this account may write, straight from whoami — `null` when the
+   * server did not say. Kept null on a whoami failure too: an unreachable
+   * identity endpoint is an outage, and revoking the operator's controls over
+   * an outage would be a permission claim the console cannot support.
+   */
+  canRespond: boolean | null;
+  /**
+   * False until whoami has answered one way or the other (including by
+   * failing). While it is false the answer is IN FLIGHT and `canRespond`'s
+   * null means "not asked yet", not "the server did not say" — the write rail
+   * must stay closed, or a read-only account gets an armed rail on first paint
+   * whenever /api/whoami is slower than the fleet snapshot.
+   */
+  identityResolved: boolean;
   snapshot: FleetStateSnapshot;
   pollStatus: PollStatus;
   disabledMessage: string;
@@ -63,6 +78,10 @@ export function useFleetSnapshot(
   // dead component — the missing-AbortSignal bug named in the Tier 1A plan.
   const abortRef = useRef<AbortController | null>(null);
   const [who, setWho] = useState("...");
+  const [canRespond, setCanRespond] = useState<boolean | null>(null);
+  // Three states, not two: loading, answered-without-the-field (permitted), and
+  // an explicit false. Only the last two may arm or disarm anything.
+  const [identityResolved, setIdentityResolved] = useState(false);
   const [snapshot, setSnapshot] = useState<FleetStateSnapshot>(() => emptySnapshot());
   const [pollStatus, setPollStatus] = useState<PollStatus>("idle");
   const [disabledMessage, setDisabledMessage] = useState("");
@@ -71,8 +90,15 @@ export function useFleetSnapshot(
 
   useEffect(() => {
     api.fetchWhoami()
-      .then((identity) => setWho(identity.user ?? "operator"))
-      .catch(() => setWho("operator"));
+      .then((identity) => {
+        setWho(identity.user ?? "operator");
+        setCanRespond(identity.canRespond ?? null);
+      })
+      .catch(() => setWho("operator"))
+      // Resolved on failure too: an unreachable identity endpoint is an outage,
+      // and holding the rail closed forever over one would take the emergency
+      // controls away from an operator the server never refused.
+      .finally(() => setIdentityResolved(true));
   }, [api]);
 
   const refresh = useCallback(async () => {
@@ -140,6 +166,8 @@ export function useFleetSnapshot(
 
   return {
     who,
+    canRespond,
+    identityResolved,
     snapshot,
     pollStatus,
     disabledMessage,

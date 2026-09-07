@@ -23,7 +23,8 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, CheckCircle2, HelpCircle, ShieldOff } from "lucide-react";
 import { EmptyState, cx } from "./components";
-import { socApiGet } from "./api";
+import { socApiGet, useResponseAuthority } from "./api";
+import { responseWithheldNow } from "./SettingsResponse";
 import { postJSON } from "../../lib/api";
 import type { SocPolicyStat } from "./types";
 
@@ -284,12 +285,37 @@ function Finding({
   item,
   onOpenDetections,
   onRun,
-  busy
+  busy,
+  withheld,
+  withheldReason,
+  withheldKind
 }: {
   item: SensorIssue;
   onOpenDetections?: () => void;
   onRun: (code: string) => void;
   busy: string;
+  /**
+   * Passed down rather than re-read here, so the row and every finding inside
+   * it answer "may this operator respond?" from the same value in the same
+   * render. The answer itself comes from the one shared predicate — see
+   * useResponseAuthority in api.ts.
+   *
+   * `withheld`, not `readOnlyAccount`: the second is false while whoami is
+   * still in flight, which is how a kill-switch RELEASE — offered from this
+   * very list — was drawn live for an account the server refuses, for as long
+   * as the identity endpoint took to answer, or failed to.
+   */
+  withheld: boolean;
+  /** The sentence for whichever refusal it is; null when nothing is withheld. */
+  withheldReason: string | null;
+  /**
+   * WHICH of the two refusals it is, passed rather than inferred from the
+   * sentence. The two are not interchangeable to the operator: "permission" is
+   * a statement about their account, "pending" is a statement about what this
+   * console has been told so far, and deriving one by string-matching the other
+   * is how the wrong one gets printed after a copy edit.
+   */
+  withheldKind: "permission" | "pending" | null;
 }) {
   const remedy = REMEDY[item.code];
   const action = ACTION[item.code];
@@ -305,14 +331,24 @@ function Finding({
           </button>
         ) : null}
         {action ? (
+          // Kept on the page and disabled rather than removed: this is the
+          // release of a kill-switch, and a control that simply vanishes reads
+          // as a deployment without one. The title names the PERMISSION, so a
+          // read-only operator does not press it to find out.
           <button
             type="button"
             className="soc-ghost-button"
-            disabled={busy === item.code}
+            disabled={withheld || busy === item.code}
+            title={withheldReason ?? undefined}
             onClick={() => onRun(item.code)}
           >
             {busy === item.code ? "Working…" : action.label}
           </button>
+        ) : null}
+        {action && withheld ? (
+          <span className="soc-sensor-remedy" data-withheld={withheldKind ?? undefined}>
+            {withheldReason}
+          </span>
         ) : null}
         {route ? (
           <a className="soc-ghost-button" href={route.href}>{route.label}</a>
@@ -323,6 +359,18 @@ function Finding({
 }
 
 function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections?: () => void }) {
+  // The same permission read as the alert drill and the Settings response
+  // section. This panel offers two of the three widest write controls on the
+  // platform — arm/disarm and the kill-switch release — and offered both to an
+  // account the control plane refuses, which is how an operator learns they
+  // are read-only by watching a POST do nothing.
+  // `withheld` drives every disabled below; `readOnlyAccount` only chooses the
+  // sentence. Keying the controls off the latter armed both of this panel's
+  // writes — arm/disarm and the kill-switch release — for the whole window in
+  // which whoami had not answered, which on a control plane whose /api/whoami
+  // is failing is the entire session.
+  const { readOnlyAccount, withheld, withheldReason } = useResponseAuthority();
+  const withheldKind = withheld ? (readOnlyAccount ? "permission" : "pending") : null;
   const [confirming, setConfirming] = useState<string>("");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState("");
@@ -332,6 +380,16 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
   // success — arming the ladder can be refused, and a console that says
   // "armed" over a refusal is the failure this whole panel exists to prevent.
   async function run(code: string) {
+    // The guard behind the disabled buttons, asked at the moment of the
+    // request rather than taken from the render that drew them: no path from
+    // this panel may reach POST /api/choke/* while the answer is in flight, or
+    // after the server has refused. A confirm panel opened before whoami landed
+    // is exactly such a path.
+    const denied = responseWithheldNow();
+    if (denied) {
+      setResult({ ok: false, message: denied });
+      return;
+    }
     // Mode lives on the containment block; everything else is a finding.
     const action =
       code === "arm" || code === "disarm"
@@ -381,11 +439,21 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
               <button
                 type="button"
                 className="soc-ghost-button"
-                disabled={busy !== ""}
+                disabled={withheld || busy !== ""}
+                title={withheldReason ?? undefined}
                 onClick={() => setConfirming(agent.containment!.auto === "enforcing" ? "disarm" : "arm")}
               >
                 {agent.containment.auto === "enforcing" ? MODE_ACTION.disarm.label : MODE_ACTION.arm.label}
               </button>
+              {/* The verdict above stays exactly as it is — what the host can
+                  DO is a reading, and readings are not withheld. Only the
+                  control that changes it is, and it says whose decision that
+                  was. */}
+              {withheld ? (
+                <span className="soc-sensor-remedy" data-withheld={withheldKind ?? undefined}>
+                  {withheldReason}
+                </span>
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -422,7 +490,8 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
             <button
               type="button"
               className="soc-action-button ok"
-              disabled={busy !== "" || reason.trim().length < 3}
+              disabled={withheld || busy !== "" || reason.trim().length < 3}
+              title={withheldReason ?? undefined}
               onClick={() => void run(confirming)}
             >
               {busy ? "Working…" : confirmLabel(confirming)}
@@ -438,14 +507,14 @@ function Row({ agent, onOpenDetections }: { agent: SensorAgent; onOpenDetections
       {agent.issues?.length ? (
         <ul className="soc-sensor-issues">
           {agent.issues.map((i) => (
-            <Finding key={i.code + i.detail} item={i} onOpenDetections={onOpenDetections} onRun={setConfirming} busy={busy} />
+            <Finding key={i.code + i.detail} item={i} onOpenDetections={onOpenDetections} onRun={setConfirming} busy={busy} withheld={withheld} withheldReason={withheldReason} withheldKind={withheldKind} />
           ))}
         </ul>
       ) : null}
       {agent.notes?.length ? (
         <ul className="soc-sensor-notes">
           {agent.notes.map((n) => (
-            <Finding key={n.code + n.detail} item={n} onOpenDetections={onOpenDetections} onRun={setConfirming} busy={busy} />
+            <Finding key={n.code + n.detail} item={n} onOpenDetections={onOpenDetections} onRun={setConfirming} busy={busy} withheld={withheld} withheldReason={withheldReason} withheldKind={withheldKind} />
           ))}
         </ul>
       ) : null}

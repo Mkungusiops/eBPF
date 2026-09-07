@@ -3,6 +3,7 @@ import {
   deriveFleet,
   detectDrift,
   majority,
+  readFanout,
   summarizeFanout,
   thresholdKey,
   validateThresholds
@@ -85,13 +86,19 @@ describe("fleet logic", () => {
   });
 
   it("summarizes partial fan-out failures", () => {
-    const summary = summarizeFanout("Thresholds", [
-      { name: "alpha", ok: true },
-      { name: "beta", ok: false, status: 503, error: "gateway disabled" }
-    ]);
+    const summary = summarizeFanout(
+      "Thresholds",
+      readFanout({
+        hosts: [
+          { name: "alpha", ok: true },
+          { name: "beta", ok: false, status: 503, error: "gateway disabled" }
+        ]
+      })
+    );
 
     expect(summary.ok).toBe(false);
     expect(summary.title).toBe("Thresholds: partial");
     expect(summary.body).toContain("beta");
+    expect(summary.body).toContain("1/2");
   });
 });

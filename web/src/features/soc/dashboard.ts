@@ -84,8 +84,20 @@ export interface KpiDrill {
   title: string;
 }
 
+/**
+ * The context menu ACTS (ack, resolve, pin), so it must carry the whole row.
+ *
+ * This was typed `SocAlert` while the queue passed it an AlertGroup — the type
+ * narrowed what the runtime object actually was, and every handler behind it
+ * reached for `.id` and wrote one member of a ×2 row. With the row's own state
+ * derived from the least-progressed member, the row then read "New" straight
+ * after the menu reported it acknowledged: two contradictory ack states on one
+ * screen. AlertGroup is a SocAlert, so a lone alert is still assignable — as
+ * `{ ...alert, groupCount: 1, members: [alert] }`, which is what the queue
+ * builds when grouping is off.
+ */
 export interface ContextMenuState {
-  alert: SocAlert;
+  alert: AlertGroup;
   x: number;
   y: number;
 }

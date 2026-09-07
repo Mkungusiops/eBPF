@@ -7,6 +7,7 @@ import { getProcesses } from "./api";
 import type { ChokeAction, SysProcEntry, ToastMessage } from "./types";
 import type { JailDetail } from "./constants";
 import { toggleNumber } from "./constants";
+import { READ_ONLY_TITLE } from "./canRespond";
 import { useInterval } from "./hooks";
 import { ACTIONS, classifyProc, deriveProcSignals, readJsonStorage, writeJsonStorage } from "./utils";
 import { EmptyState, ErrorState, LoadingState, StateBadge } from "./components";
@@ -20,6 +21,8 @@ export function JailPicker({
   onOpenDrill,
   onAction,
   pushToast,
+  readOnly = false,
+  readOnlyReason = "",
 }: {
   open: boolean;
   disabled: boolean;
@@ -29,6 +32,13 @@ export function JailPicker({
   onOpenDrill: (process: SysProcEntry) => void;
   onAction: (payload: { pids: number[]; action: ChokeAction; reason: string; descendants: boolean; revert_after_seconds?: number }) => Promise<void>;
   pushToast: (message: string, kind?: ToastMessage["kind"]) => void;
+  /**
+   * whoami says this account cannot respond. The /proc listing itself is a
+   * READ the server allows, so the picker still opens and still inspects —
+   * what is withheld is the four actions that would jail something.
+   */
+  readOnly?: boolean;
+  readOnlyReason?: string;
 }) {
   const [processes, setProcesses] = useState<SysProcEntry[]>([]);
   const [loading, setLoading] = useState(false);
@@ -92,6 +102,10 @@ export function JailPicker({
   }
 
   async function submit(action: ChokeAction, explicitPid?: number): Promise<void> {
+    // Also guarded here, not only on the buttons: the picker can be opened from
+    // the command palette, and a disabled button is a claim about permission
+    // that the submit path has to actually honour.
+    if (readOnly) return pushToast(readOnlyReason || READ_ONLY_TITLE, "warn");
     const pids = explicitPid ? [explicitPid] : Array.from(selected);
     if (pids.length === 0) return pushToast("select at least one process", "err");
     if (!reason.trim()) return pushToast("reason required for audit", "err");
@@ -116,8 +130,9 @@ export function JailPicker({
           <button type="button" onClick={onClose}>Close</button>
         </header>
         {disabled ? <ErrorState title="Gateway disabled" body="The process picker is unavailable while /api/choke/processes returns 503." /> : null}
+        {readOnly ? <p className="choke-permission-note">{readOnlyReason}</p> : null}
         <div className="choke-jail-tools">
-          <input value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="filter pid, comm, exe, cmdline, uid" />
+          <input aria-label="Filter processes" value={filter} onChange={(event) => setFilter(event.target.value)} placeholder="filter pid, comm, exe, cmdline, uid" />
           {(["user", "system", "kernel", "tracked", "high"] as Array<keyof typeof chips>).map((chip) => (
             <button key={chip} type="button" className={`choke-chip ${chips[chip] ? "on" : ""}`} onClick={() => toggleChip(chip)}>
               {chip}
@@ -129,6 +144,7 @@ export function JailPicker({
             <div className="choke-jail-head">
               <input
                 type="checkbox"
+                aria-label="Select every listed process"
                 checked={visible.length > 0 && visible.every((process) => selected.has(process.pid))}
                 onChange={(event) => setSelected(event.target.checked ? new Set(visible.map((process) => process.pid)) : new Set())}
               />
@@ -153,7 +169,7 @@ export function JailPicker({
               const checked = selected.has(process.pid);
               return (
                 <div key={process.pid} className={`choke-jail-row ${checked ? "selected" : ""}`}>
-                  <input type="checkbox" checked={checked} onChange={() => setSelected((prev) => toggleNumber(prev, process.pid))} />
+                  <input type="checkbox" aria-label={`Select pid ${process.pid}`} checked={checked} onChange={() => setSelected((prev) => toggleNumber(prev, process.pid))} />
                   <button type="button" onClick={() => onInspect(process)}>{process.pid}</button>
                   <span>{process.ppid || "-"}</span>
                   <span>{process.uid ?? "-"}</span>
@@ -161,7 +177,17 @@ export function JailPicker({
                   <span>{process.score || 0}</span>
                   <StateBadge state={process.state || "pristine"} />
                   <span className="choke-row-actions">
-                    {ACTIONS.map((action) => <button key={action} type="button" onClick={() => void submit(action, process.pid)}>{action.slice(0, 3)}</button>)}
+                    {ACTIONS.map((action) => (
+                      <button
+                        key={action}
+                        type="button"
+                        disabled={readOnly}
+                        title={readOnly ? readOnlyReason || READ_ONLY_TITLE : action}
+                        onClick={() => void submit(action, process.pid)}
+                      >
+                        {action.slice(0, 3)}
+                      </button>
+                    ))}
                     <button type="button" onClick={() => onOpenDrill(process)}>detail</button>
                   </span>
                 </div>
@@ -174,9 +200,19 @@ export function JailPicker({
         </div>
         <footer>
           <div className="choke-row-actions wide">
-            {ACTIONS.map((action) => <button key={action} type="button" onClick={() => void submit(action)}>{action}</button>)}
+            {ACTIONS.map((action) => (
+              <button
+                key={action}
+                type="button"
+                disabled={readOnly}
+                title={readOnly ? readOnlyReason || READ_ONLY_TITLE : undefined}
+                onClick={() => void submit(action)}
+              >
+                {action}
+              </button>
+            ))}
           </div>
-          <input value={reason} onChange={(event) => setReason(event.target.value)} placeholder="audit reason (required)" />
+          <input aria-label="Audit reason (required)" value={reason} onChange={(event) => setReason(event.target.value)} placeholder="audit reason (required)" />
           <label><input type="checkbox" checked={descendants} onChange={(event) => setDescendants(event.target.checked)} /> include descendants</label>
           <label><input type="checkbox" checked={revert} onChange={(event) => setRevert(event.target.checked)} /> auto-revert</label>
           <select value={revertSeconds} onChange={(event) => setRevertSeconds(Number(event.target.value))} disabled={!revert}>
