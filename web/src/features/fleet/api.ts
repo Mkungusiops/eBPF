@@ -26,7 +26,23 @@ export function fleetErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : "fleet request failed";
 }
 
-export async function readFleetSnapshot(): Promise<{
+/**
+ * The six-request fan-out behind one poll — AND THE SIGNAL THAT CANCELS IT.
+ *
+ * `options` is threaded into every getJSON below rather than dropped at this
+ * boundary. That is not tidiness: useFleetSnapshot aborts its controller when
+ * the operator closes the surface or the console unmounts, and until the signal
+ * reached `fetch` the abort cancelled nothing — the six requests ran to
+ * completion against every configured peer, and the only reason the hook's own
+ * test looked right was that its FAKE api recorded the signal it was handed.
+ * lib/api.ts spreads ApiOptions into the RequestInit it builds, so a signal
+ * passed here is the signal on the wire.
+ *
+ * The peer list is awaited first and the other five are not issued at all when
+ * no peer is configured, so an abort between the two stages stops five requests
+ * that were never sent rather than five that were.
+ */
+export async function readFleetSnapshot(options?: { signal?: AbortSignal }): Promise<{
   peers: FleetPeer[];
   states: FleetEnvelope<ChokeState>;
   cgroups: FleetEnvelope<CgroupSnapshot>;
@@ -34,7 +50,7 @@ export async function readFleetSnapshot(): Promise<{
   alerts: FleetEnvelope<Alert[]>;
   devices: FleetEnvelope<FleetDevice[]>;
 }> {
-  const peersResponse = await getJSON<{ hosts?: FleetPeer[] }>("/api/fleet/hosts");
+  const peersResponse = await getJSON<{ hosts?: FleetPeer[] }>("/api/fleet/hosts", options);
   const peers = peersResponse.hosts ?? [];
 
   if (peers.length === 0) {
@@ -49,45 +65,14 @@ export async function readFleetSnapshot(): Promise<{
   }
 
   const [states, cgroups, decisions, alerts, devices] = await Promise.all([
-    getJSON<FleetEnvelope<ChokeState>>("/api/fleet/state"),
-    getJSON<FleetEnvelope<CgroupSnapshot>>("/api/fleet/cgroups"),
-    getJSON<FleetEnvelope<Decision[]>>("/api/fleet/decisions?limit=80"),
-    getJSON<FleetEnvelope<Alert[]>>("/api/fleet/alerts"),
-    getJSON<FleetEnvelope<FleetDevice[]>>("/api/fleet/devices")
+    getJSON<FleetEnvelope<ChokeState>>("/api/fleet/state", options),
+    getJSON<FleetEnvelope<CgroupSnapshot>>("/api/fleet/cgroups", options),
+    getJSON<FleetEnvelope<Decision[]>>("/api/fleet/decisions?limit=80", options),
+    getJSON<FleetEnvelope<Alert[]>>("/api/fleet/alerts", options),
+    getJSON<FleetEnvelope<FleetDevice[]>>("/api/fleet/devices", options)
   ]);
 
   return { peers, states, cgroups, decisions, alerts, devices };
-}
-
-export interface FleetWhoami {
-  user?: string;
-  host?: string;
-  hostname?: string;
-  /**
-   * Whether this account may send containment and configuration writes.
-   *
-   * `null` is "the server did not say", and it must be read as PERMITTED. Only
-   * the multi-tenant control plane publishes `can_respond`; the single-tenant
-   * engine has no such concept, so treating a missing field as false would take
-   * the emergency controls away from every single-tenant operator on the
-   * grounds of a permission model their server does not implement.
-   */
-  canRespond: boolean | null;
-}
-
-export async function readWhoami(): Promise<FleetWhoami> {
-  const raw = await getJSON<{
-    user?: string;
-    host?: string;
-    hostname?: string;
-    can_respond?: unknown;
-  }>("/api/whoami");
-  return {
-    user: raw.user,
-    host: raw.host,
-    hostname: raw.hostname,
-    canRespond: typeof raw.can_respond === "boolean" ? raw.can_respond : null
-  };
 }
 
 export function writePreset(name: PresetName, targets: string[] | null, reason: string) {

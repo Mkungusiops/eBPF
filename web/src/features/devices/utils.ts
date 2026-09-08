@@ -1,3 +1,5 @@
+import type { ReasonRule } from "../common/EnforcementLadder";
+import { ACTION_FOR_RUNG, LADDER, type Rung } from "../common/enforcement";
 import type {
   DeviceAction,
   DeviceBucket,
@@ -155,3 +157,56 @@ export function filterDevices(
       .includes(options.query);
   });
 }
+
+/**
+ * THE DEVICE PLANE'S AUDIT-REASON RULE — the gate and the copy read it from
+ * here, so the console cannot enforce one rule while telling the operator
+ * another.
+ *
+ * EVERY jail rung needs a reason on this plane, throttle and tarpit included.
+ * That is stricter than one of the two servers the console talks to and it is a
+ * deliberate policy, not an accident of a missing case:
+ *
+ *   - The single-tenant engine (engine/internal/api/devchoke.go,
+ *     handleChokeDeviceJail) 400s a device-jail with an empty reason whatever
+ *     the rung. Relaxing throttle and tarpit here would send that server a
+ *     write it always refuses, and hand the operator its bare 400 about a field
+ *     the console had just told them was optional.
+ *   - The control plane (engine/internal/controlplane/choke.go,
+ *     requireReasonForDestructive) insists only for quarantine and sever, and
+ *     accepts the stricter console unchanged.
+ *
+ * The console cannot tell which of the two it is pointed at, so it holds to the
+ * stricter rule: a throttle is still a change to somebody's network, and an
+ * audit row for one that nobody justified is the artefact an incident review
+ * cannot reconstruct. A RELEASE is excluded — both servers accept it reason-
+ * less and the engine writes its own no-reason-stated marker, so demanding a
+ * sentence before enforcement can be lifted would be friction with nothing
+ * behind it.
+ *
+ * DEVICE_REASON_RULE below hands this same predicate to the shared
+ * EnforcementLadder, so the ladder's gate, its placeholder and its tooltips all
+ * come from here rather than from the process plane's looser built-in rule.
+ * DEVICE_REASON_NOTE stays beside the ladder for what a placeholder has no room
+ * to say: that this is stricter than one of the two servers on purpose, and
+ * that a release is exempt.
+ */
+export function deviceRungNeedsReason(rung: Rung): boolean {
+  return rung !== "pristine";
+}
+
+/**
+ * The rule above in the form the shared ladder takes: the same predicate,
+ * enumerated, plus the wording that states it. Derived from
+ * deviceRungNeedsReason rather than restated, so the gate and the copy cannot
+ * come apart — which is the defect this replaced.
+ */
+export const DEVICE_REASON_RULE: ReasonRule = {
+  rungs: new Set<Rung>(LADDER.filter(deviceRungNeedsReason)),
+  placeholder: "Reason (required for every choke — throttle and tarpit included)",
+  tooltip: (rung) => `A reason is required to ${ACTION_FOR_RUNG[rung]} on the device plane`
+};
+
+/** The rule above, in the words the operator reads next to the ladder. */
+export const DEVICE_REASON_NOTE =
+  "On the device plane every choke needs an audit reason — throttle and tarpit included, not only quarantine and sever. A release does not.";

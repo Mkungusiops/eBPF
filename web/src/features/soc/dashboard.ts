@@ -17,7 +17,12 @@ export type OpenSurface =
   | "graph"
   | "simulator"
   | "mitre"
+  // "fleet" is the browser-local peer-console bookmark list (the rail calls it
+  // "Peer Consoles"); "fleet-console" is the real fleet view — every enrolled
+  // host's mode, ladder, drift and the writes that scope a containment to a
+  // named subset. It was a route at /fleet until the two consoles were merged.
   | "fleet"
+  | "fleet-console"
   | "watchlist"
   | "behaviour"
   | "honeypots"

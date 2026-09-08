@@ -7,7 +7,8 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     risk: "M",
     mode: "local",
     description: "Persisted collapse, route links, tool launchers, and live badges.",
-    storage: ["soc.sidebarOpen"]
+    // One key per collapsible nav section, plus the rail's own collapse.
+    storage: ["soc.sidebarOpen", "soc.nav.v2.<section>"]
   },
   {
     id: "top-bar",
@@ -16,7 +17,13 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     mode: "live",
     description: "DSL search, risk, time range, host/live/theme controls, and devices link.",
     api: ["/api/whoami", "/api/decisions?limit=1"],
-    storage: ["soc.theme"]
+    // No soc.theme. Theme follows the OS (lib/theme.ts, useOSTheme) and is not
+    // persisted by this console at all. The time range is one of the two things
+    // the top bar keeps; the other is the customer switcher's choice, which
+    // SocRoute's selectTenant hands to lib/tenantScope's setSelectedTenant and
+    // that writes soc.selectedTenant. The write happens a prop-hop away from the
+    // control, which is how this entry came to omit it.
+    storage: ["soc.prefDefaultRange", "soc.selectedTenant"]
   },
   {
     id: "stale-data-banner",
@@ -64,7 +71,12 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     // set and none to restore one. An operator told the panel keeps views goes
     // looking for a control that does not exist, so the claim is withdrawn
     // rather than left standing.
-    storage: ["soc.alertStates", "soc.pinnedAlerts"]
+    //
+    // soc.groupAlerts and soc.hideBaseline are the queue's own "Group" and
+    // "Hide baseline" chips (AlertQueue's actions row); SocRoute holds the state
+    // for them, so they were counted on the account page without being named
+    // here.
+    storage: ["soc.alertStates", "soc.pinnedAlerts", "soc.groupAlerts", "soc.hideBaseline"]
   },
   {
     id: "drill-down-slide-over",
@@ -148,7 +160,8 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     risk: "M",
     mode: "local",
     description: "Local score-threshold preview against the current alert buffer.",
-    api: ["/api/alerts"]
+    api: ["/api/alerts"],
+    storage: ["soc.simThresholds"]
   },
   {
     id: "mitre-navigator-modal",
@@ -159,11 +172,44 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     api: ["/api/policies", "/api/alerts"]
   },
   {
+    id: "fleet-console-modal",
+    title: "Fleet Console",
+    risk: "H",
+    mode: "write",
+    // The HOSTS rung of the drill: estate, then customer, then hosts, then
+    // process. It was a console of its own at /fleet — which is why this entry
+    // did not exist and the sidebar's panel count did not include it.
+    description:
+      "Every enrolled host's mode, enforcement ladder, kill-switch state and drift from the fleet majority — " +
+      "and the presets, thresholds, kill-switch and thaw, scoped to all peers or to a named subset of them.",
+    api: [
+      "/api/fleet/hosts",
+      "/api/fleet/state",
+      "/api/fleet/cgroups",
+      "/api/fleet/decisions",
+      "/api/fleet/alerts",
+      "/api/fleet/devices",
+      "/api/fleet/preset",
+      "/api/fleet/thresholds",
+      "/api/fleet/kill-switch",
+      "/api/fleet/thaw"
+    ],
+    // Nothing. The host selection, the apply mode and the threshold draft are
+    // component state and are gone when the surface closes — which is correct
+    // for a target set: a remembered selection is a blast radius an operator
+    // did not choose this time.
+    storage: []
+  },
+  {
     id: "fleet-modal",
-    title: "Fleet",
+    // Not the Fleet Console surface above. The rail entry is "Peer Consoles" and
+    // this title has to agree with it, or the account page's panel inventory
+    // names a surface the operator cannot find in the nav.
+    title: "Peer Consoles",
     risk: "H",
     mode: "local",
-    description: "Operator-maintained peer directory in soc.fleet.hosts; reachability is probed server-side via /api/fleet/probe.",
+    description:
+      "Operator-maintained directory of OTHER consoles in soc.fleet.hosts; reachability is probed server-side via /api/fleet/probe. It does not enumerate enrolled agents — the Fleet Console surface above does that.",
     storage: ["soc.fleet.hosts"]
   },
   {
@@ -181,7 +227,11 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     mode: "read-only",
     description: "Decoy status, hit counts, and last-seen data.",
     api: ["/api/honeypots"],
-    storage: ["soc.hpUI.search", "soc.hpUI.filter", "soc.hpUI.sortBy", "soc.hpUI.sortDir"]
+    // No soc.hpUI.* keys. HoneypotsBody holds its search, filter and sort in
+    // component state (useState) — they are gone on close, and advertising them
+    // as browser storage both misled the operator and over-counted the account
+    // page's key inventory.
+    storage: []
   },
   {
     id: "behaviour-modal",
@@ -245,16 +295,30 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
     risk: "H",
     mode: "local",
     description: "Local notification history and preferences shell.",
-    storage: ["soc.notifications", "soc.notifyHistory", "soc.notifyMinSeverity"]
+    // The channel toggles, throttle and quiet hours are NotificationsBody's own
+    // controls (soc.notifyChannels is held by SocRoute and passed in as
+    // channels/onChannelsChange; the other three are written in the body).
+    storage: [
+      "soc.notifications",
+      "soc.notifyHistory",
+      "soc.notifyMinSeverity",
+      "soc.notifyChannels",
+      "soc.notifyThrottleMin",
+      "soc.notifyQuietStart",
+      "soc.notifyQuietEnd"
+    ]
   },
   {
     id: "account-profile-modal",
     title: "Account / profile",
     risk: "H",
     mode: "local",
-    description: "Current user, shared avatar key, theme, and local SOC storage inventory.",
+    // Neither the avatar nor the theme is stored: the avatar is initials derived
+    // from the user name, and the theme follows the OS. What this surface has is
+    // the identity read and the count of keys below.
+    description: "Current user, initials avatar, OS-derived theme, and local SOC storage inventory.",
     api: ["/api/whoami"],
-    storage: ["soc.avatar.<user>", "soc.theme"]
+    storage: []
   },
   {
     id: "kpi-drill-modal",
@@ -296,40 +360,48 @@ export const SOC_PANEL_INVENTORY: SocPanelInventoryItem[] = [
   }
 ];
 
+// EVERY KEY THIS CONSOLE ACTUALLY WRITES, AND NOTHING ELSE. The account surface
+// prints this length as "N local preference keys stored in this browser", so a
+// key listed here that nothing writes is a lie told with a number. It has been
+// one twice: soc.savedViews (no saved-view control was ever built) and, when the
+// kprobe board was replaced by SensorHealthBody, its soc.kprobeThreshold and
+// soc.kprobeUI.* keys, whose only writer went with it. Withdrawn with them:
+// soc.theme (persisted by the console's own toggle until lib/theme.ts made the
+// theme follow the OS, and left advertised after its writer went), soc.hpUI.*
+// (the honeypot toolbar is component state), soc.graphFilters/Layout/TTL,
+// soc.refreshInterval, soc.notifySoundEnabled, soc.prefGroupAlerts and
+// soc.prefHideNoise — seventeen keys in all, none of which any writer in src
+// produces today. residueStorageKeys.test.ts holds this list to the console's
+// real writes in both directions, and holds every panel entry above to it too:
+// a key here that no panel claims must be named in that test's
+// NOT_A_PANEL_KEY set with a reason, so the next panel-owned key cannot be
+// counted on the account page without being attributed to a surface.
+// Add a key here only when a writer exists. One entry with a
+// <placeholder> stands for the family the writer produces — Sidebar.tsx writes
+// one soc.nav.v2.* key per collapsible section — so the count below is families,
+// not raw keys.
 export const SOC_STORAGE_KEYS = [
   "soc.alertStates",
+  "soc.alertNotes",
+  "soc.pinnedAlerts",
   "soc.groupAlerts",
   "soc.hideBaseline",
   "soc.timelineSevHidden",
+  "soc.prefDefaultRange",
+  "soc.execBand",
+  "soc.briefingMode",
+  "soc.sidebarOpen",
+  "soc.nav.v2.<section>",
   "soc.notifications",
-  "soc.notifyMinSeverity",
   "soc.notifyChannels",
-  "soc.notifySoundEnabled",
+  "soc.notifyHistory",
+  "soc.notifyMinSeverity",
   "soc.notifyThrottleMin",
   "soc.notifyQuietStart",
   "soc.notifyQuietEnd",
-  "soc.notifyHistory",
-  "soc.pinnedAlerts",
-  "soc.alertNotes",
-  "soc.refreshInterval",
-  "soc.prefDefaultRange",
-  "soc.prefGroupAlerts",
-  "soc.prefHideNoise",
   "soc.watchlist",
   "soc.fleet.hosts",
-  "soc.hpUI.search",
-  "soc.hpUI.filter",
-  "soc.hpUI.sortBy",
-  "soc.hpUI.sortDir",
-  "soc.kprobeUI.search",
-  "soc.kprobeUI.filter",
-  "soc.kprobeUI.sortBy",
-  "soc.kprobeUI.sortDir",
-  "soc.kprobeThreshold",
   "soc.tmBookmarks",
-  "soc.graphFilters",
-  "soc.graphLayout",
-  "soc.graphTTL",
-  "soc.sidebarOpen",
-  "soc.theme"
+  "soc.simThresholds",
+  "soc.selectedTenant"
 ] as const;

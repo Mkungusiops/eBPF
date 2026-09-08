@@ -7,7 +7,7 @@ import {
   type SocSurface
 } from "./support/contracts";
 import { installMockApi, RequestLog } from "./support/mock-api";
-import { expect, socNavItem, test } from "./support/test";
+import { expect, socNavControl, test } from "./support/test";
 
 /**
  * Every tool the SOC console advertises, opened.
@@ -50,7 +50,7 @@ async function openAndInspect(page: Page, surface: SocSurface): Promise<SurfaceF
   page.on("console", onConsole);
 
   try {
-    const nav = socNavItem(page, surface.nav);
+    const nav = socNavControl(page, surface);
     if ((await nav.count()) === 0) {
       return { nav: surface.nav, reason: "no sidebar control with this accessible name" };
     }
@@ -151,7 +151,7 @@ test.describe("SOC surfaces", () => {
 
     for (const surface of SOC_LAB_SURFACES) {
       await expect(
-        socNavItem(page, surface.nav),
+        socNavControl(page, surface),
         `${surface.nav} must not be offered on a deployment that did not report lab_mode`
       ).toHaveCount(0);
     }
@@ -192,7 +192,7 @@ test.describe("SOC surfaces", () => {
     // Health, Behaviour & Intel) actually issue their reads. Without this the
     // assertion only covers the dashboard's own polling and passes vacuously.
     for (const surface of SOC_SURFACES_ALWAYS_AVAILABLE) {
-      const nav = socNavItem(page, surface.nav);
+      const nav = socNavControl(page, surface);
       if (await nav.count()) {
         await nav.click();
         await page.locator(`[data-panel="${surface.panel}"]`).waitFor({ state: "visible", timeout: 10_000 }).catch(() => undefined);

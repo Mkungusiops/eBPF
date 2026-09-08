@@ -9,6 +9,7 @@
 import { useMemo } from "react";
 import { LADDER } from "../common/enforcement";
 import { computePosture, type CommandMetrics } from "../common/ContainmentCommand";
+import { CHOKE_UNREACHABLE } from "./api";
 import { readCanRespond, readOnlyReason } from "./canRespond";
 import type { ApprovalRequest } from "./api";
 import type { ChokeState, CircuitEntry, Decision, HostPingResult, LoadState, Whoami } from "./types";
@@ -50,14 +51,17 @@ export function useChokePosture({
   // /api/choke/state has no such key. That makes it a reliable "am I the
   // multi-tenant console?" signal without inventing a capability flag.
   //
-  // It matters because two actions here are engine-LOCAL: policy preview
-  // evaluates YAML against one host's tracked processes, and a forensic
-  // snapshot dumps one host's state. Neither has a fleet-wide meaning, so the
-  // control plane answers both with 501. Offering an enabled button that always
-  // fails is worse than not offering it — the operator cannot tell a missing
-  // feature from a broken one, and finds out by clicking it in front of someone.
+  // It matters because the forensic snapshot is engine-LOCAL: it dumps one
+  // host's state, which has no fleet-wide meaning, so the control plane answers
+  // it with 501. commandItems.ts drops the palette entry entirely on a fleet
+  // console rather than offering an enabled button that always fails — the
+  // operator cannot tell a missing feature from a broken one, and finds out by
+  // clicking it in front of someone.
+  //
+  // Policy preview used to be the second such action, and this hook carried an
+  // `engineOnlyHint` string for the disabled-button tooltip on it. 30318a3
+  // removed the whole policy workbench, so the hint had no reader and is gone.
   const isFleetConsole = Boolean(kernel);
-  const engineOnlyHint = "Engine-local action — open the single-tenant engine for this host. The fleet console has no host to evaluate it against.";
   const divergedAgents = kernel?.diverged_agents || [];
   // Normalised to an array here rather than at each use: an older control plane
   // omits the key entirely, and a panel that maps over undefined throws instead
@@ -134,14 +138,38 @@ export function useChokePosture({
   };
 
   const userLabel = String(whoami?.username || whoami?.user || "operator");
-  const hostState = hostPings[0]?.ok === false ? "down" : hostPings[0] && hostPings[0].rtt_ms > 800 ? "slow" : "ok";
+  // The host pill, over EVERY endpoint the probe touched rather than only the
+  // first. hostPings[0] is /api/whoami (constants.HOST_ENDPOINTS), and identity
+  // answering says nothing about the state and circuit endpoints the operator
+  // is actually reading — under a half-open gateway that split is precisely
+  // what kept the pill green. Any endpoint that did not answer, or answered an
+  // error, is now a down host; slow is reserved for a host that answered all of
+  // them, late.
+  //
+  // With no reading at all the route's own load state decides. The probe runs
+  // on an eight-second interval, so there is a window at first paint where
+  // nothing has been measured; claiming "ok" there while this route has already
+  // failed to reach the gateway is the same confident green in miniature. An
+  // unreachable gateway is the only error that counts as down — a gateway that
+  // answered an error is still a host that is answering.
+  const probeFailed = hostPings.some((ping) => !ping.ok);
+  const probeSlow = hostPings.some((ping) => ping.rtt_ms > 800);
+  const routeUnreachable = loadState.kind === "error" && loadState.message.includes(CHOKE_UNREACHABLE);
+  const hostState = hostPings.length === 0
+    ? routeUnreachable
+      ? "down"
+      : "ok"
+    : probeFailed
+      ? "down"
+      : probeSlow
+        ? "slow"
+        : "ok";
 
   return {
     thresholds,
     mode,
     kernel,
     isFleetConsole,
-    engineOnlyHint,
     divergedAgents,
     ladderCorrections,
     pendingApprovals,

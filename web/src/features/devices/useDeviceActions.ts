@@ -15,7 +15,7 @@ import { readOnlyReason } from "../choke/canRespond";
 import type { ConfirmOptions, ConfirmResult } from "./ConfirmModal";
 import type { DeviceAction, DeviceDataPlaneState } from "./types";
 import type { ToastTone } from "./useDeviceToast";
-import { DISABLED_MESSAGE, summarizeResults } from "./utils";
+import { deviceRungNeedsReason, DISABLED_MESSAGE, summarizeResults } from "./utils";
 import { ACTION_FOR_RUNG, type Rung } from "../common/enforcement";
 
 export interface DeviceActionsOptions {
@@ -90,8 +90,13 @@ export function useDeviceActions({
       confirmLabel: nextEnforcing ? "Go live" : "Switch to detect-only",
       danger: nextEnforcing,
       requireReason: true,
-      reasonPlaceholder: "Why are you changing device mode?",
-      defaultReason: nextEnforcing ? "go live" : "staging policy"
+      // No defaultReason. The modal pre-selects whatever it is given and Enter
+      // confirms, so a prefilled "go live" shipped as the audit reason for a
+      // plane-wide arm that no operator justified — a fabricated justification,
+      // which reads worse in the audit row than a refused write. The reason box
+      // starts empty and the modal's confirm button stays disabled until one is
+      // typed, so this promise cannot resolve with a blank reason.
+      reasonPlaceholder: "Why are you changing device mode?"
     });
     if (!result) return;
     try {
@@ -131,11 +136,30 @@ export function useDeviceActions({
         ? "This bypasses all device enforcement immediately. Decisions will still be audited."
         : "Device enforcement will resume according to the current mode and active buckets.",
       confirmLabel: on ? "Engage kill-switch" : "Disengage",
-      danger: on
+      danger: on,
+      // An ENGAGE carries an audit reason, collected in the same confirm modal
+      // the mode switch uses rather than through a second kind of prompt.
+      //
+      // The single-tenant engine (engine/internal/api/devchoke.go,
+      // handleChokeDeviceKillSwitch) refuses an engage with an empty reason:
+      // shipping that engine against a console that posts only {on} would
+      // answer this button with a 400 naming a field the operator was never
+      // shown. Collecting it here means the console asks for the sentence
+      // instead of relaying that refusal.
+      //
+      // A DISENGAGE is deliberately not gated. Both servers accept it without
+      // one, the engine records its own "kill-switch released (no reason
+      // stated)" marker, and demanding a typed justification before enforcement
+      // can be restored is friction in the one moment nobody has time for it.
+      requireReason: on,
+      // No defaultReason, for the reason toggleMode states above: the modal
+      // pre-selects what it is given and Enter confirms, so a prefilled string
+      // ships as a justification no operator wrote.
+      reasonPlaceholder: "Why are you halting device enforcement?"
     });
     if (!result) return;
     try {
-      const response = await api.setKillSwitch(on);
+      const response = await api.setKillSwitch(on, result.reason);
       pushToast(response.engaged ? "kill-switch engaged" : "kill-switch disengaged", response.engaged ? "warn" : "ok");
       refresh();
     } catch (caught) {
@@ -179,9 +203,27 @@ export function useDeviceActions({
       return;
     }
     try {
+      // Send nothing when the operator typed nothing.
+      //
+      // Neither server blocks a release for want of a reason, so the only
+      // question is what an empty box puts on the wire. The old fallback posted
+      // the literal "operator thaw", which lands in the audit row looking
+      // exactly like a sentence an operator wrote — a fabricated justification,
+      // and the one outcome no deployment can correct after the fact.
+      //
+      // The two deployments record an ABSENT reason differently, and the
+      // console cannot tell which it is talking to. The single-tenant engine
+      // (engine/internal/api/devchoke.go, handleChokeDeviceThaw) substitutes
+      // its own "operator thaw (no reason stated)" marker, which is the only
+      // thing in that row telling a later reader nobody spoke. The multi-tenant
+      // control plane (engine/internal/controlplane/choke.go, handleDeviceThaw)
+      // decodes the field and then discards it — the Thaw command on the wire
+      // carries no reason at all — so the row simply has none. Absent is honest
+      // on both; invented is a lie on both.
+      const trimmed = reason.trim();
       const response = await api.thawDevices({
         macs,
-        reason: reason.trim() || "operator thaw"
+        ...(trimmed ? { reason: trimmed } : {})
       });
       const successes = response.results.filter((result) => result.ok).length;
       pushToast(summarizeResults(response.results, "thawed"), successes > 0 ? "ok" : "error");
@@ -203,9 +245,28 @@ export function useDeviceActions({
         // permission refusal and not as a rejected command.
         return { ok: false, detail: readOnlyReason("the device plane") };
       }
+      const stated = why.trim();
+      // The plane's reason rule, read from the one place that states it —
+      // deviceRungNeedsReason in ./utils, whose comment carries the reasoning
+      // and which DEVICE_REASON_NOTE puts on screen beside the ladder. Every
+      // jail rung is refused without a reason, throttle and tarpit included.
+      // Refusing here rather than posting an empty one keeps the console from
+      // inventing a stand-in for the server that demands one, and names the box
+      // the operator has to type in instead of returning that server's bare 400
+      // for a field they cannot see.
+      if (deviceRungNeedsReason(rung) && !stated) {
+        return { ok: false, detail: "a reason is required — type one in the reason box before applying" };
+      }
       try {
         if (rung === "pristine") {
-          const response = await api.thawDevices({ macs: [mac], reason: why || "operator thaw" });
+          // Empty means empty. Both release endpoints treat the reason as
+          // optional and neither is helped by a console literal: the
+          // single-tenant engine would have its "operator thaw (no reason
+          // stated)" marker overwritten by it, and the control plane discards
+          // the field either way, so the only thing an invented string can
+          // change is whether the one row that keeps it reads as a lie. See
+          // thawSelected above for both servers.
+          const response = await api.thawDevices({ macs: [mac], ...(stated ? { reason: stated } : {}) });
           const failure = response.results.find((result) => !result.ok);
           return failure
             ? { ok: false, detail: failure.error || "release rejected" }
@@ -214,7 +275,7 @@ export function useDeviceActions({
         const response = await api.jailDevices({
           macs: [mac],
           action: ACTION_FOR_RUNG[rung] as DeviceAction,
-          reason: why
+          reason: stated
         });
         const failure = response.results.find((result) => !result.ok);
         return failure

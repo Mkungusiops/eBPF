@@ -69,9 +69,20 @@ describe("Behaviour & Reputation panel", () => {
 
     render(<IntelligenceBody open />);
 
-    await waitFor(() => expect(screen.getByText(/Still learning/i)).toBeTruthy());
+    // PINNED ON THE LOADED PAINT, and it has to be said in a form the first
+    // paint cannot say. Before the reads answer, `baseline` is null, so the
+    // anomalies note already reads "The baseline is still learning…" — a bare
+    // /Still learning/i therefore matched the unanswered panel and the
+    // assertion settled before the fixture above had been read at all. The
+    // warm-up percentage is computed from the served status (120/500
+    // executions, 300s/1800s of span → min(0.24, 0.167) = 17%), so it can only
+    // appear once THIS baseline has landed and been found unready.
+    await screen.findByText(/Still learning — 17%/);
+    expect(screen.getByText(/120 of 500 executions/)).toBeTruthy();
     // The critical sentence: an empty anomaly list here is NOT "nothing unusual".
     expect(screen.getByText(/is not a finding of 'nothing unusual'/i)).toBeTruthy();
+    // And the panel must NOT be claiming the baseline is scoring.
+    expect(screen.queryByText(/Nothing has departed from this deployment's learned normal/i)).toBeNull();
   });
 
   it("says no feeds are loaded rather than implying nothing matched", async () => {

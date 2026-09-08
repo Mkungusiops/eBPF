@@ -18,13 +18,18 @@ describe("route certification contract", () => {
 
   it("tracks the 78-panel release scope", () => {
     expect(TOTAL_PANEL_COUNT).toBe(78);
+    // CONSERVED, NOT RE-TALLIED. The fleet view's thirteen panels moved out of
+    // /fleet and into the SOC route as a surface; /fleet is now a redirect that
+    // renders nothing of its own. The total is the release scope, so a panel
+    // that changed address must not change it — and counting the thirteen under
+    // both names would tally the same panels twice.
     expect(Object.fromEntries(PAGE_ROUTES.map((route) => [route.name, route.panelCount]))).toEqual(
       {
         login: 1,
-        soc: 31,
+        soc: 44,
         choke: 26,
         devices: 7,
-        fleet: 13
+        fleet: 0
       }
     );
   });

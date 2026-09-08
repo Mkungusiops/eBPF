@@ -55,11 +55,35 @@ const PENDING = [
   }
 ];
 
+/**
+ * CHANGE CONTROL IS A CONTROL-PLANE FEATURE, SO THESE TESTS MUST BE ON ONE.
+ *
+ * The console asks for /api/approvals only where the SERVER says it governs a
+ * fleet: whoami's `policy_scope` is "fleet" on the control plane
+ * (controlplane/http.go) and absent on the single-tenant engine, which the
+ * normaliser reads as the narrower "host". That gate exists because the engine
+ * does not serve /api/approvals at all, and asking it produced a 404 on every
+ * poll of a route that was working correctly.
+ *
+ * The default fixture whoami is engine-shaped — no `policy_scope` — so without
+ * this override the queue is never fetched and never rendered. Every test below
+ * would then fail for a reason that is not the feature, and the empty-queue
+ * test would PASS for the wrong one: it asserts a count of zero, which an
+ * ungated deployment satisfies by never rendering the box at all.
+ */
+const CONTROL_PLANE_WHOAMI = {
+  user: "operator",
+  username: "operator",
+  host: "all tenants",
+  hostname: "all tenants",
+  policy_scope: "fleet"
+};
+
 test.describe("change control", () => {
   test.use({ viewport: { width: 1600, height: 1000 } });
 
   test("renders nothing when nothing is pending", async ({ page }) => {
-    await installMockApi(page);
+    await installMockApi(page, { routes: { "/api/whoami": CONTROL_PLANE_WHOAMI } });
     await page.goto("/choke");
     await expect(page.locator('[data-panel="containment-ladder"]')).toBeVisible();
 
@@ -70,7 +94,12 @@ test.describe("change control", () => {
   });
 
   test("says plainly that a gated action has NOT been applied", async ({ page }) => {
-    await installMockApi(page, { routes: { "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" } } });
+    await installMockApi(page, {
+      routes: {
+        "/api/whoami": CONTROL_PLANE_WHOAMI,
+        "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" }
+      }
+    });
     await page.goto("/choke");
 
     const queue = page.locator('[data-panel="approvals-queue"]');
@@ -87,7 +116,10 @@ test.describe("change control", () => {
     const recorder = new RequestLog();
     await installMockApi(page, {
       recorder,
-      routes: { "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" } }
+      routes: {
+        "/api/whoami": CONTROL_PLANE_WHOAMI,
+        "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" }
+      }
     });
     await page.goto("/choke");
 
@@ -106,7 +138,10 @@ test.describe("change control", () => {
     const recorder = new RequestLog();
     await installMockApi(page, {
       recorder,
-      routes: { "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" } }
+      routes: {
+        "/api/whoami": CONTROL_PLANE_WHOAMI,
+        "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" }
+      }
     });
     await page.goto("/choke");
 
@@ -154,7 +189,10 @@ test.describe("change control", () => {
     const recorder = new RequestLog();
     await installMockApi(page, {
       recorder,
-      routes: { "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" } }
+      routes: {
+        "/api/whoami": CONTROL_PLANE_WHOAMI,
+        "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" }
+      }
     });
     await page.goto("/choke");
 
@@ -179,7 +217,12 @@ test.describe("change control", () => {
   });
 
   test("names a fleet-scoped request as reaching the whole tenant", async ({ page }) => {
-    await installMockApi(page, { routes: { "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" } } });
+    await installMockApi(page, {
+      routes: {
+        "/api/whoami": CONTROL_PLANE_WHOAMI,
+        "/api/approvals": { approvals: PENDING, pending: 2, you: "operator" }
+      }
+    });
     await page.goto("/choke");
 
     // Blast radius, in words. "quarantine exec-fixt…" and "quarantine the

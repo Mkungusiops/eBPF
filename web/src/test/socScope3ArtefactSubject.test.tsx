@@ -1,6 +1,17 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// This file renders the WHOLE SOC route ten times, and three of those cases sit
+// just past the suite's 10s default (measured 2026-09-07: 10.7s, 11.0s, 11.1s;
+// the file completes in 32.7s at a larger budget). They were read as a load
+// flake for most of a day because that is what a marginal budget looks like —
+// green alone, red under parallel load. The budget is stated here rather than
+// left to the machine's mood; the tests are honestly slow, not hung.
+//
+// Worth speeding up rather than raising again: the cost is mounting the real
+// route per case, not anything the assertions need.
+vi.setConfig({ testTimeout: 45_000 });
+
 /**
  * WHAT THE NUMBERS ARE ABOUT, WHEREVER THEY ARE STAMPED.
  *
@@ -64,15 +75,6 @@ const { FakeDoc, pdfText } = vi.hoisted(() => {
 
 vi.mock("jspdf", () => ({ default: FakeDoc }));
 vi.mock("jspdf-autotable", () => ({ default: () => {} }));
-
-// cmdk (mounted hidden inside SocModals on every route render) observes its
-// list, and jsdom has no ResizeObserver.
-class NoopResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-globalThis.ResizeObserver = globalThis.ResizeObserver ?? (NoopResizeObserver as unknown as typeof ResizeObserver);
 
 vi.mock("../lib/stream", () => ({
   useStream: () => ({

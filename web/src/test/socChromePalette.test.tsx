@@ -17,11 +17,20 @@ globalThis.ResizeObserver = globalThis.ResizeObserver ?? (NoopResizeObserver as 
  * The command palette is a second door onto every surface, and it was neither
  * focused nor gated.
  *
- * FOCUS: every modal body is mounted at route load inside a shell that is
- * `display: none` until it opens, so cmdk's `autoFocus` fired once on a hidden
- * input and did nothing. Ctrl+K opened the palette with focus still on <body>,
- * the next keystroke went nowhere, and the operator had to reach for the mouse
- * — which defeats the only reason a palette exists.
+ * FOCUS: every modal body USED TO BE mounted at route load inside a shell that
+ * is `display: none` until it opens, so cmdk's `autoFocus` fired once on a
+ * hidden input and did nothing. Ctrl+K opened the palette with focus still on
+ * <body>, the next keystroke went nowhere, and the operator had to reach for
+ * the mouse — which defeats the only reason a palette exists.
+ *
+ * ModalShell now mounts a body at FIRST OPEN, so that account is history for
+ * the first Ctrl+K of a session: the palette mounts in the same commit that
+ * adds `is-open`, onto an input that is already visible. It is NOT history
+ * after that. A shell stays mounted once opened, so from the second Ctrl+K
+ * onward the palette is exactly what it always was — a mounted, hidden
+ * component whose `autoFocus` will never fire again — and the layout effect
+ * below is the only thing that focuses it. The bug survives lazy mounting for
+ * every operator who opens the palette twice, which is all of them.
  *
  * GATE: the rail hides Attack Sim, Honeypots and the Rule Simulator unless the
  * SERVER reports lab_mode, because Attack Sim runs a script as root on the host
@@ -35,8 +44,11 @@ function Harness({ open }: { open: boolean }) {
   return (
     <>
       <button type="button">Ctrl+K trigger</button>
-      {/* The shell this palette really lives in keeps its body mounted whether
-          or not it is open — that is the condition the focus bug needed. */}
+      {/* The shell this palette really lives in mounts its body at first open
+          and then KEEPS it mounted across every later close and reopen. This
+          harness models that steady state — mounted once, toggled open and
+          shut — because it is the state the focus bug lives in, and the one
+          an operator is in for every Ctrl+K after their first. */}
       <div aria-hidden={!open}>
         <CommandPalette
           open={open}

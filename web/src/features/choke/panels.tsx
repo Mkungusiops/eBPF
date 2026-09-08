@@ -13,7 +13,7 @@ import { shortAgent,
   stateForScore,
   thresholdsAscending,
 } from "./utils";
-import { EmptyState, ErrorState, LoadingState, Panel, StateBadge } from "./components";
+import { EmptyState, LoadingState, Panel, StateBadge } from "./components";
 
 type EngineFactStatus = "ok" | "warn" | "danger" | "neutral";
 interface EngineFact {

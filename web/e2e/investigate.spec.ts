@@ -583,15 +583,24 @@ test.describe("watchlist", () => {
    * claim the panel's own copy makes ("stored in this browser"). A re-render
    * cannot see this; only a real navigation can.
    *
-   * AND the reopening itself. Every content assertion below passed with the
-   * reopening click DELETED, because ModalShell mounts every modal body
-   * permanently and CSS-hides the backdrop (`.soc-modal-back` without
-   * `is-open`) — so the rows are counted, and their hit counts read, whether or
-   * not the operator can get back to them. The `is-open` assertion after the
-   * click is what makes the click load-bearing, and it is the only thing
-   * exercising `watchlistNav`: the badge the panel earns by working ("Watchlist
-   * 2") is what breaks socNavItem's exact-name match, which is asserted here
-   * directly rather than left as a comment on the helper.
+   * AND the reopening itself. Every content assertion below USED TO PASS with
+   * the reopening click DELETED, because ModalShell mounted every modal body at
+   * route load and CSS-hid the backdrop (`.soc-modal-back` without `is-open`) —
+   * so the rows were counted, and their hit counts read, whether or not the
+   * operator could get back to them.
+   *
+   * ModalShell now mounts a body at FIRST OPEN. It keeps it mounted after that,
+   * but `page.reload()` below is a real page load, so the pre-reload open does
+   * not carry over: after the reload the watchlist body is not in the DOM at
+   * all until the click. The click is therefore load-bearing for the content
+   * assertions on its own now.
+   *
+   * The `is-open` assertion after the click stays, and still earns its place:
+   * it is the difference between the body EXISTING and the operator being able
+   * to REACH it, and it is the only thing exercising `watchlistNav` — the badge
+   * the panel earns by working ("Watchlist 2") is what breaks socNavItem's
+   * exact-name match, which is asserted here directly rather than left as a
+   * comment on the helper.
    */
   test("watches survive a reload and are re-matched against the new buffer", async ({ page }) => {
     await openConsole(page);

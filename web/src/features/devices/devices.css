@@ -901,10 +901,19 @@
   text-transform: uppercase;
 }
 
-.devices-field-error {
+/* The reason requirement, stated from the moment the dialog opens rather than
+   after a rejected press — the confirm button is disabled until the box is
+   filled, so this sentence is what tells the operator why. Muted while the
+   requirement is met, warm once it is outstanding: still a statement of the
+   rule, not an error about something the operator did wrong. */
+.devices-field-req {
   margin-top: 6px;
-  color: #fda4af;
+  color: var(--devices-muted);
   font-size: 0.72rem;
+}
+
+.devices-field-req--unmet {
+  color: #fda4af;
 }
 
 .devices-modal-actions {
@@ -1079,6 +1088,16 @@
   font-size: 12px;
   line-height: 1.5;
   color: var(--devices-warn, #c2820a);
+}
+
+/* The device plane's audit-reason rule, printed beside the shared ladder
+   because the ladder's own reason box states the process plane's. Dim rather
+   than warn-coloured: it is the standing rule of this surface, not a fault. */
+.devices-ladder-reason-note {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--devices-dim);
 }
 
 /* The mechanism that withholds the shared EnforcementLadder — it takes no

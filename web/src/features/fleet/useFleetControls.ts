@@ -15,7 +15,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { writeKillSwitch, writePreset, writeThaw, writeThresholds } from "./api";
-import { readFanout, summarizeFanout, validateThresholds } from "./fleetLogic";
+import { readFanout, readLadderPersistence, summarizeFanout, validateThresholds } from "./fleetLogic";
 import type {
   ApplyMode,
   ConfirmState,
@@ -58,7 +58,8 @@ export interface FleetControlsOptions {
    *
    * Only `false` disables anything, and only once `identityResolved` is true.
    * `null` from an answered whoami is the single-tenant engine, which has no
-   * permission model to consult — see FleetWhoami in api.ts.
+   * permission model to consult — see useResponseAuthority in features/soc/api.ts,
+   * which is where the whole four-state answer now comes from.
    */
   canRespond?: boolean | null;
   /**
@@ -93,6 +94,23 @@ export interface FleetControls {
   writesDisabledReason: string;
   thresholdDraft: Thresholds;
   thresholdDirty: boolean;
+  /**
+   * What the LAST threshold write said about how long it lasts — "" until one
+   * has been sent.
+   *
+   * Kept on the rail rather than left to the toast alone: a targeted ladder is
+   * pushed back over by the control plane's reconciler a couple of minutes
+   * later, long after any toast has gone, and an operator watching their
+   * thresholds change back needs the explanation still on screen when they
+   * come looking for it.
+   */
+  ladderNote: string;
+  /**
+   * The last threshold write did NOT become the tenant's ladder, so any ladder
+   * the tenant does have will be pushed back over it — see
+   * readLadderPersistence for why that is stated conditionally.
+   */
+  ladderTemporary: boolean;
   setThreshold: (key: keyof Thresholds, value: string) => void;
   applyThresholds: () => Promise<void>;
   requestPreset: (name: PresetName) => void;
@@ -117,6 +135,10 @@ export function useFleetControls({
   const [thresholdDraft, setThresholdDraft] = useState<Thresholds>(DEFAULT_THRESHOLDS);
   const [thresholdDirty, setThresholdDirty] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
+  const [ladder, setLadder] = useState<{ note: string; temporary: boolean }>({
+    note: "",
+    temporary: false
+  });
 
   // A host that drops out of the peer list must drop out of the selection with
   // it, or the next "Selected only" write names a host nobody can see.
@@ -249,6 +271,28 @@ export function useFleetControls({
     [runPreset, setConfirmState]
   );
 
+  /**
+   * The one write on this rail whose result has TWO facts in it: which hosts
+   * took the ladder, and how long they keep it.
+   *
+   * It does not go through reportAndRefresh, because that function may only
+   * ever say the first. The control plane stores a ladder as the tenant's
+   * policy only for an untargeted write and reports which it did in
+   * `stored_for_tenant`; nothing in the console read that field, so a targeted
+   * ladder raised the same green "Thresholds applied" as an estate-wide one and
+   * was then pushed back to the tenant's ladder by the reconciler a couple of
+   * minutes later — the operator saw success, then saw their thresholds change
+   * back, with nothing anywhere connecting the two.
+   *
+   * A temporary write is REPORTED, not refused. The write is real: it reaches
+   * the agents, they ack it, and a short-lived targeted tightening is a
+   * legitimate thing to do mid-incident. Refusing it would also refuse it on
+   * the single-tenant engine, which has no tenant policy and no reconciler and
+   * sends no such field — a durability rule invented for a server that does not
+   * have one. So the write goes, and the toast loses its success tone: an
+   * operator who is told "applied" and nothing else has been misinformed, and
+   * one who is told "applied, and here is when it reverts" has not.
+   */
   const applyThresholds = useCallback(async () => {
     const validation = validateThresholds(thresholdDraft);
     if (validation) {
@@ -261,13 +305,31 @@ export function useFleetControls({
     try {
       const result = await writeThresholds(thresholdDraft, write.targets);
       setThresholdDirty(false);
-      await reportAndRefresh("Thresholds", result);
+      const persistence = readLadderPersistence(result, write.targets);
+      setLadder({ note: persistence.note, temporary: persistence.temporary });
+      const summary = summarizeFanout("Thresholds", readFanout(result));
+      const body = persistence.note ? `${summary.body} ${persistence.note}` : summary.body;
+      if (summary.ok && persistence.temporary) {
+        // Warn, not ok. The fan-out succeeded AND this is not the ladder those
+        // hosts will be running shortly; only the first of those two facts used
+        // to reach the operator. "Liable to be", not "will be", because the
+        // server said this ladder is not the tenant's — not that the tenant has
+        // one to be reconciled against. The body carries that condition.
+        pushToast(
+          "warn",
+          "Thresholds applied to the selected hosts — not stored, and liable to be reconciled back",
+          body
+        );
+      } else {
+        pushToast(summary.ok ? "ok" : "err", summary.title, body);
+      }
+      await refresh();
     } catch (error) {
       pushToast("err", "Threshold update failed", error instanceof Error ? error.message : "request failed");
     } finally {
       setPendingAction(null);
     }
-  }, [pushToast, reportAndRefresh, resolveWrite, thresholdDraft]);
+  }, [pushToast, refresh, resolveWrite, thresholdDraft]);
 
   const setKillSwitch = useCallback(
     async (on: boolean, reason: string) => {
@@ -381,6 +443,8 @@ export function useFleetControls({
     writesDisabledReason,
     thresholdDraft,
     thresholdDirty,
+    ladderNote: ladder.note,
+    ladderTemporary: ladder.temporary,
     setThreshold,
     applyThresholds,
     requestPreset,

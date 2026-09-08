@@ -341,3 +341,9 @@ web/.auth/
 # Playwright probe artifacts (kept out of the e2e outputDir, which is cleared per run)
 /web/test-results-probe*/
 /web/playwright-report-probe*/
+
+# Owned by web/src/test/outcomeTypecheckGate.test.ts: a pid-named file carrying a
+# deliberate type error, created and removed inside one run so the gate is proven
+# to actually compile src/test. A SIGKILL can leave one behind; ignored so it can
+# never be swept into a commit by `git add -A`.
+web/src/test/__typecheckGateProbe.*.ts

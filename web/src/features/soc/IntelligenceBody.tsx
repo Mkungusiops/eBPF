@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Sparkles } from "lucide-react";
+import { selectedTenantNow, tenantScopedPath, useSelectedTenant } from "../../lib/tenantScope";
 import { useAssistantChat } from "../assistant/AssistantChatProvider";
 
 /**
@@ -123,11 +124,43 @@ function when(iso: string): string {
   return Number.isNaN(t.getTime()) ? "—" : t.toLocaleTimeString();
 }
 
+/**
+ * Every read this panel makes, carrying the customer the console is pointed at.
+ *
+ * `tenantScopedPath` is lib/api.ts's own scoping step. This panel raw-fetched
+ * instead, which is the one way past the funnel, so its four reads left the
+ * browser with no `tenant` on them at all — nothing on the wire said which
+ * customer they were about, while the banner over this route said every panel
+ * here is the selected customer's data only. A read-scoped screen with an
+ * unscoped panel inside it is worse than an unscoped screen: the banner is the
+ * reason the operator believes the panel. Anything added here that fetches must
+ * go through this helper, or through lib/api.ts, so it cannot be forgotten
+ * again.
+ *
+ * ASKING IS THIS SIDE'S HALF OF IT. The control plane still resolves these five
+ * endpoints from the session alone — `tenantScope` in
+ * internal/controlplane/enrichment.go reads the principal's own scope and
+ * ignores `?tenant=`, unlike `authorizeRead`, which every other read goes
+ * through — so a provider's answer here is not the selected customer's until
+ * that handler honours the parameter. What changes here is that the console no
+ * longer displays one customer while having asked about no one in particular.
+ *
+ * Scoped at the moment each request goes out rather than when the panel
+ * mounted: the 20s refresh re-enters this helper, so every poll names the
+ * customer selected at the time it is sent.
+ *
+ * It stays on fetch's own `res.json()` rather than calling lib/api.ts's `api()`
+ * because the two disagree about an unlabelled body: `api()` parses a response
+ * only when the server marked it `application/json` and otherwise hands back
+ * the raw text, while this panel reads JSON from these endpoints regardless.
+ * The scoping is the part that must match, and it does.
+ *
+ * 503 is the documented "not enabled on this deployment" answer, and it is a
+ * normal state rather than a fault — the caller renders an explanation, not an
+ * error. Anything else is genuinely unexpected.
+ */
 async function getJSON<T>(path: string, signal: AbortSignal): Promise<T | null> {
-  const res = await fetch(path, { credentials: "same-origin", signal });
-  // 503 is the documented "not enabled on this deployment" answer, and it is a
-  // normal state rather than a fault — the caller renders an explanation, not
-  // an error. Anything else is genuinely unexpected.
+  const res = await fetch(tenantScopedPath(path), { credentials: "same-origin", signal });
   if (!res.ok) return null;
   return (await res.json()) as T;
 }
@@ -142,6 +175,10 @@ export function IntelligenceBody({ open }: { open: boolean }) {
   // built around, and a conversation that has replaced its own evidence has
   // quietly abandoned it.
   const assistantChat = useAssistantChat();
+  // THE CUSTOMER THIS PANEL IS ABOUT. Held as a dependency of the load effect
+  // below, so a switch re-reads at once instead of leaving the customer just
+  // left on screen until the 20s refresh happens to come round.
+  const selectedTenant = useSelectedTenant();
   const [baseline, setBaseline] = useState<BaselineResponse | null>(null);
   const [intel, setIntel] = useState<IntelResponse | null>(null);
   const [anomalies, setAnomalies] = useState<Finding[]>([]);
@@ -150,9 +187,20 @@ export function IntelligenceBody({ open }: { open: boolean }) {
   const [unavailable, setUnavailable] = useState(false);
   const [lookup, setLookup] = useState("");
   const [lookupResult, setLookupResult] = useState<string | null>(null);
+  // THE CUSTOMER THE CONTENTS ON SCREEN DESCRIBE, as opposed to the one the
+  // console is pointed at. They are the same except between a switch and the
+  // answer to the reads it triggers; see the render below.
+  const [shownFor, setShownFor] = useState<string | null>(selectedTenant);
 
   const load = useCallback((signal: AbortSignal) => {
     setLoading(true);
+    // THE CUSTOMER THESE FOUR READS ARE ABOUT, read once before they go out and
+    // carried through to `shownFor` below, so what lands is labelled with the
+    // customer it was asked about rather than whoever is selected when it
+    // arrives. There is no second check on the way back: a switch re-runs the
+    // effect below, whose cleanup aborts this controller, so an answer for the
+    // customer just left is already dropped by the `signal.aborted` guard.
+    const scopedTo = selectedTenantNow();
     void Promise.all([
       getJSON<BaselineResponse>("/api/baseline?top=8", signal),
       getJSON<IntelResponse>("/api/intel", signal),
@@ -166,18 +214,26 @@ export function IntelligenceBody({ open }: { open: boolean }) {
         setAnomalies(a?.findings ?? []);
         setMatches(m?.findings ?? []);
         setUnavailable(b === null && i === null);
+        setShownFor(scopedTo);
         setLoading(false);
       })
       .catch(() => {
-        if (!signal.aborted) {
-          setUnavailable(true);
-          setLoading(false);
-        }
+        if (signal.aborted) return;
+        setUnavailable(true);
+        setShownFor(scopedTo);
+        setLoading(false);
       });
   }, []);
 
   useEffect(() => {
     if (!open) return;
+    // A LOOKUP ANSWER MUST NOT OUTLIVE THE VIEW IT WAS ASKED IN. It quotes the
+    // indicator count of the deployment as this panel last read it, and after a
+    // customer switch — or a re-open minutes later — it is an answer to a
+    // question nobody on this screen asked. The fetched rows need no such
+    // clearing: they are replaced by the load below, and until it lands
+    // `shownFor` keeps the previous customer's off the screen.
+    setLookupResult(null);
     const ctl = new AbortController();
     load(ctl.signal);
     // Refreshed on a timer because both layers are fed by a live event stream;
@@ -187,17 +243,24 @@ export function IntelligenceBody({ open }: { open: boolean }) {
       ctl.abort();
       window.clearInterval(t);
     };
-  }, [open, load]);
+  }, [open, load, selectedTenant]);
 
   const runLookup = useCallback(() => {
     const q = lookup.trim();
     if (!q) return;
     setLookupResult("checking…");
     const ctl = new AbortController();
+    // The scope this question is asked in. Unlike the polls above, this request
+    // has its own controller that no switch aborts, so its answer can arrive
+    // after the operator has moved on — and the verdict it carries was obtained
+    // under the customer they left. Printed then, it would sit beside the new
+    // customer's name.
+    const scopedTo = selectedTenantNow();
     void getJSON<{ matched: boolean; match?: IntelMatch }>(
       `/api/intel/lookup?q=${encodeURIComponent(q)}`,
       ctl.signal
     ).then((res) => {
+      if (selectedTenantNow() !== scopedTo) return;
       if (!res) {
         setLookupResult("lookup unavailable on this deployment");
         return;
@@ -221,6 +284,20 @@ export function IntelligenceBody({ open }: { open: boolean }) {
     const age = Math.min(1, st.need_span_seconds > 0 ? st.span_seconds / st.need_span_seconds : 1);
     return { obs, age, pct: Math.round(Math.min(obs, age) * 100) };
   }, [baseline]);
+
+  // THE CONTENTS BELONG TO THE CUSTOMER THE CONSOLE HAS SINCE LEFT.
+  //
+  // Every card below states a fact — a readiness, a feed count, a findings
+  // table — and the banner over this route says whose. Between a switch and the
+  // answer to the reads it triggers, those two disagree, and one customer's
+  // evidence read as another's is the whole defect this scoping exists to
+  // prevent. So the panel says it is reading rather than showing rows it can no
+  // longer attribute. Not reached on first paint: `shownFor` starts on the
+  // selection, so an unanswered panel renders its cards exactly as it always
+  // did, each carrying its own reason for being empty.
+  if (shownFor !== selectedTenant) {
+    return <div className="soc-empty">Reading this customer’s baseline and threat-intelligence…</div>;
+  }
 
   if (unavailable) {
     return (

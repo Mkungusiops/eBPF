@@ -1,5 +1,6 @@
 import { createContext, ReactNode, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { getJSON } from "./api";
+import { tenantScopedPath, useTenantScope } from "./tenantScope";
 import { createRafStreamBatcher, shouldProbeWhoami } from "./streamCore";
 import type { StreamFrame } from "./types";
 import { useStreamStore, type SharedStreamState } from "../stores/stream";
@@ -32,6 +33,22 @@ export function StreamProvider({ children }: { children: ReactNode }) {
   const sourceRef = useRef<EventSource | null>(null);
   const retryRef = useRef(0);
   const [reconnectNonce, setReconnectNonce] = useState(0);
+  // THE CUSTOMER THE TAIL BELONGS TO, and whether the console can name one yet.
+  // /api/stream goes through authorizeRead like every other read, so it honours
+  // ?tenant= — and a connection opened without one keeps delivering the
+  // account's default customer for as long as it stays open. Both are
+  // dependencies of the connect effect: a switch tears the socket down and
+  // re-opens it for the customer now on screen, and the barrier below re-opens
+  // it once there is a customer to name.
+  const scope = useTenantScope();
+  const selectedTenant = scope.selected;
+  // pendingTenantHydration() made reactive — the same barrier, from the same
+  // promise (see buildScopeView in lib/tenantScope.ts). Read from the store
+  // rather than called directly because an effect cannot be re-run by a promise
+  // it did not depend on: a deferred connect that fired between the selection
+  // landing and React re-rendering opened a socket the very next effect run
+  // immediately closed.
+  const confirmingCustomer = scope.hydrating;
 
   const reconnect = useCallback(() => {
     sourceRef.current?.close();
@@ -56,7 +73,12 @@ export function StreamProvider({ children }: { children: ReactNode }) {
         useStreamStore.getState().failed(retryRef.current + 1, "EventSource unavailable");
         return;
       }
-      const source = new EventSource("/api/stream");
+      // Scoped through the same accessor as every other request, so the tail
+      // and the panels beside it cannot describe different customers. A switch
+      // re-runs this effect, which resets the shared store above before
+      // reaching here — so the customer just left leaves no frame behind in the
+      // buffer the new connection starts filling.
+      const source = new EventSource(tenantScopedPath("/api/stream"));
       sourceRef.current = source;
 
       source.onopen = () => {
@@ -90,14 +112,31 @@ export function StreamProvider({ children }: { children: ReactNode }) {
       };
     };
 
-    connect();
+    // THE TAIL WAITS FOR THE CUSTOMER TOO. This is the one request that does
+    // not go through lib/api.ts's funnel — an EventSource is opened directly —
+    // so it was the one request the hydration barrier did not hold. Opened
+    // before the selection landed, it named no customer, and the control plane
+    // resolves a tenant-less read to the account's DEFAULT customer: the socket
+    // then delivered that customer's alerts into a console on its way to
+    // another one, under a "live" pill, for as long as it took the selection to
+    // arrive. Re-opening on the selection healed the URL and the buffer, but not
+    // the operator who had already read those frames.
+    //
+    // So nothing is opened while the barrier stands. The store is left in the
+    // reset "connecting" state it was just put in, which is exactly what the
+    // wait is; settling flips this flag and re-runs the effect. A retry that
+    // re-opens hydration passes through here too, closing the tail while the
+    // console cannot say whose frames it would be carrying. With no barrier at
+    // all — every tenant-bound console — this connects in the mount tick,
+    // exactly as it did before any of this existed.
+    if (!confirmingCustomer) connect();
     return () => {
       cancelled = true;
       batcher.cancel();
       sourceRef.current?.close();
       if (timeout) window.clearTimeout(timeout);
     };
-  }, [reconnectNonce]);
+  }, [reconnectNonce, selectedTenant, confirmingCustomer]);
 
   const value = useMemo(
     () => ({

@@ -18,8 +18,6 @@ import {
   fleetErrorMessage,
   isFleetDisabled,
   readFleetSnapshot,
-  readWhoami,
-  type FleetWhoami,
   writeKillSwitch,
   writePreset,
   writeThaw,
@@ -27,7 +25,14 @@ import {
 } from "./api";
 import type { FanoutEnvelope, PresetName, Thresholds } from "./types";
 
-/** Every call takes a signal: a fleet poll outlives the component that started it. */
+/**
+ * Every call takes a signal: a fleet poll outlives the component that started
+ * it. The signal is carried all the way to `fetch` — `fetchSnapshot` hands
+ * these options to readFleetSnapshot, which puts them on each of its six
+ * getJSON calls. It used to stop at this interface: the type said "abortable",
+ * the implementation called `readFleetSnapshot()` with no arguments, and the
+ * abort on close cancelled nothing but a timer.
+ */
 export interface FleetApiCallOptions {
   signal?: AbortSignal;
 }
@@ -43,7 +48,13 @@ export interface FleetSnapshotResponse {
 
 export interface FleetApi {
   fetchSnapshot(options?: FleetApiCallOptions): Promise<FleetSnapshotResponse>;
-  fetchWhoami(options?: FleetApiCallOptions): Promise<FleetWhoami>;
+  /**
+   * NO fetchWhoami. It was here while the fleet console was its own page and
+   * decided for itself whether the account may write; inside the SOC console
+   * that question has one answer, the shared authority store in
+   * features/soc/api.ts, and a seam that can supply a second one is how the two
+   * drift apart. See FleetSurface.tsx.
+   */
   applyPreset(name: PresetName, targets: string[] | null, reason: string): Promise<FanoutEnvelope>;
   applyThresholds(thresholds: Thresholds, targets: string[] | null): Promise<FanoutEnvelope>;
   /** `reason` is audited by the engine on every real transition — see writeKillSwitch. */
@@ -61,8 +72,7 @@ export interface FleetApi {
  */
 export function createFleetApi(): FleetApi {
   return {
-    fetchSnapshot: () => readFleetSnapshot(),
-    fetchWhoami: () => readWhoami(),
+    fetchSnapshot: (options) => readFleetSnapshot(options),
     applyPreset: (name, targets, reason) => writePreset(name, targets, reason),
     applyThresholds: (thresholds, targets) => writeThresholds(thresholds, targets),
     setKillSwitch: (on, targets, reason) => writeKillSwitch(on, targets, reason),

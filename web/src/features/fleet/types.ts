@@ -92,10 +92,24 @@ export interface AuditState {
   supported?: boolean;
 }
 
+/** The kill-switch as reported, which is three-valued — see `KillState`. */
+export type KillState = "on" | "off" | "unknown";
+
 export interface ChokeState {
   mode?: string;
   dry_run?: boolean;
-  kill_switched?: boolean;
+  /**
+   * `null` when the server could not read it, and that is not `false`.
+   *
+   * The multi-tenant control plane sends `"kill_switched": nil` on every host
+   * in /api/fleet/state: no heartbeat field carries the agent's switch, so it
+   * has nothing to report. Typing this as `boolean` made the console fold the
+   * unknown into "off" — a green "live" pill over a host whose enforcement
+   * state nobody knows, and an "off" vote in the drift majority, so part of a
+   * measured "DRIFT 0" was an artefact of a field the server said it could not
+   * read.
+   */
+  kill_switched?: boolean | null;
   tracked?: number;
   counts?: ChokeCounts;
   thresholds?: Thresholds;
@@ -146,6 +160,12 @@ export interface FleetStateSnapshot {
 
 export interface DriftResult {
   mode: string | null;
+  /**
+   * The majority over the hosts that actually REPORTED a kill-switch state.
+   * `null` when none did — which is the whole fleet on the control plane, and
+   * must not collapse into "off": a host compared against a majority nobody
+   * voted in would be marked drifted for a field neither side knows.
+   */
   kill: "on" | "off" | null;
   thresholds: string | null;
 }
@@ -154,7 +174,14 @@ export interface RowModel {
   peer: FleetPeer;
   result?: HostResult<ChokeState>;
   reachable: boolean;
+  /**
+   * What this host said about its kill-switch: on, off, or it did not say.
+   * Carried on the row so the table renders the same three states the KPIs
+   * count, rather than each deriving its own two-state guess.
+   */
+  killState: KillState;
   driftMode: boolean;
+  /** Never true for a host whose kill-switch state is unknown — see DriftResult. */
   driftKill: boolean;
   driftThresholds: boolean;
 }
@@ -163,7 +190,17 @@ export interface FleetKpis {
   total: number;
   healthy: number;
   enforcing: number;
+  /** Reachable hosts that reported the kill-switch ENGAGED. */
   killed: number;
+  /**
+   * Reachable hosts that did not report a kill-switch state at all.
+   *
+   * Counted separately because `killed: 0` over a fleet that reported nothing
+   * is not the same reading as `killed: 0` over a fleet that reported "off",
+   * and the tile used to render both as the reassuring one.
+   */
+  killUnknown: number;
+  /** Hosts differing from the fleet majority on a field they REPORTED. */
   drift: number;
   auditOk: number;
   /** Hosts that maintain a chain and report it broken. */

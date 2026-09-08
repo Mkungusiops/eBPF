@@ -1,0 +1,115 @@
+/* THE SHELL'S SCOPE CAPTION — the same claim the dashboard's own banner makes,
+   on the pages that had none.
+
+   /choke, /devices and /fleet are separate HTML entries with separate React
+   trees, and none of them renders the SOC dashboard's banner. A provider
+   switched to customer B therefore reached the containment controls with
+   nothing on screen naming a customer at all.
+
+   Not dismissible, for the reason the dashboard's is not: it is the caption for
+   every control below it, and a caption that can be closed is the one the
+   operator will be missing at the moment they fire containment.
+
+   IT CARRIES ITS OWN PALETTE, and that is the correction. It was styled to
+   "match" .soc-scope-banner by reusing that banner's tokens — var(--soc-text),
+   var(--soc-accent), var(--soc-line). Those are declared on .soc-route
+   (soc.css), and this banner is mounted by app/render.tsx as a SIBLING of the
+   route, so not one of them ever resolved: every colour fell through to the
+   hard-coded dark fallback beside it. On a light desktop that put #e2e8f0 text
+   on a 10%-tinted wash over a near-white page — 1.15:1, which is not "hard to
+   read", it is not there — and it took the amber refusal strip with it, the one
+   sentence on screen telling an operator their containment is being withheld
+   and which customer it was withheld from.
+
+   THREE THEME STATES, not two. lib/theme.ts stamps .theme-light/.theme-dark on
+   <html> and <body>, but it does that from initTheme() on two entries and from
+   a useOSTheme() EFFECT on the rest — so this banner, which renders above the
+   route and before that effect has run, has a first paint with NEITHER class
+   present. The dark palette below is therefore the unstamped default (dark is
+   this console's house theme, and osTheme() falls back to it too); the light
+   palette is applied both by the explicit .theme-light stamp and, for that
+   unstamped first paint, by prefers-color-scheme — guarded with
+   :not(.theme-dark) so an explicit dark stamp still wins on a light desktop.
+
+   The two light blocks are deliberate duplicates of one palette, because a
+   selector list cannot straddle a media query. src/test/shellScopeBannerTheme
+   .test.ts asserts they stay identical and that each state's ink/background
+   pair clears 4.5:1 in both palettes; the backgrounds are OPAQUE so that
+   contrast is a property of these tokens rather than of whatever page scrolls
+   under a translucent wash. */
+.console-scope-banner {
+  --csb-ink: #e6eaf1;
+  --csb-bg: #171c28;
+  --csb-line: rgba(148, 163, 184, 0.28);
+  --csb-icon: #8ba1ff;
+
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 10px 14px 0;
+  padding: 11px 14px;
+  border-radius: 7px;
+  border: 1px solid var(--csb-line);
+  background: var(--csb-bg);
+  color: var(--csb-ink);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+/* The unconfirmed scope is NOT a normal session: the console is holding
+   containment back. Amber, like every other "this reading is not what it looks
+   like" strip in the console. */
+.console-scope-banner--unconfirmed {
+  --csb-ink: #fde3b4;
+  --csb-bg: #2a1e07;
+  --csb-line: rgba(245, 158, 11, 0.55);
+  --csb-icon: #f6b73c;
+}
+
+.theme-light .console-scope-banner {
+  --csb-ink: #1a2230;
+  --csb-bg: #eef2ff;
+  --csb-line: rgba(26, 34, 48, 0.16);
+  --csb-icon: #3b4ec7;
+}
+
+.theme-light .console-scope-banner--unconfirmed {
+  --csb-ink: #7a4b04;
+  --csb-bg: #fff7e6;
+  --csb-line: rgba(180, 83, 9, 0.45);
+  --csb-icon: #b45309;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not(.theme-dark) .console-scope-banner {
+    --csb-ink: #1a2230;
+    --csb-bg: #eef2ff;
+    --csb-line: rgba(26, 34, 48, 0.16);
+    --csb-icon: #3b4ec7;
+  }
+
+  :root:not(.theme-dark) .console-scope-banner--unconfirmed {
+    --csb-ink: #7a4b04;
+    --csb-bg: #fff7e6;
+    --csb-line: rgba(180, 83, 9, 0.45);
+    --csb-icon: #b45309;
+  }
+}
+
+.console-scope-banner svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--csb-icon);
+}
+
+.console-scope-banner button {
+  margin-left: auto;
+  flex-shrink: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: transparent;
+  border: 1px solid var(--csb-line);
+  border-radius: 6px;
+  padding: 5px 9px;
+}

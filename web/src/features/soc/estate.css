@@ -1,0 +1,420 @@
+/* The estate-wide view.
+ *
+ * Kept in its own file rather than added to soc.css because the view is one
+ * self-contained section a provider sees and a tenant-bound operator never
+ * does; the tokens are the console's own (--soc-*), so it inherits both themes
+ * from the route without redefining a single colour.
+ *
+ * The visual hierarchy carries the honesty rules rather than decorating them:
+ * the unread-customers alarm sits ABOVE every total (a figure missing a
+ * customer must be read as short before it is read at all), the posture block
+ * states whose score it is in words next to the number, and an unread row in
+ * any breakdown is rendered in the muted/danger pair used for "unknown"
+ * elsewhere in the console — never in the same style as a real zero.
+ */
+
+.soc-estate {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 10px;
+  border: 1px solid var(--soc-line-strong);
+  background: var(--soc-panel);
+  box-shadow: var(--soc-shadow);
+  color: var(--soc-text);
+}
+
+.soc-estate-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.soc-estate-title {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.soc-estate-title svg {
+  flex-shrink: 0;
+  margin-top: 3px;
+  color: var(--soc-accent);
+}
+
+.soc-estate-title h2 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0.01em;
+}
+
+.soc-estate-title p {
+  margin: 3px 0 0;
+  font-size: 12px;
+  color: var(--soc-muted);
+}
+
+.soc-estate-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--soc-line);
+  background: transparent;
+  color: var(--soc-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.soc-estate-refresh:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.soc-estate-alarm {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 14px;
+  border-radius: 7px;
+  border: 1px solid rgba(224, 165, 59, 0.45);
+  background: rgba(224, 165, 59, 0.1);
+  line-height: 1.45;
+  font-size: 12.5px;
+}
+
+.soc-estate-alarm svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+  color: var(--soc-warn);
+}
+
+.soc-estate.is-error .soc-estate-alarm {
+  border-color: rgba(242, 87, 107, 0.45);
+  background: rgba(242, 87, 107, 0.1);
+}
+
+.soc-estate.is-error .soc-estate-alarm svg {
+  color: var(--soc-danger);
+}
+
+.soc-estate-alarm p {
+  margin: 0 0 4px;
+}
+
+.soc-estate-alarm button {
+  margin-left: auto;
+  padding: 5px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--soc-line);
+  background: transparent;
+  color: var(--soc-text);
+  cursor: pointer;
+}
+
+.soc-estate-unread-list {
+  margin: 4px 0 0;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Posture: the number, then the sentence that says whose it is. The two are
+ * deliberately inseparable — a bare score in this position would be read as an
+ * estate average, which is the reading this whole view refuses. */
+.soc-estate-posture {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  padding: 12px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--soc-line);
+  background: var(--soc-panel-soft);
+}
+
+.soc-estate-posture.is-concern {
+  border-color: rgba(242, 87, 107, 0.45);
+}
+
+.soc-estate-posture-score {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 150px;
+  gap: 2px;
+}
+
+.soc-estate-posture-score span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--soc-muted);
+}
+
+.soc-estate-posture-score strong {
+  font-size: 30px;
+  line-height: 1;
+}
+
+.soc-estate-posture.is-concern .soc-estate-posture-score strong {
+  color: var(--soc-danger);
+}
+
+.soc-estate-posture-score small {
+  font-size: 11px;
+  color: var(--soc-dim);
+}
+
+.soc-estate-posture-body {
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.soc-estate-posture-body p {
+  margin: 0 0 4px;
+}
+
+.soc-estate-posture-split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  color: var(--soc-muted);
+}
+
+.soc-estate-posture-split .is-concern {
+  color: var(--soc-danger);
+}
+
+.soc-estate-posture-split .is-unread,
+.soc-estate .is-unread .soc-estate-breakdown-tenant {
+  color: var(--soc-warn);
+}
+
+.soc-estate-fineprint {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: var(--soc-dim);
+  line-height: 1.4;
+}
+
+.soc-estate-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+}
+
+.soc-estate-tile {
+  border-radius: 8px;
+  border: 1px solid var(--soc-line);
+  background: var(--soc-panel-soft);
+  overflow: hidden;
+}
+
+.soc-estate-tile.is-open {
+  border-color: var(--soc-line-strong);
+}
+
+.soc-estate-tile > button {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 11px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.soc-estate-tile-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--soc-muted);
+}
+
+.soc-estate-tile-value {
+  font-size: 24px;
+  line-height: 1.1;
+}
+
+.soc-estate-tile-sub,
+.soc-estate-tile-more {
+  font-size: 11px;
+  color: var(--soc-dim);
+}
+
+.soc-estate-tile-more {
+  color: var(--soc-accent);
+}
+
+.soc-estate-mismatch {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--soc-danger);
+  border-top: 1px solid rgba(242, 87, 107, 0.35);
+  background: rgba(242, 87, 107, 0.08);
+}
+
+.soc-estate-breakdown {
+  margin: 0;
+  padding: 8px 12px 10px;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-top: 1px solid var(--soc-line);
+  font-size: 12px;
+}
+
+/* The list is display:flex, which would otherwise beat the user agent's
+ * [hidden] { display: none } and paint a collapsed tile's breakdown. */
+.soc-estate-breakdown[hidden] {
+  display: none;
+}
+
+.soc-estate-breakdown li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.soc-estate-breakdown-tenant {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.soc-estate-breakdown em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--soc-dim);
+}
+
+.soc-estate-breakdown li.is-unread strong {
+  color: var(--soc-warn);
+  font-weight: 600;
+}
+
+.soc-estate-technique h3 {
+  margin: 0 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--soc-muted);
+}
+
+.soc-estate-technique p {
+  margin: 0 0 4px;
+  font-size: 12.5px;
+}
+
+.soc-estate-technique .soc-estate-breakdown {
+  border-top: 0;
+  padding: 4px 0;
+}
+
+/* The table is the decomposition that needs no click: every customer, every
+ * figure, always on screen. It scrolls inside its own box so a wide estate
+ * never pushes the console into a horizontal scroll. */
+.soc-estate-table-wrap {
+  overflow-x: auto;
+}
+
+.soc-estate-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.soc-estate-table caption {
+  caption-side: top;
+  text-align: left;
+  padding-bottom: 6px;
+  font-size: 11px;
+  color: var(--soc-dim);
+}
+
+.soc-estate-table th,
+.soc-estate-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--soc-line);
+  text-align: right;
+  white-space: nowrap;
+}
+
+.soc-estate-table thead th,
+.soc-estate-table tbody th {
+  text-align: left;
+  color: var(--soc-muted);
+  font-weight: 600;
+}
+
+.soc-estate-table tbody th {
+  color: var(--soc-text);
+}
+
+.soc-estate-table td.is-concern {
+  color: var(--soc-danger);
+  font-weight: 600;
+}
+
+.soc-estate-table tr.is-unread td {
+  text-align: left;
+  white-space: normal;
+  color: var(--soc-warn);
+}
+
+.soc-estate-jump {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--soc-muted);
+}
+
+.soc-estate-jump button {
+  padding: 4px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--soc-line);
+  background: transparent;
+  color: var(--soc-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.soc-estate-jump button:hover {
+  border-color: var(--soc-accent);
+}
+
+.soc-estate-absent {
+  border-top: 1px dashed var(--soc-line);
+  padding-top: 8px;
+}
+
+@media (max-width: 720px) {
+  .soc-estate-posture {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .soc-estate-posture-score {
+    min-width: 0;
+    flex-direction: row;
+    align-items: baseline;
+    gap: 8px;
+  }
+}

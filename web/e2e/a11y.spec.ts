@@ -145,18 +145,21 @@ test.describe("keyboard operation", () => {
   });
 
   /**
-   * KNOWN DEFECT (found by this suite, 2026-08-27): Ctrl+K opens the palette
-   * but leaves focus on <body>, so the next keystroke goes nowhere and the
-   * operator has to reach for the mouse — which defeats the only reason a
+   * FIXED (found by this suite 2026-08-27, fixed 2026-09-02): Ctrl+K opened the
+   * palette but left focus on <body>, so the next keystroke went nowhere and
+   * the operator had to reach for the mouse — which defeats the only reason a
    * command palette exists.
    *
-   * CAUSE: every modal body is mounted at route load and hidden with CSS (see
-   * SocModals.tsx), so cmdk's `autoFocus` fires once, on a hidden input, long
-   * before the palette is opened. Opening it changes no React state that would
-   * re-run focus.
+   * CAUSE: modal bodies were mounted at route load and hidden with CSS, so
+   * cmdk's `autoFocus` fired once, on a hidden input, long before the palette
+   * was opened. Opening it changed no React state that would re-run focus.
    *
-   * Expected-to-fail rather than deleted: the assertion is right, and this
-   * turns green into a hard error the moment focus is moved on open.
+   * STILL LOAD-BEARING after ModalShell learned to mount bodies at first open.
+   * That change would fix the FIRST Ctrl+K of a session on its own — the input
+   * mounts already visible — but a shell stays mounted once opened, so from the
+   * second Ctrl+K onward the palette is again a mounted, hidden component whose
+   * `autoFocus` will never fire. CommandPalette's layout effect is what focuses
+   * it, on every open. This test guards the fix, not a pin.
    */
   test("the command palette takes focus when it opens", async ({ page }) => {
     await installMockApi(page);

@@ -109,6 +109,17 @@ type Expectation =
  * it through its own prop pair — but it IS an advertised tool, and the
  * contract does not list it. That divergence is reported, not patched here.
  */
+/**
+ * Rail links that really are EXITS — a click must leave for this route.
+ *
+ * The Fleet Console is deliberately NOT here any more. It is still an anchor
+ * carrying href="/fleet" (bookmarks, this suite's own sign-in target and the
+ * command palette all address it that way, and /fleet still answers), but a
+ * plain click no longer navigates: it opens the fleet SURFACE in place over the
+ * console. Listing it here would make this file follow the click as a
+ * navigation and never inspect the body it actually opens — a rail entry that
+ * looks tested and is not. SOC_SURFACES declares it instead, flagged navIsLink.
+ */
 const ROUTE_LINKS: Record<string, RegExp> = {
   Dashboard: /\/$/,
   "Choke Gateway": /\/choke$/,
@@ -141,6 +152,13 @@ const BODY_PROOF: Record<string, { selector: string; what: string }> = {
   "watchlist-modal": { selector: ".soc-watch-item", what: "watched-term rows" },
   "detections-modal": { selector: ".soc-detections-card", what: "detection cards" },
   "fleet-modal": { selector: ".soc-fleet-table", what: "peer table" },
+  // The fleet CONSOLE, which is a different surface from "fleet-modal" above:
+  // that one is the SOC rail's Peer Consoles list, this one is the host-level
+  // view that moved in from /fleet. `.fleet-table` is rendered only when the
+  // fan-out produced peers — a loading or empty fleet renders
+  // `.fleet-table-empty` instead — so it is a real floor rather than a wrapper
+  // that exists whatever the estate answered.
+  "fleet-console-modal": { selector: ".fleet-table tbody tr", what: "peer rows" },
   "sensor-health-modal": { selector: ".soc-sensor-summary", what: "agent summary" },
   "settings-modal": { selector: ".soc-settings-row", what: "settings rows" },
   "export-confirm-modal": { selector: ".soc-export-presets", what: "report presets" },
@@ -859,6 +877,14 @@ test.describe("console navigation, live", () => {
     const byNav = new Map(SOC_SURFACES.map((surface) => [surface.nav, surface]));
     const expectationFor = (entry: RailEntry): Expectation => {
       if (entry.kind === "link") {
+        // A surface can be addressed by a link without being an exit. Check the
+        // surface contract BEFORE the route table: get this order wrong and the
+        // fleet console is followed as a navigation, its body is never opened,
+        // and the fan-out reports a pass over a surface it did not inspect.
+        const linkedSurface = byNav.get(entry.label);
+        if (linkedSurface?.navIsLink) {
+          return { kind: "surface", panel: linkedSurface.panel, contains: linkedSurface.contains };
+        }
         const href = ROUTE_LINKS[entry.label];
         return href
           ? { kind: "route", href }
@@ -1685,9 +1711,11 @@ test.describe("console navigation, live", () => {
    * lab_mode, and says why in as many words — Attack Sim runs a script as root
    * on the host being defended and, on the control plane, writes fabricated
    * alerts into the tenant's real evidence store. The palette's own item list
-   * (commandItems in SocModals.tsx) is gated on nothing, and every surface body
-   * is mounted permanently, so "Open attacks" and "Show honeypots" open those
-   * surfaces on a production deployment that deliberately hides them.
+   * (commandItems in SocModals.tsx) is gated on nothing, so "Open attacks" and
+   * "Show honeypots" open those surfaces on a production deployment that
+   * deliberately hides them. Selecting a palette entry opens its shell, so this
+   * never depended on when the body mounted: lazy mounting does not narrow the
+   * door, and the gate is the only thing that closes it.
    *
    * FIXED 2026-09-02: commandItems reads the same server-reported lab_mode the rail
    * does, from one predicate, so the two cannot drift apart again.
@@ -2408,47 +2436,76 @@ test.describe("console navigation, live", () => {
   });
 
   /**
-   * The fleet route's OWN navigation — the console's fourth nav, and the only
-   * one that is not the SOC rail.
+   * GETTING OUT OF THE FLEET VIEW — the claim survives, its mechanism changed.
    *
-   * /fleet is a separate HTML entry with a separate bundle and no shared
-   * router, so nothing about the SOC rail's correctness says anything about
-   * this one. It is how an operator standing on the fleet view gets back to any
-   * of the other three consoles, and it was untested.
+   * /fleet used to be a separate HTML entry with its own bundle and its own
+   * "Console navigation": a fourth nav, the only one that was not the SOC rail,
+   * and the only way back to the other three consoles. That is what this test
+   * used to drive, entry by entry.
+   *
+   * The fleet console is now a SURFACE inside the SOC console, and /fleet is a
+   * redirect that opens it. So there is no fourth nav to check, and the way out
+   * is the SOC rail the operator already has — which is a stronger position
+   * than the one this test was written for, because the rail is exercised by
+   * every other test in this file rather than existing only here.
+   *
+   * The test therefore asserts three things instead of the old vocabulary
+   * check: arriving at /fleet lands in the console with the fleet surface open;
+   * there is NO second console nav (the consolidation's whole point, and the
+   * assertion that fails if a second chrome ever comes back); and the operator
+   * can still reach another console from where they landed. The followed link
+   * is still Devices, still for the same reason.
    */
-  test("the Fleet route's console navigation reaches the other three consoles", async ({ page }) => {
+  test("arriving at /fleet lands in the console, with one nav and a way out", async ({ page }) => {
     await signIn(page, env);
     const watch = new ConsoleWatch(page);
     await page.goto("/fleet", { waitUntil: "domcontentloaded" });
     const settled = watch.mark();
 
-    const nav = page.getByRole("navigation", { name: "Console navigation" });
-    await expect(nav, "the fleet route offers no way to the other consoles").toHaveCount(1);
-    expect(
-      (await nav.locator("a, span").allInnerTexts()).map((text) => text.trim()),
-      "the fleet nav is not the four consoles this platform ships"
-    ).toEqual(["Single Host", "Choke", "Devices", "Fleet"]);
-    await expect(nav.getByRole("link", { name: "Single Host" })).toHaveAttribute("href", "/");
-    await expect(nav.getByRole("link", { name: "Choke" })).toHaveAttribute("href", "/choke");
-    await expect(nav.getByRole("link", { name: "Devices" })).toHaveAttribute("href", "/devices");
-    // The current console is a span, not a link: a nav whose active entry still
-    // navigates reloads the page an operator is already standing on.
-    await expect(nav.getByRole("link", { name: "Fleet" }), "the active console is still a link").toHaveCount(0);
-    await expect(nav.locator("span.fleet-btn--active"), "the fleet nav marks no current console").toHaveText("Fleet");
-
-    // The sign-out link belongs to this nav too. Asserted, never clicked: this
-    // is the shared session.
-    const signOut = page.locator(".fleet-user").getByRole("link", { name: "Sign out" });
-    await expect(signOut, "the fleet route offers no way out").toHaveCount(1);
-    await expect(signOut).toHaveAttribute("href", "/api/logout");
-    await expect(page.locator(".fleet-user"), "the fleet route does not say who is signed in").toContainText(
-      /signed in as/i
+    // The redirect is part of the claim: /fleet must land on the console with
+    // the surface OPEN, not merely on the console.
+    await expect(
+      page.locator('[data-panel="left-sidebar"]'),
+      "/fleet did not land on the SOC console"
+    ).toBeVisible();
+    const surface = page.locator('[data-panel="fleet-console-modal"]');
+    await expect(surface, "/fleet landed on the console without opening the fleet surface").toHaveClass(
+      /is-open/,
+      { timeout: 30_000 }
     );
+
+    // THE CONSOLIDATION'S POINT, asserted rather than assumed: one nav. A
+    // second "Console navigation" reappearing means a second chrome came back,
+    // which is the thing this change removed and the thing an operator meets as
+    // two consoles for one job.
+    await expect(
+      page.getByRole("navigation", { name: "Console navigation" }),
+      "a second console navigation is back — the fleet view is carrying its own chrome again"
+    ).toHaveCount(0);
+    await expect(
+      page.locator(".fleet-user"),
+      "the fleet surface is carrying its own sign-out again"
+    ).toHaveCount(0);
+
+    // The way out is the rail the operator already has. Asserted, never
+    // clicked, for sign out: this is the shared session.
+    const railSignOut = socNavLink(page, "Sign out");
+    await expect(railSignOut, "the console offers no way out from the fleet surface").toHaveCount(1);
+    await expect(railSignOut).toHaveAttribute("href", "/api/logout");
+
+    // Closing the surface must leave the operator on the dashboard, not on a
+    // blank page: the fleet view is a door, not a destination.
+    await page.keyboard.press("Escape");
+    await expect(surface, "the fleet surface did not close on Escape").not.toHaveClass(/is-open/);
+    await expect(
+      page.locator('[data-panel="kpi-row"]'),
+      "closing the fleet surface did not leave the operator on the dashboard"
+    ).toBeVisible();
 
     // One link is FOLLOWED, and the lightest of the three: hrefs prove the
     // markup, not that the target serves a console. Devices is a seven-panel
     // route, so this costs one boot rather than the SOC route's thirty-one.
-    await nav.getByRole("link", { name: "Devices" }).click();
+    await socNavLink(page, "Device Choke").click();
     await page.waitForURL(/\/devices$/, { timeout: 60_000 });
     await expect(
       page.locator('[data-panel="topbar-row-1"]'),
@@ -2457,11 +2514,13 @@ test.describe("console navigation, live", () => {
     await expect(page.getByRole("heading", { name: /stopped rendering/i })).toHaveCount(0);
 
     await page.goBack({ waitUntil: "domcontentloaded" });
+    // Back returns to the CONSOLE, not to /fleet: entries/fleet.tsx uses
+    // location.replace, so the redirect leaves no history entry to return to.
     await expect(
-      page.getByRole("navigation", { name: "Console navigation" }),
-      "going back did not return to the fleet console"
-    ).toHaveCount(1);
-    expect(watch.since(settled), "the fleet nav logged errors while it was driven").toEqual([]);
+      page.locator('[data-panel="left-sidebar"]'),
+      "going back did not return to the console"
+    ).toBeVisible();
+    expect(watch.since(settled), "the fleet surface logged errors while it was driven").toEqual([]);
   });
 
   /**
@@ -3174,8 +3233,10 @@ test.describe("console navigation, live", () => {
     await expect(rail, "the SOC rail never rendered — there would be no exit to assert").toBeVisible();
 
     // ── one exit, and it is a link ─────────────────────────────────────────
-    // Scoped to the rail, not the page: the account-profile modal is mounted at all
-    // times and the Choke and Fleet chromes carry exits of their own.
+    // Scoped to the rail, not the page: the account panel grows a sign-out of its own the
+    // moment it is first opened (ModalShell mounts a body on first open and keeps it,
+    // components.tsx:225-249, :271), and the Choke and Fleet chromes carry exits too — page-wide,
+    // this would count a second exit the moment anything opened that panel.
     await expect(rail.locator('a[href="/api/logout"]'), "the rail offers no way out, or offers more than one").toHaveCount(1);
     const signOut = socNavLink(page, "Sign out");
     await expect(signOut, '"Sign out" does not resolve to exactly one rail link').toHaveCount(1);
@@ -3245,22 +3306,43 @@ test.describe("console navigation, live", () => {
     }
 
     // ── the second exit, in the panel that entry opens ─────────────────────
-    // ModalShell mounts every body at all times and withholds `is-open`, which is
-    // display:none (soc.css:2047/2057) — so the closed panel's exit must be genuinely
-    // unreachable, not merely off-screen, or a keyboard operator tabs into it.
+    // TWO CLAIMS, one per state, because neither implies the other: while the panel is shut
+    // its exit must be genuinely unreachable, and once it is open the exit must be there and
+    // must agree with the rail's about where signing out goes.
+    //
+    // ModalShell mounts a body on FIRST OPEN and keeps it from then on (components.tsx:225-249, :271,
+    // pinned by src/test/lazyModalMount.test.tsx), and this anchor is rendered by AccountBody —
+    // the body. So on a dashboard where nobody has opened the panel the exit does not exist at
+    // all: unreachable because it is absent, which is stronger than the display:none
+    // (soc.css:2095, and :2106 for .is-open) the shell used to hide it behind.
+    //
+    // STRONGER ON A FRESH LOAD, and only there. The body is kept once opened, so from the
+    // moment an operator opens this panel even once, the exit is back in the DOM behind that
+    // same display:none for the rest of the session — the original tab-into hazard, unchanged.
+    // This test runs on a fresh dashboard, which is why absence is the right check HERE; it is
+    // not a claim about the panel's whole life. Visibility is checked as well rather than
+    // assumed, so a return to eager mounting is REPORTED instead of quietly trading the strong
+    // guarantee for the weak one.
     const modalExit = page.locator('[data-panel="account-profile-modal"] a.soc-account-signout');
-    await expect(modalExit, "the account panel carries no sign-out of its own").toHaveCount(1);
     const openModal = page.locator('[data-panel="account-profile-modal"].is-open');
     await expect(openModal, "the account panel is already open on a fresh dashboard, so its exit cannot be checked for reachability-while-closed").toHaveCount(0);
-    if (await modalExit.isVisible()) {
+    // COLLECTED, not asserted: an exit sitting behind a shut panel is a finding to report, not
+    // a reason to abandon the checks below it.
+    if (await modalExit.count()) {
       failures.push({
         item: "account panel: Sign out",
-        reason: "is reachable while its panel is closed — an exit an operator can trip over by tabbing the dashboard"
+        reason: (await modalExit.isVisible())
+          ? "is reachable while its panel is closed — an exit an operator can trip over by tabbing the dashboard"
+          : "exists in the DOM behind a panel nobody has opened — hidden, so not tabbable, but the shell is mounting bodies eagerly again and this exit's unreachability now rests on one CSS class"
       });
     }
     try {
       await accountButton.click();
       await expect(openModal, "the account entry did not open the profile panel").toHaveCount(1);
+      // Counted HERE, after the open, not before it: the anchor only exists once this panel's
+      // body has been mounted, so "the panel carries an exit of its own" is a question only an
+      // opened panel can answer.
+      await expect(modalExit, "the account panel carries no sign-out of its own").toHaveCount(1);
       // ASSERTED, NEVER CLICKED: this is the session the rest of the run shares.
       await expect(modalExit, "the panel's exit is not offered once it is open").toBeVisible();
       await expect(modalExit, "the console's two exits disagree about where signing out goes").toHaveAttribute("href", "/api/logout");

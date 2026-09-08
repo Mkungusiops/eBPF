@@ -16,7 +16,7 @@
  */
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { ChatSidebar } from "./ChatSidebar";
-import type { AssistantSurface } from "./api";
+import { assistantRequest, type AssistantSurface } from "./api";
 import type { UseChatsOptions } from "./useChats";
 
 export interface AssistantHandover {
@@ -91,9 +91,16 @@ export function AssistantChatProvider({
   // when they open; this one exists so the NAV can decide whether Behaviour &
   // Intel needs its own entry, which has to be answered before anything is
   // opened.
+  //
+  // Through the shared transport rather than a bare fetch, so this probe cannot
+  // be the one assistant request that skips what that transport applies (api.ts
+  // — CSRF, the customer on the query string, the wait for the boot driver). It
+  // reads a DEPLOYMENT fact and would survive being unscoped; being the only
+  // exception is what would not survive, because the next reader has to find
+  // out which of two shapes is the right one to copy.
   useEffect(() => {
     const ctl = new AbortController();
-    fetch("/api/assistant", { credentials: "same-origin", signal: ctl.signal })
+    assistantRequest("/api/assistant", { signal: ctl.signal })
       .then((r) => (r.ok ? r.json() : null))
       .then((d: { enabled?: boolean } | null) => {
         if (!ctl.signal.aborted) setAvailable(d?.enabled === true);

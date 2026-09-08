@@ -18,6 +18,39 @@ function cx(...classes: Array<string | false | null | undefined>): string {
   return classes.filter(Boolean).join(" ");
 }
 
+/**
+ * ONE definition of a surface's reason policy: which rungs it refuses without a
+ * typed reason, AND the words it uses to say so.
+ *
+ * The gate and the copy are in the same object because they drifted apart once
+ * the moment they were not. The device plane refuses every jail rung without a
+ * reason — throttle and tarpit included — while this component's built-in copy
+ * said "required to quarantine or sever", so the device surface told an
+ * operator throttle needed no reason and then refused their throttle for want
+ * of one (see features/devices/utils.ts, deviceRungNeedsReason). A caller
+ * passing a stricter `rungs` set without stricter wording would reproduce that
+ * exactly, so the wording travels with it.
+ */
+export interface ReasonRule {
+  /** Rungs this surface will not apply without a reason. */
+  rungs: ReadonlySet<Rung>;
+  /** Placeholder for the reason box — where the rule is stated to the operator. */
+  placeholder: string;
+  /** Title on a rung held closed only because the reason box is empty. */
+  tooltip: (rung: Rung) => string;
+}
+
+/**
+ * The process plane's rule, and the fallback for any surface that does not
+ * state one: quarantine and sever only, which is what both servers enforce for
+ * a process choke.
+ */
+export const DEFAULT_REASON_RULE: ReasonRule = {
+  rungs: REASON_REQUIRED,
+  placeholder: "Reason (required to quarantine or sever)",
+  tooltip: (rung) => `A reason is required to ${ACTION_FOR_RUNG[rung]}`
+};
+
 export interface EnforcementLadderProps {
   target: EnforcementTarget;
   /** The target's rung right now, from the host page's live data. */
@@ -32,6 +65,11 @@ export interface EnforcementLadderProps {
   policy: TerminalPolicy;
   /** Called after an action settles so the host can refresh its own view. */
   onSettled?: () => void;
+  /**
+   * Which rungs need a reason here, and the words for it. Defaults to the
+   * process plane's rule; the device plane passes a stricter one.
+   */
+  reasonRule?: ReasonRule;
   /** Poll budget for confirmation. Multi-tenant learns state from a 5s heartbeat. */
   confirmAttempts?: number;
   confirmIntervalMs?: number;
@@ -57,6 +95,7 @@ export function EnforcementLadder({
   readState,
   policy,
   onSettled,
+  reasonRule = DEFAULT_REASON_RULE,
   confirmAttempts = 8,
   confirmIntervalMs = 2000
 }: EnforcementLadderProps) {
@@ -169,7 +208,7 @@ export function EnforcementLadder({
         className="enf-ladder-reason"
         value={reason}
         onChange={(event) => setReason(event.target.value)}
-        placeholder="Reason (required to quarantine or sever)"
+        placeholder={reasonRule.placeholder}
         aria-label="Reason for this enforcement action"
       />
 
@@ -182,7 +221,7 @@ export function EnforcementLadder({
           // leaving a dead button unexplained.
           const backwards = !isRelease && index <= current;
           const isCurrent = index === current;
-          const needsReason = REASON_REQUIRED.has(rung) && !reason.trim();
+          const needsReason = reasonRule.rungs.has(rung) && !reason.trim();
           const disabled = Boolean(busy) || isCurrent || backwards || needsReason || isDead;
           const why = isDead
             ? policy.terminalNote || "This target is in a terminal state"
@@ -191,7 +230,7 @@ export function EnforcementLadder({
               : backwards
                 ? "The ladder only climbs — use pristine to release"
                 : needsReason
-                  ? `A reason is required to ${ACTION_FOR_RUNG[rung]}`
+                  ? reasonRule.tooltip(rung)
                   : isTop && policy.terminal
                     ? "SIGKILL — cannot be undone"
                     : `Move to ${rung}`;

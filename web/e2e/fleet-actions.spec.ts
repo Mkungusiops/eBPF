@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 
+import { FLEET_SURFACE_HASH } from "./support/contracts";
 import { fleetPartialFailure } from "./support/fixtures";
 import { installMockApi, RequestLog } from "./support/mock-api";
 import { expect, test } from "./support/test";
@@ -78,13 +79,59 @@ import { expect, test } from "./support/test";
  * (`alpha`/`bravo`) are deliberately the server's, not the mock peer list's —
  * the console must echo what the fan-out reported rather than what it assumed.
  *
- * NOTE ON THE MOCK: /fleet polls on a 5s interval and has no SSE, so every
- * assertion below is scoped to non-GET requests on the write paths; the poll's
- * GET traffic shares those prefixes only for the read routes. Tests 1-7 all run
- * against support/mock-api.ts's `writeResponse`, which returns the SINGLE-TENANT
- * engine's `{hosts:[...]}` fan-out envelope. The control plane answers these
- * same routes with a different shape; that shape is exercised only by the last
- * test in this file.
+ * NOTE ON THE MOCK: the fleet surface polls on a 5s interval and has no SSE, so
+ * every assertion below is scoped to non-GET requests on the write paths; the
+ * poll's GET traffic shares those prefixes only for the read routes. Tests 1-7
+ * all run against support/mock-api.ts's `writeResponse`, which returns the
+ * SINGLE-TENANT engine's `{hosts:[...]}` fan-out envelope. The control plane
+ * answers these same routes with a different shape; that shape is exercised
+ * only by the last test in this file.
+ *
+ * ── HOW THE PAGE IS REACHED, AND WHY THAT CHANGED ─────────────────────────
+ * The fleet view is a SURFACE of the SOC console now, not a page at /fleet, so
+ * these tests open the surface instead of navigating to it. Every body, count
+ * and tone below is the one this file has always asserted. Two locator shapes
+ * had to move with the page — and two assertions were ADDED, both of which make
+ * this file stricter than it was: that the surface is still open after the
+ * Escape a confirm test already performed (it used to close the page behind the
+ * dialog, which is the interlock the fleet ConfirmModal now owns), and that a
+ * valid reason ARMS the Apply button, not merely that a blank one disables it.
+ * The reason-gate rework itself is described in its own section below.
+ *
+ * The two locator shapes:
+ *
+ *   • assertions are scoped to the surface's shell rather than to the whole
+ *     document, because there is now a live SOC dashboard behind it that has
+ *     headings, rows and buttons of its own;
+ *   • the confirm gate is addressed as `.fleet-modal` rather than as "the
+ *     dialog on the page", because the shell hosting the surface is itself
+ *     role="dialog" — a bare getByRole("dialog") would match both.
+ *
+ * ── WHAT THE REASON-GATE ASSERTIONS NOW SAY, AND WHAT THEY NO LONGER CAN ──
+ * The two preset confirms below used to press "Apply preset" with a blank
+ * reason and assert the dialog answered "a reason is required". On 2026-09-08
+ * the fleet confirm moved onto the device plane's idiom — DISABLED until the
+ * reason is valid — and that press is no longer expressible: a browser will
+ * not dispatch a click to a disabled control, and React will not deliver one
+ * to a disabled button even if a test forces the event. So the single old
+ * assertion is split into the two claims it was making, both kept:
+ *
+ *   • THE OPERATOR IS TOLD WHY — asserted as VISIBLE TEXT in the dialog, from
+ *     the moment it opens, which is stronger than the `title` its device
+ *     sibling is pinned on at devices.spec.ts:233 and is the whole reason the
+ *     modal renders the sentence rather than only hanging it on the button;
+ *   • THE CONTROL IS INERT — `toBeDisabled()` on the confirm button.
+ *
+ * The `writes(...)` checks that follow are HONESTLY WEAKER than they were:
+ * they used to prove the click handler refuses a PRESSED button, and now they
+ * prove only that nothing was written while the button was dead. Nothing can
+ * restore the stronger claim from here, and the missing half is not hiding in a
+ * unit test either: ConfirmModal's `if (reasonMissing) return` guard is
+ * unreachable through the DOM, so deleting it leaves every test in
+ * src/test/fleetConfirmIdiom.test.tsx green (measured, not assumed). What that
+ * file does pin is the observable half — pressing the dead button writes
+ * nothing and closes nothing — plus the requirement text, the focus target and
+ * the gate itself.
  */
 
 type WriteBody = Record<string, unknown>;
@@ -95,6 +142,38 @@ function writes(recorder: RequestLog, path: RegExp): WriteBody[] {
     .matching(path)
     .filter((request) => request.method !== "GET")
     .map((request) => JSON.parse(request.body ?? "{}") as WriteBody);
+}
+
+/** The fleet surface's shell, and the scope for every assertion in this file. */
+const FLEET_PANEL = '[data-panel="fleet-console-modal"]';
+
+function fleet(page: Page) {
+  return page.locator(FLEET_PANEL);
+}
+
+/**
+ * The fleet console's own confirmation gate.
+ *
+ * Scoped to its class rather than reached as "the dialog", because the
+ * ModalShell hosting the surface carries role="dialog" too. The claims made of
+ * it below — that it is up, that it is gone, that it says what the write does,
+ * that it collects an audit reason — are unchanged.
+ */
+function confirmDialog(page: Page) {
+  return fleet(page).locator("section.fleet-modal[role='dialog']");
+}
+
+/**
+ * Open the fleet surface by its address — the same door the /fleet redirect and
+ * an operator's bookmark come through. No rail interaction, so a change to the
+ * sidebar cannot make these write-path tests fail for an unrelated reason.
+ */
+async function openFleetSurface(page: Page) {
+  await page.goto(`/${FLEET_SURFACE_HASH}`);
+  await expect(
+    fleet(page),
+    "the fleet surface never opened, so no control on it is under test"
+  ).toHaveClass(/is-open/);
 }
 
 const PRESET = /^\/api\/fleet\/preset$/;
@@ -110,17 +189,17 @@ const THAW = /^\/api\/fleet\/thaw$/;
  */
 async function fleetReady(page: Page) {
   await expect(
-    page.getByRole("row", { name: /alpha-edge/ }),
+    fleet(page).getByRole("row", { name: /alpha-edge/ }),
     "the fleet table never loaded, so no control on this page is under test"
   ).toBeVisible();
   await expect(
-    page.getByLabel("Throttle", { exact: true }),
+    fleet(page).getByLabel("Throttle", { exact: true }),
     "threshold draft never synced to the fleet majority (5/10/20/40)"
   ).toHaveValue("5");
 }
 
 function preset(page: Page, name: RegExp) {
-  return page.getByRole("button", { name }).and(page.locator("button.fleet-posture"));
+  return fleet(page).getByRole("button", { name }).and(page.locator("button.fleet-posture"));
 }
 
 test.describe("fleet write path", () => {
@@ -134,16 +213,16 @@ test.describe("fleet write path", () => {
   test("the target set on screen is the target set on the wire", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     // Default posture: every configured peer.
     await expect(
-      page.getByText("Writes target every configured peer."),
+      fleet(page).getByText("Writes target every configured peer."),
       "the rail did not open on All hosts, so the first write below is not the one this test means"
     ).toBeVisible();
     await expect(
-      page.getByText(/Current target set: 2 hosts\./),
+      fleet(page).getByText(/Current target set: 2 hosts\./),
       "Emergency Controls did not restate the estate-wide count, so the rail and the panel disagree about blast radius"
     ).toBeVisible();
 
@@ -163,13 +242,13 @@ test.describe("fleet write path", () => {
     // Now narrow to one host. Ticking a row is itself the mode switch — an
     // operator who ticks alpha-edge and never touches the segment must not get
     // an estate-wide write.
-    await page.getByLabel("Select alpha-edge", { exact: true }).check();
+    await fleet(page).getByLabel("Select alpha-edge", { exact: true }).check();
     await expect(
-      page.getByText("Writes target 1 selected host."),
+      fleet(page).getByText("Writes target 1 selected host."),
       "ticking a host row did not flip the rail out of All hosts"
     ).toBeVisible();
     await expect(
-      page.getByText(/Current target set: 1 host\./),
+      fleet(page).getByText(/Current target set: 1 host\./),
       "Emergency Controls kept restating the estate-wide count after a host was selected"
     ).toBeVisible();
 
@@ -192,7 +271,7 @@ test.describe("fleet write path", () => {
     // "Select all" is an EXPLICIT list, not a shortcut back to null. The
     // distinction matters the moment a peer is added to the engine's host
     // file: null follows the estate, a list does not.
-    await page.getByRole("button", { name: "Select all", exact: true }).click();
+    await fleet(page).getByRole("button", { name: "Select all", exact: true }).click();
     await preset(page, /Observe Forensic/).click();
 
     await expect.poll(
@@ -215,12 +294,12 @@ test.describe("fleet write path", () => {
   test('"Selected only" with nothing selected sends nothing at all', async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
-    await page.getByRole("button", { name: "Selected only", exact: true }).click();
+    await fleet(page).getByRole("button", { name: "Selected only", exact: true }).click();
     await expect(
-      page.getByText("Writes target 0 selected hosts."),
+      fleet(page).getByText("Writes target 0 selected hosts."),
       "the rail is not in the empty-selection state this test exists to cover"
     ).toBeVisible();
 
@@ -229,7 +308,7 @@ test.describe("fleet write path", () => {
     // The click WAS handled — the toast proves the handler ran and refused,
     // rather than the button being inert for some unrelated reason.
     await expect(
-      page.locator(".fleet-toast").filter({ hasText: "No hosts selected" }),
+      fleet(page).locator(".fleet-toast").filter({ hasText: "No hosts selected" }),
       "no feedback at all: an operator cannot tell a refused write from a lost one"
     ).toBeVisible();
     expect(
@@ -241,10 +320,10 @@ test.describe("fleet write path", () => {
   test("a non-ascending threshold ladder is refused before it can be sent", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
-    const apply = page.getByRole("button", { name: "Apply", exact: true });
+    const apply = fleet(page).getByRole("button", { name: "Apply", exact: true });
     await expect(
       apply,
       "Apply must stay disabled while the draft still matches the fleet, or a no-op write can be fired at the estate"
@@ -252,8 +331,8 @@ test.describe("fleet write path", () => {
 
     // sever BELOW quarantine: the ladder inverts, and a fleet that accepted it
     // would sever at a score it is meant to merely quarantine at.
-    await page.getByLabel("Sever", { exact: true }).fill("8");
-    await expect(page.getByText("Unsaved changes"), "the editor did not register the edit").toBeVisible();
+    await fleet(page).getByLabel("Sever", { exact: true }).fill("8");
+    await expect(fleet(page).getByText("Unsaved changes"), "the editor did not register the edit").toBeVisible();
     await expect(
       apply,
       "Apply stayed disabled after an edit, so the refusal below would be an artefact of an inert button"
@@ -261,11 +340,11 @@ test.describe("fleet write path", () => {
     await apply.click();
 
     await expect(
-      page.locator(".fleet-toast").filter({ hasText: "Invalid thresholds" }),
+      fleet(page).locator(".fleet-toast").filter({ hasText: "Invalid thresholds" }),
       "a malformed ladder was accepted silently"
     ).toBeVisible();
     await expect(
-      page.locator(".fleet-toast"),
+      fleet(page).locator(".fleet-toast"),
       "the refusal must say WHICH rule was broken, not just that something was wrong"
     ).toContainText(/strictly ascending/i);
     expect(
@@ -275,12 +354,12 @@ test.describe("fleet write path", () => {
 
     // Zero is refused on the same path, and for the same reason: a threshold of
     // 0 fires the rung on every process.
-    await page.getByLabel("Sever", { exact: true }).fill("0");
+    await fleet(page).getByLabel("Sever", { exact: true }).fill("0");
     await apply.click();
     await expect(
       // Toasts stack rather than replace, so this names the second rule by its
       // own message instead of matching the "Invalid thresholds" title twice.
-      page.locator(".fleet-toast").filter({ hasText: "greater than zero" }),
+      fleet(page).locator(".fleet-toast").filter({ hasText: "greater than zero" }),
       "a zero threshold was accepted; it fires its rung on every process on every host"
     ).toBeVisible();
     expect(
@@ -289,10 +368,10 @@ test.describe("fleet write path", () => {
     ).toEqual([]);
 
     // Repaired: strictly ascending, and now it goes — with the target set.
-    await page.getByLabel("Throttle", { exact: true }).fill("6");
-    await page.getByLabel("Tarpit", { exact: true }).fill("12");
-    await page.getByLabel("Quarantine", { exact: true }).fill("24");
-    await page.getByLabel("Sever", { exact: true }).fill("48");
+    await fleet(page).getByLabel("Throttle", { exact: true }).fill("6");
+    await fleet(page).getByLabel("Tarpit", { exact: true }).fill("12");
+    await fleet(page).getByLabel("Quarantine", { exact: true }).fill("24");
+    await fleet(page).getByLabel("Sever", { exact: true }).fill("48");
     await apply.click();
 
     await expect.poll(
@@ -313,12 +392,12 @@ test.describe("fleet write path", () => {
   test("estate-wide destructive presets are gated on a confirm and an audit reason", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     await preset(page, /Severe Containment/).click();
 
-    const dialog = page.getByRole("dialog");
+    const dialog = confirmDialog(page);
     await expect(dialog, "containment applied on a single click").toBeVisible();
     await expect(
       dialog,
@@ -326,28 +405,59 @@ test.describe("fleet write path", () => {
     ).toContainText(/choke suspicious chains/i);
     expect(writes(recorder, PRESET), "the preset was sent while the confirm was still open").toEqual([]);
 
-    // Escaping out is a refusal, not a deferral.
+    // Escaping out is a refusal, not a deferral — of the CONFIRM, and of
+    // nothing behind it. The console this surface now lives in closes whatever
+    // surface is open on Escape, so the confirm takes the key in the capture
+    // phase and stops it; the next line would otherwise be pressing a preset on
+    // a fleet view the same keystroke had just shut.
     await page.keyboard.press("Escape");
+    await expect(
+      fleet(page),
+      "Escape dismissed the confirm and the fleet view behind it, dropping the operator on the dashboard mid-incident"
+    ).toHaveClass(/is-open/);
     await expect(dialog, "Escape did not dismiss the confirm, so the refusal below proves nothing").toHaveCount(0);
     expect(writes(recorder, PRESET), "dismissing the confirm still applied the preset").toEqual([]);
 
     await preset(page, /Severe Containment/).click();
-    const reason = page.getByRole("dialog").getByLabel("Audit reason");
+    const reason = confirmDialog(page).getByLabel("Audit reason");
     await expect(
       reason,
       "an estate-wide containment with no reason field lands in the audit log with no explanation"
     ).toBeVisible();
 
-    await reason.fill("   ");
-    await page.getByRole("dialog").getByRole("button", { name: "Apply preset" }).click();
+    // DISABLED UNTIL VALID — one grammar across every containment confirm.
+    //
+    // The device plane settled this on 2026-09-07 and the fleet confirm was
+    // brought onto it on 2026-09-08: the button is unavailable until a reason
+    // is present, rather than accepting the press and answering with an inline
+    // error. Whitespace still does not count — a reason box satisfied by a
+    // space bar is a reason field in name only, and this is the estate-wide
+    // containment preset.
+    //
+    // Both halves of that idiom are asserted, because a dead control that does
+    // not say what is missing is its own failure — and a `title` cannot say it,
+    // since a browser opens no tooltip on a disabled button. See the header for
+    // what this pair replaced and what it can no longer claim.
     await expect(
-      page.getByRole("dialog"),
+      dialog,
+      "the confirm never states that a reason is required, so the button below goes dead unexplained"
+    ).toContainText(/reason is required/i);
+
+    await reason.fill("   ");
+    const applyPreset = confirmDialog(page).getByRole("button", { name: "Apply preset" });
+    await expect(
+      applyPreset,
       "a whitespace-only reason satisfied the audit requirement"
+    ).toBeDisabled();
+    await expect(
+      dialog,
+      "the operator blanked the reason and was left with a dead Apply preset and nothing on screen saying why"
     ).toContainText(/reason is required/i);
     expect(writes(recorder, PRESET), "containment was applied with a blank audit reason").toEqual([]);
 
     await reason.fill("beaconing confirmed on alpha-edge");
-    await page.getByRole("dialog").getByRole("button", { name: "Apply preset" }).click();
+    await expect(applyPreset).toBeEnabled();
+    await applyPreset.click();
 
     await expect.poll(
       () => writes(recorder, PRESET).length,
@@ -362,13 +472,13 @@ test.describe("fleet write path", () => {
       body.reason,
       `the operator's reason must travel with the write; body was ${JSON.stringify(body)}`
     ).toBe("beaconing confirmed on alpha-edge");
-    await expect(page.getByRole("dialog"), "the confirm stayed open after a successful write").toHaveCount(0);
+    await expect(confirmDialog(page), "the confirm stayed open after a successful write").toHaveCount(0);
 
     // Maintenance is the OTHER `danger` branch in requestPreset, and it is not
     // a lesser case: it engages the kill-switch across the target set, i.e. it
     // stops enforcement estate-wide. It must be gated exactly as hard.
     await preset(page, /Pause Maintenance/).click();
-    const maintenance = page.getByRole("dialog");
+    const maintenance = confirmDialog(page);
     await expect(maintenance, "the maintenance preset applied on a single click").toBeVisible();
     await expect(
       maintenance,
@@ -381,10 +491,18 @@ test.describe("fleet write path", () => {
 
     const maintenanceReason = maintenance.getByLabel("Audit reason");
     await maintenanceReason.fill("  ");
-    await maintenance.getByRole("button", { name: "Apply preset" }).click();
+    // Same grammar as the containment preset above, and asserted as the same
+    // pair: the requirement in readable text, and the control inert.
+    // Maintenance raises thresholds and engages the kill-switch estate-wide, so
+    // it is the LAST confirm that should be easier to satisfy than containment
+    // — that asymmetry is what this case exists for.
     await expect(
-      page.getByRole("dialog"),
+      maintenance.getByRole("button", { name: "Apply preset" }),
       "maintenance accepted a whitespace-only audit reason where containment refused one"
+    ).toBeDisabled();
+    await expect(
+      maintenance,
+      "maintenance went dead with no reason on screen where containment explained itself"
     ).toContainText(/reason is required/i);
     expect(
       writes(recorder, PRESET),
@@ -412,11 +530,11 @@ test.describe("fleet write path", () => {
   test("engaging the kill-switch is gated; disengaging it is not", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
-    await page.getByRole("button", { name: "Kill-switch on", exact: true }).click();
-    const dialog = page.getByRole("dialog");
+    await fleet(page).getByRole("button", { name: "Kill-switch on", exact: true }).click();
+    const dialog = confirmDialog(page);
     await expect(dialog, "bypassing enforcement fleet-wide was a single click").toBeVisible();
     await expect(
       dialog,
@@ -439,7 +557,7 @@ test.describe("fleet write path", () => {
 
     // The way OUT of a bad state never waits for a dialog — the same rule the
     // approvals queue follows for withdrawal.
-    await page.getByRole("button", { name: "Kill-switch off", exact: true }).click();
+    await fleet(page).getByRole("button", { name: "Kill-switch off", exact: true }).click();
     await expect.poll(
       () => writes(recorder, KILL_SWITCH).length,
       "restoring enforcement did not reach the server on one click"
@@ -449,7 +567,7 @@ test.describe("fleet write path", () => {
       `disengaging must send on:false to the same target set, not a second engage; body was ${JSON.stringify(writes(recorder, KILL_SWITCH)[1])}`
     ).toMatchObject({ on: false, targets: null });
     await expect(
-      page.getByRole("dialog"),
+      confirmDialog(page),
       "restoring enforcement must not be gated behind a dialog an operator has to read mid-incident"
     ).toHaveCount(0);
   });
@@ -485,11 +603,11 @@ test.describe("fleet write path", () => {
   test("engaging the kill-switch records the operator's audit reason", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
-    await page.getByRole("button", { name: "Kill-switch on", exact: true }).click();
-    const dialog = page.getByRole("dialog");
+    await fleet(page).getByRole("button", { name: "Kill-switch on", exact: true }).click();
+    const dialog = confirmDialog(page);
     const reason = dialog.getByLabel("Audit reason");
     await expect(
       reason,
@@ -513,15 +631,15 @@ test.describe("fleet write path", () => {
   test("thaw carries an audit reason and the selected hosts", async ({ page }) => {
     const recorder = new RequestLog();
     await installMockApi(page, { recorder });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     // Scope it first, so this also pins that the confirm path resolves targets
     // at write time rather than capturing them when the dialog opened.
-    await page.getByLabel("Select bravo-edge", { exact: true }).check();
+    await fleet(page).getByLabel("Select bravo-edge", { exact: true }).check();
 
-    await page.getByRole("button", { name: "Thaw quarantine", exact: true }).click();
-    const dialog = page.getByRole("dialog");
+    await fleet(page).getByRole("button", { name: "Thaw quarantine", exact: true }).click();
+    const dialog = confirmDialog(page);
     await expect(dialog, "thaw released quarantined processes without a confirm").toBeVisible();
     await expect(
       dialog.getByLabel("Audit reason"),
@@ -565,7 +683,7 @@ test.describe("fleet write path", () => {
       recorder,
       routes: { "/api/fleet/preset": fleetPartialFailure }
     });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     await preset(page, /Everyday Default/).click();
@@ -575,7 +693,7 @@ test.describe("fleet write path", () => {
       "the preset never reached the server, so no fan-out result was rendered"
     ).toBe(1);
 
-    const toast = page.locator(".fleet-toast");
+    const toast = fleet(page).locator(".fleet-toast");
     await expect(toast, "the fan-out result was not reported at all").toBeVisible();
     await expect(
       toast,
@@ -592,11 +710,11 @@ test.describe("fleet write path", () => {
     await expect(toast, "the succeeded/total count is missing").toContainText("1/2");
 
     await expect(
-      page.locator(".fleet-toast--ok"),
+      fleet(page).locator(".fleet-toast--ok"),
       "a success-toned toast was raised over a fan-out that half-failed"
     ).toHaveCount(0);
     await expect(
-      page.locator(".fleet-toast--err"),
+      fleet(page).locator(".fleet-toast--err"),
       "the partial fan-out was not toned as a failure, so it reads like routine confirmation"
     ).toHaveCount(1);
   });
@@ -639,7 +757,7 @@ test.describe("fleet write path", () => {
       // two of two agents. Note what is NOT in it — a `hosts` array.
       routes: { "/api/fleet/preset": { ok: true, preset: "default", applied: 2, total: 2, detail: "" } }
     });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     await preset(page, /Everyday Default/).click();
@@ -649,7 +767,7 @@ test.describe("fleet write path", () => {
       "the preset never reached the server, so no fan-out result was rendered"
     ).toBe(1);
 
-    const toast = page.locator(".fleet-toast");
+    const toast = fleet(page).locator(".fleet-toast");
     await expect(toast, "the fan-out result was not reported at all").toBeVisible();
     await expect(
       toast,
@@ -660,7 +778,7 @@ test.describe("fleet write path", () => {
       "the console reported 0/0 for a write the control plane said reached every agent"
     ).not.toContainText(/0\s*\/\s*0/);
     await expect(
-      page.locator(".fleet-toast--ok"),
+      fleet(page).locator(".fleet-toast--ok"),
       "a fan-out that reached every agent must be toned as the success it was"
     ).toHaveCount(1);
   });
@@ -699,7 +817,7 @@ test.describe("fleet write path", () => {
       // no peer at all.
       routes: { "/api/fleet/preset": { hosts: [] } }
     });
-    await page.goto("/fleet");
+    await openFleetSurface(page);
     await fleetReady(page);
 
     await preset(page, /Everyday Default/).click();
@@ -709,18 +827,18 @@ test.describe("fleet write path", () => {
       "the preset never reached the server, so no fan-out result was rendered"
     ).toBe(1);
 
-    const toast = page.locator(".fleet-toast");
+    const toast = fleet(page).locator(".fleet-toast");
     await expect(toast, "the fan-out result was not reported at all").toBeVisible();
     await expect(
       toast,
       "a write the console could account for on zero hosts was still reported as applied; it must say it reached no hosts"
     ).toContainText(/no hosts/i);
     await expect(
-      page.locator(".fleet-toast--err"),
+      fleet(page).locator(".fleet-toast--err"),
       "a fan-out that touched no host must be toned as a failure, not as routine confirmation"
     ).toHaveCount(1);
     await expect(
-      page.locator(".fleet-toast--ok"),
+      fleet(page).locator(".fleet-toast--ok"),
       "a success-toned toast was raised over a fan-out that touched no host at all"
     ).toHaveCount(0);
   });

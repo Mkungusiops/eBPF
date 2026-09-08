@@ -20,6 +20,7 @@ import {
   Menu,
   Network,
   Radar,
+  Server,
   Settings,
   ShieldAlert,
   Sparkles,
@@ -124,6 +125,34 @@ export function SocSidebar({
         <SidebarSection title="Respond">
           <SidebarLink icon={ShieldAlert} label="Choke Gateway" href="/choke" />
           <SidebarLink icon={Wifi} label="Device Choke" href="/devices" />
+          {/* The fleet view — mode, ladder, kill switch, drift and the writes
+              that scope a containment to named hosts — belongs beside the two
+              choke gateways because it answers the same question they do (what
+              do I contain, and how far does it reach), not under Manage next to
+              the diagnostics.
+
+              IT IS A SURFACE NOW, AND STILL A LINK. It was a console of its own
+              at /fleet, kept out of a SOC modal because 2.5k lines of
+              five-second polling across six fan-out endpoints would have run
+              behind a closed dialog for every analyst. That objection is spent:
+              ModalShell mounts a body only once the surface is first opened,
+              and the fleet body stops polling the moment it is closed. What is
+              left is one drill hierarchy — estate, customer, hosts, process —
+              instead of two consoles for one job.
+
+              The href stays real. /fleet is bookmarked, the live probe suite
+              signs in at it, and it now redirects into this console with the
+              surface open (src/entries/fleet.tsx), so the address is still the
+              address. The click opens the surface in place rather than paying
+              for that round trip; a modified click is left to the browser, so
+              "open in a new tab" still works and lands in the same place. */}
+          <SidebarSurfaceLink
+            icon={Server}
+            label="Fleet Console"
+            href="/fleet"
+            onOpen={() => onOpenSurface("fleet-console")}
+            active={openSurface === "fleet-console"}
+          />
         </SidebarSection>
         <SidebarSection title="Detect & Investigate">
           <SidebarButton icon={Gauge} label="MITRE Coverage" onClick={() => onOpenSurface("mitre")} active={openSurface === "mitre"} />
@@ -163,7 +192,14 @@ export function SocSidebar({
           {labMode ? (
             <SidebarButton icon={Zap} label="Attack Sim" onClick={() => onOpenSurface("attacks")} active={openSurface === "attacks"} />
           ) : null}
-          <SidebarButton icon={Network} label="Fleet" onClick={() => onOpenSurface("fleet")} active={openSurface === "fleet"} />
+          {/* Named for what it is. This is not the fleet console (that is the
+              /fleet link under Respond): it is a browser-local directory of
+              OTHER consoles' URLs, kept in soc.fleet.hosts and probed for
+              reachability, which deliberately does not enumerate enrolled
+              agents. Called "Fleet" it was the discoverable entry of that name,
+              so an operator looking for host drift found a bookmark list and
+              concluded the fleet page was redundant. */}
+          <SidebarButton icon={Network} label="Peer Consoles" onClick={() => onOpenSurface("fleet")} active={openSurface === "fleet"} />
           <SidebarButton icon={Cpu} label="Sensor Health" onClick={() => onOpenSurface("kprobes")} active={openSurface === "kprobes"} />
           {/* Tuning lives next to the surface that shows what needs tuning. */}
           <SidebarButton icon={SlidersHorizontal} label="Settings" onClick={() => onOpenSurface("settings")} active={openSurface === "settings"} />
@@ -273,6 +309,51 @@ function SidebarButton({
       <span>{label}</span>
       {badge ? <em>{badge}</em> : null}
     </button>
+  );
+}
+
+/**
+ * A rail entry that is BOTH an address and a surface.
+ *
+ * The fleet view has a URL of its own that has to keep working — bookmarks, the
+ * live probe suite, the command palette's route entry — while opening it from
+ * inside the console must not reload the console. So the anchor carries the
+ * real href and the plain left click opens the surface instead of following it.
+ *
+ * Everything a modified click means is left alone: ctrl/cmd/shift/alt and any
+ * button but the primary one go to the browser, which is how "open in a new
+ * tab" reaches /fleet and redirects back into a fresh console with the surface
+ * open. Suppressing those would break the one gesture the href exists for.
+ */
+function SidebarSurfaceLink({
+  icon: Icon,
+  label,
+  href,
+  onOpen,
+  active
+}: {
+  icon: typeof Activity;
+  label: string;
+  href: string;
+  onOpen: () => void;
+  active?: boolean;
+}) {
+  return (
+    <a
+      className={cx("soc-sidebar-item", active && "is-active")}
+      href={href}
+      title={label}
+      aria-current={active ? "page" : undefined}
+      onClick={(event) => {
+        if (event.defaultPrevented) return;
+        if (event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+        event.preventDefault();
+        onOpen();
+      }}
+    >
+      <Icon size={16} strokeWidth={1.75} />
+      <span>{label}</span>
+    </a>
   );
 }
 

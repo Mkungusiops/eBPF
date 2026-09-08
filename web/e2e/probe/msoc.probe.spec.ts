@@ -630,11 +630,14 @@ test.describe("cross-tenant MSOC admin", () => {
   /**
    * WHAT THE ADMIN SEES — the one place the console does say it.
    *
-   * SocModals mounts every modal body permanently and hides it by withholding
-   * `is-open`, and a SlideOver is pushed off-screen with translateX(102%) —
-   * both of which Playwright still counts as visible. `toHaveClass(/is-open/)`
-   * is the assertion that means "this opened"; toBeVisible() would pass against
-   * a modal that never opened at all.
+   * A modal shell is in the DOM before it is visible and is hidden by
+   * withholding `is-open`, and a SlideOver is pushed off-screen with
+   * translateX(102%) — both of which Playwright still counts as visible.
+   * `toHaveClass(/is-open/)` is the assertion that means "this opened";
+   * toBeVisible() would pass against a modal that never opened at all. That is
+   * unchanged by ModalShell mounting bodies at first open instead of at route
+   * load: the shell, its `data-panel` and its class list are always there, and
+   * it is the class that carries the claim.
    */
   test("the console names the operator's role, so an MSOC admin is not shown as an analyst", async ({
     browser,

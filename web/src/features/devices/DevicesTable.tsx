@@ -12,7 +12,15 @@ import { EnforcementLadder } from "../common/EnforcementLadder";
 import { DEVICE_TERMINAL, type Rung } from "../common/enforcement";
 import type { DeviceEntry } from "./types";
 import type { FlowLoadState } from "./useDeviceInventory";
-import { formatAgo, formatBucket, formatBytes, isDeviceStateName, macSlug } from "./utils";
+import {
+  DEVICE_REASON_NOTE,
+  DEVICE_REASON_RULE,
+  formatAgo,
+  formatBucket,
+  formatBytes,
+  isDeviceStateName,
+  macSlug
+} from "./utils";
 
 export function DevicesTable({
   devices,
@@ -212,6 +220,15 @@ function DeviceRow({
                 device is doing, the ladder does something about it. Same
                 component as the correlation graph and Choke Gateway. */}
             {blockedReason ? <p className="devices-permission-note">{blockedReason}</p> : null}
+            {/* The ladder below now states this plane's rule itself — it is
+                given DEVICE_REASON_RULE, so its placeholder, its tooltips and
+                the gate that stops the write all come from one definition. This
+                line survives because a placeholder has no room for the part an
+                operator still needs: that the rule is stricter than one of the
+                two servers on purpose, and that a release is exempt. */}
+            <p className="devices-ladder-reason-note" data-panel="device-reason-rule">
+              {DEVICE_REASON_NOTE}
+            </p>
             {/* The shared ladder takes no disabled prop, and it should not have
                 to learn about permissions to be withheld from one surface:
                 fieldset[disabled] disables every control inside it. */}
@@ -227,6 +244,7 @@ function DeviceRow({
                 apply={(rung, why) => onApply(device.mac, rung, why)}
                 readState={() => onReadState(device.mac)}
                 onSettled={onSettled}
+                reasonRule={DEVICE_REASON_RULE}
               />
             </fieldset>
           </td>

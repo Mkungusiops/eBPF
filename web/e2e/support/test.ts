@@ -261,3 +261,19 @@ export function socNavLink(page: Page, label: string) {
     .getByRole("link", { name: label, exact: true })
     .and(page.locator("a.soc-sidebar-item"));
 }
+
+/**
+ * The sidebar control for a SURFACE, resolved by what that control actually is.
+ *
+ * Most surfaces are opened by a button. The Fleet Console is opened by an
+ * anchor — it is still `<a href="/fleet">` so bookmarks, the live probe's
+ * sign-in target and the palette's route entry keep working, and a plain left
+ * click opens the surface in place instead of navigating. Asking for it by the
+ * wrong role does not fail loudly: `getByRole("button")` simply finds nothing,
+ * which reads as "the surface is missing" in one caller and passes VACUOUSLY in
+ * another that asserts a count of zero. So the contract carries `navIsLink` and
+ * this helper honours it, rather than each call site guessing.
+ */
+export function socNavControl(page: Page, surface: { nav: string; navIsLink?: boolean }) {
+  return surface.navIsLink ? socNavLink(page, surface.nav) : socNavItem(page, surface.nav);
+}

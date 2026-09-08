@@ -1,12 +1,16 @@
 // Rich SOC panel bodies. The base SocRoute keeps the live-data plumbing; these
 // components render the enterprise-grade surfaces (MITRE matrix, honeypot grid,
-// kprobe board, fleet console, notification center, risk gauge) that the modal
-// shells host. Each body is data-driven off the same snapshot the route already
-// fetches, so nothing here introduces new network calls beyond explicit probes.
+// fleet console, notification center, risk gauge) that the modal shells host.
+// Each body is data-driven off the same snapshot the route already fetches, so
+// nothing here introduces new network calls beyond explicit probes.
+//
+// The kprobe board that used to live here was replaced in 30318a3 by
+// SensorHealthBody, which the "kprobes" surface has mounted ever since; its
+// KprobeBody was left exported with no caller and is now deleted.
 import { useCallback, useEffect, useMemo, useState, type Dispatch, type SetStateAction } from "react";
-import { Activity, AlertTriangle, Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Shield, ShieldCheck, Target, Trash2, Volume2 } from "lucide-react";
-import { cx, EmptyState, Sparkline } from "./components";
-import { fetchPolicyStats, probeFleetHosts } from "./api";
+import { AlertTriangle, Bell, FileCode, FileDown, Globe, Plus, RadioTower, Search, Shield, ShieldCheck, Target, Trash2, Volume2 } from "lucide-react";
+import { cx, EmptyState } from "./components";
+import { probeFleetHosts } from "./api";
 import type {
   Severity,
   SocAlert,
@@ -342,8 +346,6 @@ export function techniqueForAlert(alert: SocAlert, techByPolicy: Map<string, str
 //   observed — a detection actually fired (count > 0)
 //   covered  — a policy maps to it, but it has not fired (capability, dormant)
 //   gap      — NO policy maps to it: a blind spot an attacker could use unseen
-export type MitreCoverageModel = ReturnType<typeof buildMitreCoverageModel>;
-
 export function buildMitreCoverageModel(
   mitreRows: Array<{ label: string; value: number; meta?: string; id?: string }>,
   alerts: SocAlert[],
@@ -610,6 +612,14 @@ export function MitreNavigatorBody({
 
 /* ------------------------------------------------------------ Policy viewer */
 
+// UNREFERENCED. 30318a3 pointed the "policies" surface at DetectionsBody and
+// left this read-only viewer exported with no caller (see the note in
+// SocModals.tsx). It is residue and should go the way KprobeBody just did, but
+// src/test/policySurfaces.test.ts still asserts that THIS file contains the
+// viewer's `loaded on ${policy.loadedAgents}` / "unknown" string, so deleting
+// the component here alone turns that suite red. Deleting it means retargeting
+// that one assertion at DetectionsBody, which already carries the same
+// guarantee — and that test file is not this pass's to edit.
 export function PoliciesBody({
   policies,
   alerts,
@@ -888,249 +898,6 @@ export function HoneypotsBody({ honeypots, now }: { honeypots: SocHoneypot[]; no
         <EmptyState
           title="No honeypots match the current filter"
           detail="Decoy files are seeded under the honeypots directory and fire critical alerts on access."
-        />
-      )}
-    </div>
-  );
-}
-
-/* -------------------------------------------------------- Kprobe performance */
-
-type KprobeBand = "all" | "hot" | "warm" | "calm" | "idle" | "over";
-type KprobeSort = "rate" | "posts" | "name" | "mem";
-
-// Per-probe rate history, module-level so it survives the modal opening and
-// closing — the sparklines rebuild from what the console has already sampled
-// rather than resetting to a flat line each time you reopen the panel.
-// Neither the engine nor the control plane reports a per-policy RATE — only the
-// cumulative `posts` counter — so the rate is derived here from the delta of
-// that counter between snapshot samples. Each sample is {t, posts}; the rate is
-// (Δposts / Δtime) and the sparkline is the Δposts series. Module-level so it
-// survives the modal opening and closing.
-interface KprobeSample { t: number; posts: number }
-const KPROBE_HISTORY = new Map<string, KprobeSample[]>();
-const KPROBE_HISTORY_LEN = 30;
-
-// posts delta between the two most recent samples, as a per-minute rate.
-function kprobeRateFromHistory(name: string): number {
-  const h = KPROBE_HISTORY.get(name);
-  if (!h || h.length < 2) return 0;
-  const a = h[h.length - 2];
-  const b = h[h.length - 1];
-  const dt = b.t - a.t;
-  // Ignore a stale pair spanning a long gap (e.g. reopening after minutes) — the
-  // next poll produces a tight pair and a real rate.
-  if (dt <= 0 || dt > 60_000) return 0;
-  return Math.max(0, ((b.posts - a.posts) / dt) * 60_000);
-}
-
-// The per-interval posts deltas — the shape the sparkline draws.
-function kprobeDeltaSeries(name: string): number[] {
-  const h = KPROBE_HISTORY.get(name) ?? [];
-  const out: number[] = [];
-  for (let i = 1; i < h.length; i++) out.push(Math.max(0, h[i].posts - h[i - 1].posts));
-  return out;
-}
-
-export function KprobeBody({ policyStats: propStats }: { policyStats: SocPolicyStat[] }) {
-  const [threshold, setThreshold] = useLocalState<number>("soc.kprobeThreshold", 99);
-  const [query, setQuery] = useState("");
-  const [band, setBand] = useState<KprobeBand>("all");
-  const [sort, setSort] = useState<KprobeSort>("rate");
-
-  // Self-poll the live stats on a fast cadence so the derived rate and sparklines
-  // actually MOVE. The shared snapshot only refreshes every 30s — far too slow to
-  // watch a probe heat up — so this panel fetches /api/policy-stats every 3s while
-  // it is open, and each poll advances the posts counter that the rate is derived
-  // from. Falls back to the snapshot prop until the first live poll lands.
-  const [live, setLive] = useState<SocPolicyStat[] | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    const controller = new AbortController();
-    const tick = async () => {
-      const stats = await fetchPolicyStats(controller.signal);
-      if (!cancelled && stats.length) setLive(stats);
-    };
-    void tick();
-    // 3s was chosen to make per-probe rate moves visible, but each call is a
-    // server-side aggregate over the tenant's recent telemetry — at 3s the
-    // requests outran their own query time and piled up on the database. 15s
-    // still reads as live for a rate panel and cuts that load fivefold.
-    const id = window.setInterval(() => void tick(), 15_000);
-    return () => { cancelled = true; controller.abort(); window.clearInterval(id); };
-  }, []);
-  const policyStats = live ?? propStats;
-
-  // Prefer a reported rate; otherwise derive it from the posts counter.
-  const rate = useCallback((s: SocPolicyStat) => s.ratePerMin ?? kprobeRateFromHistory(s.name), []);
-  const bandOf = useCallback(
-    (s: SocPolicyStat): Exclude<KprobeBand, "all"> => {
-      const r = rate(s);
-      if (r > threshold) return "over";
-      if (r === 0) return "idle";
-      if (r < threshold * 0.25) return "calm";
-      if (r < threshold * 0.6) return "warm";
-      return "hot";
-    },
-    [rate, threshold]
-  );
-
-  const totalPosts = policyStats.reduce((sum, s) => sum + s.posts, 0);
-  const hottest = policyStats.reduce<SocPolicyStat | null>((best, s) => (!best || rate(s) > rate(best) ? s : best), null);
-  const enabled = policyStats.filter((s) => (s.status || "").toLowerCase() !== "disabled").length;
-  const totalMem = policyStats.reduce((sum, s) => sum + (s.memoryBytes || 0), 0);
-
-  // Record a {t, posts} sample once per DATA update (keyed on total posts, which
-  // only moves when the snapshot refreshes — not on filter/search re-renders).
-  useEffect(() => {
-    const now = Date.now();
-    for (const s of policyStats) {
-      const h = KPROBE_HISTORY.get(s.name) ?? [];
-      const last = h[h.length - 1];
-      if (!last || s.posts !== last.posts || now - last.t > 4_000) {
-        h.push({ t: now, posts: s.posts });
-        if (h.length > KPROBE_HISTORY_LEN) h.shift();
-        KPROBE_HISTORY.set(s.name, h);
-      }
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [totalPosts]);
-
-  // A probe is spiking if its latest per-interval delta is well above its own
-  // recent baseline — a sudden jump matters even below the absolute threshold.
-  const spikeOf = (s: SocPolicyStat): boolean => {
-    const series = kprobeDeltaSeries(s.name);
-    if (series.length < 4) return false;
-    const latest = series[series.length - 1];
-    const prior = series.slice(0, -1);
-    const avg = prior.reduce((a, b) => a + b, 0) / prior.length;
-    return latest > Math.max(avg * 1.8, 3) && latest > avg + 2;
-  };
-  const spiking = policyStats.filter(spikeOf).length;
-
-  const counts = useMemo(() => {
-    const acc: Record<KprobeBand, number> = { all: policyStats.length, hot: 0, warm: 0, calm: 0, idle: 0, over: 0 };
-    for (const s of policyStats) acc[bandOf(s)] += 1;
-    return acc;
-  }, [policyStats, bandOf]);
-
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    let list = policyStats.filter((s) => {
-      if (q && !s.name.toLowerCase().includes(q)) return false;
-      if (band !== "all") return bandOf(s) === band;
-      return true;
-    });
-    list = [...list].sort((a, b) => {
-      if (sort === "posts") return b.posts - a.posts;
-      if (sort === "name") return a.name.localeCompare(b.name);
-      if (sort === "mem") return (b.memoryBytes || 0) - (a.memoryBytes || 0);
-      return rate(b) - rate(a);
-    });
-    return list;
-  }, [policyStats, query, band, sort, bandOf, rate]);
-
-  const maxRate = Math.max(1, threshold, ...policyStats.map(rate));
-
-  return (
-    <div className="soc-kprobes">
-      <StatGrid>
-        <StatCard label="Policies" value={`${enabled}`} sub={`${policyStats.length} loaded`} />
-        <StatCard
-          label="Spiking now"
-          value={`${spiking}`}
-          sub={spiking ? "above own baseline" : "all steady"}
-          tone={spiking ? "danger" : undefined}
-        />
-        <StatCard
-          label="Hottest"
-          value={hottest && rate(hottest) ? `${fmtNum(Math.round(rate(hottest)))}/min` : "—"}
-          sub={hottest && rate(hottest) ? hottest.name : "0/min"}
-          tone={hottest && rate(hottest) > threshold ? "danger" : undefined}
-        />
-        <StatCard label="Kernel mem" value={formatBytes(totalMem)} sub={`BPF maps · ${fmtNum(totalPosts)} posts`} />
-        <StatCard
-          label="Threshold"
-          value={
-            <input
-              type="number"
-              className="soc-inline-number"
-              value={threshold}
-              min={1}
-              onChange={(event) => setThreshold(Math.max(1, Number(event.target.value) || 1))}
-            />
-          }
-          sub="/min within limits"
-        />
-      </StatGrid>
-
-      <div className="soc-toolbar">
-        <SearchField value={query} onChange={setQuery} placeholder="filter by name…" />
-        <FilterChips
-          value={band}
-          onChange={setBand}
-          options={[
-            { key: "all", label: "ALL", count: counts.all },
-            { key: "hot", label: "🔥 HOT", count: counts.hot, tone: "danger" },
-            { key: "warm", label: "⚡ WARM", count: counts.warm, tone: "warn" },
-            { key: "calm", label: "✓ CALM", count: counts.calm, tone: "good" },
-            { key: "idle", label: "○ IDLE", count: counts.idle },
-            { key: "over", label: "⚠ OVER", count: counts.over, tone: "danger" }
-          ]}
-        />
-      </div>
-
-      <div className="soc-sort-row">
-        <span>sort</span>
-        {(["rate", "posts", "name", "mem"] as KprobeSort[]).map((key) => (
-          <button key={key} type="button" className={cx("soc-sort", sort === key && "is-active")} onClick={() => setSort(key)}>
-            {key}
-          </button>
-        ))}
-      </div>
-
-      {rows.length ? (
-        <div className="soc-kprobe-list">
-          {rows.map((s) => {
-            const b = bandOf(s);
-            const history = kprobeDeltaSeries(s.name);
-            const spiking = spikeOf(s);
-            return (
-              <article key={s.name} className={cx("soc-kprobe-card", `band-${b}`, spiking && "is-spiking")}>
-                <div className="soc-kprobe-head">
-                  <strong>{s.name}</strong>
-                  {spiking ? (
-                    <span className="soc-kprobe-spike"><Activity size={11} aria-hidden="true" /> spiking</span>
-                  ) : (
-                    <span className={cx("soc-kprobe-band", `band-${b}`)}>{b}</span>
-                  )}
-                </div>
-                {history.length > 1 ? (
-                  <div className="soc-kprobe-spark">
-                    <Sparkline values={history} tone={spiking || b === "over" ? "danger" : b === "hot" ? "warn" : "accent"} />
-                  </div>
-                ) : (
-                  <Meter value={rate(s)} max={maxRate} tone={b === "over" || b === "hot" ? "danger" : b === "warm" ? "warn" : "good"} />
-                )}
-                <div className="soc-kprobe-meta">
-                  <span>
-                    rate <b>{rate(s) ? `${fmtNum(Math.round(rate(s)))}/min` : "—"}</b>
-                  </span>
-                  <span>
-                    posts <b>{fmtNum(s.posts)}</b>
-                  </span>
-                  <span>
-                    mem <b>{formatBytes(s.memoryBytes)}</b>
-                  </span>
-                </div>
-              </article>
-            );
-          })}
-        </div>
-      ) : (
-        <EmptyState
-          title="No policies match the current filter"
-          detail="GET /api/policy-stats may return 503 when Tetragon is unavailable."
         />
       )}
     </div>

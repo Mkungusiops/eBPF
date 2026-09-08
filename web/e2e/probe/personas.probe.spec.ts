@@ -809,9 +809,11 @@ test.describe("read-only operator", () => {
       test.skip(!openerReady, "the Policies control never appeared — a harness fault, not the defect");
       await opener.click().catch(() => undefined);
 
-      // is-open, not toBeVisible: SocModals mounts every modal body permanently
-      // and hides it by withholding this class, so the copy below is queryable
-      // whether or not anything opened.
+      // is-open, not toBeVisible: the SHELL is in the DOM before it is visible
+      // and is hidden by withholding this class, so the copy below is queryable
+      // whether or not anything opened. (ModalShell mounts the BODY at first
+      // open and keeps it after — so on a surface already opened once, the copy
+      // is queryable through a shut door exactly as before.)
       const modal = persona.page.locator('[data-panel="detections-modal"]');
       const modalOpen = await modal
         .first()

@@ -24,7 +24,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
-import { EmptyState, InlineNotice, cx } from "./components";
+import { InlineNotice, cx } from "./components";
 import { api, getJSON, postJSON } from "../../lib/api";
 import { useResponseAuthority } from "./api";
 import { LIFECYCLE_LABEL, SETTINGS_SECTIONS } from "./settingsModel";

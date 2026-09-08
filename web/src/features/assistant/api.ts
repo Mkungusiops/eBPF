@@ -1,4 +1,10 @@
 import { readCookie } from "../../lib/api";
+import {
+  pendingTenantHydration,
+  tenantScopeApplies,
+  tenantScopedPath,
+  tenantScopeRefusal
+} from "../../lib/tenantScope";
 /**
  * AssistantApi — the injected seam for the analyst assistant.
  *
@@ -239,26 +245,90 @@ export class AssistantError extends Error {
   }
 }
 
-type Requester = (path: string, init?: RequestInit) => Promise<Response>;
+export type Requester = (path: string, init?: RequestInit) => Promise<Response>;
+
+/** The methods lib/api.ts treats as writes. One definition for both rules below. */
+function isUnsafe(method: string): boolean {
+  return !["GET", "HEAD", "OPTIONS"].includes(method.toUpperCase());
+}
 
 /**
- * The console protects every unsafe method with a double-submit CSRF token, so
- * an assistant POST without the header is rejected before it reaches the
- * handler — which is exactly what happened: the panel rendered, the buttons
- * worked, and every ask came back "csrf token missing or invalid".
+ * The transport every assistant request goes out on — asks, streams and chat
+ * history alike.
  *
- * readCookie is the console's shared helper (lib/api.ts); reusing it rather
- * than re-reading document.cookie here keeps one definition of where the token
- * lives.
+ * It is a raw fetch rather than lib/api.ts's funnel because its callers need
+ * the Response itself: `askStream` reads an SSE body the funnel would have
+ * parsed, and `capability` has to inspect a failing status rather than be
+ * handed a thrown ApiError — treating an unreachable server as a configured-off
+ * one is the distinction that sends an operator to the wrong team. So this
+ * deliberately MIRRORS the funnel instead, importing its rules from
+ * lib/tenantScope rather than restating them — the same shape
+ * features/choke/api.ts's apiBlob takes, and for the same reason.
+ *
+ * ── The CSRF token
+ *
+ * The console protects every unsafe method with a double-submit token, so an
+ * assistant POST without the header is rejected before it reaches the handler —
+ * which is exactly what happened: the panel rendered, the buttons worked, and
+ * every ask came back "csrf token missing or invalid". readCookie is the
+ * console's shared helper (lib/api.ts); reusing it keeps one definition of
+ * where the token lives.
+ *
+ * ── WHICH CUSTOMER THE QUESTION IS ABOUT
+ *
+ * This client used to issue its own unscoped fetches, and it was the last
+ * surface under the provider banner that answered about the wrong customer: the
+ * control plane resolves a request that names no tenant to the account's
+ * DEFAULT customer, so a provider who had switched the console to customer B
+ * asked a question and got a paragraph built entirely out of customer A's
+ * telemetry. Worse than a wrong table, because prose carries no column header
+ * and gets pasted into a handover. Scoping the client is only half of it — see
+ * assistantScope in controlplane/assistant.go for the other end.
+ *
+ * ── The barrier, and the refusal
+ *
+ * The selection takes two round trips (whoami, then the roster) to become
+ * trustworthy, so a request sent inside that window names no customer and is
+ * answered about the default one. An ask waits for the boot driver exactly as
+ * every panel read does; only a path that WOULD have carried the selection
+ * waits, so the single-tenant engine and every tenant-bound operator wait for
+ * nothing.
+ *
+ * And when hydration settles WITHOUT confirming the customer, the funnel refuses
+ * unsafe methods. An ask is a POST, and it is kept inside that rule rather than
+ * carved out of it. It is not containment, but it is not a read of rows either:
+ * it spends a customer's inference budget, writes a turn into a conversation,
+ * and returns an answer an analyst quotes — and there is no honest caption for
+ * "this is about whichever customer the server picked for a console that was
+ * told to point elsewhere". A refused ask says so in a sentence the panel
+ * renders; an unconfirmed one would have looked exactly like a good answer. In
+ * THAT state — and only that one, since a confirmed selection is named on these
+ * paths like any other — the history GETs beside it still go out, unscoped, for
+ * the reason every panel read does: the server's own default is a real scope,
+ * and a sidebar that renders nothing teaches an analyst nothing.
  */
-const defaultRequest: Requester = (path, init) => {
+export const assistantRequest: Requester = async (path, init) => {
   const headers = new Headers(init?.headers);
   const method = (init?.method ?? "GET").toUpperCase();
-  if (method !== "GET" && method !== "HEAD" && !headers.has("X-CSRF-Token")) {
+  if (isUnsafe(method) && !headers.has("X-CSRF-Token")) {
     const csrf = readCookie("csrf_token");
     if (csrf) headers.set("X-CSRF-Token", csrf);
   }
-  return fetch(path, { credentials: "same-origin", ...init, headers });
+  if (tenantScopeApplies(path)) {
+    const hydrating = pendingTenantHydration();
+    if (hydrating) await hydrating;
+    if (isUnsafe(method)) {
+      const refusal = tenantScopeRefusal();
+      // No status: nothing left the browser, so there is no HTTP answer to
+      // report. The message is written for an operator and is rendered verbatim.
+      if (refusal) throw new AssistantError(refusal);
+    }
+  }
+  // Scoped at the moment the request goes out, not when the caller built the
+  // path, for the reason lib/api.ts gives: a path scoped early and sent late
+  // would carry the customer the operator has already switched away from — and
+  // after the wait above, which is when the selection is finally knowable.
+  return fetch(tenantScopedPath(path), { credentials: "same-origin", ...init, headers });
 };
 
 /**
@@ -266,7 +336,7 @@ const defaultRequest: Requester = (path, init) => {
  * without a network or a Vite proxy — and because a proxy returns its own 502
  * when the backend is absent, a try/catch cannot tell "down" from "broken".
  */
-export function createAssistantApi(request: Requester = defaultRequest): AssistantApi {
+export function createAssistantApi(request: Requester = assistantRequest): AssistantApi {
   return {
     async capability(surface, signal) {
       // The surface scopes the agent list the server returns, so each panel is

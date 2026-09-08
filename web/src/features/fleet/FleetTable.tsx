@@ -12,7 +12,7 @@
  */
 import { RefreshCw } from "lucide-react";
 
-import { deriveFleet, thresholdKey } from "./fleetLogic";
+import { classifyAudit, deriveFleet, thresholdKey } from "./fleetLogic";
 import { PanelTitle } from "./PanelTitle";
 import type { FleetKpis } from "./types";
 
@@ -40,8 +40,14 @@ export function FleetHostsPanel({
       <div className="fleet-panel__head">
         <div>
           <PanelTitle title="Fleet" />
+          {/* The same three-state reading as the KPI strip, for the same
+              reason: "0 kill-switched" over hosts that reported nothing is a
+              claim about enforcement nobody measured, and a drift count over a
+              single reporting host can only ever be zero. */}
           <p className="fleet-muted">
-            {kpis.healthy}/{kpis.total} reachable · {kpis.enforcing} enforcing · {kpis.killed} kill-switched · {kpis.drift} drift
+            {kpis.healthy}/{kpis.total} reachable · {kpis.enforcing} enforcing · {kpis.killed} kill-switched
+            {kpis.killUnknown > 0 ? ` · ${kpis.killUnknown} kill state not reported` : ""}
+            {kpis.healthy >= 2 ? ` · ${kpis.drift} drift` : ""}
           </p>
         </div>
         <div className="fleet-toolbar">
@@ -153,8 +159,26 @@ function FleetTable({
                   <small>{row.peer.url}</small>
                 </td>
                 <td>
-                  <span className={`fleet-pill ${data.kill_switched ? "fleet-pill--danger" : "fleet-pill--good"}`}>
-                    {data.kill_switched ? "bypass" : "live"}
+                  {/* Three states, because the servers report three. A host
+                      whose kill-switch the control plane cannot read used to
+                      get the same green "live" pill as one that answered
+                      "off" — the console asserting enforcement is armed on a
+                      host that never said so. */}
+                  <span
+                    className={`fleet-pill ${
+                      row.killState === "on"
+                        ? "fleet-pill--danger"
+                        : row.killState === "off"
+                          ? "fleet-pill--good"
+                          : "fleet-pill--muted"
+                    }`}
+                    title={
+                      row.killState === "unknown"
+                        ? "This host did not report a kill-switch state, so enforcement here is unknown"
+                        : undefined
+                    }
+                  >
+                    {row.killState === "on" ? "bypass" : row.killState === "off" ? "live" : "not reported"}
                   </span>
                 </td>
                 <td>
@@ -163,7 +187,7 @@ function FleetTable({
                 </td>
                 <td>
                   {row.driftKill ? <DriftMark /> : null}
-                  {data.kill_switched ? "on" : "off"}
+                  {row.killState === "unknown" ? "not reported" : row.killState}
                 </td>
                 <td>
                   {row.driftThresholds ? <DriftMark /> : null}
@@ -174,12 +198,32 @@ function FleetTable({
                 <td>{counts.tarpit ?? 0}</td>
                 <td>{counts.throttled ?? 0}</td>
                 <td>
-                  {audit?.ok ? (
-                    <span className="fleet-pill fleet-pill--good">ok · {audit.total ?? 0}</span>
-                  ) : audit?.bad_at != null ? (
-                    <span className="fleet-pill fleet-pill--danger">broken @{audit.bad_at}</span>
+                  {/* The SAME classification the KPI strip counts, from
+                      classifyAudit — not a second guess made here. This cell
+                      decided "broken" on `bad_at != null`, so a host reporting
+                      {ok: false} with no offending index — a BROKEN chain, and
+                      one of the auditBroken the strip was counting — rendered
+                      as "not maintained": the row said this host keeps no
+                      tamper-evidence while the tile above it said its evidence
+                      had failed.
+
+                      "not maintained" rather than "—". A dash in a security
+                      column is read as missing data on a check that ran; this
+                      host chains nothing centrally, which is a stated property
+                      of the deployment and not a gap in its evidence. */}
+                  {classifyAudit(audit) === "ok" ? (
+                    <span className="fleet-pill fleet-pill--good">ok · {audit?.total ?? 0}</span>
+                  ) : classifyAudit(audit) === "broken" ? (
+                    <span className="fleet-pill fleet-pill--danger">
+                      {audit?.bad_at != null ? `broken @${audit.bad_at}` : "broken"}
+                    </span>
                   ) : (
-                    <span className="fleet-pill fleet-pill--muted">—</span>
+                    <span
+                      className="fleet-pill fleet-pill--muted"
+                      title="This host does not maintain a central hash chain; its agent chains its own decisions"
+                    >
+                      not maintained
+                    </span>
                   )}
                 </td>
               </tr>

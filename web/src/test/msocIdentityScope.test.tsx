@@ -30,15 +30,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
  * still pass, which is exactly how the first sweep stopped one layer short.
  */
 
-// cmdk (mounted hidden inside SocModals on every route render) observes its
-// list, and jsdom has no ResizeObserver.
-class NoopResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-globalThis.ResizeObserver = globalThis.ResizeObserver ?? (NoopResizeObserver as unknown as typeof ResizeObserver);
-
 vi.mock("../lib/stream", () => ({
   useStream: () => ({
     state: "live" as const,

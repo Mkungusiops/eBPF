@@ -1,3 +1,4 @@
+import { ApiError, api as sharedApi, type ApiMethod, type ApiOptions } from "../../lib/api";
 import { readCanRespond } from "../choke/canRespond";
 import type {
   DeviceDataPlaneState,
@@ -47,7 +48,16 @@ export interface DevicesApi {
   jailDevices(body: DeviceJailRequest): Promise<DeviceJailResponse>;
   thawDevices(body: DeviceThawRequest): Promise<DeviceThawResponse>;
   setMode(enforcing: boolean, reason: string): Promise<DeviceModeResponse>;
-  setKillSwitch(on: boolean): Promise<DeviceKillSwitchResponse>;
+  /**
+   * The audit reason is a REQUIRED parameter, not an optional courtesy: the
+   * single-tenant engine refuses an engage whose reason is empty
+   * (engine/internal/api/devchoke.go, handleChokeDeviceKillSwitch), because
+   * engaging halts every device containment on the host — including one an
+   * operator deliberately pressed — and the record of that may not be blank.
+   * Required in the type so a new caller has to decide what it is sending
+   * rather than discovering the refusal as a 400 in front of an operator.
+   */
+  setKillSwitch(on: boolean, reason: string): Promise<DeviceKillSwitchResponse>;
   /**
    * Optional so that the many hand-built fakes of this interface keep
    * compiling. A fake that omits it reports `canRespond: null`, which is the
@@ -71,8 +81,18 @@ export function createDevicesApi(request: ApiRequest = defaultApiRequest): Devic
       request<DeviceThawResponse>("/api/choke/device-thaw", jsonPost(body)),
     setMode: (enforcing, reason) =>
       request<DeviceModeResponse>("/api/choke/device-mode", jsonPost({ enforcing, reason })),
-    setKillSwitch: (on) =>
-      request<DeviceKillSwitchResponse>("/api/choke/device-kill-switch", jsonPost({ on })),
+    setKillSwitch: (on, reason = "") =>
+      request<DeviceKillSwitchResponse>(
+        "/api/choke/device-kill-switch",
+        // Absent, never empty, when the operator said nothing — the same rule
+        // the thaw path follows. A release with no reason is accepted by both
+        // servers, and the single-tenant engine writes its own "kill-switch
+        // released (no reason stated)" marker, which is the only thing in that
+        // row telling a later reader nobody justified it. Posting "" would not
+        // change what that server records, but sending a field the operator
+        // never filled in is how invented justifications start.
+        jsonPost({ on, ...(reason.trim() ? { reason: reason.trim() } : {}) })
+      ),
     fetchWhoami: async (options) => ({
       canRespond: readCanRespond(await request<unknown>("/api/whoami", options))
     })
@@ -95,40 +115,74 @@ function jsonPost(body: unknown): RequestInit {
   };
 }
 
+/**
+ * EVERY device request goes out through the shared funnel (lib/api.ts).
+ *
+ * This client used to call fetch() directly, with a CSRF header and a 401
+ * redirect of its own. What it did not have was the funnel's tenant scoping, so
+ * every request it made — device-jail, device-thaw, device-kill-switch,
+ * device-mode and the reads besides — left WITHOUT the `?tenant=` that names
+ * the customer the console is pointed at. A provider operator who had switched
+ * to customer B was therefore looking at B's devices while their chokes landed
+ * on whichever customer the server resolves a tenant-less write to. That
+ * failure does not announce itself: the request succeeds, on the wrong LAN.
+ *
+ * Delegating rather than re-applying tenantScopedPath here is the point. One
+ * funnel means a change to the scoping rule — or a new unscoped path — reaches
+ * the device plane the day it is written, with nothing for this file to
+ * remember. It is also why the DEFAULT requester is the funnel-routed one:
+ * DevicesRoute falls back to `createDevicesApi()` when it is handed no api
+ * prop, so a bypass left in the default is one dropped prop away from being
+ * the live path again.
+ *
+ * The failure is translated back into a DevicesApiError so the rest of this
+ * feature keeps the error surface it was written against — and so the server's
+ * own sentence survives: the funnel's ApiError reports `statusText` for a
+ * text/plain body, which would have turned the engine's explanation of a
+ * refused kill-switch into a bare "Bad Request" in the operator's toast.
+ */
 async function defaultApiRequest<T>(url: string, init: RequestInit = {}): Promise<T> {
-  const method = (init.method ?? "GET").toUpperCase();
-  const headers = new Headers(init.headers);
-  if (isUnsafeApiRequest(url, method) && !headers.has("X-CSRF-Token")) {
-    headers.set("X-CSRF-Token", csrfToken());
+  try {
+    return await sharedApi<T>(url, toApiOptions(init));
+  } catch (caught) {
+    throw asDevicesError(caught);
   }
-
-  const response = await fetch(url, { ...init, method, headers });
-  if (response.status === 401) {
-    redirectToLogin();
-    throw new DevicesApiError(response.status, "unauthorized");
-  }
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new DevicesApiError(response.status, text.trim());
-  }
-  if (!text) return undefined as T;
-  return JSON.parse(text) as T;
 }
 
-function isUnsafeApiRequest(url: string, method: string): boolean {
-  return url.startsWith("/api/") && !["GET", "HEAD", "OPTIONS"].includes(method);
+function toApiOptions(init: RequestInit): ApiOptions {
+  const options: ApiOptions = {
+    ...init,
+    method: init.method as ApiMethod | undefined
+  };
+
+  // jsonPost hands over an already-serialised body because ApiRequest is a
+  // RequestInit seam that a dozen test fakes are written against. The funnel
+  // serialises what it is given, so the string is decoded back to the object it
+  // came from rather than being stringified a second time into a JSON string.
+  if (init.body != null) {
+    options.body = decodeRequestBody(init.body);
+  }
+
+  return options;
 }
 
-function csrfToken(): string {
-  if (typeof document === "undefined") return "";
-  const match = document.cookie.match(/(?:^|;\s*)csrf_token=([^;]+)/);
-  return match ? decodeURIComponent(match[1]) : "";
+function decodeRequestBody(body: BodyInit): unknown {
+  if (typeof body !== "string") return body;
+  try {
+    return JSON.parse(body) as unknown;
+  } catch {
+    return body;
+  }
 }
 
-function redirectToLogin(): void {
-  if (typeof window === "undefined") return;
-  window.location.href = "/login";
+function asDevicesError(caught: unknown): unknown {
+  if (!(caught instanceof ApiError)) return caught;
+  // A refusal's own words first. The control plane answers JSON, which the
+  // funnel has already reduced to its `error` field in the message; the
+  // single-tenant engine answers text/plain, which arrives whole in `body` and
+  // is the only place the reason is stated.
+  const stated = typeof caught.body === "string" ? caught.body.trim() : "";
+  return new DevicesApiError(caught.status, stated || caught.message);
 }
 
 function hasStatus(error: unknown, status: number): boolean {

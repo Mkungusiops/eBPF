@@ -1,4 +1,4 @@
-import { act, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, renderHook, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 
 import { DevicesBulkBar } from "../features/devices/DevicesBulkBar";
@@ -250,9 +250,23 @@ describe("the device containment controls are drawn disabled, not drawn armed", 
     );
     const fieldset = container.querySelector<HTMLFieldSetElement>(".devices-permission-fieldset");
     expect(fieldset!.disabled).toBe(false);
-    // Not "none disabled": the ladder disables its own rungs for its own
-    // reasons — the current rung, a backwards move, a missing audit reason. The
-    // claim here is only that PERMISSION is not one of them.
+
+    // A REASON IS TYPED FIRST, and that is the whole method of this test.
+    //
+    // The claim is only that PERMISSION is not what disables a rung — the
+    // ladder disables its own for its own reasons (the current rung, a
+    // backwards move, a missing audit reason). Since 2026-09-07 the device
+    // plane requires a reason for EVERY rung, throttle and tarpit included, so
+    // an empty box disables all of them and "some rung is enabled" stops
+    // isolating permission: the assertion would fail while permission was
+    // working perfectly. Filling the box removes the only other disabler this
+    // row has, so what is left to explain a disabled rung is permission alone.
+    const reason = container.querySelector<HTMLInputElement>(
+      'input[placeholder="Reason (required for every choke — throttle and tarpit included)"]'
+    );
+    expect(reason, "the row has no reason box, so this test cannot isolate permission").toBeTruthy();
+    fireEvent.change(reason!, { target: { value: "authorised containment drill, ticket INC-4471" } });
+
     const rungs = Array.from(fieldset!.querySelectorAll("button"));
     expect(rungs.some((button) => !button.matches(":disabled"))).toBe(true);
   });

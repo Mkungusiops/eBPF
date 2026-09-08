@@ -33,7 +33,13 @@ export const socPanels: PanelSpec[] = [
   ["Fleet modal", "soc-fleet-modal", "H", "Cross-host probes with credentials included."],
   ["Watchlist modal", "soc-watchlist", "M", "LocalStorage-compatible watchlist."],
   ["Honeypots modal", "soc-honeypots", "H", "/api/honeypots polling."],
-  ["Kprobe performance modal", "soc-kprobes", "H", "/api/policy-stats polling."],
+  // Not "Kprobe performance modal … /api/policy-stats polling". That board was
+  // replaced by SensorHealthBody, and the fast self-poll it named (api.ts's
+  // fetchPolicyStats) went with its last caller — the surface now reads
+  // /api/sensor-health and the snapshot's policy stats. Title and id follow
+  // SOC_PANEL_INVENTORY's "sensor-health-modal", or this file names a surface
+  // the operator cannot find.
+  ["Sensor Health & Coverage modal", "soc-sensor-health", "H", "/api/sensor-health and snapshot policy stats."],
   ["Time Machine modal", "soc-time-machine", "H", "Snapshot/live source switch."],
   ["Command palette", "soc-command-palette", "M", "cmdk operator commands."],
   ["Notifications center modal", "soc-notifications", "H", "Read/clear notification center."],

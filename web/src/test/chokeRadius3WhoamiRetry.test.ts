@@ -50,11 +50,20 @@ beforeEach(() => {
   vi.stubGlobal("fetch", async (path: string, init: RequestInit = {}) => {
     const url = String(path);
     if (url.startsWith("/api/whoami")) {
-      // The reachability probe (pingHost) also GETs /api/whoami every 8s and
-      // THROWS THE BODY AWAY — it only wants a status code, and passes no
-      // credentials. That probe is why "whoami is already being polled" looks
-      // true and is not: it never populates the authority. Only the real read
-      // (through lib/api, which sends same-origin credentials) is counted here.
+      // The reachability probe (pingHost -> probeEndpoint) also GETs
+      // /api/whoami every 8s and THROWS THE BODY AWAY — it only wants a status
+      // code. That probe is why "whoami is already being polled" looks true and
+      // is not: it never populates the authority, so it must not be counted.
+      //
+      // The discriminator is the INIT OBJECT, not the wire. probeEndpoint calls
+      // fetch(path, {method, cache, signal}) and never names `credentials`,
+      // while lib/api's funnel sets `credentials: "same-origin"` explicitly on
+      // every request it sends. On the wire the two are identical — same-origin
+      // IS the Fetch default, so the probe carries the session cookie too — but
+      // only the funnel's init has the key, which is all this stub needs to tell
+      // the authority read from the probe. Do not "simplify" this to a check on
+      // the URL or the method: both reads are a GET of the same path, and the
+      // count would then include the probe and stop meaning anything.
       if (init.credentials === "same-origin") whoamiCalls += 1;
       if (whoamiFails) return new Response("upstream unavailable", { status: 502 });
       return new Response(JSON.stringify({ user: "analyst", can_respond: true }), {

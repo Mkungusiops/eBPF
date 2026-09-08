@@ -13,9 +13,15 @@ describe("SSE certification contract", () => {
     expect(SSE_CONTRACT.endpoint).toBe("/api/stream");
   });
 
-  it("keeps Fleet and Devices poll-only", () => {
+  it("keeps the fleet VIEW poll-only even though its address now consumes SSE", () => {
     expect(SSE_CONTRACT.consumers).toEqual(["soc", "choke"]);
-    expect(SSE_CONTRACT.pollOnlyRoutes).toEqual(["devices", "fleet"]);
+    // /fleet redirects into the SOC console, which is an SSE consumer — so the
+    // fleet ROUTE can no longer be described as poll-only without saying
+    // something false about the page an operator lands on. The fleet VIEW is
+    // still poll-only, and that is the claim worth keeping: it fans out over
+    // six endpoints on a timer and consumes no stream.
+    expect(SSE_CONTRACT.pollOnlyRoutes).toEqual(["devices"]);
+    expect(SSE_CONTRACT.pollOnlySurfaces).toEqual(["fleet-console-modal"]);
   });
 
   it("represents heartbeats as freshness-only stream frames", () => {

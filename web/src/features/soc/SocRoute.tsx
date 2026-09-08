@@ -18,12 +18,22 @@ import { AlertTriangle, Radio, RefreshCw, Search, Server, ShieldCheck } from "lu
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import type * as React from "react";
-import { MAX_BUFFERED_DECISIONS, fetchProcessDetail, socIdentityOf } from "./api";
+import {
+  MAX_BUFFERED_DECISIONS,
+  fetchProcessDetail,
+  scopeSnapshotToTenant,
+  setSelectedTenant,
+  socIdentityOf,
+  useSelectedTenant,
+  useTenantRoster
+} from "./api";
+import type { TenantRosterEntry } from "./api";
 import { useStream } from "../../lib/stream";
 import { useOSTheme } from "../../lib/theme";
 import { IconButton, PanelFrame, PopoverCard, SeverityBadge, SlideOver, Sparkline, StatusPill, cx } from "./components";
 import { AlertQueue } from "./AlertQueue";
 import { DrillPanel } from "./DrillPanel";
+import { EstateView } from "./EstateView";
 import { EventStream } from "./EventStream";
 import { ExecutiveBand } from "./ExecutiveBand";
 import { PillHostContent, PillLiveContent, PillRiskContent } from "./pills";
@@ -162,11 +172,78 @@ export function SocRoute() {
   const processedStreamBatchRef = useRef(0);
   const previousStreamStateRef = useRef(sharedStream.state);
 
+  // WHO IS LOOKING, AND AT WHOSE ESTATE — two facts, and the console used to
+  // publish one answer for both. See socIdentityOf and the scope banner below.
+  const identity = socIdentityOf(snapshot.whoami);
+  // THE CUSTOMER SWITCHER, offered to a provider account and to nobody else.
+  // A tenant-bound operator holds exactly one tenant: there is nothing to
+  // switch between, asking would put a request on every console in the estate
+  // that could only be refused, and the endpoint 404s them by design.
+  const roster = useTenantRoster(identity.crossTenant);
+  const selectedTenant = useSelectedTenant();
+
+  // THE LIVE TAIL IS THE SELECTED CUSTOMER'S.
+  //
+  // /api/stream goes through authorizeRead like every other read, and
+  // StreamProvider now opens it through the same scoped accessor as the rest of
+  // the console — a switch closes the connection and re-opens it for the
+  // customer now on screen (src/lib/stream.tsx). So frames no longer have to be
+  // discarded to keep one customer's alerts out of another's queue: they are
+  // that customer's by the time they arrive. Until that was true, the console
+  // held them back, and a provider watching a switched console saw a queue that
+  // only ever moved when the 30s poll landed.
   useEffect(() => {
     if (sharedStream.batchId === 0 || processedStreamBatchRef.current === sharedStream.batchId) return;
     processedStreamBatchRef.current = sharedStream.batchId;
     applySocStreamBatch(setSnapshot, sharedStream.latestBatch);
   }, [setSnapshot, sharedStream.batchId, sharedStream.latestBatch]);
+
+  // WHAT A CHANGE OF CUSTOMER DOES TO THE SCREEN.
+  //
+  // NOTHING AIMED AT THE PREVIOUS CUSTOMER MAY SURVIVE IT. The buffered rows go
+  // (scopeSnapshotToTenant — the poll is MERGED into what is on screen, so a
+  // buffer left standing would keep feeding one customer's alerts into
+  // another's queue), and so does every piece of session state that holds a
+  // resolved target: the drill panel, the row selection, the context menu, the
+  // hovered preview, the fetched process tree. A drill panel left open across a
+  // switch is the exact shape of the defect this feature exists to prevent — a
+  // live containment control, aimed at a process belonging to the customer no
+  // longer on screen, sending a request the console now scopes to the customer
+  // that is.
+  //
+  // Driven off the SELECTION rather than off the click, because there are two
+  // ways it changes: the operator picks a customer, and the roster confirms a
+  // customer persisted from an earlier session (adoptPersistedTenant). The
+  // second no longer arrives after the first poll has been answered for the
+  // server's own default: the shell holds every scoped read until hydration
+  // settles (app/tenantHydration.ts), so a restored selection is already on
+  // the request that fills this screen. What this effect is for is a change
+  // MID-SESSION — the operator switching, or a roster that only answered after
+  // the deadline finally confirming the remembered customer — and it has to
+  // clear the screen for either.
+  const appliedTenantRef = useRef(selectedTenant);
+  useEffect(() => {
+    if (appliedTenantRef.current === selectedTenant) return;
+    appliedTenantRef.current = selectedTenant;
+    // The stream store is reset when the connection re-opens for the new
+    // customer, which restarts its batch counter at zero. Without forgetting
+    // the last batch applied, the new customer's frames would be skipped for as
+    // long as the counter took to pass that stale number.
+    processedStreamBatchRef.current = 0;
+    setSnapshot((current) => scopeSnapshotToTenant(current, selectedTenant));
+    setDrillAlert(null);
+    setProcessDetail(null);
+    setProcessDetailError("");
+    setContextMenu(null);
+    setHoverPreview(null);
+    setSelectedIds(new Set());
+    refresh();
+  }, [refresh, selectedTenant, setSnapshot]);
+
+  // The switcher's own handler is only the recording of the choice; everything
+  // that follows from it is the effect above, so the click and a restored
+  // selection cannot diverge.
+  const selectTenant = useCallback((tenant: string) => setSelectedTenant(tenant), []);
 
   useEffect(() => {
     const previous = previousStreamStateRef.current;
@@ -392,16 +469,33 @@ export function SocRoute() {
     });
   }
 
-  // WHO IS LOOKING, AND AT WHOSE ESTATE — two facts, and the console used to
-  // publish one answer for both. See socIdentityOf and the scope banner below.
-  const identity = socIdentityOf(snapshot.whoami);
   // The same two facts for every surface that names a SUBJECT rather than an
-  // identity: the executive band's "What is affected", the assistant's scope
-  // chip, and the exports. They kept reading `whoami.host`, which for a
-  // provider account now says "all tenants" over one customer's rows — the
-  // scope banner cannot travel with an exported file, and a chip is read as a
-  // caption on the answer beside it. See estateSubjectOf.
+  // identity: the executive band's "What is affected", the exports, and the
+  // assistant chip below. They kept reading `whoami.host`, which for a provider
+  // account now says "all tenants" over one customer's rows — and the scope
+  // banner cannot travel with an exported file. See estateSubjectOf.
   const estate = estateSubjectOf(snapshot.whoami);
+
+  // WHOSE TELEMETRY THE ASSISTANT'S ANSWERS ARE DRAWN FROM — now the same
+  // customer every other panel on this page is showing.
+  //
+  // This label carried a deliberate INVERSION until 2026-09-08. The assistant
+  // reached the estate outside the scoped funnel at both ends — its client
+  // issued its own fetches, and the control plane's tool loop called the
+  // console's read endpoints with the asking analyst's session cookie and no
+  // tenant, resolving to the account's default customer — so while a switch
+  // pointed the panels at customer B the assistant was still answering about A.
+  // The chip named A on purpose: a caption is a claim about the answer beside
+  // it, and naming the selection would have put B's name on A's telemetry, in
+  // the surface an analyst quotes into a handover.
+  //
+  // Both ends are scoped now (features/assistant/api.ts routes through
+  // lib/tenantScope, and controlplane/assistant.go resolves the ask through
+  // authorizeReadAs and hands the tenant to Runner), so the inversion has to go
+  // WITH it: kept, it would put A's name on an answer genuinely about B — the
+  // same lie pointing the other way. The chip names the customer on screen
+  // because that is now the customer the assistant read.
+  const assistantScopeLabel = estate.subject;
 
   return (
     <div className={cx("soc-route", theme === "light" && "theme-light", sidebarOpen && "sidebar-open")}>
@@ -412,7 +506,7 @@ export function SocRoute() {
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onCloseSidebar={() => setSidebarOpen(false)}
         onOpenSurface={openSurfaceByName}
-        onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: estate.subject })}
+        onOpenAssistant={() => assistantChat?.openAssistant({ scopeLabel: assistantScopeLabel })}
         assistantOpen={assistantChat?.open ?? false}
         // null (still probing) counts as AVAILABLE so the nav does not flicker
         // an entry in and straight back out on every load.
@@ -432,6 +526,10 @@ export function SocRoute() {
           host={snapshot.whoami.host}
           crossTenant={identity.crossTenant}
           viewingTenant={identity.viewingTenant}
+          customers={roster.offered}
+          rosterSource={roster.source}
+          selectedTenant={selectedTenant}
+          onSelectTenant={selectTenant}
           streamState={stream.state}
           openPill={openPill}
           onOpenPill={setOpenPill}
@@ -440,18 +538,68 @@ export function SocRoute() {
         />
 
         <main className="soc-content">
+          {/* THE WHOLE BOOK OF BUSINESS, FOR A PROVIDER WHO HAS NOT PICKED A
+              CUSTOMER.
+
+              The switcher governs which console this is. With a customer
+              selected the panels below ARE the answer and the estate section
+              would be a second, larger scope on the same screen. With no
+              customer selected the server resolves these panels to one
+              customer of its own choosing — and that customer's alert count
+              read as the state of the estate is the defect the scope banner
+              underneath exists to correct. This section answers the question
+              the banner can only warn about, with every total broken down per
+              customer and every customer that could not be read named as
+              unread rather than counted as a quiet zero.
+
+              It is rendered — and its request is issued — only for a
+              cross-tenant principal. A tenant-bound operator must never reach
+              it: the endpoint 404s them by design, and asking would put a
+              permanent refusal in the network log of a console that is working
+              perfectly. */}
+          <EstateView
+            enabled={identity.crossTenant && !selectedTenant}
+            rangeMin={rangeMin}
+            onSelectTenant={selectTenant}
+          />
+
           {/* THE PROVIDER'S CAPTION.
               A cross-tenant operator holds no tenant of their own, so every
-              panel below is resolved by the server to ONE customer — and until
-              this banner existed, nothing on the screen said which. The
-              provider read one customer's alert count, posture and containment
-              history as the state of their whole book of business, and the
-              persona probes measured the sharper version: a cross-tenant
-              RESPONDER firing containment aimed by a console that had silently
-              chosen the tenant for them.
-              It is rendered only when the server says cross_tenant, and it
-              names viewing_tenant — the tenant the server itself resolves
-              these reads to — rather than a tenant the console picked. */}
+              panel below is about ONE customer — and until this banner existed,
+              nothing on the screen said which. The provider read one customer's
+              alert count, posture and containment history as the state of their
+              whole book of business, and the persona probes measured the
+              sharper version: a cross-tenant RESPONDER firing containment aimed
+              by a console that had silently chosen the tenant for them.
+
+              It is rendered only when the server says cross_tenant, and the
+              customer it names is the one the requests underneath it actually
+              carry: `viewingTenant` is the server's own resolution of a
+              tenant-less read until the operator switches, and from then on it
+              is the selection the request funnel puts on every read and every
+              write (lib/tenantScope.ts, applied in lib/api.ts). That is what
+              makes the sentence about containment true rather than a hope —
+              before the funnel it was read-scoped and write-unscoped, so the
+              banner promised an aim the writes did not have.
+
+              "EVERY PANEL BELOW" INCLUDES THE ONES THIS ROUTE OPENS IN A MODAL.
+              Behaviour & Intel read /api/baseline and /api/intel with a raw
+              fetch, which is the one way past the funnel, so it filled itself
+              from requests that named no customer at all while standing under
+              this sentence — a read-scoped screen with an unscoped panel in it,
+              which is worse than an unscoped screen because the banner is why
+              the operator believes the panel. It now applies lib/tenantScope's
+              own scoping step to each of those paths (tenantScopedPath), so
+              every PANEL under this banner is the named customer's.
+
+              THE ASSISTANT IS NOT, AND IS NOT COVERED BY THIS SENTENCE. Its
+              client raw-fetches without scoping and the control plane's tool
+              loop reads with the session cookie alone, so its answers are the
+              server's default customer's whichever customer is selected — see
+              assistantScopeLabel above, which is why the panel carries its own
+              scope chip naming the customer it actually read rather than
+              standing under this one. It is a caption on a reading; nothing
+              containment-shaped is fired from it. */}
           {identity.crossTenant ? (
             <div className="soc-scope-banner" role="status">
               <Server size={16} />
@@ -614,7 +762,11 @@ export function SocRoute() {
       </SlideOver>
 
       <PopoverCard panel={PANELS["pill-popovers"]} open={openPill === "live"} title="Live data stream" onClose={() => setOpenPill(null)}>
-        <PillLiveContent stream={stream} staleSeconds={staleSeconds} onReconnect={sharedStream.reconnect} />
+        <PillLiveContent
+          stream={stream}
+          staleSeconds={staleSeconds}
+          onReconnect={sharedStream.reconnect}
+        />
       </PopoverCard>
       <PopoverCard panel={PANELS["pill-popovers"]} open={openPill === "host"} title="Host reachability" onClose={() => setOpenPill(null)}>
         <PillHostContent whoami={snapshot.whoami} errors={errors} statuses={statuses} onRefresh={refresh} />
@@ -701,6 +853,10 @@ function SocTopBar({
   host,
   crossTenant,
   viewingTenant,
+  customers,
+  rosterSource,
+  selectedTenant,
+  onSelectTenant,
   streamState,
   openPill,
   onOpenPill,
@@ -715,6 +871,10 @@ function SocTopBar({
   host?: string;
   crossTenant: boolean;
   viewingTenant?: string;
+  customers: TenantRosterEntry[];
+  rosterSource?: string;
+  selectedTenant: string | null;
+  onSelectTenant: (tenant: string) => void;
   streamState: string;
   openPill: PillSurface | null;
   onOpenPill: (pill: PillSurface | null) => void;
@@ -767,6 +927,60 @@ function SocTopBar({
           ))}
         </div>
         <span className="soc-topbar-sep" aria-hidden="true" />
+        {/* THE CUSTOMER SWITCHER.
+            Rendered only for a provider account that was actually offered a
+            roster: a tenant-bound operator gets nothing here, and so does a
+            provider on a server that does not serve /api/tenants — a refusal
+            leaves the console exactly as it was rather than breaking it.
+
+            It carries its own presentation instead of the `.soc-host-pill`
+            class beside it. That class is a MEASURED surface — the live
+            persona probes read `.soc-host-pill` to check that a customer's
+            name is never presented as the estate, and a control whose text is
+            a list of customer names must not be able to answer that query.
+
+            No "all customers" option, deliberately. Nothing on this server
+            answers across customers, so an aggregate row would promise a view
+            that does not exist — the same estate-wide overclaim the banner
+            below exists to prevent. */}
+        {crossTenant && customers.length > 0 ? (
+          <label
+            className="soc-tenant-switcher"
+            title={rosterSource}
+            style={{ display: "inline-flex", alignItems: "center", gap: 7 }}
+          >
+            <span style={{ color: "var(--soc-muted)", fontSize: 11 }}>Customer</span>
+            <select
+              aria-label="Customer shown in this console"
+              value={selectedTenant || viewingTenant || ""}
+              onChange={(event) => onSelectTenant(event.target.value)}
+              style={{
+                minHeight: 34,
+                maxWidth: "18ch",
+                padding: "4px 8px",
+                color: "var(--soc-text)",
+                background: "var(--soc-panel)",
+                border: "1px solid var(--soc-line)",
+                borderRadius: 999,
+                fontSize: 12
+              }}
+            >
+              {/* The server resolves this session to a customer that the roster
+                  may not list (a fleet with no heartbeat behind a registry
+                  fallback). Listing it keeps the control from displaying a
+                  customer other than the one on screen. */}
+              {viewingTenant && !customers.some((entry) => entry.tenantId === viewingTenant) ? (
+                <option value={viewingTenant}>{viewingTenant}</option>
+              ) : null}
+              {customers.map((entry) => (
+                <option key={entry.tenantId} value={entry.tenantId}>
+                  {entry.displayName ? `${entry.displayName} (${entry.tenantId})` : entry.tenantId}
+                  {entry.agents > 0 ? ` — ${entry.agentsFresh}/${entry.agents} agents live` : " — no agents"}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {/* THE ESTATE IDENTITY, WHICH IS NOT ALWAYS A HOST NAME.
             For a tenant-bound operator this pill reads their own tenant, which
             is true. For a cross-tenant one the server publishes an estate label

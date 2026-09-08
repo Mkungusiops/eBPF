@@ -179,10 +179,19 @@ test.describe("Devices route", () => {
       path: "/api/choke/device-thaw",
       csrfToken: "mock-csrf",
       body: {
-        macs: ["02:00:00:00:00:10"],
-        reason: "operator thaw"
+        macs: ["02:00:00:00:00:10"]
       }
     });
+    // The operator cleared the reason box, so the request carries NO reason at
+    // all. Until 2026-09-07 the console substituted the literal "operator thaw"
+    // here, which put a sentence nobody typed into a tamper-evident audit row —
+    // a fabricated justification is worse than an absent one, because it reads
+    // as though someone gave it. Asserted as an ABSENCE so a future default
+    // cannot creep back in unnoticed.
+    expect(
+      Object.keys(api.callsFor("/api/choke/device-thaw")[0].body ?? {}),
+      "the console invented a reason for an empty box"
+    ).not.toContain("reason");
     await expect(page.locator(".devices-toast")).toHaveText("1/1 thawed");
     await expect(page.getByText("0 selected")).toBeVisible();
 
@@ -210,12 +219,23 @@ test.describe("Devices route", () => {
 
     await modeControl.click();
     const dialog = page.getByRole("dialog", { name: "Switch to detect-only" });
+    // DISABLED UNTIL VALID, not press-then-error.
+    //
+    // The console settled one grammar for "a reason is required for the audit
+    // trail" on 2026-09-07: the confirm is unavailable until the box has one,
+    // and says so on the control. This spec used to press the button with the
+    // box empty and wait for an inline error — which under the new grammar
+    // would hang on a click that can never land, failing as a timeout rather
+    // than as the contract breach it would actually be.
     await dialog.getByLabel("Reason").fill("");
-    await dialog.getByRole("button", { name: "Switch to detect-only" }).click();
-    await expect(dialog.getByText("A reason is required for the audit log.")).toBeVisible();
+    const submit = dialog.getByRole("button", { name: "Switch to detect-only" });
+    await expect(submit, "the confirm was live with no audit reason typed").toBeDisabled();
+    await expect(submit).toHaveAttribute("title", "A reason is required for the audit log.");
+    expect(api.callsFor("/api/choke/device-mode")).toEqual([]);
 
     await dialog.getByLabel("Reason").fill("maintenance test");
-    await dialog.getByRole("button", { name: "Switch to detect-only" }).click();
+    await expect(submit).toBeEnabled();
+    await submit.click();
 
     await expect.poll(() => api.callsFor("/api/choke/device-mode").length).toBe(1);
     expect(api.callsFor("/api/choke/device-mode")[0]).toMatchObject({
@@ -248,17 +268,32 @@ test.describe("Devices route", () => {
     expect(api.callsFor("/api/choke/device-kill-switch")).toEqual([]);
 
     await killControl.click();
-    await page
-      .getByRole("dialog", { name: "Engage kill-switch" })
-      .getByRole("button", { name: "Engage kill-switch" })
-      .click();
+    const engageDialog = page.getByRole("dialog", { name: "Engage kill-switch" });
+
+    // THE REASON IS REQUIRED, AND THE CONFIRM ENFORCES IT.
+    //
+    // Engaging the device kill-switch bypasses containment across the plane, and
+    // the engine refuses the write outright when the reason is empty
+    // (handleChokeDeviceKillSwitch, 2026-09-07). Until the same day the console
+    // posted {on: true} and nothing else, so an operator could disable a
+    // containment plane and leave an audit row that never said why. Asserted in
+    // both directions — the button is unavailable while the box is empty, and
+    // the reason reaches the wire verbatim — because a confirm that collects a
+    // reason and then drops it is the failure this whole class keeps producing.
+    const engageButton = engageDialog.getByRole("button", { name: "Engage kill-switch" });
+    await expect(engageButton, "the engage button was live with no audit reason typed").toBeDisabled();
+    expect(api.callsFor("/api/choke/device-kill-switch")).toEqual([]);
+
+    await engageDialog.getByRole("textbox").fill("suspected lateral movement, ticket INC-4471");
+    await expect(engageButton).toBeEnabled();
+    await engageButton.click();
 
     await expect.poll(() => api.callsFor("/api/choke/device-kill-switch").length).toBe(1);
     expect(api.callsFor("/api/choke/device-kill-switch")[0]).toMatchObject({
       method: "POST",
       path: "/api/choke/device-kill-switch",
       csrfToken: "mock-csrf",
-      body: { on: true }
+      body: { on: true, reason: "suspected lateral movement, ticket INC-4471" }
     });
     await expect(page.locator(".devices-toast")).toHaveText("kill-switch engaged");
     await expect(killControl).toContainText("Engaged");

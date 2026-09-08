@@ -1,3 +1,4 @@
+import { useRef } from "react";
 import type { ReactNode } from "react";
 import { X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
@@ -221,6 +222,32 @@ export function ModalShell({
   // to explore rather than a cramped modal box.
   fullScreen?: boolean;
 }) {
+  // The body is mounted lazily and then kept.
+  //
+  // A dashboard render fans out into every surface this console offers, and
+  // until now each one mounted its body immediately: a closed modal's polls,
+  // effects and subscriptions all ran on a screen the operator never opened.
+  // Nothing below `open` needs to exist before the surface is first shown, so
+  // nothing is created until then.
+  //
+  // KEPT after the first open, not unmounted on close, and the trade is worth
+  // stating. Unmounting again would stop a body's poll the moment the operator
+  // closes it, but it would also throw away state that survives an open today
+  // — a scrolled list, a half-typed audit reason, the Time Machine's window
+  // and the graph's layout — and make every re-open pay a fresh fan-out of
+  // fetches. Keeping the body removes the cost that scales (every surface, on
+  // every load, for every analyst) and leaves only the cost the operator asked
+  // for by opening the surface once. A body whose poll is expensive enough that
+  // it must stop at close needs that decision made per panel, by the caller,
+  // not taken here on behalf of every surface at once.
+  //
+  // The shell itself — backdrop, card, head, eyebrow, title, close button and
+  // the panel's description — is unchanged when closed: it carries no effects,
+  // and the e2e suite selects `[data-panel]` (and asserts `is-open` rather than
+  // visibility) on surfaces that are still shut.
+  const bodyMounted = useRef(false);
+  if (open) bodyMounted.current = true;
+
   return (
     <div
       className={cx("soc-modal-back", open && "is-open", fullScreen && "is-fullscreen")}
@@ -241,7 +268,7 @@ export function ModalShell({
           </button>
         </div>
         <p className="soc-panel-copy">{panel.description}</p>
-        {children}
+        {bodyMounted.current ? children : null}
       </div>
     </div>
   );

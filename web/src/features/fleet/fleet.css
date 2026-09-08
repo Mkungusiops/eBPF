@@ -1,5 +1,17 @@
+/* THIS IS A SURFACE STYLESHEET, NOT A PAGE ONE.
+   It used to be loaded by one HTML entry that had the document to itself, so it
+   set `*`, `html`, `body` and `#root` directly and painted the page background.
+   The fleet view is a surface inside the SOC console now, and this file is
+   bundled with it: those rules would have restyled every other panel on the
+   route — a 13px base size on the whole dashboard and a second body background
+   fighting src/styles.css. The reset and the page paint belong to styles.css;
+   what is left here is scoped to .fleet-app and the --fleet-* variables, which
+   collide with nothing. */
 :root {
-  /* Cool neutral-slate dark palette (shared with the SOC console). */
+  /* Cool neutral-slate dark palette (shared with the SOC console).
+     Custom properties only — no `color-scheme` here. styles.css sets that for
+     the document on the same selectors, and a second declaration in a
+     separately-bundled file wins or loses on load order rather than on intent. */
   --fleet-bg: 10 12 16;
   --fleet-panel: 18 22 31;
   --fleet-panel-2: 26 31 43;
@@ -12,7 +24,6 @@
   --fleet-warn: 224 165 59;
   --fleet-danger: 242 87 107;
   --fleet-info: 110 139 255;
-  color-scheme: dark;
 }
 
 :root.theme-light {
@@ -28,26 +39,22 @@
   --fleet-warn: 194 130 10;
   --fleet-danger: 225 29 72;
   --fleet-info: 37 99 235;
-  color-scheme: light;
 }
 
-* {
-  box-sizing: border-box;
+.fleet-app button,
+.fleet-app input {
+  font: inherit;
 }
 
-html,
-body,
-#root {
-  min-height: 100%;
+.fleet-app button {
+  color: inherit;
 }
 
-body {
-  margin: 0;
-  background:
-    radial-gradient(circle at 100% 0%, rgb(var(--fleet-accent) / 0.06), transparent 36rem),
-    radial-gradient(circle at 0% 100%, rgb(var(--fleet-accent) / 0.03), transparent 32rem),
-    linear-gradient(180deg, rgb(var(--fleet-panel-2) / 0.3), transparent 260px),
-    rgb(var(--fleet-bg));
+/* The typography and ground the old page rules put on <body>, scoped to the
+   surface. Kept as its own paint rather than inherited from the shell: this
+   view has its own --fleet-* palette and its panels are drawn against it. */
+.fleet-app {
+  padding-top: 4px;
   color: rgb(var(--fleet-text));
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 13px;
@@ -55,37 +62,37 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-button,
-input {
-  font: inherit;
+.fleet-app *,
+.fleet-app *::before,
+.fleet-app *::after {
+  box-sizing: border-box;
 }
 
-button {
-  color: inherit;
+/* The surface is hosted full-screen, so the body takes the height the shell's
+   flex column leaves it rather than asking for a viewport of its own. */
+.soc-modal-card.is-fullscreen .fleet-app {
+  flex: 1;
+  min-height: 0;
 }
 
-.fleet-app {
-  min-height: 100vh;
+/* WHOSE hosts these are. First line of the surface, because it qualifies the
+   host table and the kill-switch under it, and because the backdrop this
+   surface is mounted on covers every other caption in the console. */
+.fleet-scope-caption {
+  gap: 8px;
+  padding: 10px 20px 2px;
+  color: rgb(var(--fleet-text));
 }
 
-.fleet-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: grid;
-  grid-template-columns: minmax(240px, auto) minmax(250px, 1fr) auto auto auto;
-  gap: 14px;
-  align-items: center;
-  padding: 12px 20px;
-  border-bottom: 1px solid rgb(var(--fleet-line));
-  background: rgb(var(--fleet-bg) / 0.88);
-  backdrop-filter: blur(12px);
+/* All that is left of the topbar's status: the poll readout, on its own line
+   and left aligned, since it no longer sits in a five-column grid. */
+.fleet-surface-status {
+  justify-content: flex-start;
+  padding: 0 20px 8px;
 }
 
-.fleet-brand,
+.fleet-scope-caption,
 .fleet-status,
-.fleet-nav,
-.fleet-user,
 .fleet-toolbar,
 .fleet-panel__head,
 .fleet-panel__row,
@@ -94,32 +101,7 @@ button {
   align-items: center;
 }
 
-.fleet-brand {
-  gap: 10px;
-  min-width: 0;
-}
-
-.fleet-brand__mark {
-  display: grid;
-  width: 36px;
-  height: 36px;
-  flex: 0 0 auto;
-  place-items: center;
-  border: 1px solid rgb(var(--fleet-accent) / 0.32);
-  border-radius: 8px;
-  color: rgb(var(--fleet-accent));
-  background: rgb(var(--fleet-accent) / 0.08);
-}
-
-.fleet-brand__title {
-  font-size: 15px;
-  font-weight: 750;
-  letter-spacing: 0;
-}
-
-.fleet-brand__sub,
 .fleet-muted,
-.fleet-user span,
 .fleet-status,
 .fleet-kpi__sub,
 .fleet-posture small,
@@ -128,9 +110,8 @@ button {
   color: rgb(var(--fleet-muted));
 }
 
-.fleet-brand__sub,
 .fleet-status,
-.fleet-user,
+.fleet-scope-caption,
 .fleet-muted {
   font-size: 12px;
 }
@@ -185,21 +166,8 @@ button {
   }
 }
 
-.fleet-nav,
-.fleet-user,
 .fleet-toolbar {
   gap: 8px;
-}
-
-.fleet-user {
-  padding-left: 12px;
-  border-left: 1px solid rgb(var(--fleet-line));
-  white-space: nowrap;
-}
-
-.fleet-user strong {
-  font-family: "SFMono-Regular", ui-monospace, monospace;
-  font-size: 12px;
 }
 
 .fleet-btn,
@@ -319,6 +287,22 @@ input:focus-visible {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   padding: 20px 20px 0;
+}
+
+/*
+ * The line that says WHY a comparative tile is not there — one host reported,
+ * so drift and the majority ladder have nothing to compare.
+ *
+ * It spans the whole strip instead of taking a tile's column: a sentence
+ * squeezed into one sixth of the grid is unreadable, and a KPI-shaped box would
+ * read as another tile, which is the opposite of what it is there to say.
+ */
+.fleet-kpis__note {
+  grid-column: 1 / -1;
+  margin: 2px 0 0;
+  color: rgb(var(--fleet-muted));
+  font-size: 12px;
+  line-height: 1.45;
 }
 
 .fleet-kpi,
@@ -1023,15 +1007,10 @@ input:focus-visible {
 }
 
 @media (max-width: 1260px) {
-  .fleet-topbar {
-    grid-template-columns: 1fr auto auto;
-  }
-
-  .fleet-status,
-  .fleet-nav {
-    display: none;
-  }
-
+  /* The topbar's five-column grid used to be relieved here by hiding the poll
+     readout and the console nav. The nav is gone and the readout is on its own
+     full-width line, so hiding it now would only take the fan-out's health away
+     from every laptop narrower than 1260px. */
   .fleet-grid {
     grid-template-columns: minmax(270px, 330px) minmax(0, 1fr);
   }
@@ -1062,15 +1041,10 @@ input:focus-visible {
 }
 
 @media (max-width: 680px) {
-  .fleet-topbar {
-    grid-template-columns: 1fr auto;
-    padding: 10px 12px;
-  }
-
-  .fleet-user {
-    grid-column: 1 / -1;
-    padding-left: 0;
-    border-left: 0;
+  .fleet-scope-caption,
+  .fleet-surface-status {
+    padding-right: 12px;
+    padding-left: 12px;
   }
 
   .fleet-kpis,

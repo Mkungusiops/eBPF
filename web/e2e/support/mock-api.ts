@@ -541,7 +541,14 @@ function readResponse(path: string): unknown {
           url: peer.url,
           ok: true,
           status: 200,
-          data: { "/sys/fs/cgroup/choke/quarantined": [4242] }
+          // The ENGINE's own cgroup names (enforce/cgroupv2: NameThrottled,
+          // NameTarpit, NameQuarantined), not a path. FleetCgroups reads these
+          // three keys exactly; this fixture used to answer
+          // "/sys/fs/cgroup/choke/quarantined", which matched none of them, so
+          // the mocked panel rendered three all-zero bars on every run and no
+          // spec noticed — the same "nothing contained" misreading the panel's
+          // own header comment exists to prevent, hidden behind a key mismatch.
+          data: { "choke-throttled": [4242, 4243], "choke-tarpit": [5150], "choke-quarantined": [8080] }
         }))
       };
     case "/api/fleet/decisions":

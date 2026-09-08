@@ -4,10 +4,38 @@ export type AppRoute = {
   name: AppRouteName;
   path: "/" | "/login" | "/choke" | "/devices" | "/fleet";
   entry: "login" | "soc" | "choke" | "devices" | "fleet";
+  /**
+   * The document title once the address has SETTLED. For a redirect that is the
+   * title of the page it lands on, which is why /fleet now carries the SOC
+   * console's.
+   */
   title: RegExp;
   public: boolean;
+  /**
+   * Certified panels reachable at this address, and the four route counts sum
+   * to the release scope. It is not `SOC_PANEL_INVENTORY.length` and never was
+   * — that is one console's self-description; this is the release tally.
+   */
   panelCount: number;
+  /**
+   * Set when the address is a signpost rather than a page: the console it
+   * redirects into, fragment included. /fleet is the only one — the fleet view
+   * is a surface of the SOC console now, and the URL was kept because bookmarks,
+   * the live probe suite and the command palette all still use it.
+   */
+  redirectsTo?: string;
 };
+
+/**
+ * The URL fragment that names the fleet surface.
+ *
+ * Stated here as well as in src/features/fleet/address.ts, deliberately: this
+ * file is the contract the browser suite asserts AGAINST, so it has to say what
+ * the address is rather than import the implementation's opinion of it. The two
+ * are held together by e2e/fleet.spec.ts, which reaches the surface through
+ * this constant and then checks the redirect actually lands on it.
+ */
+export const FLEET_SURFACE_HASH = "#fleet";
 
 export const PAGE_ROUTES = [
   {
@@ -24,7 +52,12 @@ export const PAGE_ROUTES = [
     entry: "soc",
     title: /eBPF SOC/i,
     public: false,
-    panelCount: 31
+    // 31 + the fleet console's 13. The thirteen did not disappear and no new
+    // one was certified: the fleet view moved in from its own address as a
+    // surface, so the panels an operator reaches at "/" grew by exactly what
+    // /fleet stopped serving. TOTAL_PANEL_COUNT is unchanged, which is the
+    // point — the release scope was conserved, not re-tallied.
+    panelCount: 44
   },
   {
     name: "choke",
@@ -43,12 +76,25 @@ export const PAGE_ROUTES = [
     panelCount: 7
   },
   {
+    // KEPT, AND STILL PROTECTED. /fleet is no longer a console: the entry's
+    // only job is to redirect into the SOC console with the fleet surface open
+    // (src/entries/fleet.tsx). The row stays because the address stays — the
+    // server still serves and still auth-gates it, operators still have it
+    // bookmarked, and e2e/probe/console.probe.spec.ts still signs in AT it.
+    //
+    // Zero panels, because it renders none: what an operator sees a moment
+    // later is the SOC route's, counted there. Counting the fleet surface here
+    // as well would tally the same thirteen panels twice.
     name: "fleet",
     path: "/fleet",
     entry: "fleet",
-    title: /eBPF Fleet/i,
+    title: /eBPF SOC/i,
     public: false,
-    panelCount: 13
+    panelCount: 0,
+    // Kept literal rather than built from FLEET_SURFACE_HASH: `as const` on the
+    // array is what gives every other field its literal type, and a template
+    // literal would widen this one to `string`.
+    redirectsTo: "/#fleet"
   }
 ] as const satisfies readonly AppRoute[];
 
@@ -258,7 +304,20 @@ export const FORM_ENCODED_WRITE_PATHS = ["/api/run-attack"] as const;
 export const SSE_CONTRACT = {
   endpoint: "/api/stream",
   consumers: ["soc", "choke"],
-  pollOnlyRoutes: ["devices", "fleet"],
+  /**
+   * Routes that open no stream at all. "fleet" left this list when /fleet
+   * stopped being a console: the address now lands on the SOC route, which IS
+   * an SSE consumer. The fleet VIEW is still poll-only — see pollOnlySurfaces.
+   */
+  pollOnlyRoutes: ["devices"],
+  /**
+   * Surfaces inside an SSE-consuming route that read by polling anyway. The
+   * fleet surface fans six requests across every configured peer every five
+   * seconds and has no stream behind it, which is why it stops polling the
+   * moment it is closed and why it carries its own poll-health readout rather
+   * than borrowing the shell's live pill.
+   */
+  pollOnlySurfaces: ["fleet-console-modal"],
   heartbeatType: "heartbeat",
   staleAfterMs: 30_000,
   watchdogAfterMs: 45_000,
@@ -298,9 +357,28 @@ export type SocSurface = {
   labOnly?: boolean;
   /** Reachable from the sidebar only when no assistant is configured. */
   assistantFallbackOnly?: boolean;
+  /**
+   * The rail control is an ANCHOR, not a button: the surface has an address of
+   * its own that must keep working (a bookmark, the live probe's sign-in
+   * target, the command palette's route entry), and a plain click opens it in
+   * place instead of paying for the round trip. A harness that reaches surfaces
+   * with `socNavItem` (getByRole("button")) will not find these — use
+   * `socNavLink`. Only the fleet console is one.
+   */
+  navIsLink?: boolean;
 };
 
 export const SOC_SURFACES: readonly SocSurface[] = [
+  // First, as it is in the rail: the fleet view sits in Respond beside the two
+  // choke gateways, because it answers the same question they do. It was a
+  // console at /fleet until the two were merged, which is why this list did not
+  // carry it.
+  {
+    nav: "Fleet Console",
+    panel: "fleet-console-modal",
+    contains: /host|fleet|threshold|kill-switch/i,
+    navIsLink: true
+  },
   { nav: "MITRE Coverage", panel: "mitre-navigator-modal", contains: /technique|ATT&CK|coverage/i },
   { nav: "Correlation Graph", panel: "process-correlation-graph-modal", contains: /graph|process|correlat/i },
   { nav: "Time Machine", panel: "time-machine-modal", contains: /snapshot|replay|window|time/i },
@@ -312,7 +390,7 @@ export const SOC_SURFACES: readonly SocSurface[] = [
   },
   { nav: "Watchlist", panel: "watchlist-modal", contains: /watchlist|path|binar/i },
   { nav: "Policies", panel: "detections-modal", contains: /detection|policy|policies/i },
-  { nav: "Fleet", panel: "fleet-modal", contains: /host|peer|fleet/i },
+  { nav: "Peer Consoles", panel: "fleet-modal", contains: /host|peer|fleet/i },
   { nav: "Sensor Health", panel: "sensor-health-modal", contains: /agent|sensor|policies|kernel/i },
   { nav: "Settings", panel: "settings-modal", contains: /noise|response|guardrails|evidence/i },
   { nav: "Reports", panel: "export-confirm-modal", contains: /export|report|csv|pdf/i },

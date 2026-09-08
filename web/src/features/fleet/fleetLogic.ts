@@ -1,5 +1,6 @@
 import type {
   Alert,
+  AuditState,
   ChokeState,
   Decision,
   DerivedFleet,
@@ -11,6 +12,7 @@ import type {
   FleetKpis,
   FleetPeer,
   HostResult,
+  KillState,
   Thresholds
 } from "./types";
 
@@ -19,6 +21,7 @@ export const EMPTY_KPIS: FleetKpis = {
   healthy: 0,
   enforcing: 0,
   killed: 0,
+  killUnknown: 0,
   drift: 0,
   auditOk: 0,
   auditBroken: 0,
@@ -74,11 +77,50 @@ export function validateThresholds(thresholds: Thresholds): string | null {
   return null;
 }
 
+/**
+ * The kill-switch as the server actually reported it.
+ *
+ * Three outcomes, because there are three. `kill_switched: null` is what the
+ * multi-tenant control plane sends for every host — no heartbeat field carries
+ * the agent's switch — and `undefined` is a server that omitted the field
+ * entirely. Neither is "off", and the console spent both of them as one:
+ * `data.kill_switched ? "on" : "off"`.
+ */
+export function killStateOf(state?: ChokeState | null): KillState {
+  if (typeof state?.kill_switched !== "boolean") {
+    return "unknown";
+  }
+  return state.kill_switched ? "on" : "off";
+}
+
+/**
+ * Which of the three audit outcomes a host is in.
+ *
+ * Shared by the reducer and the host table so they cannot disagree: the table
+ * used to decide "broken" on `bad_at != null`, which quietly re-classified a
+ * host reporting {ok:false} with no offending index — a BROKEN chain in the
+ * KPIs — as one that maintains no chain at all.
+ */
+export function classifyAudit(audit?: AuditState | null): "ok" | "broken" | "unmaintained" {
+  if (!audit || audit.supported === false) {
+    return "unmaintained";
+  }
+  return audit.ok ? "ok" : "broken";
+}
+
 export function detectDrift(stateResults: Array<HostResult<ChokeState>>): DriftResult {
   const okRows = stateResults.filter((row) => row.ok && row.data);
+  // EXCLUDED from the vote, not merely displayed differently. A host that did
+  // not report its kill-switch cannot be evidence for what the fleet's
+  // kill-switch majority is; counting it as "off" let a fleet that reported
+  // nothing at all elect an "off" majority, against which a genuinely
+  // kill-switched host then looked like the drifted one.
+  const reportedKill = okRows
+    .map((row) => killStateOf(row.data))
+    .filter((value): value is "on" | "off" => value !== "unknown");
   return {
     mode: majority(okRows.map((row) => row.data?.mode ?? "?")),
-    kill: majority(okRows.map((row) => (row.data?.kill_switched ? "on" : "off"))),
+    kill: majority(reportedKill),
     thresholds: majority(okRows.map((row) => thresholdKey(row.data?.thresholds)))
   };
 }
@@ -95,6 +137,7 @@ export function deriveFleet(
     const result = byHost.get(peer.name);
     const data = result?.data;
     const reachable = Boolean(result?.ok && data);
+    const killState = reachable ? killStateOf(data) : "unknown";
 
     if (reachable && data) {
       kpis.healthy += 1;
@@ -102,16 +145,18 @@ export function deriveFleet(
       if (data.mode === "enforcing") {
         kpis.enforcing += 1;
       }
-      if (data.kill_switched) {
+      if (killState === "on") {
         kpis.killed += 1;
+      } else if (killState === "unknown") {
+        kpis.killUnknown += 1;
       }
       // Three outcomes, not two. A host that does not chain centrally, or
       // reports no audit block at all, is NOT a host with a broken chain —
       // counting it as one told an operator their tamper-evidence had failed.
-      const audit = data.audit;
-      if (!audit || audit.supported === false) {
+      const auditClass = classifyAudit(data.audit);
+      if (auditClass === "unmaintained") {
         kpis.auditUnsupported += 1;
-      } else if (audit.ok) {
+      } else if (auditClass === "ok") {
         kpis.auditOk += 1;
       } else {
         kpis.auditBroken += 1;
@@ -125,7 +170,11 @@ export function deriveFleet(
     }
 
     const driftMode = reachable && data?.mode !== drift.mode;
-    const driftKill = reachable && (data?.kill_switched ? "on" : "off") !== drift.kill;
+    // A host that did not report its kill-switch does not drift on it. It was
+    // being compared as "off" against a majority it had itself voted "off"
+    // into, so the field agreed with itself and quietly certified a fleet
+    // nobody had measured.
+    const driftKill = reachable && killState !== "unknown" && killState !== drift.kill;
     const driftThresholds = reachable && thresholdKey(data?.thresholds) !== drift.thresholds;
     if (driftMode || driftKill || driftThresholds) {
       kpis.drift += 1;
@@ -135,6 +184,7 @@ export function deriveFleet(
       peer,
       result,
       reachable,
+      killState,
       driftMode,
       driftKill,
       driftThresholds
@@ -328,6 +378,93 @@ export function summarizeFanout(label: string, report: FanoutReport): {
       ? `${success}/${total} succeeded; failures: ${failures}${trailer}`
       : `${success}/${total} succeeded; the server did not name the hosts that failed.${trailer}`
   };
+}
+
+/**
+ * How long a threshold write LASTS, read off the one field that says so.
+ *
+ * The multi-tenant control plane stores a ladder as the tenant's policy only
+ * when the write named no targets, and reports which it did in
+ * `stored_for_tenant` (controlplane/choke.go). That distinction is not
+ * cosmetic: `reconcileLadders` re-pushes the tenant policy to every agent whose
+ * reported ladder differs from it, every two minutes. So a TARGETED ladder is
+ * applied honestly, acked honestly — and then, on any tenant that has a stored
+ * ladder, reconciled away within one pass of that timer. The
+ * reconciler's own comment describes the operator who "watches it revert within
+ * two minutes with nothing anywhere saying why"; nothing in the console read
+ * the field, so the toast said "applied" and stopped there.
+ *
+ * Strictly boolean, like every other capability field the console reads: the
+ * single-tenant engine has no tenant policy and no reconciler and sends no such
+ * field, and inventing a durability caveat for it would be as untrue as
+ * omitting one here.
+ */
+export interface LadderPersistence {
+  /** The server said this ladder is not the tenant's and will be reconciled back. */
+  temporary: boolean;
+  /** What the operator is told about durability; "" when the server said nothing. */
+  note: string;
+}
+
+export function readLadderPersistence(result: unknown, targets: string[] | null): LadderPersistence {
+  const envelope = (typeof result === "object" && result !== null ? result : {}) as {
+    stored_for_tenant?: unknown;
+  };
+  const stored = envelope.stored_for_tenant;
+  if (typeof stored !== "boolean") {
+    return { temporary: false, note: "" };
+  }
+  if (stored) {
+    return {
+      temporary: false,
+      note: "Stored as this tenant's ladder, so an agent that enrols later inherits it."
+    };
+  }
+  if (targets !== null) {
+    const count = targets.length;
+    // Conditional, because the server's answer is. `stored_for_tenant: false`
+    // says this ladder is not the tenant's; it does not say whether the tenant
+    // HAS one. reconcileLadders skips a tenant with no stored ladder
+    // (ThresholdsFor errors and the deployed ladder stands), so promising a
+    // revert outright would be a second untrue reading traded for the first.
+    // What is certain — this is not the tenant's ladder, and any tenant ladder
+    // will win — is stated as certain, and the timing is named because two
+    // minutes is the reconciler's own cadence.
+    return {
+      temporary: true,
+      note:
+        `Applied to the ${count} selected host${count === 1 ? "" : "s"} only, and NOT stored as this tenant's ladder. ` +
+        "If this tenant has a stored ladder, the control plane pushes it back over any host that differs, " +
+        "so expect these hosts to revert within about two minutes. Apply to all hosts to change the ladder itself."
+    };
+  }
+  // Untargeted and unstored: the live fleet did take it, and nothing will
+  // revert it — there is no stored policy to reconcile against. The caveat is
+  // about the NEXT agent, so it is stated without being toned as a failure.
+  return {
+    temporary: false,
+    note:
+      "Applied to the agents running now, but the server could not record it as the tenant's ladder: " +
+      "an agent that enrols later starts on the ladder its deploy configured."
+  };
+}
+
+/**
+ * The ladder reading beside the threshold inputs, qualified by how many hosts
+ * it was computed from.
+ *
+ * "Majority 5/10/20/40" over a single reporting host is a majority of one — a
+ * comparative reading on a fleet with nothing to compare, which on a
+ * single-agent tenant is the only reading there is. It says which it is.
+ */
+export function ladderReading(reportingHosts: number, majorityThresholds: Thresholds | null): string {
+  if (reportingHosts === 0 || !majorityThresholds) {
+    return "No host reported a ladder";
+  }
+  if (reportingHosts === 1) {
+    return `One host reporting · ${thresholdKey(majorityThresholds)}`;
+  }
+  return `Majority of ${reportingHosts} · ${thresholdKey(majorityThresholds)}`;
 }
 
 export type MergedDecision = Decision & { _host: string };

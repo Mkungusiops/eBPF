@@ -103,12 +103,19 @@ export function DetectionsBody({
    * connection", which is the original defect firing during exactly the window
    * an operator first looks at the panel.
    *
-   * A FAILED whoami counts as unanswered here, and that is deliberately
-   * different from the fleet rail's rule (useFleetSnapshot's
-   * `identityResolved`, which resolves on failure). The rail is deciding
-   * whether to withhold a control — over an outage it must not — whereas this
-   * is deciding which SENTENCE to print, and over an outage the honest
-   * sentence is "not known yet".
+   * A FAILED whoami counts as unanswered here, and that is deliberately a
+   * different question from the one the containment rails ask. They decide
+   * whether to WITHHOLD A CONTROL, and they all fail closed over an outage:
+   * DevicesRoute withholds on `authority.pending`, and the fleet rail does the
+   * same since it stopped reading its own whoami and adopted the shared store.
+   * This decides which SENTENCE to print, and over an outage the honest
+   * sentence is "not known yet" rather than a claim about Tetragon.
+   *
+   * The rails make the same distinction one layer along, in copy rather than in
+   * whether the button is live: DevicesRoute separates a read-only account from
+   * a whoami still in flight from one that failed and is being retried
+   * (AUTHORITY_UNREACHABLE_REASON), because an operator looking at a dead
+   * kill-switch needs to know which of the three it is.
    *
    * Defaults to true so a caller that does not track it keeps the behaviour it
    * had — and that default is no longer load-bearing. SocModals never passed

@@ -1,5 +1,4 @@
-import { readCookie } from "../../lib/api";
-import { AssistantError, type AssistantStep } from "./api";
+import { AssistantError, assistantRequest, type AssistantStep, type Requester } from "./api";
 
 /**
  * ChatApi — the injected seam for assistant conversation history.
@@ -13,7 +12,12 @@ import { AssistantError, type AssistantStep } from "./api";
  * Injected from the first commit for the reason recorded in api.ts — and
  * reinforced since: the CSRF bug there shipped past seven green tests because
  * every one of them injected a fake and the real transport was never exercised.
- * chatApi.test.ts drives THIS module's defaultRequest for that reason.
+ * chatApi.test.ts drives the PATHS AND BODIES this module builds over a
+ * captured requester; what the shared transport then does to them — the CSRF
+ * header, the customer on the query string, the wait for the boot driver — is
+ * covered over a stubbed fetch in src/test/assistantScope.test.ts, because a
+ * seam that is only ever driven with a fake covers nothing that actually goes
+ * on the wire.
  */
 
 /** One stored conversation. Mirrors chatstore.Chat's wire format. */
@@ -73,19 +77,6 @@ export interface ChatApi {
   deleteChat(chatId: string): Promise<void>;
 }
 
-type Requester = (path: string, init?: RequestInit) => Promise<Response>;
-
-/** Same CSRF contract as api.ts; see the comment there for why it exists. */
-const defaultRequest: Requester = (path, init) => {
-  const headers = new Headers(init?.headers);
-  const method = (init?.method ?? "GET").toUpperCase();
-  if (method !== "GET" && method !== "HEAD" && !headers.has("X-CSRF-Token")) {
-    const csrf = readCookie("csrf_token");
-    if (csrf) headers.set("X-CSRF-Token", csrf);
-  }
-  return fetch(path, { credentials: "same-origin", ...init, headers });
-};
-
 /**
  * HISTORY_DISABLED is the status the control plane returns when this deployment
  * has no chat store. It is a normal condition, so it is modelled as a typed
@@ -104,7 +95,35 @@ async function fail(res: Response): Promise<never> {
   throw new AssistantError(detail, res.status);
 }
 
-export function createChatApi(request: Requester = defaultRequest): ChatApi {
+/**
+ * The same transport the asks go out on (api.ts), not a second copy of it.
+ *
+ * It used to be a copy — identical CSRF logic, duplicated — and a duplicate is
+ * how one of two request paths ends up missing the rule the other one gained.
+ *
+ * IT MEANS THESE PATHS CARRY A `tenant` THE CHAT ROUTES DO NOT READ, and that
+ * is deliberate rather than an oversight to tidy up. Chat history is
+ * per-OPERATOR: controlplane/chat.go's scopeFor builds the scope from the
+ * verified session and explicitly never from anything the client sent, so the
+ * parameter is inert on every one of these endpoints. The alternative is an
+ * exemption list living inside this feature, beside the one lib/tenantScope
+ * already keeps (UNSCOPED_PATHS) — and two lists is how a request ends up
+ * exempt from the rule nobody remembered the second list existed to state.
+ *
+ * IT ALSO MEANS THE UNSAFE ONES ARE REFUSED WHEN THE CUSTOMER IS UNCONFIRMED,
+ * which needs saying because a create, rename or delete here is about an
+ * OPERATOR'S OWN conversation and not about a customer at all — so the refusal
+ * sentence that transport throws ("...the write was not sent. Pick a customer
+ * and try again") would be a wrong explanation if an operator ever read it.
+ * They do not: useChats swallows every one of these failures deliberately —
+ * createChat falls back to an incognito ask, and rename, pin and delete are
+ * `.catch(() => undefined)` — so the only refusal that reaches a screen is the
+ * ask's own, where the sentence is exactly true. That is what makes ONE rule
+ * for the whole transport the cheaper correct answer here; if a chat write is
+ * ever surfaced to the operator, this is the comment that says why the message
+ * it would show is wrong.
+ */
+export function createChatApi(request: Requester = assistantRequest): ChatApi {
   const json = { "Content-Type": "application/json" };
   return {
     async listChats(query, signal) {

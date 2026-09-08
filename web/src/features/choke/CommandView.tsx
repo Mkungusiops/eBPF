@@ -68,7 +68,7 @@ export function CommandView({
   onCommitThresholds: (next: Thresholds) => Promise<void>;
 }) {
   const { buckets, cgroups, chokeState, circuits, decisions, now, streamInfo, systemHealth } = data;
-  const { disabled, engineOnlyHint, isFleetConsole, mode, stateCounts, thresholds } = posture;
+  const { disabled, mode, stateCounts, thresholds } = posture;
   // Two different disablers, deliberately kept apart. `disabled` says the
   // gateway is not serving; the withheld pair is about the OPERATOR — refused,
   // or not yet answered for. Panels that only READ (the engine stack) stay on

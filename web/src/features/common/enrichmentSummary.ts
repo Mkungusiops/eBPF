@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { tenantScopedPath, useSelectedTenant } from "../../lib/tenantScope";
 
 /**
  * A one-line summary of whether the two enrichment layers are actually working.
@@ -43,26 +44,60 @@ interface IntelResponse {
   status: { loaded: boolean; indicators: number };
 }
 
+/**
+ * The two status reads, carrying the customer the console is pointed at.
+ *
+ * `tenantScopedPath` is lib/api.ts's own scoping step. This hook raw-fetched
+ * instead, so the line it produces — "Baseline ready · 414 indicators", printed
+ * beside the selected customer's console — was asked with no customer named on
+ * it at all. That is the one sentence this strip exists to get right: it is the
+ * analyst's evidence that the detector behind an empty findings list is
+ * actually running, and evidence about a customer nobody named is not weaker
+ * evidence, it is false evidence.
+ *
+ * Naming the customer is this side's half of it; see IntelligenceBody's helper
+ * for the control-plane handler that does not yet read the parameter.
+ *
+ * It stays on fetch's own `res.json()` rather than calling lib/api.ts's `api()`
+ * for the reason that helper gives: `api()` parses a response only when the
+ * server labelled it `application/json` and otherwise hands back the raw text.
+ * The scoping is the part that must match, and it does.
+ *
+ * 503 is the documented "not enabled on this deployment" answer and is a
+ * normal state, not a fault.
+ */
 async function getJSON<T>(path: string, signal: AbortSignal): Promise<T | null> {
-  const res = await fetch(path, { credentials: "same-origin", signal });
-  // 503 is the documented "not enabled on this deployment" answer and is a
-  // normal state, not a fault.
+  const res = await fetch(tenantScopedPath(path), { credentials: "same-origin", signal });
   if (!res.ok) return null;
   return (await res.json()) as T;
 }
 
 /**
- * Fetches the summary once per `enabled` transition. No polling: this is a
- * status line beside a link, not a live panel, and the panel it links to does
- * its own refreshing.
+ * Nothing is known until something has answered: the sidebar renders its
+ * neutral "Behaviour & reputation" label for this, rather than a readiness it
+ * has not been told.
+ */
+const NOTHING_KNOWN_YET: EnrichmentSummary = {
+  baselineReady: null,
+  baselineProgress: null,
+  indicators: null,
+  unavailable: false
+};
+
+/**
+ * Fetches the summary once per `enabled` transition, and again whenever the
+ * console is pointed at a different customer. No polling: this is a status line
+ * beside a link, not a live panel, and the panel it links to does its own
+ * refreshing.
+ *
+ * The customer is a dependency because this line is EVIDENCE — "Baseline ready
+ * · 414 indicators" is what tells an analyst that an empty findings list is a
+ * finding. Left on the answer it got before a switch, it would go on vouching
+ * for the previous customer's detector while the console named another.
  */
 export function useEnrichmentSummary(enabled: boolean): EnrichmentSummary {
-  const [summary, setSummary] = useState<EnrichmentSummary>({
-    baselineReady: null,
-    baselineProgress: null,
-    indicators: null,
-    unavailable: false
-  });
+  const [summary, setSummary] = useState<EnrichmentSummary>(NOTHING_KNOWN_YET);
+  const selectedTenant = useSelectedTenant();
 
   const load = useCallback((signal: AbortSignal) => {
     void Promise.all([
@@ -70,6 +105,9 @@ export function useEnrichmentSummary(enabled: boolean): EnrichmentSummary {
       getJSON<IntelResponse>("/api/intel", signal)
     ])
       .then(([b, i]) => {
+        // A switch re-runs the effect below, whose cleanup aborts this
+        // controller — so an answer about the customer just left is dropped
+        // here rather than stated beside the new one's name.
         if (signal.aborted) return;
         if (!b && !i) {
           setSummary({ baselineReady: null, baselineProgress: null, indicators: null, unavailable: true });
@@ -89,18 +127,22 @@ export function useEnrichmentSummary(enabled: boolean): EnrichmentSummary {
         });
       })
       .catch(() => {
-        if (!signal.aborted) {
-          setSummary({ baselineReady: null, baselineProgress: null, indicators: null, unavailable: true });
-        }
+        if (signal.aborted) return;
+        setSummary({ baselineReady: null, baselineProgress: null, indicators: null, unavailable: true });
       });
   }, []);
 
   useEffect(() => {
     if (!enabled) return;
+    // What was known was known about the customer the console was pointed at
+    // when it was read. On a switch that is no longer the customer on screen,
+    // and a stale "Baseline ready" beside the new one's name is not a weaker
+    // claim than none — it is a false one. Forgotten first, then re-read.
+    setSummary(NOTHING_KNOWN_YET);
     const ctl = new AbortController();
     load(ctl.signal);
     return () => ctl.abort();
-  }, [enabled, load]);
+  }, [enabled, load, selectedTenant]);
 
   return summary;
 }

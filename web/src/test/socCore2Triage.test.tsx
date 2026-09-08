@@ -16,16 +16,6 @@ import type { SocAlert, SocSnapshot } from "../features/soc/types";
  * only rendering the route reaches the call sites that were wrong.
  */
 
-// cmdk (the command palette, mounted hidden inside SocModals on every route
-// render) observes its list, and jsdom has no ResizeObserver: without this the
-// route throws before the queue exists.
-class NoopResizeObserver {
-  observe() {}
-  unobserve() {}
-  disconnect() {}
-}
-globalThis.ResizeObserver = globalThis.ResizeObserver ?? (NoopResizeObserver as unknown as typeof ResizeObserver);
-
 const ALERT_A = "alert-dup-1";
 const ALERT_B = "alert-dup-2";
 

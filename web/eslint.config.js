@@ -24,7 +24,12 @@ export default tseslint.config(
     ignores: [
       "dist/**",
       "node_modules/**",
-      "playwright-report/**",
+      // The trailing glob matters: probe runs write to sibling directories
+      // (playwright-report-probe-engine, -controlplane) that .gitignore
+      // already covers but this list did not, so eslint walked the bundled
+      // trace-viewer bundles in them and reported ~7900 errors from vendored
+      // JS nobody here wrote — enough noise to hide a real one.
+      "playwright-report*/**",
       "test-results/**",
       "coverage/**",
       "scripts/**",

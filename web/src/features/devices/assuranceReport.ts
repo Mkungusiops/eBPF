@@ -94,7 +94,19 @@ export function buildDeviceAssuranceHtml(args: {
       : Math.round((m.contained / (m.activeThreats + m.contained)) * 100);
   const postureText = m.posture === null ? "n/a" : String(m.posture);
   const coverageText = coverage === null ? "n/a" : `${coverage}%`;
-  const auditRowsText = m.auditRows === null ? "not counted" : m.auditRows.toLocaleString();
+  // No audit-row count is printed, and the "not counted" string this report
+  // used to compute for one is deliberately gone.
+  //
+  // CommandMetrics.auditRows is structurally null on this plane — metrics.ts
+  // sets it null for every device deployment because nothing counts audit rows
+  // for the device gateway — so the only line this report could ever have
+  // rendered is a permanent "Audit rows: not counted". A field that can never
+  // carry a value is the structurally-empty-panel defect in a printed,
+  // customer-facing form: a board reader sees an audit measure that looks
+  // failed or unreported rather than a measure that does not exist here. The
+  // report says what it can evidence — ladder counts, plane liveness, the
+  // inventory — and stays silent about what it cannot. If a real count ever
+  // reaches CommandMetrics for devices, print it then.
   const tone = m.posture === null ? "#6b7a8c" : m.posture >= 80 ? "#2f9e5e" : m.posture >= 55 ? "#c9871f" : "#d23a4f";
   const rung = (r: string) => counts[r] || 0;
   const deviceRows =

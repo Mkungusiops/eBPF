@@ -201,6 +201,17 @@ export interface Whoami {
   host?: string;
   hostname?: string;
   server_ip?: string;
+  /**
+   * What a policy push REACHES on this deployment: "fleet" on the multi-tenant
+   * control plane, absent on the single-tenant engine, which serves one host.
+   *
+   * A DEPLOYMENT capability, not a permission — the control plane emits the
+   * same value for every principal it serves. It is the console's only
+   * server-stated answer to "which deployment am I talking to", which is why
+   * the approvals queue keys off it: dual control is a control-plane feature
+   * and /api/approvals does not exist on the engine.
+   */
+  policy_scope?: string;
   [key: string]: unknown;
 }
 
