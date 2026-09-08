@@ -63,6 +63,7 @@ tags:
   - name: "Policy"
   - name: "Simulation"
   - name: "Telemetry"
+  - name: "Tenancy"
 components:
   securitySchemes:
     bearerAdmin:
@@ -818,8 +819,12 @@ paths:
                     type: string
                     description: "Named so the console cannot present this as if it were the sensor's profile. They answer different questions and an operator comparing them must know which is which."
                   "status": {}
+        "400":
+          description: |
+            The handler refused the request; the conditions it refuses are in the
+            description above. A 400 is a REJECTED request, not a failed change -
+            nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
-        "403": { description: "Forbidden" }
         "404": { description: "Not found, or not visible to this caller" }
         "405": { description: "Method not allowed" }
         "503":
@@ -858,8 +863,12 @@ paths:
                 type: object
                 properties:
                   "findings": {}
+        "400":
+          description: |
+            The handler refused the request; the conditions it refuses are in the
+            description above. A 400 is a REJECTED request, not a failed change -
+            nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
-        "403": { description: "Forbidden" }
         "404": { description: "Not found, or not visible to this caller" }
         "405": { description: "Method not allowed" }
         "503":
@@ -1343,9 +1352,12 @@ paths:
         macs: ["aa:bb:cc:dd:ee:ff", ...], action:
         "throttle"|"tarpit"|"quarantine"|"sever", reason: "responding to incident
         #1234", // REQUIRED for the audit row revert_after_seconds: 300 //
-        optional auto-revert } Each MAC is audited separately; returns a per-MAC
-        outcome list so the UI can show "3/4 succeeded" (a refusal — e.g. an
-        allow-listed MAC — surfaces as ok=false with the reason).
+        optional auto-revert } A body that states no intent — absent, empty,
+        whitespace-only, a literal null, or any JSON that is not an object — is
+        refused 400 before a single MAC is touched. See decodeWrite in choke.go.
+        Each MAC is audited separately; returns a per-MAC outcome list so the UI
+        can show "3/4 succeeded" (a refusal — e.g. an allow-listed MAC — surfaces
+        as ok=false with the reason).
 
         Surface: control-plane, engine.
         Requires the tenant query parameter on the control plane; the
@@ -1472,8 +1484,23 @@ paths:
         handleDeviceKill — fleet-wide KillSwitch on the DEVICE plane.
 
         engine — handleChokeDeviceKillSwitch:
-        POST /api/choke/device-kill-switch — body: {on: bool}. Global stop for
-        device enforcement (decisions still audited).
+        POST /api/choke/device-kill-switch — body: {on: bool, reason: string}.
+        `on` is REQUIRED; `reason` is required to ENGAGE. Global stop for device
+        enforcement (decisions still audited). A body that states no intent —
+        absent, empty, whitespace-only, a literal null, or any JSON that is not an
+        object — is refused 400, as is an object that never names "on" ({},
+        {"on":null}). An explicit {"on":false} releases the kill-switch and still
+        works: releasing is a real operator act, and telling it apart from silence
+        is the point. The reason is read now because there is somewhere for it to
+        go: DeviceGateway.SetKillSwitchBy writes a hash-chained row for the
+        transition and hashes the operator's words into it, so this plane finally
+        records what handleChokeKillSwitch records for the process plane. Engaging
+        halts every device containment on this host — including a sever an
+        operator pressed themselves — so, like the quarantine/sever rungs guarded
+        by requireReasonForDestructive and like the neighbouring device-mode
+        write, it may not be recorded with an empty justification. Releasing is
+        never blocked for want of one: refusing to restore enforcement is how a
+        plane stays halted longer than anyone intended.
 
         Surface: control-plane, engine.
         Requires the tenant query parameter on the control plane; the
@@ -1622,9 +1649,14 @@ paths:
 
         engine — handleChokeDeviceMode:
         POST /api/choke/device-mode — runtime swap between enforcing and
-        detect-only. Body: {enforcing: bool, reason: string}. In detect-only,
-        device-jail decisions are audited but the kernel data plane is untouched.
-        Returns the prior mode so the caller can detect no-ops.
+        detect-only. Body: {enforcing: bool, reason: string}, both REQUIRED. In
+        detect-only, device-jail decisions are audited but the kernel data plane
+        is untouched. Returns the prior mode so the caller can detect no-ops. A
+        body that states no intent — absent, empty, whitespace-only, a literal
+        null, or any JSON that is not an object — is refused 400, as is an object
+        that never names "enforcing" ({}, {"reason":"…"}, {"enforcing":null}). An
+        explicit {"enforcing":false} is a legitimate instruction and still disarms
+        the plane; that distinction is the whole of the rule.
 
         Surface: control-plane, engine.
         Requires the tenant query parameter on the control plane; the
@@ -1840,12 +1872,22 @@ paths:
       summary: "handleDeviceThaw / handleChokeDeviceThaw"
       description: |
         control-plane — handleDeviceThaw:
-        handleDeviceThaw — release LAN devices by MAC.
+        handleDeviceThaw — release LAN devices by MAC. The release is attributed:
+        the operator is stamped on each command as its actor, and the agent copies
+        that into the tamper-evident audit row it writes when it tears the tc rule
+        down. `reason` is optional and, when given, is recorded on the CONTROL
+        PLANE's operator trail rather than travelling to the agent —
+        ebpfsoc.v1.Thaw has no field to carry it. An absent reason is recorded as
+        absent; nothing is substituted for one the operator did not type.
 
         engine — handleChokeDeviceThaw:
         POST /api/choke/device-thaw — clear enforcement for one or more devices.
         Body: {macs: [...], reason: "..."}. Precise per-device release (unlike the
-        per-tier cgroup thaw on the process side).
+        per-tier cgroup thaw on the process side). A body that states no intent —
+        absent, empty, whitespace-only, a literal null, or any JSON that is not an
+        object — is refused 400 and nothing is released. Naming the MACs is what
+        this endpoint requires; the reason stays optional, because a release must
+        never be blocked.
 
         Surface: control-plane, engine.
         Requires the tenant query parameter on the control plane; the
@@ -1909,7 +1951,13 @@ paths:
       operationId: put_api_choke_device_thaw
       summary: "handleDeviceThaw"
       description: |
-        handleDeviceThaw — release LAN devices by MAC.
+        handleDeviceThaw — release LAN devices by MAC. The release is attributed:
+        the operator is stamped on each command as its actor, and the agent copies
+        that into the tamper-evident audit row it writes when it tears the tc rule
+        down. `reason` is optional and, when given, is recorded on the CONTROL
+        PLANE's operator trail rather than travelling to the agent —
+        ebpfsoc.v1.Thaw has no field to carry it. An absent reason is recorded as
+        absent; nothing is substituted for one the operator did not type.
 
         Surface: control-plane.
         Requires the tenant query parameter.
@@ -2886,6 +2934,9 @@ paths:
                         type: string
                       "status":
                         type: string
+                      "stored_for_tenant":
+                        type: boolean
+                        description: "Never stored as the tenant's policy: applied to the agents named here and liable to be reconciled back to the tenant's ladder."
                       "targets":
                         description: "Echoed on the parking response too, so the requester's own console can show what it just asked for rather than re-deriving it."
                       "total":
@@ -2964,6 +3015,9 @@ paths:
                     type: string
                   "status":
                     type: string
+                  "stored_for_tenant":
+                    type: boolean
+                    description: "Never stored as the tenant's policy: applied to the agents named here and liable to be reconciled back to the tenant's ladder."
                   "targets":
                     description: "Echoed on the parking response too, so the requester's own console can show what it just asked for rather than re-deriving it."
                   "total":
@@ -3750,6 +3804,25 @@ paths:
             nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
         "404": { description: "Not found, or not visible to this caller" }
+  "/api/estate/summary":
+    get:
+      tags: ["Other"]
+      operationId: get_api_estate_summary
+      summary: "handleEstateSummary"
+      description: |
+        handleEstateSummary answers "how is the whole book of business doing" for
+        a cross-tenant operator. ?window_min= window length in minutes (default
+        60, max 7 days)
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200": { description: "Success" }
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+        "405": { description: "Method not allowed" }
   "/api/events":
     get:
       tags: ["Detections"]
@@ -4367,6 +4440,9 @@ paths:
                         type: string
                       "status":
                         type: string
+                      "stored_for_tenant":
+                        type: boolean
+                        description: "Never stored as the tenant's policy: applied to the agents named here and liable to be reconciled back to the tenant's ladder."
                       "targets":
                         description: "Echoed on the parking response too, so the requester's own console can show what it just asked for rather than re-deriving it."
                       "total":
@@ -4448,6 +4524,9 @@ paths:
                     type: string
                   "status":
                     type: string
+                  "stored_for_tenant":
+                    type: boolean
+                    description: "Never stored as the tenant's policy: applied to the agents named here and liable to be reconciled back to the tenant's ladder."
                   "targets":
                     description: "Echoed on the parking response too, so the requester's own console can show what it just asked for rather than re-deriving it."
                   "total":
@@ -5038,8 +5117,12 @@ paths:
                   "matches_total": {}
                   "refresh": {}
                   "status": {}
+        "400":
+          description: |
+            The handler refused the request; the conditions it refuses are in the
+            description above. A 400 is a REJECTED request, not a failed change -
+            nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
-        "403": { description: "Forbidden" }
         "404": { description: "Not found, or not visible to this caller" }
         "405": { description: "Method not allowed" }
         "503":
@@ -5073,7 +5156,6 @@ paths:
             description above. A 400 is a REJECTED request, not a failed change -
             nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
-        "403": { description: "Forbidden" }
         "404": { description: "Not found, or not visible to this caller" }
         "405": { description: "Method not allowed" }
         "503":
@@ -5112,8 +5194,12 @@ paths:
                 type: object
                 properties:
                   "findings": {}
+        "400":
+          description: |
+            The handler refused the request; the conditions it refuses are in the
+            description above. A 400 is a REJECTED request, not a failed change -
+            nothing was applied anywhere.
         "401": { description: "Unauthenticated" }
-        "403": { description: "Forbidden" }
         "404": { description: "Not found, or not visible to this caller" }
         "405": { description: "Method not allowed" }
         "503":
@@ -6321,6 +6407,43 @@ paths:
           description: |
             Server error. On a write this does not say whether the change was
             applied; re-read the state rather than assuming either way.
+  "/api/tenants":
+    get:
+      tags: ["Tenancy"]
+      operationId: get_api_tenants
+      summary: "handleTenants"
+      description: |
+        No handler documentation in source.
+
+        Surface: control-plane.
+        Requires the tenant query parameter.
+      parameters:
+        - $ref: '#/components/parameters/tenant'
+      responses:
+        "200":
+          description: |
+            Success. The fields below are those OBSERVED on this handler's
+            response path, derived from its writeJSON literals - they are
+            NOT an exhaustive schema, and the shape varies by outcome.
+            Read `ok` as 'the agent confirmed it applied', not 'accepted'.
+            A field published WITHOUT a type is one the source does not
+            settle - it is listed because the handler emits it, and left
+            untyped rather than guessed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  "audited":
+                    type: string
+                    description: "Stated on the response because an operator should be able to see, from the thing itself, that reading it was not free."
+                  "count":
+                    type: integer
+                  "source": {}
+                  "tenants": {}
+        "401": { description: "Unauthenticated" }
+        "404": { description: "Not found, or not visible to this caller" }
+        "405": { description: "Method not allowed" }
   "/api/verify-chain":
     get:
       tags: ["Other"]

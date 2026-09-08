@@ -357,6 +357,18 @@ func (s *Server) handleChokeBulkManual(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	// The same reason gate the single-target /api/choke/manual applies, and
+	// that the control plane's bulk handler applies. It was missing HERE, on
+	// the one endpoint that quarantines or SIGKILLs a whole selection in one
+	// request — so the widest per-operator blast radius on this surface was
+	// also the only way to reach those two rungs with an empty audit reason.
+	// The console's bulk confirm is reason-gated, so this refuses nothing it
+	// can send; a direct API caller was the hole. Reversible rungs stay
+	// frictionless, exactly as on the single-target path.
+	if err := requireReasonForDestructive(body.Action, body.Reason); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	actor := s.auth.Username()
 	type outcome struct {
 		ExecID    string `json:"exec_id"`

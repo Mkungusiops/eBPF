@@ -22,9 +22,12 @@ import "strings"
 //
 // A surface is not authorization. It changes what the model is TOLD, never what
 // it may READ — the tool registry and the caller's session are still the only
-// things that decide that. A forged surface string can therefore mis-frame an
-// answer for the person who forged it and nothing else, which is why this is
-// free-form-ish input validated against a known set rather than a permission.
+// things that decide that, and WHICH CUSTOMER's rows those reads return is
+// Runner.Tenant, resolved and authorized by the handler through the same
+// Authorize as every console read (see Caller in tool.go). A forged surface
+// string can therefore mis-frame an answer for the person who forged it and
+// nothing else, which is why this is free-form-ish input validated against a
+// known set rather than a permission.
 type Surface struct {
 	// ID is the wire value the console sends.
 	ID string

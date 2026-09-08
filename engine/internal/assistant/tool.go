@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -269,12 +270,37 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Caller is WHO a tool call is made as, and WHICH CUSTOMER it is about.
+//
+// The two travel in one value on purpose. There used to be only the cookie, and
+// the customer was left to whatever the server resolves a request that names
+// none to — on the multi-tenant control plane, the account's DEFAULT customer
+// (authz.DefaultTenant). So a provider who had pointed the console at customer
+// B asked the assistant a question and was answered about customer A: not a
+// column of rows with a header to give it away, but prose, in the surface an
+// analyst quotes in a handover. Making a Caller the parameter means a future
+// caller cannot forward the session and forget the customer, because there is
+// no longer a parameter that carries only one of them.
+//
+// COOKIE IS STILL THE ONLY THING THAT AUTHORIZES ANYTHING. The endpoints these
+// calls reach put the named tenant through the same Authorize as every console
+// read, so a customer this session may not reach is refused (404) and recorded
+// exactly as it is anywhere else. Tenant says which customer the question was
+// about; it can never widen who is asking.
+//
+// An empty Tenant is the single-tenant engine and every tenant-bound operator:
+// the request goes out byte for byte the one this package always sent.
+type Caller struct {
+	Cookie string
+	Tenant string
+}
+
 // Call executes a registered tool against the engine's own API.
 //
 // The doer is expected to be readOnlyClient (see provider.go), which is the
 // third read-only layer: even if this function were changed to build a POST,
 // the transport refuses it.
-func (r *Registry) Call(ctx context.Context, doer *http.Client, base, cookie, name string, args map[string]any) (json.RawMessage, error) {
+func (r *Registry) Call(ctx context.Context, doer *http.Client, base string, as Caller, name string, args map[string]any) (json.RawMessage, error) {
 	t, ok := r.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("assistant: unknown tool %q", name)
@@ -289,19 +315,37 @@ func (r *Registry) Call(ctx context.Context, doer *http.Client, base, cookie, na
 	if strings.Contains(suffix, "..") || strings.Contains(suffix, "/") {
 		return nil, fmt.Errorf("assistant: tool %s: illegal path suffix %q", name, suffix)
 	}
-	url := strings.TrimRight(base, "/") + t.path + suffix
-	if q != "" {
-		url += "?" + q
+	// WHICH CUSTOMER THIS READ IS ABOUT — applied AFTER the builder has run, so
+	// a tool argument cannot decide it. Set, not appended: Go's Query().Get
+	// answers with the FIRST value, so appending would let a model-supplied
+	// `tenant` outrank the one the ask resolved and hand the model another
+	// customer's rows through an argument it chose itself.
+	//
+	// No tenant is the single-tenant engine and every tenant-bound operator on
+	// the control plane, whose reads resolve server-side exactly as they always
+	// have; the URL is then untouched.
+	if as.Tenant != "" {
+		values, err := url.ParseQuery(q)
+		if err != nil {
+			return nil, fmt.Errorf("assistant: tool %s: unparsable query %q: %w", name, q, err)
+		}
+		values.Set("tenant", as.Tenant)
+		q = values.Encode()
 	}
-	req, err := http.NewRequestWithContext(ctx, t.method, url, nil)
+	target := strings.TrimRight(base, "/") + t.path + suffix
+	if q != "" {
+		target += "?" + q
+	}
+	req, err := http.NewRequestWithContext(ctx, t.method, target, nil)
 	if err != nil {
 		return nil, err
 	}
 	// The asking analyst's session. Without it these calls are unauthenticated
 	// and the engine correctly refuses them; with it the assistant inherits the
-	// caller's authorization exactly. See Runner.Cookie.
-	if cookie != "" {
-		req.Header.Set("Cookie", cookie)
+	// caller's authorization exactly — including the refusal of a customer the
+	// tenant above names and this session may not read. See Runner.Cookie.
+	if as.Cookie != "" {
+		req.Header.Set("Cookie", as.Cookie)
 	}
 	resp, err := doer.Do(req)
 	if err != nil {

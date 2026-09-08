@@ -571,26 +571,139 @@ func (g *DeviceGateway) Enforcing() bool { return g.enforcing.Load() }
 // plane is untouched (a shadow mode for staging policy / watching flows).
 // Dry-run (a boot flag) and the kill-switch remain independent global stops.
 // Returns the prior mode string for the audit/UI.
+//
+// The transition is written to the hash-chained ledger, the way the process
+// gateway's SetEnforcing writes its "set-mode" row. Disarming a host's whole
+// network plane used to leave a log line and nothing else: every subsequent
+// device decision became an audited no-op, and nothing an incident review can
+// reach said who ordered that, or why.
+//
+// Recorded inside the setter rather than at the handler because actor and
+// reason are already parameters here, so BOTH callers — the operator's HTTP
+// toggle and the agent applier acting on a signed SetMode — leave a row.
 func (g *DeviceGateway) SetEnforcing(on bool, actor, reason string) string {
-	prev := g.Mode()
-	g.enforcing.Store(on)
-	log.Printf("[devgateway] mode %s → %s (actor=%s reason=%q)", prev, g.Mode(), actor, reason)
-	return prev
+	prevMode := g.Mode()
+	// Swap, so the flag's own prior value is known: a no-op flip must write no
+	// row, because rows for changes that did not happen are how a ledger stops
+	// being evidence.
+	prev := g.enforcing.Swap(on)
+	log.Printf("[devgateway] mode %s → %s (actor=%s reason=%q)", prevMode, g.Mode(), actor, reason)
+	if prev != on {
+		g.auditConfigChange("device-set-mode", g.enforcementWord(prev), g.enforcementWord(on), actor, reason)
+	}
+	return prevMode
+}
+
+// enforcementWord names the posture the ENFORCING FLAG alone selects, and says
+// which wider stop is overriding it when one is in force.
+//
+// Not Mode(): Mode folds the stops in, so a flip made while the kill-switch is
+// engaged or dry-run is set reads "kill-switched → kill-switched" — an audit
+// row that records an arming as though nothing happened. Naming the flag alone
+// would have the opposite fault, reading as though the host now enforces when a
+// global stop says it does not, so the row carries both.
+func (g *DeviceGateway) enforcementWord(on bool) string {
+	word := "detect-only"
+	if on {
+		word = "enforcing"
+	}
+	switch {
+	case g.killSwitch.Load():
+		return word + " (kill-switch engaged)"
+	case g.dryRun:
+		return word + " (dry-run)"
+	}
+	return word
 }
 
 // KillSwitched reports whether the device kill-switch is engaged.
 func (g *DeviceGateway) KillSwitched() bool { return g.killSwitch.Load() }
 
-// SetKillSwitch toggles the global device-enforcement bypass. Returns the
-// prior value.
+// SetKillSwitch toggles the global device-enforcement bypass with no operator
+// named. Returns the prior value.
+//
+// The caller that lands here is the agent's applier, acting on a signed
+// KillSwitch command that carries no operator down to this level. The row it
+// writes is therefore unattributed, which is the honest record — inventing a
+// name for a caller that gave none would put words in an operator's mouth in an
+// audit chain. An operator-driven toggle goes through SetKillSwitchBy.
 func (g *DeviceGateway) SetKillSwitch(on bool) bool {
+	return g.SetKillSwitchBy(on, "", "")
+}
+
+// SetKillSwitchBy is SetKillSwitch with the operator and their justification,
+// and it is the one that writes the tamper-evident row.
+//
+// This is the device plane's widest toggle: it halts ALL device enforcement,
+// including a sever an operator pressed themselves. It used to write a
+// log.Printf and nothing else, while the process plane's identical toggle wrote
+// a hash-chained row through Gateway.AuditConfigChange — so the question an
+// incident review asks first, "who bypassed the network plane, and when", had
+// no answer on this half of the product.
+//
+// Only a real transition is recorded: re-engaging a switch that is already
+// engaged changed nothing.
+func (g *DeviceGateway) SetKillSwitchBy(on bool, actor, reason string) bool {
 	prev := g.killSwitch.Swap(on)
 	state := "DISENGAGED"
 	if on {
 		state = "ENGAGED"
 	}
-	log.Printf("[devgateway] kill-switch %s (prev=%v)", state, prev)
+	log.Printf("[devgateway] kill-switch %s (prev=%v actor=%s reason=%q)", state, prev, actor, reason)
+	if prev != on {
+		g.auditConfigChange("device-kill-switch", killSwitchWord(prev), killSwitchWord(on), actor, reason)
+	}
 	return prev
+}
+
+// killSwitchWord renders a kill-switch position for the audit row. "engaged"
+// and "released" rather than true/false: a from/to pair a reviewer can read
+// without having to know which way the boolean points.
+func killSwitchWord(on bool) string {
+	if on {
+		return "engaged"
+	}
+	return "released"
+}
+
+// auditConfigChange records a change to how DEVICE enforcement BEHAVES as a
+// hash-chained decision row — the device plane's copy of
+// Gateway.auditConfigChange, and it exists for the same reason.
+//
+// Jailing one device wrote a tamper-evident row from the start. Halting the
+// plane and disarming it wrote nothing, so on this plane the two widest actions
+// were the two /api/verify-chain could not cover: there was no row to verify.
+//
+// Unexported, unlike the process gateway's: every device config change this
+// engine has runs through the two setters above, which already hold the actor
+// and the reason, so there is nothing for a handler to call. The day a device
+// config command needs its own row (the agent audits signed commands against
+// the PROCESS gateway today, whichever plane they name), this grows an exported
+// wrapper the way Gateway did.
+//
+// ExecID is "config:<action>" rather than a device MAC, because this is a
+// change to the gateway and not to a device; each action is device-prefixed so
+// a review can tell a network-plane halt from a process-plane one at a glance.
+// Reason and Actor are hashed into the chain (store.Decision.canonicalAt), so
+// the justification is evidence rather than decoration.
+func (g *DeviceGateway) auditConfigChange(action, from, to, actor, reason string) {
+	rec := &store.Decision{
+		Timestamp: time.Now().UTC(),
+		ExecID:    "config:" + action,
+		Action:    action,
+		FromState: from,
+		ToState:   to,
+		Reason:    reason,
+		DryRun:    g.dryRun,
+		Backend:   "device-gateway",
+		Outcome:   "ok",
+		Actor:     actor,
+	}
+	// Through recordDecision, so a config change reaches the console and the
+	// control-plane uplink by the same path a containment does. A row that only
+	// ever lands in the local SQLite is invisible to the tenant whose network
+	// plane was just halted.
+	g.recordDecision(rec, action+" audit insert")
 }
 
 // ─────────── Time-bound auto-revert (mirrors Gateway.ScheduleRevert) ─────

@@ -347,11 +347,31 @@ type Runner struct {
 	// This is a deliberate authorization decision, not plumbing. The tools read
 	// alerts, decisions and process trees through the same authenticated
 	// endpoints the console uses, so forwarding the caller's session means the
-	// assistant sees EXACTLY what the person asking can see — same tenant, same
-	// scope, same denials. The alternative, giving the assistant its own
+	// assistant sees EXACTLY what the person asking can see — same grants, same
+	// denials, same audit trail. The alternative, giving the assistant its own
 	// privileged identity, would build a confused deputy: an analyst could ask
 	// it to summarise data their own session is refused.
 	Cookie string
+	// Tenant is WHICH CUSTOMER the question was asked about, named on every
+	// tool call the same way the console names it on every request it sends.
+	//
+	// The cookie above answers "who is asking"; on a multi-tenant control plane
+	// it does NOT answer "about whom". A provider account belongs to no
+	// customer, so a read that names none resolves to the account's default one
+	// (authz.DefaultTenant) — which is how a provider who had switched the
+	// console to customer B asked a question and got an answer built entirely
+	// out of customer A's telemetry, captioned by a console that believed it
+	// was pointed at B.
+	//
+	// IT GRANTS NOTHING. The endpoints these calls reach put this tenant
+	// through the same Authorize as every console read, so a customer this
+	// session may not reach is refused with the same 404 and recorded with the
+	// same audit row. It is the question's subject, not a credential.
+	//
+	// Empty on the single-tenant engine and for every tenant-bound operator,
+	// whose tool calls are then byte for byte the ones this package always
+	// made — see Caller in tool.go.
+	Tenant string
 	// OnStep is called as each tool call COMPLETES, before the model has
 	// written a word.
 	//
@@ -639,7 +659,8 @@ func (r *Runner) Run(ctx context.Context, agentID, question, execID string) (Ans
 			if tc.Function.Arguments != "" {
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &args)
 			}
-			res, callErr := r.Tools.Call(ctx, r.Client, r.BaseURL, r.Cookie, tc.Function.Name, args)
+			res, callErr := r.Tools.Call(ctx, r.Client, r.BaseURL,
+				Caller{Cookie: r.Cookie, Tenant: r.Tenant}, tc.Function.Name, args)
 
 			content := string(res)
 			if callErr != nil {

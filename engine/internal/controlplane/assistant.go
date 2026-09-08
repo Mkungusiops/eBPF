@@ -17,10 +17,11 @@ import (
 // The engine has its own copy of these handlers (internal/api/assistant.go).
 // They stay separate rather than shared because the two servers differ in the
 // one way that matters here: on the control plane every read is TENANT-SCOPED,
-// so the assistant's tool calls must carry the caller's session and be answered
-// through the same tenant predicate as the console. Sharing a handler would
-// invite a future edit that "simplifies" the credential forwarding and silently
-// gives the assistant cross-tenant reach.
+// so the assistant's tool calls must carry the caller's session AND the
+// customer the question named, and be answered through the same tenant
+// predicate as the console. Sharing a handler would invite a future edit that
+// "simplifies" the credential forwarding and silently gives the assistant
+// cross-tenant reach.
 //
 //	GET  /api/assistant       capability
 //	POST /api/assistant/ask   run one agent
@@ -106,8 +107,9 @@ type cpAskRequest struct {
 	Conversation bool `json:"conversation"`
 	// Surface is which console panel asked. Framing only — it changes what the
 	// model is told, never what it may read. On a multi-tenant control plane
-	// that separation is the point: tenant scope comes from the session cookie
-	// and nothing a caller puts here can widen it.
+	// that separation is the point: which customer an ask reads is decided by
+	// ?tenant= put through the same Authorize as every other read (see
+	// assistantScope), and nothing a caller puts in the BODY can widen it.
 	Surface string `json:"surface"`
 }
 
@@ -151,11 +153,36 @@ func (s *Server) historyFor(r *http.Request, req cpAskRequest) ([]assistant.Mess
 	return assistant.SanitiseHistory(out), grounded
 }
 
-func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
+// assistantScope answers the two questions that must be settled before a single
+// token is spent: WHO is asking, and WHICH CUSTOMER they are asking about.
+//
+// The second one was missing, and its absence was the last surface under the
+// provider banner that answered about the wrong customer. The console's
+// customer switcher puts ?tenant= on every request its funnel sends; the
+// assistant's client did not go through that funnel, and this handler read no
+// tenant even when one arrived, building a Runner from the session cookie
+// alone. Every tool call therefore reached the console's own read endpoints
+// naming no customer, which authorizeRead resolves to the account's DEFAULT
+// one (authz.DefaultTenant). A provider who had switched the console to
+// customer B asked a question and got a fluent, confident answer assembled
+// entirely from customer A's telemetry — no column header, no row count, no
+// banner on the paragraph an analyst pastes into a handover.
+//
+// IT IS authorizeReadAs, NOT A CHECK OF ITS OWN. That is the whole point: an
+// ask is a read of a customer's data by other means, so it resolves, authorizes
+// and audits through exactly the function every panel read goes through — same
+// default for a request that names no tenant, same 404 for a customer this
+// operator may not reach (a 403 would confirm the customer exists), same
+// cross-tenant audit row for the provider who may. A private resolution here is
+// the only shape this defect can return in, which is why the AST test in
+// assistantscope_test.go pins the call.
+//
+// It runs BEFORE the "is the assistant configured" check on purpose. An
+// unauthorized caller must not be told what this deployment has configured, and
+// a run that cannot legitimately read anything should not reach an inference
+// endpoint at all — the same argument that put the authentication gate here in
+// the first place.
+func (s *Server) assistantScope(w http.ResponseWriter, r *http.Request) (string, bool) {
 	// AUTHENTICATE FIRST.
 	//
 	// This gate was missing. The tools forward the caller's cookie and every
@@ -170,8 +197,27 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 	// Checked here rather than relying on the tools failing, because the answer
 	// to "who may ask this assistant anything" should not be an emergent
 	// property of six other handlers.
-	if _, ok := s.principal(r); !ok {
+	//
+	// This 401 is JSON where the refusals authorizeReadAs writes are plain text.
+	// Deliberate: the console reads an error body as JSON and falls back to the
+	// status, and this particular sentence has been the shape it is since the
+	// gate was added, while a tenant refusal must look like every other read's.
+	p, ok := s.principal(r)
+	if !ok {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+		return "", false
+	}
+	return s.authorizeReadAs(w, r, p)
+}
+
+func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	// Who is asking, and about which customer. See assistantScope.
+	tenant, ok := s.assistantScope(w, r)
+	if !ok {
 		return
 	}
 
@@ -217,14 +263,19 @@ func (s *Server) handleAssistantAsk(w http.ResponseWriter, r *http.Request) {
 		Tools:    assistant.DefaultTools(),
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
-		// The caller's session, forwarded verbatim. On a multi-tenant control
-		// plane this is what keeps the assistant inside the asking analyst's
-		// tenant: the tools read the same endpoints the console does, and those
-		// derive tenant from the session. Without it the calls are
-		// unauthenticated; with a privileged identity of its own the assistant
-		// would read across tenants, which is the isolation invariant this
-		// product is built on.
-		Cookie:   r.Header.Get("Cookie"),
+		// The caller's session, forwarded verbatim: the tools read the same
+		// endpoints the console does, so the assistant is authorized exactly as
+		// the person asking is. Without it the calls are unauthenticated; with
+		// a privileged identity of its own the assistant would read across
+		// tenants, which is the isolation invariant this product is built on.
+		Cookie: r.Header.Get("Cookie"),
+		// The customer the ASK named, put on every tool call — the session says
+		// who, and on a provider account that does not say about whom. The
+		// value is the one assistantScope already authorized and audited above,
+		// so naming it here widens nothing: it decides which customer's rows
+		// the tools ask for, out of the customers this session may already
+		// read.
+		Tenant:   tenant,
 		Surface:  req.Surface,
 		MaxCalls: cfg.MaxToolCalls,
 	}
@@ -276,22 +327,17 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	// AUTHENTICATE FIRST.
-	//
-	// This gate was missing. The tools forward the caller's cookie and every
-	// read endpoint they hit checks the tenant, so an unauthenticated caller
-	// could never obtain data — the tool calls simply failed and the run
-	// returned the ungrounded refusal. But it could still START A RUN, which
-	// means an unauthenticated request to a public control plane drove a full
-	// tool-calling loop against a paid inference endpoint. Confidentiality was
-	// intact; cost and availability were not, and "it fails safe downstream" is
-	// not a reason to leave the front door open.
-	//
-	// Checked here rather than relying on the tools failing, because the answer
-	// to "who may ask this assistant anything" should not be an emergent
-	// property of six other handlers.
-	if _, ok := s.principal(r); !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
+	// Who is asking, and about which customer — the SAME assistantScope call as
+	// the non-streaming path, not a re-implementation of it, so the customer is
+	// resolved, authorized and audited here exactly as it is there. A second
+	// copy of a handler is where a rule stops being applied twice, which is why
+	// TestBothAssistantAsksUseTheSharedGate pins both entry points to this call
+	// rather than only checking what the gate does. (Said in the body rather
+	// than in the doc comment above: scripts/ci/gen-openapi.py publishes that
+	// comment as this route's API description, and the spec is regenerated
+	// centrally.)
+	tenant, ok := s.assistantScope(w, r)
+	if !ok {
 		return
 	}
 
@@ -348,6 +394,8 @@ func (s *Server) handleAssistantStream(w http.ResponseWriter, r *http.Request) {
 		Client:   assistant.NewReadOnlyClient(timeout, nil),
 		BaseURL:  s.selfBaseURL(),
 		Cookie:   r.Header.Get("Cookie"),
+		// The customer the ask named, exactly as on the non-streaming path.
+		Tenant:   tenant,
 		Surface:  req.Surface,
 		MaxCalls: cfg.MaxToolCalls,
 		OnStep:   stream.Step,

@@ -313,6 +313,31 @@ func (t *tenantEnricher) tenants() []string {
 
 // ── HTTP ───────────────────────────────────────────────────────────────────
 
+// WHICH CUSTOMER THESE PANELS ARE ABOUT.
+//
+// Every enrichment read below goes through authorizeRead, the one gate the rest
+// of the read plane uses: the tenant named by ?tenant= when the console names
+// one, the tenant stamped on the account when it does not (authz.DefaultTenant,
+// the same value whoami publishes as viewing_tenant), and the RBAC grant checked
+// either way.
+//
+// These handlers used to resolve the tenant from the principal alone, through
+// the chat scope, and ignored ?tenant= entirely. Two consequences, both silent:
+//
+//   - a provider operator switching customers in the console kept reading the
+//     SAME profile, underneath a banner asserting that every panel on screen is
+//     the selected customer's data only. The banner is why an operator believes
+//     the panel, so an unscoped panel under it is worse than an unscoped screen.
+//   - for a CROSS-TENANT principal the chat scope's answer is not a customer at
+//     all — it is the platform pseudo-tenant those operators' chat rows are
+//     stamped with, which no agent ever reports under. So the Behaviour & Intel
+//     panel was structurally empty for exactly the operators an MSSP staffs.
+//
+// Nothing is widened by routing through authorizeRead. A tenant-bound operator
+// naming another customer is refused with a 404 that does not confirm whether
+// that tenant exists (§6 side channels), and a cross-tenant read is recorded in
+// operator_audit here exactly as it is on every other read path.
+
 func (s *Server) registerEnrichmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/baseline", s.handleBaseline)
 	mux.HandleFunc("/api/baseline/anomalies", s.handleBaselineAnomalies)
@@ -320,26 +345,6 @@ func (s *Server) registerEnrichmentRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/intel/matches", s.handleIntelMatches)
 	mux.HandleFunc("/api/intel/lookup", s.handleIntelLookup)
 	mux.HandleFunc("/api/platform-doc", s.handlePlatformDoc)
-}
-
-// tenantScope resolves the caller's tenant, or writes the refusal.
-//
-// EVERY handler below goes through this. The tenant comes from the session,
-// never from a query parameter — the same rule the rest of this server follows,
-// restated here because an enrichment endpoint that accepted ?tenant= would be
-// a cross-tenant read with a friendly name.
-func (s *Server) tenantScope(w http.ResponseWriter, r *http.Request) (string, bool) {
-	p, ok := s.principal(r)
-	if !ok {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthenticated"})
-		return "", false
-	}
-	sc, err := scopeFor(p)
-	if err != nil {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "no tenant scope"})
-		return "", false
-	}
-	return sc.TenantID, true
 }
 
 func (s *Server) enrichmentEnabled(w http.ResponseWriter) bool {
@@ -357,7 +362,7 @@ func (s *Server) handleBaseline(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	tenant, ok := s.tenantScope(w, r)
+	tenant, ok := s.authorizeRead(w, r)
 	if !ok || !s.enrichmentEnabled(w) {
 		return
 	}
@@ -377,7 +382,7 @@ func (s *Server) handleBaselineAnomalies(w http.ResponseWriter, r *http.Request)
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	tenant, ok := s.tenantScope(w, r)
+	tenant, ok := s.authorizeRead(w, r)
 	if !ok || !s.enrichmentEnabled(w) {
 		return
 	}
@@ -391,7 +396,7 @@ func (s *Server) handleIntel(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	tenant, ok := s.tenantScope(w, r)
+	tenant, ok := s.authorizeRead(w, r)
 	if !ok || !s.enrichmentEnabled(w) {
 		return
 	}
@@ -410,7 +415,7 @@ func (s *Server) handleIntelMatches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	tenant, ok := s.tenantScope(w, r)
+	tenant, ok := s.authorizeRead(w, r)
 	if !ok || !s.enrichmentEnabled(w) {
 		return
 	}
@@ -424,7 +429,7 @@ func (s *Server) handleIntelLookup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if _, ok := s.tenantScope(w, r); !ok {
+	if _, ok := s.authorizeRead(w, r); !ok {
 		return
 	}
 	if !s.enrichmentEnabled(w) {

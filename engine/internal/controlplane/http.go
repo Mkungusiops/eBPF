@@ -57,6 +57,8 @@ func (s *Server) buildHTTP() http.Handler {
 	s.registerFleetRoutes(mux)         // Fleet view: tenant's agents as hosts
 	s.registerAttackRoutes(mux)        // quick-fire attacks + honeypots (demo/lab)
 	s.registerOperatorAuditRoutes(mux) // who accessed what: the durable operator trail
+	s.registerTenantRoutes(mux)        // the customer roster, cross-tenant only and audited per customer
+	s.registerEstateRoutes(mux)        // the estate-wide roll-up, cross-tenant only and audited per customer
 	mux.HandleFunc("/api/admin/enroll-token", s.handleEnrollToken)
 	mux.HandleFunc("/api/admin/command", s.handleCommand)
 	if s.cfg.BFF != nil {
@@ -374,6 +376,45 @@ func storeQueryFailed(w http.ResponseWriter, r *http.Request, tenant, kind strin
 	http.Error(w, "query failed", http.StatusInternalServerError)
 }
 
+// recordID is the identity of one stored telemetry record as the console has to
+// see it: the same string for the same row on this poll, the next poll, the SSE
+// stream and after a restart.
+//
+// WHY THE VIEWS CARRIED NONE. eventView and alertView emitted no id at all, so
+// the console synthesised one from the record's POSITION in the response
+// (`<type>-<timestamp>-<index>`). Position is not identity: the same real
+// record moves index as newer rows arrive, comes back under a new id, and
+// anything keyed on it — acknowledgement state, pins, the id-keyed merge in
+// applySocStreamBatch — either duplicated the record or re-attached to a
+// different one.
+// The console defends itself today by treating a positional id as the
+// non-identifier it is (see eventIdentity in features/soc/hooks.ts) and falling
+// back to a content key, which under-counts two records that agree in every
+// field inside the same millisecond. Sending the real id removes the guess.
+//
+// WHY NOT DedupKey ALONE. The dedup key is agent-assigned and stable across
+// resends (internal/uplink: "evt:<local row>", "alt:<local row>",
+// "dec:<local row>"), but its uniqueness domain is the store's PRIMARY KEY —
+// (tenant_id, agent_id, dedup_key), see centralstore's schema — not the key by
+// itself. Two agents in one tenant each number their own local store from 1, so
+// both send "evt:1" for two entirely different executions and both rows are
+// stored. A console keyed on the bare dedup key would fold them into one
+// record. That is not hypothetical: acme-corp runs two agents on this estate.
+// So the id published here is the whole primary key, which is exactly as stable
+// as the row it names and unique wherever the row is.
+//
+// Empty when the record carries no dedup key — an agent predating the field, or
+// a malformed record. The views omit the field entirely in that case rather
+// than send a shared placeholder, because every such record sharing one id is
+// worse than the positional guess: it would collapse them all into one row. The
+// console's content-key fallback handles the absence correctly.
+func recordID(row centralstore.Row) string {
+	if row.DedupKey == "" {
+		return ""
+	}
+	return row.TenantID + "/" + row.AgentID + "/" + row.DedupKey
+}
+
 // handleAlerts serves a tenant's recent alerts (the triage queue). The frontend
 // derives the severity timeline from the same list, so one endpoint covers both.
 func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
@@ -397,6 +438,10 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type alertView struct {
+		// ID is the stable per-record identity — see recordID. Ack state and
+		// pins are keyed on it, so a positional stand-in silently re-attaches
+		// them to a different alert between polls.
+		ID          string `json:"id,omitempty"`
 		Agent       string `json:"agent"`
 		Severity    string `json:"severity"`
 		Title       string `json:"title"`
@@ -426,6 +471,7 @@ func (s *Server) handleAlerts(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		out = append(out, alertView{
+			ID:    recordID(row),
 			Agent: row.AgentID, Severity: a.GetSeverity(), Title: a.GetTitle(),
 			Description: a.GetDescription(), Score: a.GetScore(), ExecID: a.GetExecId(),
 			Process: row.Binary, MitreID: a.GetMitreId(), Tactic: a.GetTactic(),
@@ -457,6 +503,10 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	type eventView struct {
+		// ID is the stable per-record identity — see recordID. Without it the
+		// console keys this feed by position, which is what filled its buffer
+		// with duplicates of one event.
+		ID     string `json:"id,omitempty"`
 		Agent  string `json:"agent"`
 		ExecID string `json:"exec_id"`
 		PID    uint32 `json:"pid"`
@@ -500,6 +550,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 		out = append(out, eventView{
+			ID:    recordID(row),
 			Agent: row.AgentID, ExecID: e.GetExecId(), PID: e.GetPid(), ParentPID: e.GetParentPid(),
 			EventType: e.GetEventType(), Process: e.GetBinary(), Args: e.GetArgs(),
 			PolicyName: e.GetPolicyName(), DestIP: e.GetDestIp(), DestPort: e.GetDestPort(),
@@ -661,7 +712,16 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 	// advertising filter parameters no server read — a surface describing a
 	// shape it does not fill.
 	type decisionView struct {
-		ID        int64  `json:"id"`
+		// ID is the stable per-record identity — see recordID.
+		//
+		// It used to be the Decision's own Id, which is the autoincrement row
+		// number of the ORIGINATING AGENT'S local audit chain. That number is
+		// unique on one host and nowhere else: two agents in the same tenant
+		// both write decision 1, and the console — which tracks ack on `id` —
+		// folded them into one row. The agent-local number is still published,
+		// as decision_id, because it is what an operator matches against that
+		// host's own audit chain.
+		ID        string `json:"id,omitempty"`
 		ExecID    string `json:"exec_id"`
 		PID       uint32 `json:"pid"`
 		Binary    string `json:"binary"`
@@ -685,6 +745,10 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 		// regardless — omitting it from the view would mean transmitting a
 		// field for verification and then hiding it from the person verifying.
 		Actor string `json:"actor,omitempty"`
+		// DecisionID is the row number this decision has in its own agent's
+		// local audit chain — the number to quote when re-verifying that chain
+		// on the host. Not an estate-wide identity: see ID above.
+		DecisionID int64 `json:"decision_id,omitempty"`
 	}
 	out := make([]decisionView, 0, len(rows))
 	for _, row := range rows {
@@ -701,7 +765,8 @@ func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {
 			target = d.GetExecId()
 		}
 		out = append(out, decisionView{
-			ID: d.GetId(), ExecID: d.GetExecId(), PID: d.GetPid(), Binary: d.GetBinary(),
+			ID: recordID(row), DecisionID: d.GetId(),
+			ExecID: d.GetExecId(), PID: d.GetPid(), Binary: d.GetBinary(),
 			Action: d.GetAction(), FromState: d.GetFromState(), ToState: d.GetToState(),
 			State: d.GetToState(), Target: target,
 			Reason: d.GetReason(), Score: d.GetScore(),
@@ -921,6 +986,11 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		Timestamp string `json:"timestamp"`
 	}
 	type eventView struct {
+		// Same stable identity as the main feed (see recordID). The drill
+		// panel keys its event rows on this; without it they fall back to
+		// timestamp+type, which collides for a process that execs twice in the
+		// same second.
+		ID         string `json:"id,omitempty"`
 		Agent      string `json:"agent"`
 		ExecID     string `json:"exec_id"`
 		PID        uint32 `json:"pid"`
@@ -944,6 +1014,7 @@ func (s *Server) handleProcess(w http.ResponseWriter, r *http.Request) {
 		}
 		ts := at.UTC().Format(time.RFC3339Nano)
 		events = append(events, eventView{
+			ID:    recordID(row),
 			Agent: row.AgentID, ExecID: e.GetExecId(), PID: e.GetPid(),
 			EventType: e.GetEventType(), Process: e.GetBinary(), Args: e.GetArgs(),
 			PolicyName: e.GetPolicyName(), Timestamp: ts,
@@ -1037,7 +1108,7 @@ func streamFrame(row centralstore.Row) string {
 			at = e.GetOccurredAt().AsTime()
 		}
 		frame = map[string]any{"type": "event", "payload": map[string]any{
-			"id": row.DedupKey, "agent": row.AgentID, "exec_id": e.GetExecId(),
+			"agent": row.AgentID, "exec_id": e.GetExecId(),
 			"pid": e.GetPid(), "event_type": e.GetEventType(), "process": e.GetBinary(),
 			"args": e.GetArgs(), "policy_name": e.GetPolicyName(),
 			"dest_ip": e.GetDestIp(), "dest_port": e.GetDestPort(), "proto": e.GetProto(),
@@ -1053,7 +1124,7 @@ func streamFrame(row centralstore.Row) string {
 			at = a.GetOccurredAt().AsTime()
 		}
 		frame = map[string]any{"type": "alert", "payload": map[string]any{
-			"id": row.DedupKey, "agent": row.AgentID, "severity": a.GetSeverity(),
+			"agent": row.AgentID, "severity": a.GetSeverity(),
 			"title": a.GetTitle(), "description": a.GetDescription(), "score": a.GetScore(),
 			"exec_id": a.GetExecId(), "process": row.Binary,
 			"mitre_id": a.GetMitreId(), "tactic": a.GetTactic(),
@@ -1079,6 +1150,20 @@ func streamFrame(row centralstore.Row) string {
 		}}
 	default:
 		return ""
+	}
+	// The SAME identity the REST views publish, on every kind of frame.
+	//
+	// The live tail and the poll both deliver the same row, and the console
+	// merges them by id — so two spellings of one record's identity is two rows
+	// in the feed. This used to send the bare dedup key here while the views
+	// sent nothing at all, which is exactly that: the streamed copy of an event
+	// and the polled copy of the same event were never recognised as one.
+	// Decision frames carried no id whatsoever, so every streamed decision was
+	// keyed `decision-<timestamp>-0` — one bucket for all of them.
+	if payload, ok := frame["payload"].(map[string]any); ok {
+		if id := recordID(row); id != "" {
+			payload["id"] = id
+		}
 	}
 	b, err := json.Marshal(frame)
 	if err != nil {

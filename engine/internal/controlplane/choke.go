@@ -1730,8 +1730,26 @@ func (s *Server) handleChokePreset(w http.ResponseWriter, r *http.Request) {
 	}
 	out := s.dispatchFleet(r, agents, &ebpfsocv1.Command{
 		Action: &ebpfsocv1.Command_ApplyPreset{ApplyPreset: &ebpfsocv1.ApplyPreset{Preset: b.Name}}})
+	// A preset lasts exactly as long as a threshold write of the same scope, and
+	// only the threshold write said so. A preset moves the agents' ladder, and
+	// reconcileLadders pushes the tenant's stored ladder back over any agent
+	// whose ladder differs from it every two minutes — so an operator saw
+	// "Containment applied", then saw containment come off, with nothing
+	// anywhere connecting the two. Both writes now answer the durability
+	// question with the same key, so the console can treat them identically
+	// instead of carrying a warning for one and silence for the other.
+	//
+	// The answer is a constant, and honestly so: nothing in this handler writes
+	// a preset's ladder to the tenant's policy, and it could not — the ladder a
+	// preset installs is a compile-time tuple inside the AGENT
+	// (choke.Gateway.ApplyPreset), so this hop has no numbers to store, and
+	// forensic/maintenance also move the kill-switch, which a tenant ladder
+	// cannot hold.
 	writeJSON(w, 200, map[string]any{"ok": out.applied > 0, "preset": b.Name,
-		"applied": out.applied, "total": out.total, "detail": out.detail, "hosts": out.hosts})
+		"applied": out.applied, "total": out.total, "detail": out.detail, "hosts": out.hosts,
+		// Never stored as the tenant's policy: applied to the agents named here
+		// and liable to be reconciled back to the tenant's ladder.
+		"stored_for_tenant": false})
 }
 
 // handleChokeBulk — multi-target jail.
@@ -1972,7 +1990,30 @@ func (s *Server) tenantAgents(tenant string) []string {
 }
 
 // handleDeviceThaw — release LAN devices by MAC.
+//
+// The release is attributed: the operator is stamped on each command as its
+// actor, and the agent copies that into the tamper-evident audit row it writes
+// when it tears the tc rule down.
+//
+// `reason` is optional and, when given, is recorded on the CONTROL PLANE's
+// operator trail rather than travelling to the agent — ebpfsoc.v1.Thaw has no
+// field to carry it. An absent reason is recorded as absent; nothing is
+// substituted for one the operator did not type.
 func (s *Server) handleDeviceThaw(w http.ResponseWriter, r *http.Request) {
+	// THIS RELEASE USED TO RECORD NEITHER WHO NOR WHY.
+	//
+	// WHO: cmd.Actor was never set, while releaseFleet — the process plane's
+	// release, twenty lines up in this file — has always stamped it. So on the
+	// plane where a release is what restores a possibly-compromised host's
+	// network access, the agent's audit row said the PLATFORM had done it.
+	// Stamped before Enqueue signs the command, because the actor is inside the
+	// signature (command.Canonical): attribution anyone on the path could
+	// rewrite is worse than none, since it names a specific person.
+	//
+	// WHY: the reason was decoded into the body struct below and then never
+	// touched again — the one outcome with no record anywhere. It cannot reach
+	// the agent's row (ebpfsoc.v1.Thaw carries exec_id and pid and nothing
+	// else), so recordWriteReason puts it where this control plane can hold it.
 	tenant, ok := s.authorizeRespond(w, r)
 	if !ok {
 		return
@@ -1992,13 +2033,62 @@ func (s *Server) handleDeviceThaw(w http.ResponseWriter, r *http.Request) {
 		Agent  string `json:"agent,omitempty"`
 		Detail string `json:"detail,omitempty"`
 	}
+	actor := s.subject(r)
 	results := make([]res, 0, len(b.Macs))
 	for _, mac := range b.Macs {
 		out := s.dispatchTargeted(s.tenantAgents(tenant), &ebpfsocv1.Command{
+			Actor:  actor,
 			Action: &ebpfsocv1.Command_Thaw{Thaw: &ebpfsocv1.Thaw{ExecId: "device:" + mac}}})
 		results = append(results, res{Mac: mac, OK: out.applied, Agent: out.owner, Detail: out.detail})
 	}
+	s.recordWriteReason(r, tenant, "device-thaw", actor, b.Reason,
+		fmt.Sprintf("released %d device(s): %s", len(b.Macs), strings.Join(b.Macs, ", ")))
 	writeJSON(w, 200, map[string]any{"results": results})
+}
+
+// recordWriteReason writes an operator's justification for one write to the
+// operator trail, for the actions whose reason cannot travel to the agent.
+//
+// WHY IT RE-ASKS AUTHORIZE. The row has to say whether this operator reached
+// the tenant through a cross-tenant role, and that is Authorize's answer, not a
+// property of the principal — a provider operator who also holds a tenant-bound
+// grant on this customer is NOT crossing a boundary here. Re-deriving the flag
+// locally is how the trail would come to disagree with the gate that let the
+// write through, so the decision is asked for again, with a nil auditor so
+// asking does not itself write a second row.
+//
+// WHAT IT CANNOT PROMISE. Both auditors deliberately drop own-tenant ALLOWED
+// rows (centralstore.PGStore.RecordAccess, authz.MemAuditor.RecordAccess): an
+// operator working inside their own tenant is the system working, and recording
+// every such access would bury the cross-tenant and denied entries an auditor
+// is looking for. So this durably records a PROVIDER's release — the
+// cross-tenant case an MSSP runs on, and the one where "who let this device
+// back on" is asked from outside — while a tenant-bound analyst releasing their
+// own devices leaves the reason in the journal line this also writes, and
+// nowhere else.
+// That is a smaller gap than the one it replaces, which was no record anywhere,
+// and it is stated here rather than implied so nobody reads this call as a
+// guarantee the trail does not make.
+func (s *Server) recordWriteReason(r *http.Request, tenant, action, actor, reason, what string) {
+	stated := reason
+	if strings.TrimSpace(stated) == "" {
+		// Said, not invented. An absent reason is a fact about the release and
+		// the trail has to carry it as one.
+		stated = "(no reason given)"
+	}
+	detail := what + "; reason: " + stated
+	s.cfg.Logf("[%s] %s on tenant %s: %s", action, actor, tenant, detail)
+
+	aud, ok := s.auditor.(authz.AccessAuditor)
+	if !ok {
+		return
+	}
+	p, ok := s.principal(r)
+	if !ok {
+		return
+	}
+	d := authz.Authorize(p, tenant, authz.ActionRespond, nil)
+	aud.RecordAccess(actor, tenant, action, d.Allowed, d.CrossTenant, detail)
 }
 
 // chokePosture folds the tenant's agents into a single enforcement posture (the
