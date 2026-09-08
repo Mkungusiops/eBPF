@@ -219,6 +219,192 @@ for spec in "${CP_HOST:+$CP_HOST=ebpf-soc-controlplane}" "${ENGINE_HOST:+$ENGINE
   fi
 done
 
+# ── the assistant is actually on the RUNNING command line ────────────────────
+#
+# 2026-09-02: a deploy shipped both servers with the analyst assistant off.
+# Every unit was active, every health check answered, and this script reported
+# the estate verified — because nothing here had ever looked at the capability
+# itself. It was gone for 45 minutes, until a browser probe noticed.
+#
+# The check above ("unit overrides") is the near miss: it knows an ExecStart
+# drop-in can shadow the deploy's unit, and it says so, but it only asks whether
+# a shadowing file EXISTS. Every other way of losing the flags — a deploy run
+# without ASSISTANT_URL, a recovery that guessed wrong, a unit rewritten by hand
+# — leaves no drop-in behind and passes it untouched.
+#
+# WHERE THE ANSWER COMES FROM. Not `systemctl cat`: this script's own comment
+# above spells out why that text is not evidence of what is running, and taking
+# an ExecStart= line out of it gets the answer wrong in both directions. The
+# flags are read from /proc/<MainPID>/cmdline — the command line the service is
+# executing right now, drop-ins and all — with `systemctl show -p ExecStart`
+# (systemd's merged unit+drop-in view, not the raw file) as the fallback for a
+# unit that is loaded with nothing running. Which of the two answered is
+# reported, because "what it runs now" and "what it would run next start" are
+# different claims and only the first one was asked for.
+#
+# A box that answers NEITHER is a failure here, not a shrug. "Could not tell"
+# read as "fine" is precisely how the outage passed.
+#
+# _assistant_running_script — the probe that runs ON the target, on its stdin.
+# In a function of its own because bash 3.2 (macOS, where this is often run by
+# hand) mis-parses an apostrophe in a here-document nested inside a command
+# substitution; piping a function's output keeps the substitution clean.
+_assistant_running_script() {
+  cat <<'REMOTE'
+unit="$1"
+state=unreadable; src=none; args=; reason=
+
+pid="$(systemctl show "$unit" -p MainPID --value 2>/dev/null)"
+pid="${pid#MainPID=}"   # systemd before v230 has no --value; keep the number
+case "$pid" in ''|*[!0-9]*) pid=0 ;; esac
+if [ "$pid" -gt 0 ]; then
+  # NUL-separated, one argument per line: an exact split, where the unit
+  # fallback below can only split on spaces.
+  if raw="$(tr '\000' '\n' <"/proc/$pid/cmdline" 2>/dev/null)" && [ -n "$raw" ]; then
+    args="$raw"; src=process
+  elif raw="$(sudo -n cat "/proc/$pid/cmdline" 2>/dev/null | tr '\000' '\n')" && [ -n "$raw" ]; then
+    args="$raw"; src=process
+  else
+    reason="/proc/$pid/cmdline could not be read"
+  fi
+else
+  reason="the unit is loaded but nothing is running (MainPID 0)"
+fi
+if [ -z "$args" ]; then
+  raw="$(systemctl show "$unit" -p ExecStart --value 2>/dev/null |
+         sed -n 's/.*argv\[\]=//p' | sed 's/ ; .*//' | head -n1)"
+  if [ -n "$raw" ]; then args="$(printf '%s\n' "$raw" | tr ' ' '\n')"; src=unit; fi
+fi
+# An empty argument list finds no flags, and "no flags" would be reported as
+# "no assistant here" — the exact silent omission this check exists to stop. So
+# it stays unreadable instead.
+if [ -n "$args" ]; then
+  state=read
+else
+  reason="${reason:+$reason; }no command line came back from the process or from systemctl show"
+fi
+
+# One flag's value = the argument that follows the flag. An argument list with
+# no -assistant-url on it is a real answer: "running, deliberately without one".
+flag() { printf '%s\n' "$args" | grep -A1 -x -e "$1" | sed -n 2p; }
+
+# The record is pipe-delimited and the reason is a systemd message or a path
+# this script does not control the shape of, so it carries neither.
+reason="$(printf '%s' "$reason" | tr '|\n\r\t' '    ' | cut -c1-120)"
+
+# Printed last and unconditionally: reaching this line is the proof that the
+# reads above actually happened on the target.
+printf 'EBPF-ASSISTANT-RUNNING|%s|%s|%s|%s|%s|%s\n' "$state" "$src" \
+  "$(flag -assistant-url)" "$(flag -assistant-model)" "$(flag -assistant-deep-model)" \
+  "$reason"
+REMOTE
+}
+
+step_header "analyst assistant (running command line)"
+
+# The expectation comes from the SAME environment the deploy ran with, which is
+# what the header of this file says to pass. Three cases, and the third is a
+# real deployment shape, not an oversight:
+#   ASSISTANT_URL set   → the estate is meant to be running that assistant
+#   ASSISTANT_OFF=1     → it is meant to be running none
+#   neither             → nobody stated one; report what is there and fail only
+#                         on what can be judged without an expectation
+ASST_WANT=none
+[[ -n "${ASSISTANT_URL:-}" ]] && ASST_WANT=on
+if [[ "${ASSISTANT_OFF:-0}" == "1" ]]; then
+  if [[ "$ASST_WANT" == on ]]; then
+    err "ASSISTANT_OFF=1 and ASSISTANT_URL are both set — say one thing or the other; nothing here can be checked against a contradiction"
+    FAIL=$((FAIL + 1))
+  fi
+  ASST_WANT=off
+fi
+
+# Newline-joined strings, not arrays: this runs under `set -u` on bash 3.2,
+# where expanding an EMPTY array is an unbound variable and aborts the script.
+ASST_SEEN=""
+for spec in "${CP_HOST:+$CP_HOST=ebpf-soc-controlplane}" "${ENGINE_HOST:+$ENGINE_HOST=ebpf-engine}"; do
+  [[ -n "$spec" ]] || continue
+  h="${spec%%=*}"; unit="${spec#*=}"
+  script="$(_assistant_running_script)"
+  # Match the marker rather than the whole reply: a login banner ahead of it is
+  # noise, not a failed probe. No marker at all = the box never answered, which
+  # is reported as unreadable rather than as "no assistant".
+  line=$(remote "$h" bash -s -- "$unit" <<<"$script" 2>/dev/null | grep -m1 '^EBPF-ASSISTANT-RUNNING|' || true)
+  if [[ -z "$line" ]]; then
+    line="EBPF-ASSISTANT-RUNNING|unreadable|none||||the probe returned nothing (ssh failed, or no login shell)"
+  fi
+  IFS='|' read -r _marker astate asrc aurl amodel adeep areason <<<"$line"
+
+  if [[ "$astate" != read ]]; then
+    err "$h: cannot tell whether $unit is running the assistant — $areason. A verification that cannot see the capability it just deployed is how the 2026-09-02 outage passed. Check by hand: sudo tr '\\0' '\\n' < /proc/\$(systemctl show $unit -p MainPID --value)/cmdline"
+    FAIL=$((FAIL + 1))
+    continue
+  fi
+
+  # Which record answered. `unit` means nothing was running to read, so every
+  # line below is about what the box WOULD start — a weaker claim than the one
+  # this section is here to make, and it has to be worded as the weaker one
+  # rather than reported as fact about a running process.
+  case "$asrc" in
+    process) awhere="on the running command line"; averb="is running" ;;
+    *)       awhere="in the unit it would start (nothing is running)"; averb="would start"
+             warn "$h: read from the UNIT, not from a running process ($areason) — this is what $unit would start, not what it is running" ;;
+  esac
+
+  if [[ -n "$aurl" ]]; then
+    ASST_SEEN="${ASST_SEEN:+$ASST_SEEN
+}$h $aurl"
+    case "$ASST_WANT" in
+      on)
+        if [[ "$aurl" == "${ASSISTANT_URL}" ]]; then
+          ok "$h: assistant LIVE $awhere — ${amodel:-<no model flag>} via $aurl${adeep:+ (sidebar: $adeep)}"
+          if [[ -n "${ASSISTANT_MODEL:-}" && -n "$amodel" && "$amodel" != "$ASSISTANT_MODEL" ]]; then
+            warn "$h: the model there is $amodel, but this deploy named $ASSISTANT_MODEL — the capability is up, on a different model than was asked for"
+          fi
+        else
+          err "$h: $unit $averb the assistant against $aurl, but this deploy named $ASSISTANT_URL — the console will answer from an endpoint nobody deployed"
+          FAIL=$((FAIL + 1))
+        fi
+        ;;
+      off)
+        err "$h: ASSISTANT_OFF=1 was requested but $unit STILL has -assistant-url $aurl $awhere — the removal did not take"
+        FAIL=$((FAIL + 1))
+        ;;
+      *)
+        ok "$h: assistant present $awhere — ${amodel:-<no model flag>} via $aurl${adeep:+ (sidebar: $adeep)} (nothing was asked for on this run, so this is a report)"
+        ;;
+    esac
+  else
+    ASST_SEEN="${ASST_SEEN:+$ASST_SEEN
+}$h <none>"
+    case "$ASST_WANT" in
+      on)
+        err "$h: $unit has NO assistant flags $awhere, but this deploy named ASSISTANT_URL=$ASSISTANT_URL. Every unit is active and every health check passes; the capability is simply gone. This is the 2026-09-02 failure exactly."
+        FAIL=$((FAIL + 1))
+        ;;
+      off)
+        ok "$h: no assistant $awhere (ASSISTANT_OFF=1, as requested)"
+        ;;
+      *)
+        ok "$h: no assistant $awhere — this run named neither ASSISTANT_URL nor ASSISTANT_OFF=1, so this is a report, not an assertion"
+        ;;
+    esac
+  fi
+done
+
+# With no expectation to check against, the one judgement still available is
+# that the two surfaces are meant to carry the SAME assistant (lib.sh writes the
+# flags from one set of variables for both). One surface with it and one without
+# is a half-applied deploy, and nothing else on this run would say so.
+if [[ "$ASST_WANT" == none && -n "$ASST_SEEN" ]]; then
+  asst_uniq=$(printf '%s\n' "$ASST_SEEN" | awk '{print $2}' | sort -u | grep -c . || true)
+  if [[ "${asst_uniq:-0}" -gt 1 ]]; then
+    err "the probed surfaces are NOT running the same assistant, and this run named neither ASSISTANT_URL nor ASSISTANT_OFF=1, so nothing here can say which is right:"
+    printf '%s\n' "$ASST_SEEN" | while read -r ah au; do err "    $ah: $au"; done
+    FAIL=$((FAIL + 1))
+  fi
+fi
+
 printf '\n'
 if (( FAIL > 0 )); then
   err "$FAIL post-deploy check(s) failed"

@@ -5,7 +5,7 @@
 #   - policy posture: every shipped TracingPolicy is disarmed by declaration
 #   - build all THREE binaries (engine, agent, controlplane) as static linux
 #   - web suite: npm ci && npm run lint (eslint + architecture) && typecheck
-#     && test with coverage
+#     && test with coverage (the test script typechecks too — see the web job)
 #   - Playwright e2e (mocked API, Chromium; credential/target-VM specs self-skip)
 #   - security: govulncheck, staticcheck, npm audit, gitleaks, trivy
 #   - build a control-plane container image, generate an SBOM, and — for
@@ -269,11 +269,35 @@ jobs:
         working-directory: web
         run: npm run lint
 
+      # Named separately so a type error fails fast under its own heading rather
+      # than 90 seconds into a test run — but `npm run test:coverage` below now
+      # runs the typecheck ITSELF, and the duplication is the point.
+      #
+      # vitest does not typecheck. A `tsc -b` that could not compile the console
+      # shipped green through two rounds of adversarial verification because
+      # every gate anyone actually ran — `npm test` locally, `vitest run` on a
+      # single file — reported 741 passing tests over source that would not
+      # build. The gate that matters is the one people run, so the typecheck is
+      # inside it: CI, scripts/release-git.sh and a developer at a terminal now
+      # all fail on a broken build, not just the one job that remembered.
+      #
+      # `tsc --noEmit --incremental false`, not `tsc -b`: build mode answers
+      # from tsconfig.tsbuildinfo, and a gate whose green can come out of a
+      # cache is the same class of defect as a gate nobody runs.
       - name: typecheck
         working-directory: web
         run: npm run typecheck
 
-      - name: test (with coverage)
+      # Runs SEPARATELY from the suite above because it spawns `npm test` as a
+      # child to prove the gate's exit status actually depends on the
+      # typecheck. Inside the ordinary run it starved the worker pool and timed
+      # out six unrelated files; here it has the machine to itself. If this step
+      # goes red the gate is not gating, which is worth a failed build.
+      - name: test:gate (proves `npm test` fails on a type error)
+        working-directory: web
+        run: npm run test:gate
+
+      - name: test (typecheck + vitest, with coverage)
         working-directory: web
         run: npm run test:coverage
 

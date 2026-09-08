@@ -165,10 +165,9 @@ PKG() {
     || die "package install failed: $pkgs"
 }
 
-
 # ── Analyst assistant ──────────────────────────────────────────────────────
-# Provision the optional LLM assistant for a unit, or return the empty string
-# when it is not requested.
+# Provision the optional LLM assistant for a unit, or return a record carrying no
+# flags at all when it is not requested.
 #
 #   ASSISTANT_URL=https://host/v1 OPEN_WEIGHT_API_KEY=... ./scripts/deploy/estate.sh
 #
@@ -181,24 +180,107 @@ PKG() {
 # is regenerated from a heredoc on every deploy, so anything appended to it is
 # silently lost on the next run — which already happened once here.
 #
-# _assistant_flags <keyfile>  — echoes the flags to append to ExecStart.
-_assistant_flags() {
-  local keyfile="$1"
-  [[ -z "${ASSISTANT_URL:-}" ]] && { printf ''; return 0; }
-  if [[ -z "${OPEN_WEIGHT_API_KEY:-}" ]]; then
-    # Loud, not fatal: the engine reports itself unavailable and the console
-    # says so, which is a working deployment minus one optional feature.
-    warn "ASSISTANT_URL is set but OPEN_WEIGHT_API_KEY is not — the assistant will report itself unavailable"
-  else
-    # >&2 is REQUIRED, not tidiness. This function is called in $(…) so that its
-    # flags can be appended to ExecStart, which means anything it prints on
-    # stdout is spliced into the systemd unit. RUN echoes the remote command
-    # under DRY_RUN and passes through the remote stdout otherwise, so without
-    # this the unit would be built with deploy chatter inside its ExecStart.
-    RUN "install -d -m 0700 \"$(dirname "$keyfile")\"
-      umask 077; printf 'OPEN_WEIGHT_API_KEY=%s\n' '$OPEN_WEIGHT_API_KEY' > $keyfile
-      chmod 600 $keyfile" >&2
+# THE DEPLOYER'S SHELL IS NOT THE TARGET. The key lives on the box, in the
+# operator-owned keyfile below, handed to the unit through EnvironmentFile=. This
+# function only ever WRITES that file when OPEN_WEIGHT_API_KEY is set, so a
+# keyless redeploy is the normal, correct case: the box keeps the key it has and
+# the assistant keeps working. From 2026-09-08 back, a keyless run warned
+# "the assistant will report itself unavailable" on every one of those deploys —
+# an outcome asserted from a variable that cannot see the target, and contradicted
+# on the very next line by this file's own "analyst assistant: <model>" line.
+# Only the target can answer, and RUN is root on the target, so it is asked.
+
+# _assistant_key_state <keyfile> — echo present | absent | unknown for the key
+# file ON THE TARGET.
+#
+# RUN executes as root there (both drivers do `sudo bash -c`), so `test -s` is
+# authoritative in BOTH directions — unlike an unprivileged stat, which cannot
+# tell "no key" from "not allowed to look". What is not authoritative is a reply
+# that never arrived: a dropped transport, a box mid-restart or a driver whose
+# RUN failed all produce no output, and reading that as "absent" would put the
+# script straight back to asserting an outcome it did not observe. So the remote
+# prints a MARKER it can only reach after the test has run, and a reply without
+# the marker is `unknown` — never `absent`.
+#
+# Called from _assistant_spec, which runs inside $(…): its own stdout is spliced
+# into a systemd ExecStart. This function's stdout is captured by its caller, so
+# it must print the state and NOTHING else.
+_assistant_key_state() {
+  local out
+  # The remote's stderr is dropped because a failure here is an EXPECTED outcome
+  # (classified below as `unknown`), not a deploy error — unlike _systemd_timer,
+  # where a failing write must stay visible.
+  out="$(RUN "if [ -s '$1' ]; then echo 'EBPF-ASSISTANT-KEY|present'
+    else echo 'EBPF-ASSISTANT-KEY|absent'; fi" 2>/dev/null)" || out=""
+  # tail, not head: `head -n1` closes the pipe on its producer, and under this
+  # file's `set -o pipefail` that SIGPIPE is a failed read of a state we did in
+  # fact get. Same trap the backup script documents.
+  out="$(printf '%s\n' "$out" | sed -n 's/^EBPF-ASSISTANT-KEY|//p' | tail -n1 | tr -d '[:space:]')"
+  case "$out" in
+    present|absent) printf '%s' "$out" ;;
+    *)              printf 'unknown' ;;
+  esac
+}
+
+# _assistant_spec <keyfile> — echo "<keystate>|<ExecStart flags>".
+#
+# ONE record, not a variable, because the callers read this in $(…) — a subshell,
+# where anything the function assigns is gone the moment it returns. That is not
+# hypothetical: this function DID set a global first, and the state reached the
+# caller as the empty string, i.e. "unknown", on every path including the ones it
+# had just measured.
+#
+# The keystate is one of:
+#   written  this run wrote the key from OPEN_WEIGHT_API_KEY
+#   present  the target already had one; this run left it alone (normal redeploy)
+#   absent   the target has none and this run brought none — the assistant WILL
+#            report itself unavailable
+#   unknown  the keyfile could not be read; this deploy cannot say either way
+#   (empty)  no assistant was requested at all (ASSISTANT_URL unset)
+#
+# CALLERS MUST STRIP THE PREFIX before splicing the flags into a unit:
+#   rec="$(_assistant_spec /etc/…/assistant.env)"; flags="${rec#*|}"
+# The two in this file do; there are no others.
+_assistant_spec() {
+  local keyfile="$1" state=""
+  if [[ -n "${ASSISTANT_URL:-}" ]]; then
+    if [[ -n "${OPEN_WEIGHT_API_KEY:-}" ]]; then
+      # >&2 is REQUIRED, not tidiness. This function is called in $(…) so that
+      # its flags can be appended to ExecStart, which means anything reaching its
+      # stdout is spliced into the systemd unit. RUN passes the remote command's
+      # stdout through, so without this the unit would be built with deploy
+      # chatter inside its ExecStart. The same rule governs every message below:
+      # warn and err already go to stderr, ok/dim/log do NOT — so this function
+      # reports only through warn and leaves the summary line to its caller.
+      RUN "install -d -m 0700 \"$(dirname "$keyfile")\"
+        umask 077; printf 'OPEN_WEIGHT_API_KEY=%s\n' '$OPEN_WEIGHT_API_KEY' > $keyfile
+        chmod 600 $keyfile" >&2
+      state=written
+    else
+      state="$(_assistant_key_state "$keyfile")"
+      case "$state" in
+        present)
+          # The normal redeploy: the operator's key is on the box and this run
+          # deliberately does not touch it. Nothing to warn about; the caller's
+          # summary line says which state it is in.
+          : ;;
+        absent)
+          # The genuinely dangerous case, and the only one the old warning was
+          # ever right about: a first deploy to a box with no key file, from a
+          # shell with no key. Loud, not fatal — the engine reports itself
+          # unavailable and the console says so, which is a working deployment
+          # minus one optional feature.
+          warn "ASSISTANT_URL is set, OPEN_WEIGHT_API_KEY is not, and there is no key on the target"
+          warn "($keyfile does not exist) — the assistant will start and report itself unavailable."
+          warn "Redeploy with OPEN_WEIGHT_API_KEY=… in your shell to give it one." ;;
+        *)
+          warn "could not read $keyfile on the target, so whether the assistant has a key there is"
+          warn "UNKNOWN — this deploy cannot say whether it will work. Pass OPEN_WEIGHT_API_KEY=… to be sure." ;;
+      esac
+    fi
   fi
+  printf '%s|' "$state"
+  [[ -z "${ASSISTANT_URL:-}" ]] && return 0
   printf ' -assistant-url %s -assistant-model %s' \
     "$ASSISTANT_URL" "${ASSISTANT_MODEL:-gpt-oss:120b}"
   # Optional second model for sustained sidebar conversations. Emitted only
@@ -206,6 +288,23 @@ _assistant_flags() {
   # command line it got before this existed.
   [[ -n "${ASSISTANT_DEEP_MODEL:-}" ]] && printf ' -assistant-deep-model %s' "$ASSISTANT_DEEP_MODEL"
   return 0
+}
+
+# _assistant_report <keystate> <keyfile> — the one-line summary for the flags
+# just built. Shared by the engine and the control plane so the two surfaces
+# cannot drift into describing the same state differently.
+#
+# It reports what was OBSERVED about the key, because "analyst assistant:
+# <model> (read-only tools)" on its own is a claim that the assistant WORKS, and
+# with no key on the box it does not. Only the ✓ states may use ok.
+_assistant_report() {
+  local model="${ASSISTANT_MODEL:-gpt-oss:120b}"
+  case "$1" in
+    written) ok "analyst assistant: $model (read-only tools; key written to $2)" ;;
+    present) ok "analyst assistant: $model (read-only tools; key already on the target, left untouched)" ;;
+    absent)  warn "analyst assistant: $model is configured but has NO key on the target — it will report itself unavailable" ;;
+    *)       warn "analyst assistant: $model is configured; the key on the target could not be read, so whether it works is unknown" ;;
+  esac
 }
 
 # ── Threat-intelligence feeds ──────────────────────────────────────────────
@@ -224,7 +323,7 @@ _ship_intel() {
   local src="$REPO_ROOT/deploy/intel"
   [[ -d "$src" ]] || return 0
   RUN "install -d -m 0755 /etc/ebpf-soc/intel"
-  local f base
+  local f base shipped=0 kept=0
   # *.txt AND feeds.yaml. The glob was .txt only, so the refresh configuration
   # never reached a single host and every deployment matched whatever static
   # indicators it happened to have — with /api/intel cheerfully reporting them
@@ -243,14 +342,33 @@ _ship_intel() {
       allow.txt|feeds.yaml)
         if RUN "[ -e /etc/ebpf-soc/intel/$base ]" >/dev/null 2>&1; then
           dim "keeping the existing /etc/ebpf-soc/intel/$base (operator-owned)"
+          kept=$((kept+1))
           continue
         fi
         ;;
     esac
     PUT "$f" "/etc/ebpf-soc/intel/$base"
+    shipped=$((shipped+1))
   done
   RUN "chmod 0644 /etc/ebpf-soc/intel/*.txt 2>/dev/null || true"
-  ok "threat-intel feeds shipped to /etc/ebpf-soc/intel"
+  # COUNT what actually moved. This line used to be unconditional, so an empty
+  # deploy/intel/ — a bad checkout, a tarball that lost the directory, a glob that
+  # matched nothing — printed a ✓ saying feeds were shipped after shipping none,
+  # and the box then matched against whatever indicators it already had while the
+  # deploy said its intel was current. Same class as the liveness line below: the
+  # ✓ was assembled from reaching the end of a loop, not from any file being sent.
+  local keptnote=""
+  # NOT ${kept:+…}: kept is "0", not empty, so that spelling would append
+  # ", 0 operator-owned file(s) kept" to every first deploy.
+  (( kept > 0 )) && keptnote=", $kept operator-owned file(s) left untouched"
+  if (( shipped > 0 )); then
+    ok "threat-intel: $shipped file(s) shipped to /etc/ebpf-soc/intel$keptnote"
+  elif (( kept > 0 )); then
+    ok "threat-intel: nothing to ship — all $kept file(s) on the target are operator-owned and were kept"
+  else
+    warn "threat-intel: NO feed files were shipped ($src is empty) — the target keeps whatever indicators"
+    warn "it already had, and this deploy did not update them."
+  fi
 }
 
 _systemd_unit() { # <name> <description> <ExecStart> [After] [EnvironmentFiles…]
@@ -276,8 +394,23 @@ UNIT
 systemctl daemon-reload"
 }
 
-_systemd_timer() { # <name> <description> <ExecStart> <OnCalendar>
-  RUN "cat > /etc/systemd/system/$1.service <<'UNIT'
+# _systemd_timer <name> <description> <ExecStart> <OnCalendar>
+#
+# Returns 0 only when the timer is ARMED on the target, and leaves systemd's own
+# answer in TIMER_STATE for the caller's message. `systemctl enable --now` had
+# its status thrown away with `|| true`, and both callers then printed a ✓ line
+# saying backups run nightly — an outcome asserted from a command whose failure
+# was discarded. The status alone is not the answer either (enable can succeed
+# while the timer fails to start), so the timer is ASKED whether it is active.
+#
+# TIMER_STATE is a global and that is safe here, unlike in _assistant_spec:
+# this function is called directly, not inside $(…), so it is not assigning in a
+# subshell.
+TIMER_STATE=""
+_systemd_timer() {
+  TIMER_STATE=""
+  local out
+  out="$(RUN "cat > /etc/systemd/system/$1.service <<'UNIT'
 [Unit]
 Description=$2
 [Service]
@@ -297,7 +430,75 @@ RandomizedDelaySec=300
 WantedBy=timers.target
 TIMER
 systemctl daemon-reload
-systemctl enable --now $1.timer >/dev/null 2>&1 || true"
+systemctl enable --now $1.timer >/dev/null 2>&1 || true
+# The marker carries the state systemd just reported, and nothing else prints on
+# stdout here, so a reply without it is 'could not ask' — never 'not armed'.
+printf 'EBPF-TIMER-STATE|%s\n' \"\$(systemctl is-active $1.timer 2>&1 | head -n1 | tr -d '[:space:]')\"")" || out=""
+  # Only stdout is captured: the remote's stderr still reaches the deploy log, so
+  # a heredoc or systemctl error is visible rather than swallowed by this probe.
+  # tail, not head: head would SIGPIPE its producer, and under this file's
+  # pipefail that reads as a failed probe of a state we did get.
+  TIMER_STATE="$(printf '%s\n' "$out" | sed -n 's/^EBPF-TIMER-STATE|//p' | tail -n1)"
+  [[ "$TIMER_STATE" == active ]]
+}
+
+# _http_code <curl-args…> — the HTTP status the TARGET saw, or '' when the probe
+# itself did not report one.
+#
+# The code comes back behind a MARKER, for the reason spelled out in
+# _assistant_key_state: a dropped transport, a box mid-restart or a driver whose
+# RUN failed all produce no output, and reading that as a status code puts the
+# script straight back to asserting an outcome it never observed. curl's own
+# "nothing answered" is 000, which IS a measurement; no marker at all is not, and
+# the two must not collapse into one string.
+#
+# Callers capture stdout, so nothing else may be printed here. The remote's
+# stderr is dropped for the same reason as in _assistant_key_state: a probe that
+# cannot connect is a state this function classifies, not a deploy error.
+_http_code() {
+  local out
+  out="$(RUN "printf 'EBPF-HTTP-CODE|%s\n' \"\$(curl -s -o /dev/null --max-time 10 -w '%{http_code}' $* 2>/dev/null)\"" 2>/dev/null)" || out=""
+  # tail, not head — see _assistant_key_state on head's SIGPIPE under pipefail.
+  printf '%s\n' "$out" | sed -n 's/^EBPF-HTTP-CODE|//p' | tail -n1 | tr -d '[:space:]'
+}
+
+# _origin_code <path> — the status the TARGET sees for the ORIGIN this deploy is
+# about to print, $TARGET_SCHEME://$TARGET_HOST<path>, with the connection pinned
+# to loopback.
+#
+# It exists because the closing ✓ lines name that origin and nothing used to
+# observe it. They were assembled from `http://localhost/` and, on the engine,
+# `-H 'Host: …' http://127.0.0.1/` — plain HTTP to :80. On a TLS estate that is
+# a different port, a different server block and no certificate at all, so a
+# deploy could print "live at https://host/" having never touched :443. An
+# expired certificate or a :443 block nginx refused to load looked exactly like
+# a healthy one.
+#
+# --resolve, NOT -k: the request carries the real hostname, so curl VERIFIES the
+# certificate against it — chain, name and expiry, using the target's own trust
+# store — while the socket goes to 127.0.0.1. That keeps the probe independent
+# of DNS and of whether the box can hairpin its own public address, which is why
+# the loopback probes were chosen in the first place. What it therefore does NOT
+# observe is DNS, the firewall, or the path from the internet; the lines that
+# use it say so rather than implying otherwise.
+_origin_code() {
+  if [[ "${TARGET_SCHEME:-http}" == https ]]; then
+    _http_code "--resolve $TARGET_HOST:443:127.0.0.1 https://$TARGET_HOST$1"
+  else
+    _http_code "-H 'Host: $TARGET_HOST' http://127.0.0.1$1"
+  fi
+}
+
+# _origin_note — what the origin probe did and did not see, for the dim line
+# under a ✓. Printed rather than left implied: "live at https://…" is a much
+# larger claim than "loopback said 200", and the gap between them is where every
+# defect in this file's green lines has lived.
+_origin_note() {
+  if [[ "${TARGET_SCHEME:-http}" == https ]]; then
+    printf 'probed from the target over loopback, certificate verified for %s; DNS, the firewall and the path from the internet are not checked here' "$TARGET_HOST"
+  else
+    printf 'probed from the target over loopback; DNS, the firewall and the path from the internet are not checked here'
+  fi
 }
 
 # ─── backups ────────────────────────────────────────────────────────────────
@@ -328,10 +529,14 @@ provision_engine_backups() {
   }
   PUT "$BUILD_DIR/socbackup" /usr/local/bin/socbackup
   RUN "chmod 0755 /usr/local/bin/socbackup; install -d -m 0700 /var/backups/ebpf-soc"
-  _systemd_timer ebpf-soc-backup "eBPF-SOC engine database backup" \
+  if _systemd_timer ebpf-soc-backup "eBPF-SOC engine database backup" \
     "/usr/local/bin/socbackup -db /var/lib/ebpf-engine/events.db -dest /var/backups/ebpf-soc -keep 3" \
-    "*-*-* 03:30:00"
-  ok "engine backups: nightly 03:30, 3 retained, /var/backups/ebpf-soc"
+    "*-*-* 03:30:00"; then
+    ok "engine backups: nightly 03:30, 3 retained, /var/backups/ebpf-soc"
+  else
+    warn "engine backup timer is NOT armed (systemd says: ${TIMER_STATE:-no answer}) — the evidence"
+    warn "store will NOT be backed up nightly; check: systemctl status ebpf-soc-backup.timer"
+  fi
 }
 
 provision_controlplane_backups() {
@@ -401,9 +606,70 @@ fi
 SH
   PUT "$BUILD_DIR/ebpf-soc-cp-backup" /usr/local/bin/ebpf-soc-cp-backup
   RUN "chmod 0700 /usr/local/bin/ebpf-soc-cp-backup; install -d -m 0700 /var/backups/ebpf-soc"
-  _systemd_timer ebpf-soc-cp-backup "eBPF-SOC control-plane PKI + config backup" \
-    "/usr/local/bin/ebpf-soc-cp-backup" "*-*-* 03:00:00"
-  ok "control-plane backups: nightly 03:00, 7 retained, /var/backups/ebpf-soc"
+  if _systemd_timer ebpf-soc-cp-backup "eBPF-SOC control-plane PKI + config backup" \
+    "/usr/local/bin/ebpf-soc-cp-backup" "*-*-* 03:00:00"; then
+    ok "control-plane backups: nightly 03:00, 7 retained, /var/backups/ebpf-soc"
+  else
+    warn "control-plane backup timer is NOT armed (systemd says: ${TIMER_STATE:-no answer}) — the CA and"
+    warn "fleet signing keys are NOT being backed up; check: systemctl status ebpf-soc-cp-backup.timer"
+  fi
+}
+
+# _engine_up_or_die — did the engine process itself come up?
+#
+# Its OWN port, which only the engine binds — nothing else on the box can answer
+# here, so a 200 is the service itself and not something in front of it.
+#
+# Split out of provision_engine (with _engine_edge_verdict below) for the reason
+# _cp_liveness is its own function: a verdict that can be executed against a
+# stubbed RUN is a verdict that can be tested, and the ""-vs-code distinction
+# below is exactly the kind that gets quietly collapsed back.
+_engine_up_or_die() {
+  local code; code="$(_http_code "http://localhost:$ENGINE_PORT/login")"
+  case "$code" in
+    200) : ;;
+    # No marker came back, so the probe never ran: "did not come up" would be a
+    # verdict on a measurement that does not exist.
+    "")  die "could not ask the target whether the engine came up (the probe returned nothing) — this deploy cannot say either way; check: systemctl status ebpf-engine" ;;
+    *)   die "engine did not come up (HTTP $code); check: systemctl status ebpf-engine" ;;
+  esac
+}
+
+# _engine_edge_verdict — the front-door verdict for the DNS-name branch.
+#
+# The URL printed here is nginx's, and everything proved before it is the
+# ENGINE's own port. Those are two different layers: a vhost that failed to
+# reload leaves the engine answering happily on 127.0.0.1:$ENGINE_PORT while the
+# address the operator was just handed answers nothing.
+#
+# The probe follows TARGET_SCHEME (see _origin_code), so an https line is earned
+# by an https request against the real certificate instead of by a plain-HTTP
+# reply from :80.
+#
+# 3xx is healthy, for a different reason on each scheme: on http the probe lands
+# on the :80 server, which redirects to https when certs are on disk, and on
+# https it lands on the engine, which sends an unauthenticated caller to /login.
+# Both are the correct answer, not a fault.
+_engine_edge_verdict() {
+  local edge; edge="$(_origin_code /)"
+  case "$edge" in
+    2*|3*) ok "engine live at $TARGET_SCHEME://$TARGET_HOST/ — the front door answered HTTP $edge (login $ENGINE_USER / $ENGINE_PASS)"
+           dim "$(_origin_note)" ;;
+    # A probe that never reported is not a failed front door. Splitting this out
+    # of the catch-all below is the same distinction _http_code exists to keep:
+    # curl's 000 is a measurement, silence is not.
+    "")    warn "could not ask whether nginx serves $TARGET_HOST (the probe returned nothing) — the engine is up"
+           warn "on its own port, but $TARGET_SCHEME://$TARGET_HOST/ is NOT confirmed either way; check: nginx -t"
+           dim "login when it is: $ENGINE_USER / $ENGINE_PASS" ;;
+    *)     warn "the engine is up on its own port, but nginx did not serve $TARGET_HOST ($edge)"
+           warn "— $TARGET_SCHEME://$TARGET_HOST/ is NOT confirmed reachable; check: nginx -t; systemctl status nginx"
+           # 000 on https is two faults wearing one code. Saying only "nginx did
+           # not serve" would pick one of them without having measured which.
+           if [[ "$TARGET_SCHEME" == https && "$edge" == 000 ]]; then
+             warn "on https a 000 also covers a certificate this box would not accept, not just a dead vhost"
+           fi
+           dim "login when it is: $ENGINE_USER / $ENGINE_PASS" ;;
+  esac
 }
 
 # ─── single-tenant: the engine ──────────────────────────────────────────────
@@ -475,8 +741,36 @@ provision_engine() {
         -v /etc/tetragon/tetragon.tp.d:/etc/tetragon/tetragon.tp.d \
         $TETRAGON_IMAGE --server-address unix:///var/run/tetragon/tetragon.sock >/dev/null"
     # ship policies + attacks for real detection
+    #
+    # NO macOS RESOURCE FORKS IN THE POLICY DIRECTORY. Deployed from a Mac, this
+    # tar carries AppleDouble sidecars — ._network-watch.yaml,
+    # ._sensitive-files.yaml and friends — straight into a directory whose entire
+    # contents are policy. They were measured sitting in an agent's
+    # /opt/ebpf-soc/policies. Junk today, but the loader below and every other
+    # consumer globs *.yaml here, and a ._ sidecar matches that glob: the day
+    # anything parses what it finds instead of skipping it, the estate has
+    # policy files that are 4KB of binary metadata.
+    #
+    # Three measures because they cover three different sources, and only the
+    # first two are on the sending side:
+    #   COPYFILE_DISABLE=1  stops bsdtar SYNTHESISING ._ entries from the
+    #                       extended attributes on the local files (nothing on
+    #                       disk to exclude — the tar invents them).
+    #   --exclude='._*'     drops sidecars that are REAL files locally, left by
+    #                       an earlier copy through a Mac.
+    #   find … -delete      removes the ones ALREADY on the boxes. tar -x adds
+    #                       and overwrites; it never deletes, so a redeploy alone
+    #                       would leave every existing sidecar exactly where it
+    #                       is. This is the half that cleans up what is there now.
+    # The sweep is the whole /var/lib/ebpf-engine tree, not just policies/,
+    # because a sidecar for a DIRECTORY (._policies, ._attacks — the tar makes
+    # those from the directories' own xattrs) lands one level ABOVE the directory
+    # it describes, and everything it can match is junk by construction.
+    # Same shape as the Keycloak theme copy in provision_controlplane.
     RUN "mkdir -p /var/lib/ebpf-engine/policies /var/lib/ebpf-engine/attacks"
-    tar -C "$REPO_ROOT" -cf - policies attacks 2>/dev/null | RUN "tar -C /var/lib/ebpf-engine -xf - 2>/dev/null || true"
+    COPYFILE_DISABLE=1 tar -C "$REPO_ROOT" --exclude='._*' -cf - policies attacks 2>/dev/null | \
+      RUN "tar -C /var/lib/ebpf-engine -xf - 2>/dev/null || true
+        find /var/lib/ebpf-engine -name '._*' -delete 2>/dev/null; true"
     _ship_intel
 
     # Tetragon needs a moment to attach its BPF programs and open the gRPC socket;
@@ -560,8 +854,19 @@ provision_engine() {
     ip -4 neigh show | awk -v gw="$gw" "\$1==gw {for(i=1;i<=NF;i++) if (\$i==\"lladdr\") print \$(i+1)}" | head -1' 2>/dev/null | tr -d '\r')"
   local protect="${DEVCHOKE_PROTECT:-}"
   [[ -n "$gwmac" ]] && protect="${protect:+$protect,}$gwmac"
-  [[ -n "$protect" ]] && ok "protected MACs: $protect" \
-                      || warn "could not resolve the gateway MAC — only the engine's own NIC is protected"
+  # NOT reported here. devchoke_protect — and devchoke_obj / devchoke_ifaces
+  # below — become the host's only when the engine.yaml heredoc ~70 lines down
+  # lands, and both ticks used to print before it. That is the same defect the
+  # "choke thresholds" line was moved for, on the same write: a ✓ printed ahead
+  # of the thing it describes is a claim about work that has not happened yet.
+  # The verdicts are collected here as "<ok|warn>|<message>" lines and emitted
+  # immediately after that heredoc.
+  local devreport
+  if [[ -n "$protect" ]]; then
+    devreport="ok|protected MACs: $protect"
+  else
+    devreport="warn|could not resolve the gateway MAC — only the engine's own NIC is protected"
+  fi
 
   # The tc data plane itself is opt-in (DEVCHOKE=1): it needs a compiled
   # devchoke.o, which means a clang/libbpf toolchain on the target. Without it
@@ -572,17 +877,28 @@ provision_engine() {
   if [[ "${DEVCHOKE:-0}" == 1 ]]; then
     local iface
     iface="$(RUN 'ip -o -4 route show default | awk "{print \$5}" | head -1' 2>/dev/null | tr -d '\r')"
-    log "compiling the device-choke data plane for $iface"
-    PKG clang libbpf-dev linux-libc-dev
-    RUN "mkdir -p /var/lib/ebpf-engine/bpf"
-    PUT "$REPO_ROOT/engine/internal/enforce/devbpf/bpf/devchoke.c" /var/lib/ebpf-engine/bpf/devchoke.c
-    if RUN "cd /var/lib/ebpf-engine/bpf && clang -O2 -g -target bpf -I/usr/include/\$(uname -m)-linux-gnu -c devchoke.c -o devchoke.o" >/dev/null 2>&1; then
-      devlines="$devlines
+    if [[ -z "$iface" ]]; then
+      # This lookup's stderr is silenced and it can legitimately come back empty
+      # (no default route, or the probe never ran at all). Compiling anyway and
+      # writing a blank "devchoke_ifaces:" leaves the engine on the NOOP backend
+      # either way — hoststack.go loads the tc plane only when devchoke_obj AND
+      # at least one interface are set — while the tick read "device data plane
+      # compiled (tc on )" with nothing after the "on". Report the miss and keep
+      # the keys out of the config.
+      devreport+=$'\n'"warn|no default-route interface resolved — no tc data plane was attached; the device gateway stays on the noop backend"
+    else
+      log "compiling the device-choke data plane for $iface"
+      PKG clang libbpf-dev linux-libc-dev
+      RUN "mkdir -p /var/lib/ebpf-engine/bpf"
+      PUT "$REPO_ROOT/engine/internal/enforce/devbpf/bpf/devchoke.c" /var/lib/ebpf-engine/bpf/devchoke.c
+      if RUN "cd /var/lib/ebpf-engine/bpf && clang -O2 -g -target bpf -I/usr/include/\$(uname -m)-linux-gnu -c devchoke.c -o devchoke.o" >/dev/null 2>&1; then
+        devlines="$devlines
 devchoke_obj: /var/lib/ebpf-engine/bpf/devchoke.o
 devchoke_ifaces: $iface"
-      ok "device data plane compiled (tc on $iface)"
-    else
-      warn "devchoke.o failed to compile — device gateway stays on the noop backend"
+        devreport+=$'\n'"ok|device data plane compiled and configured (tc on $iface)"
+      else
+        devreport+=$'\n'"warn|devchoke.o failed to compile — device gateway stays on the noop backend"
+      fi
     fi
   fi
 
@@ -630,7 +946,6 @@ HOSTS"
 tarpit_at: ${TARPIT_AT:-50}
 quarantine_at: ${QUARANTINE_AT:-120}
 sever_at: ${SEVER_AT:-200}"
-  ok "choke thresholds: ${THROTTLE_AT:-20}/${TARPIT_AT:-50}/${QUARANTINE_AT:-120}/${SEVER_AT:-200} (throttle/tarpit/quarantine/sever)"
 
   log "writing engine config (/etc/ebpf-engine/engine.yaml, 0600)"
   RUN "umask 077; cat > /etc/ebpf-engine/engine.yaml <<'YAML'
@@ -652,10 +967,26 @@ fleet_hosts: /etc/ebpf-engine/fleet.hosts
 $thresholds
 $devlines
 YAML"
+  # Reported AFTER the write, not before it: the values are only the host's once
+  # the heredoc has landed, and a ✓ printed ahead of the thing it describes is a
+  # claim about work that has not happened yet.
+  ok "choke thresholds: ${THROTTLE_AT:-20}/${TARPIT_AT:-50}/${QUARANTINE_AT:-120}/${SEVER_AT:-200} (throttle/tarpit/quarantine/sever)"
+  # The device-choke verdicts held back above, for the same reason and now on the
+  # right side of the same write: devchoke_protect / devchoke_obj /
+  # devchoke_ifaces are on the host as of the heredoc directly above this.
+  local _kind _msg
+  while IFS='|' read -r _kind _msg; do
+    case "$_kind" in ok) ok "$_msg" ;; warn) warn "$_msg" ;; esac
+  done <<< "$devreport"
   log "writing systemd unit (ebpf-engine)"
   local fakeflag=""; [[ "$ENGINE_MODE" == fake ]] && fakeflag="-fake"
-  local asst; asst="$(_assistant_flags /etc/ebpf-engine/assistant.env)"
-  [[ -n "$asst" ]] && ok "analyst assistant: ${ASSISTANT_MODEL:-gpt-oss:120b} (read-only tools)"
+  # "<keystate>|<flags>" — the state must be stripped before the flags go near
+  # the unit, and the state is what decides whether the summary line below may
+  # claim the assistant works.
+  local asstrec asst
+  asstrec="$(_assistant_spec /etc/ebpf-engine/assistant.env)"
+  asst="${asstrec#*|}"
+  [[ -n "$asst" ]] && _assistant_report "${asstrec%%|*}" /etc/ebpf-engine/assistant.env
   _systemd_unit ebpf-engine "eBPF SOC engine (single-tenant)" \
     "/usr/local/bin/ebpf-engine -config /etc/ebpf-engine/engine.yaml $fakeflag -login-rate $LOGIN_RATE$asst" \
     "" -/etc/ebpf-engine/assistant.env
@@ -665,8 +996,7 @@ YAML"
   # disk describe the new config. Every credential/mode change needs a restart.
   RUN "systemctl enable ebpf-engine >/dev/null 2>&1; systemctl restart ebpf-engine; sleep 3"
 
-  local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost:$ENGINE_PORT/login" || true)"
-  [[ "$code" == 200 ]] || die "engine did not come up (HTTP $code); check: systemctl status ebpf-engine"
+  _engine_up_or_die
 
   # Front the engine with nginx when TARGET_HOST is a DNS name, so it is reached
   # on a clean origin (and can carry TLS) instead of host:$ENGINE_PORT. Keeps the
@@ -724,7 +1054,7 @@ NGINX"
       RUN "rm -f /etc/nginx/sites-enabled/default
         ln -sf /etc/nginx/sites-available/engine /etc/nginx/sites-enabled/engine
         nginx -t && systemctl enable nginx >/dev/null 2>&1 && systemctl restart nginx"
-      ok "engine live at $TARGET_SCHEME://$TARGET_HOST/ (login $ENGINE_USER / $ENGINE_PASS)"
+      _engine_edge_verdict
       ;;
     *)
       ok "engine live at http://$TARGET_HOST:$ENGINE_PORT/ (login $ENGINE_USER / $ENGINE_PASS)"
@@ -779,9 +1109,22 @@ provision_tls() {
   log "installing certbot"
   PKG certbot
   RUN "mkdir -p /var/www/certbot"
-  if RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem" >/dev/null 2>&1; then
-    ok "certificate already present for $host (renewal is certbot's own timer)"
+  # "A file is there" is not "TLS works". This early return tested only
+  # `test -s fullchain.pem`, so a cert that expired last month satisfied it — the
+  # deploy skipped renewal, printed a green line, set TARGET_SCHEME=https for the
+  # caller, and every browser then met a full-page TLS interstitial. -checkend
+  # asks the certificate itself; 7 days is well inside certbot's own 30-day
+  # renewal window, so this only ever fires when that timer has already failed.
+  # Anything other than "present and good for another week" — expired, soon to
+  # expire, unreadable, no openssl — falls through to certbot below, which is
+  # --keep-until-expiring and therefore a no-op when there is nothing to do.
+  if RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem && openssl x509 -in /etc/letsencrypt/live/$host/fullchain.pem -noout -checkend 604800" >/dev/null 2>&1; then
+    ok "certificate present for $host and valid for at least 7 more days (renewal is certbot's own timer)"
     return 0
+  fi
+  if RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem" >/dev/null 2>&1; then
+    warn "the certificate on $host is expired, expires within 7 days, or could not be read — renewing now"
+    warn "rather than trusting it"
   fi
   # Bootstrap the challenge path. On the FIRST TLS deploy of a host the live
   # nginx config predates the ACME location, so the SPA's try_files catch-all
@@ -823,6 +1166,129 @@ ACME
   RUN "test -s /etc/letsencrypt/live/$host/fullchain.pem" >/dev/null 2>&1 \
     || { warn "certbot reported success but no cert on disk — staying on http"; return 1; }
   ok "certificate issued for $host"
+}
+
+# _cp_liveness — the closing "is it actually live?" verdict for the control plane.
+#
+# THREE probes, because the address this line prints is three independent layers
+# and only one of them is the platform:
+#
+#   the SERVICE — http://127.0.0.1:$CP_HTTP_PORT/readyz. The control plane binds
+#     that port on LOOPBACK (see its ExecStart above), so nothing else on the box
+#     is in front of it: a reply there is the Go process itself. /readyz is used
+#     rather than /healthz because /healthz answers a constant — it is up-ness of
+#     the process only — while /readyz runs a real tenant-scoped read against
+#     Postgres, so a 200 also means the store every console panel reads is
+#     readable.
+#   the EDGE — http://localhost/ through nginx. Is the web server serving at all.
+#   the ORIGIN — $TARGET_SCHEME://$TARGET_HOST/readyz via _origin_code, pinned to
+#     loopback. This is the one that makes the printed URL mean something: it
+#     goes through the vhost written above (and, on https, through :443 with the
+#     certificate verified) and out the "location /readyz { proxy_pass … }" this
+#     same file installs — so a 200 is the browser-facing origin reaching the
+#     control plane, not nginx answering for itself.
+#
+# The original check asked ONLY the edge and accepted any 2xx/3xx. On the live
+# TLS estate the :80 vhost written above answers `301 -> https` out of nginx's
+# own config: no proxy_pass, no upstream, nginx alone serving a constant. So the
+# ✓ reading "control plane live" was assembled from a reply that cannot tell a
+# healthy platform from a dead service behind a healthy proxy.
+#
+# The pass after that added the loopback /readyz probe and fixed exactly that,
+# but the sentence still named an origin nothing had touched: no probe went near
+# :443, the certificate, or the nginx-to-control-plane hop, while this file adds
+# a /readyz proxy_pass to the vhost specifically so the store-reachability probe
+# can reach the control plane. The origin probe closes that gap. What remains
+# unobserved — DNS, the firewall, the path from the internet — is stated in the
+# dim line rather than implied away.
+#
+# A FOURTH probe fires only on https and only when the verified origin probe
+# failed: the same URL with verification off. curl reports 000 both for "nothing
+# answered" and for "I will not accept that certificate", and naming the wrong
+# one would be this file's own defect in a new place.
+#
+# The edge's 301 stays HEALTHY: a TLS box answering 301 on plain :80 and 200 on
+# /readyz is a good deploy and must not warn.
+_cp_liveness() {
+  local app edge origin edge_ok=no
+  app="$(_http_code "http://127.0.0.1:$CP_HTTP_PORT/readyz")"
+  edge="$(_http_code "http://localhost/")"
+  origin="$(_origin_code /readyz)"
+  case "$edge" in 2*|3*) edge_ok=yes ;; esac
+  case "$app" in
+    200)
+      if [[ "$edge_ok" == yes && "$origin" == 200 ]]; then
+        ok "control plane live at  $TARGET_SCHEME://$TARGET_HOST/   (service /readyz 200, same 200 through the vhost, console HTTP $edge)"
+        dim "$(_origin_note)"
+      elif [[ "$edge_ok" != yes ]]; then
+        warn "the control plane is READY (/readyz 200) but nginx did not serve the console on"
+        warn "http://localhost/ (${edge:-no reply}) — the service is up and the front door is not;"
+        warn "check: nginx -t; systemctl status nginx"
+        dim "expected address: $TARGET_SCHEME://$TARGET_HOST/"
+      else
+        # nginx is serving something, but the origin an operator was about to be
+        # handed does not reach the control plane through it. A renamed location
+        # block, a :443 server that failed to load, an expired certificate: all
+        # of them look like this, and all of them used to print a ✓.
+        #
+        # On https those causes do NOT share a status code by accident: curl
+        # reports 000 both when nothing answers and when the certificate is
+        # refused, and naming the wrong one would be this file's own defect in a
+        # new place — a good estate whose box simply lacks a CA bundle would be
+        # told its origin does not reach the service. So ask once more with
+        # verification off, and let the two answers name the cause.
+        local insecure=""
+        if [[ "$TARGET_SCHEME" == https ]]; then
+          insecure="$(_http_code "-k --resolve $TARGET_HOST:443:127.0.0.1 https://$TARGET_HOST/readyz")"
+        fi
+        if [[ "$insecure" == 200 ]]; then
+          warn "the control plane is READY and $TARGET_SCHEME://$TARGET_HOST/readyz reaches it — but only with"
+          warn "certificate verification OFF (the verified probe said ${origin:-nothing}). The certificate is"
+          warn "expired, not valid for this name, or its chain is not trusted on this box; a browser will meet"
+          warn "a TLS warning, so this is NOT confirmed live."
+          warn "check: openssl x509 -noout -dates -subject -in /etc/letsencrypt/live/$TARGET_HOST/fullchain.pem"
+        else
+          warn "the control plane is READY on 127.0.0.1:$CP_HTTP_PORT (/readyz 200) and nginx is serving, but"
+          warn "$TARGET_SCHEME://$TARGET_HOST/readyz answered ${origin:-nothing} through it — the origin a browser"
+          warn "uses does not reach the service, so this is NOT confirmed live."
+          warn "check: nginx -t; systemctl status nginx; the vhost and, on https, the certificate"
+        fi
+      fi ;;
+    503)
+      # The process answered, and what it said was "I cannot read my store". The
+      # console will still LOAD — nginx serves the bundle from disk — and every
+      # panel in it will 500. Never a ✓.
+      warn "the control plane is running but reports itself NOT READY (/readyz 503): it cannot read its"
+      warn "central store. The console will load and its panels will fail; this is NOT a live deployment."
+      warn "check: systemctl status ebpf-soc-controlplane postgresql; journalctl -u ebpf-soc-controlplane" ;;
+    "")
+      # No marker came back, so no probe happened. Not 'down' — unmeasured.
+      warn "could not ask the target whether the control plane is live (the probe returned nothing) —"
+      warn "NOT confirmed either way; check: systemctl status ebpf-soc-controlplane nginx"
+      dim "expected address: $TARGET_SCHEME://$TARGET_HOST/" ;;
+    *)
+      # Say only what was measured. This branch used to print ONE fixed sentence
+      # for every code in it, and that sentence was wrong in two reachable
+      # states: it glossed the reading as "000 means nothing is listening" even
+      # when the reading was a 404 (something DID answer — a renamed route, or
+      # another service on the port), and it said "nginx answered $edge at the
+      # edge, so the site can still serve a page" even when $edge was 000 and
+      # nothing had answered at the edge either.
+      warn "the control plane did NOT answer 200 on 127.0.0.1:$CP_HTTP_PORT/readyz — curl reported $app."
+      case "$app" in
+        000) warn "000 is curl's 'nothing answered': nothing is listening on that port." ;;
+        *)   warn "Something answered there and it was not a ready control plane — a renamed route, or another"
+             warn "service holding $CP_HTTP_PORT, looks exactly like this." ;;
+      esac
+      case "$edge" in
+        2*|3*) warn "nginx answered $edge on http://localhost/, so $TARGET_SCHEME://$TARGET_HOST/ can still serve a"
+               warn "page or a redirect with no service behind it." ;;
+        "")    warn "the edge probe returned nothing, so what nginx is serving was not measured." ;;
+        *)     warn "nothing served http://localhost/ either (curl reported $edge)." ;;
+      esac
+      warn "NOT confirmed live. check: systemctl status ebpf-soc-controlplane nginx"
+      dim "expected address: $TARGET_SCHEME://$TARGET_HOST/" ;;
+  esac
 }
 
 # ─── multi-tenant: the control plane ────────────────────────────────────────
@@ -989,8 +1455,22 @@ EOF"
     # by IP. Put TLS in front for production and set this back to EXTERNAL.
     K update realms/ebpf-soc -s sslRequired=NONE >/dev/null 2>&1 || true
     K update realms/master   -s sslRequired=NONE >/dev/null 2>&1 || true
+    # ALL FOUR roles authz.go recognises, not the two the console happens to use.
+    #
+    # authz.go:24-29 defines read-only, tenant-analyst, msoc-admin and
+    # cross-tenant-responder, and this provisioner created only the middle two.
+    # So half the authorization model existed exclusively in Go: no realm ever
+    # carried the other two, no account could hold them, and nothing on any
+    # deployment had ever executed the code paths that separate \"may read\" from
+    # \"may fire containment\". A role the platform enforces but never provisions
+    # is a rule nobody has watched work.
+    #
+    # Every create is || true because a redeploy hits an existing role and kcadm
+    # exits non-zero for it; that is a no-op, not a failure.
     K create roles -r ebpf-soc -s name=tenant-analyst >/dev/null 2>&1 || true
     K create roles -r ebpf-soc -s name=msoc-admin >/dev/null 2>&1 || true
+    K create roles -r ebpf-soc -s name=read-only >/dev/null 2>&1 || true
+    K create roles -r ebpf-soc -s name=cross-tenant-responder >/dev/null 2>&1 || true
     CID=\$(K create clients -r ebpf-soc -s clientId=console-bff -s enabled=true -s protocol=openid-connect -s publicClient=false -s standardFlowEnabled=true -s directAccessGrantsEnabled=true -s 'redirectUris=[\"$redirect\",\"$base/*\"]' -s 'webOrigins=[\"$base\"]' -i 2>/dev/null || K get clients -r ebpf-soc -q clientId=console-bff --fields id --format csv | tail -1 | tr -d '\"')
     # ALWAYS re-assert the URLs. The create above is a no-op on redeploy (the
     # client already exists), so without this an existing deployment keeps the
@@ -1039,8 +1519,30 @@ EOF"
     fi
     ok "console-bff client secret read from Keycloak (${#CP_SECRET} chars)"
 
-  # one operator per tenant + one cross-tenant msoc-admin
-  local userlist=""
+  # one operator per tenant, one cross-tenant msoc-admin, and one account for
+  # each of the two roles nothing had ever been able to sign in as.
+  #
+  # Every account here is created the same way, and the shape matters on the
+  # SECOND deploy rather than the first:
+  #   * `create users … || true` — the create is a no-op once the account
+  #     exists, and its non-zero exit is not a deploy failure.
+  #   * `add-roles` runs unconditionally, so an account created by an older
+  #     deploy (before its role existed) still ends up holding it.
+  #   * the password comes from console_password, which READS BACK the value
+  #     recorded on the host and only mints one when there is none. So
+  #     set-password re-asserts the SAME secret on a redeploy instead of
+  #     rotating it. For the two probe personas that is not merely a
+  #     convenience: their credentials are lifted into .deploy-build/e2e.env by
+  #     hand, and a password quietly rotated underneath them turns the next
+  #     probe run into eleven authentication failures that look like an RBAC
+  #     regression. Rotate deliberately by deleting the account's line from
+  #     /etc/ebpf-soc/console-users.env.
+  #
+  # The probe-suite hint on each line is deliberate. web/e2e/probe/support/
+  # live.ts reads PROBE_USER, PROBE_OTHER_USER, PROBE_ADMIN_USER, PROBE_RO_USER
+  # and PROBE_XR_USER, and which local account plays which persona is not
+  # guessable from a username — so the credentials file says it outright.
+  local userlist="" tenant_n=0 probe_hint=""
   for t in $TENANTS; do
     local u; u="op-$(echo $t | cut -d- -f1)"; local pw; pw="$(console_password "$u")"
     RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
@@ -1048,7 +1550,13 @@ EOF"
       K create users -r ebpf-soc -s username=$u -s enabled=true -s email=$u@local -s firstName=$u -s lastName=op -s emailVerified=true -s 'attributes.tenant=[\"$t\"]' >/dev/null 2>&1 || true
       K add-roles -r ebpf-soc --uusername $u --rolename tenant-analyst >/dev/null 2>&1
       K set-password -r ebpf-soc --username $u --new-password '$pw' >/dev/null 2>&1"
-    userlist+="  $u / $pw   (tenant-analyst, $t)\n"
+    tenant_n=$((tenant_n+1))
+    case $tenant_n in
+      1) probe_hint="   -> probe PROBE_USER / PROBE_PASSWORD" ;;
+      2) probe_hint="   -> probe PROBE_OTHER_USER / PROBE_OTHER_PASSWORD (PROBE_OTHER_TENANT=$t)" ;;
+      *) probe_hint="" ;;
+    esac
+    userlist+="  $u / $pw   (tenant-analyst, $t)$probe_hint\n"
   done
   local msoc_pw; msoc_pw="$(console_password msoc)"
   RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
@@ -1056,7 +1564,49 @@ EOF"
     K create users -r ebpf-soc -s username=msoc -s enabled=true -s email=msoc@local -s firstName=msoc -s lastName=admin -s emailVerified=true -s 'attributes.tenant=[\"$first_tenant\"]' >/dev/null 2>&1 || true
     K add-roles -r ebpf-soc --uusername msoc --rolename msoc-admin >/dev/null 2>&1
     K set-password -r ebpf-soc --username msoc --new-password '$msoc_pw' >/dev/null 2>&1"
-  userlist+="  msoc / $msoc_pw   (msoc-admin, cross-tenant)\n"
+  userlist+="  msoc / $msoc_pw   (msoc-admin, cross-tenant)   -> probe PROBE_ADMIN_USER / PROBE_ADMIN_PASSWORD\n"
+
+  # ── the two personas the platform enforces and no realm could sign in as ───
+  #
+  # THE TENANT ATTRIBUTE IS LOAD-BEARING, on both of them. The tenant claim
+  # mapper above copies it into the token, identity.PrincipalFromClaims stamps
+  # it onto every realm role, and authz.DefaultTenant returns it as the tenant
+  # a request that named none resolves to — which is every request the console
+  # makes, since the console names a tenant nowhere. whoami publishes it as
+  # viewing_tenant. An account without it resolves to NO tenant and is refused
+  # on reads it is fully entitled to, which reads on screen exactly like the
+  # RBAC defect these probes exist to measure. Same attribute, same syntax as
+  # every account above.
+  #
+  # BOTH SIT ON THE FIRST TENANT — the same one the tenant-analyst control
+  # (PROBE_USER) sits on. Every persona spec drives the persona and the analyst
+  # side by side in the same second and compares what each is offered; a
+  # persona parked on a different customer would be comparing two ESTATES, and
+  # "the read-only operator sees no containment control" would be satisfied by
+  # a tenant that merely has no agents.
+  #
+  # The cross-tenant responder gets a tenant attribute too, and that is not a
+  # mistake to correct here: personas.probe.spec.ts states it explicitly as the
+  # INPUT to the tenant-pinning defect it predicts for cross-tenant principals
+  # (TenantScope drops the cross-tenant role but keeps the tenant stamped on
+  # Keycloak's default composites, so whoami hands the operator a one-tenant
+  # scope). Strip it here and the probe measures a different deployment than
+  # the one it was written against.
+  local ro_pw; ro_pw="$(console_password op-readonly)"
+  RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
+    { $KC_CFG; }
+    K create users -r ebpf-soc -s username=op-readonly -s enabled=true -s email=op-readonly@local -s firstName=op -s lastName=readonly -s emailVerified=true -s 'attributes.tenant=[\"$first_tenant\"]' >/dev/null 2>&1 || true
+    K add-roles -r ebpf-soc --uusername op-readonly --rolename read-only >/dev/null 2>&1
+    K set-password -r ebpf-soc --username op-readonly --new-password '$ro_pw' >/dev/null 2>&1"
+  userlist+="  op-readonly / $ro_pw   (read-only, $first_tenant)   -> probe PROBE_RO_USER / PROBE_RO_PASSWORD\n"
+
+  local xr_pw; xr_pw="$(console_password op-responder)"
+  RUN "K(){ /opt/keycloak/bin/kcadm.sh \"\$@\"; }
+    { $KC_CFG; }
+    K create users -r ebpf-soc -s username=op-responder -s enabled=true -s email=op-responder@local -s firstName=op -s lastName=responder -s emailVerified=true -s 'attributes.tenant=[\"$first_tenant\"]' >/dev/null 2>&1 || true
+    K add-roles -r ebpf-soc --uusername op-responder --rolename cross-tenant-responder >/dev/null 2>&1
+    K set-password -r ebpf-soc --username op-responder --new-password '$xr_pw' >/dev/null 2>&1"
+  userlist+="  op-responder / $xr_pw   (cross-tenant-responder, cross-tenant, viewing $first_tenant)   -> probe PROBE_XR_USER / PROBE_XR_PASSWORD\n"
 
   # Remove Keycloak's temporary bootstrap admin now that the permanent ebpf-admin
   # is in place and proven (the console's "temporary admin" warning goes away).
@@ -1115,8 +1665,11 @@ EOF"
   # bootstrap-token-gated and the command channel is mTLS, so exposing 9443 on
   # the local OrbStack bridge is safe.
   _ship_intel
-  local cpasst; cpasst="$(_assistant_flags /etc/ebpf-soc/assistant.env)"
-  [[ -n "$cpasst" ]] && ok "analyst assistant: ${ASSISTANT_MODEL:-gpt-oss:120b} (read-only tools)"
+  # "<keystate>|<flags>" — see the engine's call site.
+  local cpasstrec cpasst
+  cpasstrec="$(_assistant_spec /etc/ebpf-soc/assistant.env)"
+  cpasst="${cpasstrec#*|}"
+  [[ -n "$cpasst" ]] && _assistant_report "${cpasstrec%%|*}" /etc/ebpf-soc/assistant.env
   _systemd_unit ebpf-soc-controlplane "ebpf-soc control plane (multi-tenant)" \
     "/usr/local/bin/ebpf-soc-controlplane -http 127.0.0.1:$CP_HTTP_PORT -grpc 0.0.0.0:9443 -server-name localhost -store postgres -oidc-issuer $issuer -oidc-client-id console-bff -oidc-redirect-url $redirect -app-url / -state-dir /var/lib/ebpf-soc -fleet-pubkey-out /var/lib/ebpf-soc/fleet.pub$cpasst" \
     "postgresql.service ebpf-keycloak.service" \
@@ -1157,7 +1710,8 @@ cat > /etc/nginx/snippets/ebpf-console.conf <<'NGINX'
     # /readyz was NOT proxied, so it fell through to the SPA catch-all below and
     # answered 200 with index.html — an uptime check pointed at it saw HTML and
     # called it healthy. It is the only probe that reports store reachability,
-    # so it has to reach the control plane.
+    # so it has to reach the control plane. _cp_liveness's origin probe comes
+    # through here: it is what lets the closing line name this origin.
     location /readyz { proxy_pass http://127.0.0.1:$CP_HTTP_PORT; }
     # Keycloak, same origin. /realms + /resources carry the OIDC flow and its
     # login-page assets; /admin + /js are the admin console.
@@ -1311,9 +1865,8 @@ NGINX"
     RUN "sleep 8"
   fi
 
-  local code; code="$(RUN "curl -s -o /dev/null -w '%{http_code}' http://localhost/" || true)"
   echo
-  ok "control plane live at  $TARGET_SCHEME://$TARGET_HOST/   (console HTTP $code)"
+  _cp_liveness
   # Keycloak is proxied on the console origin, NOT on :$KC_PORT — that port is
   # deliberately closed to the internet.
   echo "  Keycloak admin:  $TARGET_SCHEME://$TARGET_HOST/admin/  ($PERM_ADMIN_USER / $PERM_ADMIN_PW)"
@@ -1327,7 +1880,11 @@ NGINX"
 # is fine for small trees; overridden by drivers that can do it faster).
 put_dir() { # <localdir> <remotedir>
   RUN "rm -rf $2/* 2>/dev/null || true"
-  ( cd "$1" && find . -type f ) | while read -r f; do
+  # `! -name '._*'` — macOS AppleDouble sidecars are real files on disk here and
+  # would be copied up like any other. See the policy-shipping note in
+  # provision_engine for why they are not harmless in a directory the target
+  # globs.
+  ( cd "$1" && find . -type f ! -name '._*' ) | while read -r f; do
     RUN "mkdir -p $2/$(dirname "$f")"
     PUT "$1/$f" "$2/$f"
   done

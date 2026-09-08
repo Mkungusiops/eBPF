@@ -155,12 +155,23 @@ m 'mkdir -p /opt/ebpf-soc/bpf /etc/ebpf-soc /var/lib/ebpf-soc-agent/honey'
 tar --exclude='._*' -cz -C "$REPO_ROOT" policies attacks \
   | m 'cat > /tmp/pa.tgz && tar -xzf /tmp/pa.tgz -C /opt/ebpf-soc && rm -f /tmp/pa.tgz'
 
-# Threat-intelligence feeds. Same path as every other host in the estate, and
-# MERGED rather than replaced: allow.txt is the operator's veto list, and a
-# deploy that overwrote it would silently reinstate every false positive they
-# had already suppressed. Only files absent on the box are written.
-if [[ -d "$REPO_ROOT/deploy/intel" ]]; then
+# ship_intel — threat-intelligence feeds. Same path as every other host in the
+# estate, and MERGED rather than replaced: allow.txt is the operator's veto list,
+# and a deploy that overwrote it would silently reinstate every false positive
+# they had already suppressed. Only files absent on the box are written.
+#
+# A FUNCTION rather than an inline block so it can be EXECUTED against stubbed
+# m/push in a test: this script runs top-to-bottom and ssh's during its own
+# preflight, so it cannot be sourced, and the closing line here has been wrong in
+# exactly the way lib.sh's _ship_intel was.
+ship_intel() {
+  if [[ ! -d "$REPO_ROOT/deploy/intel" ]]; then
+    warn "threat-intel: $REPO_ROOT/deploy/intel is not there — NO feeds were shipped; the agent keeps"
+    warn "whatever indicators it already had."
+    return 0
+  fi
   m 'install -d -m 0755 /etc/ebpf-soc/intel'
+  local f base shipped=0 kept=0
   # *.txt AND feeds.yaml — the refresh configuration lives beside the indicators
   # it produces, and a glob that missed it left every agent matching only the
   # static starter set while reporting itself configured.
@@ -172,15 +183,37 @@ if [[ -d "$REPO_ROOT/deploy/intel" ]]; then
     case "$base" in
       allow.txt|feeds.yaml)
         if m "[ -e /etc/ebpf-soc/intel/$base ] && echo yes" 2>/dev/null | grep -q yes; then
+          log "keeping the existing /etc/ebpf-soc/intel/$base (operator-owned)"
+          kept=$((kept+1))
           continue
         fi
         ;;
     esac
     cat "$f" | push "/etc/ebpf-soc/intel/$base"
+    shipped=$((shipped+1))
   done
   m 'chmod 0644 /etc/ebpf-soc/intel/*.txt 2>/dev/null || true'
-  log "threat-intel feeds shipped to /etc/ebpf-soc/intel"
-fi
+  # COUNT what actually moved. This line was `log "threat-intel feeds shipped to
+  # /etc/ebpf-soc/intel"`, printed unconditionally once the loop reached its end,
+  # so an empty deploy/intel/ — a bad checkout, a tarball that lost the
+  # directory, a glob that matched nothing — reported feeds shipped after
+  # shipping none, while the agent went on matching whatever indicators it
+  # already had. lib.sh's _ship_intel was fixed for this; the copy here was not.
+  # Keep the two in step.
+  local keptnote=""
+  # NOT ${kept:+…}: kept is "0", not empty, so that spelling would append
+  # ", 0 operator-owned file(s) kept" to every first deploy.
+  (( kept > 0 )) && keptnote=", $kept operator-owned file(s) left untouched"
+  if (( shipped > 0 )); then
+    ok "threat-intel: $shipped file(s) shipped to /etc/ebpf-soc/intel$keptnote"
+  elif (( kept > 0 )); then
+    ok "threat-intel: nothing to ship — all $kept file(s) on the target are operator-owned and were kept"
+  else
+    warn "threat-intel: NO feed files were shipped ($REPO_ROOT/deploy/intel is empty) — the agent keeps"
+    warn "whatever indicators it already had, and this deploy did not update them."
+  fi
+}
+ship_intel
 # Write-then-rename: `cat >` truncates the running executable in place and
 # fails with "Text file busy", so a redeploy would silently keep the OLD agent
 # while reporting success. rename(2) swaps the directory entry instead; the
